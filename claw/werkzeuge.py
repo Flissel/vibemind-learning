@@ -23,6 +23,7 @@ from uuid import UUID
 
 import httpx
 
+from .freigabe import FreigabeAbgelehnt, FreigabeStore
 from .learning_client import (
     LearningClient,
     LearningRejected,
@@ -35,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 ROLE_AUTHOR = "learning.author"
 ROLE_REVIEWER = "learning.reviewer"
+ROLE_PUBLISHER = "learning.publisher"
+_REVIEW_READY = "review_ready"
+
+# Module-level so tests can swap in a store with a fake clock.
+_freigaben = FreigabeStore()
 
 _MESSAGE_LIMIT = 300
 _REASONS = {
@@ -190,6 +196,68 @@ def entwurf_ablehnen(job_id: str, revision: int, grund: str) -> dict[str, Any]:
             body,
             roles=ROLE_REVIEWER,
             idempotency_key_value=idempotency_key("entwurf_ablehnen", {"job_id": job_id, **body}),
+        )
+        return _job(data)
+
+    return _run(act)
+
+
+def _anzeigen(client: LearningClient, job_id: str) -> dict[str, Any]:
+    job = client.get(f"/course-factory/jobs/{job_id}", roles=ROLE_AUTHOR)
+    if job["state"] != _REVIEW_READY:
+        raise ValueError("Der Kurs ist noch nicht zur Veroeffentlichung bereit")
+    kurs = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)["course"]
+    titel = kurs.get("title") if isinstance(kurs, dict) else None
+    return {
+        "job_id": job["job_id"],
+        "titel": titel,
+        # The course projection does not carry these; never invented.
+        "kapitel": None,
+        "lektionen": None,
+        "unbelegte_aussagen": list(job.get("unsupported_claim_ids") or []),
+        "revision": job["revision"],
+        "token": _freigaben.ausstellen(job_id, job["revision"]),
+    }
+
+
+def veroeffentlichung_anzeigen(job_id: str) -> dict[str, Any]:
+    """Return the summary to show the person plus a one-time publication token.
+
+    Only a ``review_ready`` job can be displayed. The token is valid 10 minutes
+    and bound to (job, revision).
+    """
+    try:
+        job_id = _uuid(job_id)
+    except ValueError as error:
+        return {"ok": False, "fehler": f"Ungueltige Eingabe: {error}"[:_MESSAGE_LIMIT]}
+    return _run(lambda client: _anzeigen(client, job_id))
+
+
+def veroeffentlichen(job_id: str, token: str) -> dict[str, Any]:
+    """Publish a displayed course. Call only after the person said yes post-display.
+
+    The token is consumed (one-time use) before the publish call, so a failed or
+    unavailable publish needs a fresh display; a retry with the same token is
+    refused. The idempotency key derives from (job_id, token).
+    """
+
+    def act(client: LearningClient) -> dict[str, Any]:
+        job_id_norm = _uuid(job_id)
+        job = client.get(f"/course-factory/jobs/{job_id_norm}", roles=ROLE_AUTHOR)
+        try:
+            _freigaben.einloesen(job_id_norm, job["revision"], token)
+        except FreigabeAbgelehnt as error:
+            raise LearningRejected("freigabe_abgelehnt", error.grund, 0) from error
+        if job["state"] != _REVIEW_READY:
+            raise ValueError("Der Kurs ist nicht zur Veroeffentlichung bereit")
+        body = {"expected_revision": job["revision"], "confirmed": True, "approval_ref": token}
+        data = client.post(
+            f"/course-factory/jobs/{job_id_norm}/publish",
+            body,
+            roles=ROLE_PUBLISHER,
+            idempotency_key_value=idempotency_key(
+                "veroeffentlichen", {"job_id": job_id_norm, "token": token}
+            ),
         )
         return _job(data)
 
