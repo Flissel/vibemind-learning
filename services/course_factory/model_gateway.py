@@ -18,10 +18,10 @@ from pydantic import BaseModel, ValidationError
 ROLE_CONTRACTS = {
     "architect": ("structuring", "architect-prompt-v1", "architect-v1"),
     "concept_mapper": ("structuring", "concept-map-prompt-v1", "concept-map-v1"),
-    "lesson_author": ("authoring", "lesson-prompt-v1", "lesson-v1"),
+    "lesson_author": ("authoring", "lesson-prompt-v2", "lesson-v1"),
     "assessment_designer": (
         "assessing",
-        "assessment-prompt-v1",
+        "assessment-prompt-v2",
         "assessment-v1",
     ),
     "source_verifier": (
@@ -48,8 +48,8 @@ ROLE_CONTRACTS = {
 ROLE_PROMPTS = {
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome.",
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure.",
-    "lesson_author": "Draft rigorous lessons from the supplied structure and source references.",
-    "assessment_designer": "Design authentic activities that assess the mapped concepts without inventing facts.",
+    "lesson_author": "Draft rigorous lessons from the supplied structure and source references, using only facts stated in the supplied sources; add no outside knowledge, examples, or reasons the sources do not give.",
+    "assessment_designer": "Design authentic activities that assess the mapped concepts, using only facts stated in the supplied sources; never invent facts or expected answers.",
     "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
     "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied source references.",

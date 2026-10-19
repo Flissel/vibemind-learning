@@ -461,3 +461,13 @@ async def test_both_transports_give_the_model_the_output_json_schema() -> None:
     )
     assert schema in system_body["messages"][0]["content"]
     assert schema not in system_body["messages"][1]["content"]
+
+
+@pytest.mark.parametrize("role", ["lesson_author", "assessment_designer"])
+def test_authoring_roles_forbid_knowledge_beyond_the_sources(role: str) -> None:
+    # Live, the lesson author added plausible outside facts (12 unsupported
+    # claims) and the quality gate stopped the draft.
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    assert "only facts stated in the supplied sources" in ROLE_PROMPTS[role]
+    assert ROLE_CONTRACTS[role][1].endswith("-v2")
