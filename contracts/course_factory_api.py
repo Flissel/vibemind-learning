@@ -173,6 +173,9 @@ class MaterialImportResponseV1(ContractModel):
     artifact_id: SafeToken
     projection_state: Literal["pending", "complete", "failed"]
     content_hash: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
+    locators: tuple[
+        Annotated[str, Field(pattern=r"^source://[A-Za-z0-9/._:-]{1,500}$")], ...
+    ] = ()
     evidence: EvidenceRefV1 | None = None
 
 

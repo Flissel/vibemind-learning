@@ -65,6 +65,18 @@ def test_browser_facing_compose_environment_contains_no_secret_variable() -> Non
     )
 
 
+def test_no_direct_provider_credentials_reach_public_services() -> None:
+    services = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    for name in ("learning-api", "learning-mcp", "learnhouse-web"):
+        environment = services[name].get("environment", {})
+        assert "OPENAI_API_KEY" not in environment
+        assert "LEARNING_OPENFANG_API_KEY" not in environment
+        assert "LEARNING_OPENFANG_URL" not in environment
+    assert "LEARNING_VIBEMIND_SERVICE_KEY" not in services["learnhouse-web"].get(
+        "environment", {}
+    )
+
+
 def test_tracked_runtime_and_browser_sources_have_no_embedded_provider_keys() -> None:
     paths = subprocess.run(
         ["git", "ls-files"],

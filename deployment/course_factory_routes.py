@@ -272,6 +272,9 @@ def import_material(
         artifact_id=staged.artifact_id,
         projection_state=_projection(data.get("projection_state")),
         content_hash=staged.content_hash,
+        locators=tuple(
+            item for item in source.get("locators", []) if isinstance(item, str)
+        ),
         evidence=result.evidence,
     )
     return JSONResponse(

@@ -213,6 +213,7 @@ def test_complete_semantic_mcp_golden_path(tmp_path: Path) -> None:
         "material_import",
         "rag_index",
         "course_generate",
+        "generation_status",
         "course_review",
         "course_publish",
         "chapter_open",
@@ -230,6 +231,18 @@ def test_complete_semantic_mcp_golden_path(tmp_path: Path) -> None:
         step["result"]["correlation_id"] == report["correlation_id"]
         for step in report["steps"]
     )
+    transports = {step["name"]: step["transport"] for step in report["steps"]}
+    assert transports["material_import"] == "http"
+    assert transports["course_generate"] == "http"
+    assert {
+        name for name, transport in transports.items() if transport == "http"
+    } == {"material_import", "course_generate"}
+    steps = {step["name"]: step for step in report["steps"]}
+    created, observed = steps["course_generate"], steps["generation_status"]
+    assert observed["result"]["aggregate"]["aggregate_id"] == created["result"]["job_id"]
+    assert observed["result"]["aggregate"]["revision"] == created["result"]["revision"]
+    assert created["evidence_owner"] == observed["evidence_owner"] == "course-factory"
+    assert steps["material_import"]["evidence_owner"] == "learning-ingestion"
     assert report["profile"] == "deterministic"
     assert report["live_provider_claim"] is False
     assert report["factory"]["state"] == "published"

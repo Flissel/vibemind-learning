@@ -124,3 +124,55 @@ reconstruction, PenEcho frame security, and stale-intent handling.
 Real import and route switching require a fresh evidence file plus explicit action-time
 confirmation for the exact batch, expected route revision, confirmation reference, and
 rollback command.
+
+## Increment 2026-10-19: VibeMind Course Factory HTTP API
+
+Scope: plan `docs/plans/2026-08-26-vibemind-course-factory-api.md`, Tasks 1-6, plus
+repairs needed after this Space moved into its own repository.
+
+Status: **implementation and deterministic evidence accepted; Docker rebuild and live
+OpenFang not executed**
+
+| Gate | Evidence | Result |
+| --- | --- | --- |
+| HTTP contracts and VibeMind authority | `test_course_factory_api.py` (contract), `test_vibemind_auth.py` | passed |
+| Transport-neutral application | `test_course_factory_application.py`, MCP generation/publish regressions | passed |
+| Authenticated HTTP routes | `test_course_factory_http_api.py`, `test_material_import_api.py` | passed |
+| Safe material staging | `test_material_staging.py` (traversal, links, private/redirect hops, size, type, cleanup, replay) | passed |
+| Compose and registry wiring | `deployment/test_compose.py`, `test_registry.py`, `docker compose config --quiet` with sentinels | passed |
+| Transport equivalence and OpenFang boundary | `test_course_factory_transport_equivalence.py`, `test_secret_boundary.py` | passed |
+| Golden Path (HTTP import + job, MCP status/review/publish/...) | `test_golden_path.py`, `scripts/run_learning_golden_path.py` | 16 steps, 9/9 terminal receipts, published |
+| Learning Python suite | `python -m pytest spaces/learning/tests spaces/learning/deployment/test_compose.py` | 467 passed, 12 skipped, 2 failed (see below) |
+| Static quality | `ruff check spaces/learning scripts/run_learning_golden_path.py` | passed |
+
+The two failing tests (`test_openfang_scope.py`) read the `brain-learning` manifest from
+the vibemind-os OpenFang gitlink. The manifest exists as OpenFang commit `3838469`
+(cherry-pick of `7a2a40c` onto the pinned line) and both tests pass against it; the
+gitlink moves once that commit is pushed.
+
+Deviations from the plan: generation and import requests carry
+`expected_course_revision` because the application binds both to the LearnHouse course
+revision; sources are addressed as `source_ids` (the application pins their current
+revision). Rejections are precise (`source_not_ready`, `not_found`, `revision_conflict`,
+`not_review_ready`, `invalid_transition`); publication checks revision and review state
+before calling the publisher.
+
+Repairs from the repository split: `.gitmodules` for `learnhouse`/`penecho` now lives in
+this repository, `test_upstream_pins.py` and the secret scan read this repository instead
+of the parent (the scan had silently scanned 0 files).
+
+### Blocker: fork commits are not published
+
+The pinned LearnHouse commit `136347810737fd5230f99e58d5abfa25a38b173d` and PenEcho
+commit `0327c3977fdfad861a218d96b5522f3da284d68d` were not found on `Flissel/learnhouse`
+or `Flissel/penecho`, and no local clone holding them was found. Until they are pushed
+(or recovered), `git submodule update` fails for both and the LearnHouse/PenEcho images
+cannot be rebuilt from source. The images built on 2026-08-26 still exist locally.
+
+### Non-claims of this increment
+
+- No Docker rebuild or `runtime_smoke` run; the `vibemind-learning` containers stayed
+  stopped.
+- No live OpenFang/provider execution; Golden Path evidence is `openfang://deterministic/*`.
+- No DNS-rebinding protection for remote imports (checked before connect, not pinned).
+- Import, cutover, and rollback remain unexecuted, as above.

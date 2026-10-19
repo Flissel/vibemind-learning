@@ -4,10 +4,15 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
+import secrets
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4, uuid5
 
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
@@ -26,6 +31,12 @@ from spaces.learning.contracts.penecho import (
     PenEchoLaunchContextV1,
     SourceReferenceV1,
 )
+from spaces.learning.deployment import runtime_api
+from spaces.learning.deployment.course_factory_routes import (
+    CourseFactoryRuntime,
+    get_course_factory_runtime,
+)
+from spaces.learning.deployment.vibemind_auth import SERVICE_KEY_ENV
 from spaces.learning.mcp import server
 from spaces.learning.mcp.tools.canvas import (
     CanvasAdaptiveSubmissionService,
@@ -81,7 +92,6 @@ from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.services.course_factory.team import CourseAgentTeam
 from spaces.learning.services.db.models import (
     Base,
-    LearningArtifact,
     LearningInvocationReceipt,
 )
 from spaces.learning.services.db.repository import SqlReceiptStore
@@ -91,6 +101,7 @@ from spaces.learning.services.evaluation.canvas_artifacts import (
 )
 from spaces.learning.services.evaluation.schemas import CriterionEvaluation, RubricModelOutput
 from spaces.learning.services.ingestion.models import LearningSourceChunk, LearningSourceRevision
+from spaces.learning.services.ingestion.material_staging import MaterialStagingService
 from spaces.learning.services.ingestion.outbox_worker import QdrantOutboxWorker
 from spaces.learning.services.ingestion.pipeline import IngestionPipeline
 from spaces.learning.services.ingestion.qdrant_index import QdrantHit, QdrantPoint
@@ -580,32 +591,58 @@ def _call(dispatcher: LearningDispatcher, tool: LearningToolName, event: EventEn
     return json.loads(response["result"]["content"][0]["text"])
 
 
+@contextmanager
+def _http_adapter(runtime: CourseFactoryRuntime) -> Iterator[tuple[TestClient, str]]:
+    """Serve the real Course Factory HTTP adapter over ``runtime`` in-process.
+
+    A throwaway caller key is installed for the duration of the run, so the
+    deterministic path exercises the same bearer/role checks a VibeMind
+    caller passes; the previous process value is restored afterwards.
+    """
+    key = secrets.token_urlsafe(32)
+    previous = os.environ.get(SERVICE_KEY_ENV)
+    os.environ[SERVICE_KEY_ENV] = key
+    runtime_api.app.dependency_overrides[get_course_factory_runtime] = lambda: runtime
+    try:
+        with TestClient(runtime_api.app, raise_server_exceptions=False) as client:
+            yield client, key
+    finally:
+        runtime_api.app.dependency_overrides.pop(get_course_factory_runtime, None)
+        if previous is None:
+            os.environ.pop(SERVICE_KEY_ENV, None)
+        else:
+            os.environ[SERVICE_KEY_ENV] = previous
+
+
+def _http_headers(key: str, roles: str, idempotency_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {key}",
+        "X-VibeMind-Actor-ID": ACTOR.actor_id,
+        "X-VibeMind-Space-ID": "learning",
+        "X-VibeMind-Roles": roles,
+        "X-VibeMind-Correlation-ID": str(CORRELATION_ID),
+        "Idempotency-Key": idempotency_key,
+    }
+
+
+def _evidence_owner(result: dict[str, Any]) -> str | None:
+    evidence = result.get("evidence")
+    return evidence.get("owner") if isinstance(evidence, dict) else None
+
+
 def run_deterministic(workdir: Path, *, fixture_path: Path) -> dict[str, Any]:
     workdir.mkdir(parents=True, exist_ok=True)
     artifact_root = workdir / "artifacts"
     artifact_root.mkdir()
+    import_root = workdir / "imports"
+    import_root.mkdir()
     engine = create_engine(f"sqlite:///{workdir / 'golden.db'}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     learnhouse = _LearnHouse()
     ui = _UiRecorder()
 
-    upload = artifact_root / "uploads" / "authority.md"
-    upload.parent.mkdir(parents=True)
-    content = fixture_path.read_bytes()
-    upload.write_bytes(content)
-    artifact_id = str(uuid4())
-    with factory() as db, db.begin():
-        db.add(LearningArtifact(
-            id=artifact_id,
-            relative_path="uploads/authority.md",
-            content_hash=hashlib.sha256(content).hexdigest(),
-            media_type="text/markdown",
-            size_bytes=len(content),
-            aggregate_type="source_upload",
-            aggregate_id=artifact_id,
-            revision=1,
-        ))
+    (import_root / "authority.md").write_bytes(fixture_path.read_bytes())
 
     repository = CourseFactoryRepository(factory)
     factory_store = CourseFactoryArtifactStore(factory, artifact_root=artifact_root)
@@ -661,25 +698,84 @@ def run_deterministic(workdir: Path, *, fixture_path: Path) -> dict[str, Any]:
         gateways=gateways, receipts=SqlReceiptStore(factory), ui_delivery=ui
     )
     steps: list[dict[str, Any]] = []
+    with _http_adapter(CourseFactoryRuntime(
+        dispatcher=dispatcher,
+        session_factory=factory,
+        stager=MaterialStagingService(
+            session_factory=factory, import_root=import_root, artifact_root=artifact_root
+        ),
+    )) as (http, http_key):
+        report = _run_steps(
+            steps=steps,
+            dispatcher=dispatcher,
+            http=http,
+            http_key=http_key,
+            factory=factory,
+            learnhouse=learnhouse,
+            generation_model=generation_model,
+            runner=runner,
+            penecho=penecho,
+            ui=ui,
+        )
+    engine.dispose()
+    return report
+
+
+def _run_steps(
+    *,
+    steps: list[dict[str, Any]],
+    dispatcher: LearningDispatcher,
+    http: TestClient,
+    http_key: str,
+    factory: Any,
+    learnhouse: _LearnHouse,
+    generation_model: _GenerationGateway,
+    runner: CourseFactoryRunner,
+    penecho: _PenEcho,
+    ui: _UiRecorder,
+) -> dict[str, Any]:
+    def record(name: str, transport: str, result: dict[str, Any]) -> dict[str, Any]:
+        aggregate = result.get("aggregate")
+        steps.append({
+            "name": name,
+            "transport": transport,
+            "correlation_id": result.get("correlation_id"),
+            "revision": (
+                aggregate.get("revision") if isinstance(aggregate, dict) else result.get("revision")
+            ),
+            "evidence_owner": _evidence_owner(result),
+            "result": result,
+        })
+        return result
 
     def invoke(name: str, tool: LearningToolName, event: EventEnvelopeV1) -> dict[str, Any]:
-        result = _call(dispatcher, tool, event)
-        steps.append({"name": name, "result": result})
-        return result
+        return record(name, "mcp", _call(dispatcher, tool, event))
+
+    def post(name: str, path: str, *, roles: str, body: dict[str, Any]) -> dict[str, Any]:
+        response = http.post(
+            path,
+            headers=_http_headers(http_key, roles, f"golden-http-{name}-{uuid4()}"),
+            json=body,
+        )
+        if response.status_code not in {200, 202}:
+            raise RuntimeError(f"golden HTTP step {name} failed: {response.status_code}")
+        return record(name, "http", response.json())
 
     invoke(
         "status",
         LearningToolName.STATUS,
         _event(LearningEventType.STATUS, course_id=None),
     )
-    imported = invoke(
+    imported = post(
         "material_import",
-        LearningToolName.MATERIAL_IMPORT,
-        _event(
-            LearningEventType.MATERIAL_IMPORT,
-            expected_revision=1,
-            payload={"artifact_id": artifact_id, "title": "Authorized AI execution"},
-        ),
+        "/api/v1/materials/import",
+        roles="learning.author",
+        body={
+            "course_id": str(COURSE_ID),
+            "expected_course_revision": 1,
+            "title": "Authorized AI execution",
+            "source": {"kind": "local_import", "relative_path": "authority.md"},
+        },
     )
     index = _Index()
     assert QdrantOutboxWorker(factory, index=index, embedder=_Embedder()).run_once()
@@ -692,28 +788,37 @@ def run_deterministic(workdir: Path, *, fixture_path: Path) -> dict[str, Any]:
     index_hits = index.retrieve([chunk.id])
     steps.append({
         "name": "rag_index",
+        "transport": "worker",
+        "evidence_owner": None,
         "result": {
             "state": "completed",
             "correlation_id": str(CORRELATION_ID),
             "point_ids": [hit.point_id for hit in index_hits],
-            "source_locators": imported["result"]["source"]["locators"],
+            "source_locators": imported["locators"],
         },
     })
 
-    generated = invoke(
+    generated = post(
         "course_generate",
-        LearningToolName.COURSE_GENERATE,
-        _event(
-            LearningEventType.COURSE_GENERATE,
-            expected_revision=learnhouse.course_revision,
-            payload={
-                "audience": "AI course students",
-                "target_outcome": "Operate an authorized AI workflow",
-                "source_ids": [str(SOURCE_ID)],
-            },
-        ),
+        "/api/v1/course-factory/jobs",
+        roles="learning.author",
+        body={
+            "course_id": str(COURSE_ID),
+            "expected_course_revision": learnhouse.course_revision,
+            "title": "Authorized AI execution",
+            "audience": "AI course students",
+            "level": "beginner",
+            "locale": "en",
+            "learning_objectives": ["Operate an authorized AI workflow"],
+            "source_ids": [str(SOURCE_ID)],
+        },
     )
-    job_id = generated["result"]["job_id"]
+    job_id = generated["job_id"]
+    invoke(
+        "generation_status",
+        LearningToolName.GENERATION_STATUS,
+        _event(LearningEventType.GENERATION_STATUS, payload={"job_id": job_id}),
+    )
     generation_model.draft = _draft(job_id, source_revision, chunk)
     generation_run = asyncio.run(runner.run_job(job_id))
     assert generation_run.job.state is FactoryState.REVIEW_READY
@@ -902,7 +1007,7 @@ def run_deterministic(workdir: Path, *, fixture_path: Path) -> dict[str, Any]:
         },
         "rag": {
             "point_count": len(index.points),
-            "source_locators": imported["result"]["source"]["locators"],
+            "source_locators": imported["locators"],
         },
         "adaptive": {
             "mastery_evidence_count": mastery_count,
@@ -917,5 +1022,4 @@ def run_deterministic(workdir: Path, *, fixture_path: Path) -> dict[str, Any]:
         },
         "ui_intents": ui.intents,
     }
-    engine.dispose()
     return report
