@@ -97,11 +97,17 @@ def test_stateful_mounts_use_named_volumes() -> None:
     declared = set(compose["volumes"])
 
     assert isinstance(services, dict)
-    mounted = {
-        str(mount).split(":", 1)[0]
+    mounts = [
+        str(mount)
         for service in services.values()
         if isinstance(service, dict)
         for mount in service.get("volumes", [])
+    ]
+    # The only bind mount is read-only configuration, never state.
+    bind_mounts = [mount for mount in mounts if mount.startswith(".")]
+    assert bind_mounts == ["./postgres-init:/docker-entrypoint-initdb.d:ro"]
+    mounted = {
+        mount.split(":", 1)[0] for mount in mounts if mount not in bind_mounts
     }
     assert STATEFUL_VOLUMES <= mounted
     assert mounted <= declared
@@ -348,6 +354,15 @@ def test_postgres_image_provides_learnhouse_pgvector_contract() -> None:
     assert isinstance(postgres, dict)
 
     assert postgres["image"] == "pgvector/pgvector:pg16"
+    # The image ships pgvector but a fresh database does not enable it; LearnHouse's
+    # schema adoption (create_all) needs the type before it creates course_embedding.
+    assert (
+        "./postgres-init:/docker-entrypoint-initdb.d:ro" in postgres["volumes"]
+    )
+    init_sql = (DEPLOYMENT_DIR / "postgres-init" / "01-vector.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "CREATE EXTENSION IF NOT EXISTS vector;" in init_sql
 
 
 def test_learnhouse_web_uses_the_reserved_learning_space_default_port() -> None:
