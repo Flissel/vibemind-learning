@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid4
@@ -43,6 +46,35 @@ _REVIEW_READY = "review_ready"
 
 # Module-level so tests can swap in a store with a fake clock.
 _freigaben = FreigabeStore()
+
+
+class Idempotenzfenster:
+    """Windowed idempotency keys for "start something new" tools.
+
+    The same arguments reuse one key for ``seconds`` after they were first seen (a
+    retry replays instead of starting twice); afterwards a fresh key is minted, so a
+    deliberate second identical session or job is possible. In-process only.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, seconds: float = 600) -> None:
+        self._clock = clock
+        self._seconds = seconds
+        self._seen: dict[str, tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    def key(self, tool: str, args: dict[str, Any]) -> str:
+        digest = idempotency_key(tool, args)
+        with self._lock:
+            now = self._clock()
+            self._seen = {d: v for d, v in self._seen.items() if now - v[1] < self._seconds}
+            entry = self._seen.get(digest)
+            if entry is None:
+                entry = ("claw-" + secrets.token_hex(20), now)
+                self._seen[digest] = entry
+            return entry[0]
+
+
+_fenster = Idempotenzfenster()
 
 _MESSAGE_LIMIT = 300
 _REASONS = {
@@ -160,7 +192,7 @@ def kurs_erzeugen(
             "/course-factory/jobs",
             body,
             roles=ROLE_AUTHOR,
-            idempotency_key_value=idempotency_key("kurs_erzeugen", body),
+            idempotency_key_value=_fenster.key("kurs_erzeugen", body),
         )
         return _job(data)
 
@@ -193,11 +225,14 @@ def entwurf_ablehnen(job_id: str, revision: int, grund: str) -> dict[str, Any]:
     body = {"expected_revision": revision, "decision": "reject", "reason": grund}
 
     def act(client: LearningClient) -> dict[str, Any]:
+        job_id_norm = _uuid(job_id)
         data = client.post(
-            f"/course-factory/jobs/{_uuid(job_id)}/review",
+            f"/course-factory/jobs/{job_id_norm}/review",
             body,
             roles=ROLE_REVIEWER,
-            idempotency_key_value=idempotency_key("entwurf_ablehnen", {"job_id": job_id, **body}),
+            idempotency_key_value=idempotency_key(
+                "entwurf_ablehnen", {"job_id": job_id_norm, **body}
+            ),
         )
         return _job(data)
 
@@ -307,6 +342,7 @@ def _mcp(
     tool: str,
     *,
     write: bool = False,
+    windowed: bool = False,
     course_id: str | None = None,
     session_id: str | None = None,
     expected_revision: int | None = None,
@@ -328,7 +364,9 @@ def _mcp(
             event["expected_revision"] = expected_revision
         if write:
             keyed = {k: v for k, v in event.items() if k not in ("invocation_id", "correlation_id")}
-            event["idempotency_key"] = idempotency_key(tool, keyed)
+            event["idempotency_key"] = (
+                _fenster.key(tool, keyed) if windowed else idempotency_key(tool, keyed)
+            )
 
         answer = client.mcp_call(tool, event)
         result = answer.get("result")
@@ -347,6 +385,7 @@ def sitzung_starten(
         "learning.session.start",
         "learning_session_start",
         write=True,
+        windowed=True,
         course_id=course_id,
         payload={
             "course_revision": kurs_revision,

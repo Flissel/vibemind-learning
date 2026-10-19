@@ -321,3 +321,55 @@ def test_mcp_call_string_error_code() -> None:
 
 def test_module_exposes_logger_not_print() -> None:
     assert learning_client.logger.name == "spaces.learning.claw.learning_client"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 500.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_kurs_erzeugen_reuses_the_key_for_600_seconds_then_mints_a_new_one(
+    fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr(werkzeuge, "_fenster", werkzeuge.Idempotenzfenster(clock=clock))
+    _create()
+    clock.now += 599
+    _create()
+    clock.now += 2  # 601 s after the first call
+    _create()
+    _create()
+    keys = [r.headers["Idempotency-Key"] for r in fake.requests]
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]
+    assert keys[3] == keys[2]
+    assert all(k.startswith("claw-") for k in keys)
+
+
+def test_kurs_erzeugen_window_is_per_arguments(fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(werkzeuge, "_fenster", werkzeuge.Idempotenzfenster(clock=_Clock()))
+    _create()
+    werkzeuge.kurs_erzeugen(COURSE, "Anderer Titel", "a", "b", "de-DE", ["x"], [SOURCE], 3)
+    assert fake.requests[0].headers["Idempotency-Key"] != fake.requests[1].headers["Idempotency-Key"]
+
+
+def test_deterministic_keys_stay_for_reject_and_import(fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _Clock()
+    monkeypatch.setattr(werkzeuge, "_fenster", werkzeuge.Idempotenzfenster(clock=clock))
+    werkzeuge.entwurf_ablehnen(JOB, 4, "grund")
+    werkzeuge.material_importieren(COURSE, "t", 3, pfad="a")
+    clock.now += 10_000
+    werkzeuge.entwurf_ablehnen(JOB, 4, "grund")
+    werkzeuge.material_importieren(COURSE, "t", 3, pfad="a")
+    k = [r.headers["Idempotency-Key"] for r in fake.requests]
+    assert k[0] == k[2] and k[1] == k[3]
+
+
+def test_entwurf_ablehnen_key_uses_the_normalized_job_id(fake: Fake) -> None:
+    werkzeuge.entwurf_ablehnen(JOB, 4, "grund")
+    werkzeuge.entwurf_ablehnen(JOB.replace("-", ""), 4, "grund")
+    k = [r.headers["Idempotency-Key"] for r in fake.requests]
+    assert k[0] == k[1]

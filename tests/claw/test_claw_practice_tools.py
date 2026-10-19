@@ -170,3 +170,39 @@ def test_no_canvas_save_or_submit_tool_exists() -> None:
     forbidden = ("zeichnung_speichern", "zeichnung_abgeben", "canvas_save", "canvas_submit")
     assert not any(n in names for n in forbidden)
     assert not any("speichern" in n or "abgeben" in n for n in names if n.startswith("zeichn"))
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 500.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_sitzung_starten_window_reuses_then_renews_the_key(
+    fake_mcp: FakeMcp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr(werkzeuge, "_fenster", werkzeuge.Idempotenzfenster(clock=clock))
+    werkzeuge.sitzung_starten(COURSE, 2, "training")
+    first = fake_mcp.last_event["idempotency_key"]
+    clock.now += 599
+    werkzeuge.sitzung_starten(COURSE, 2, "training")
+    assert fake_mcp.last_event["idempotency_key"] == first
+    clock.now += 2
+    werkzeuge.sitzung_starten(COURSE, 2, "training")
+    second = fake_mcp.last_event["idempotency_key"]
+    assert second != first and second.startswith("claw-")
+
+
+def test_antwort_geben_key_stays_deterministic(
+    fake_mcp: FakeMcp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr(werkzeuge, "_fenster", werkzeuge.Idempotenzfenster(clock=clock))
+    werkzeuge.antwort_geben(SESSION, 4, {"choice_id": "a"})
+    first = fake_mcp.last_event["idempotency_key"]
+    clock.now += 10_000
+    werkzeuge.antwort_geben(SESSION, 4, {"choice_id": "a"})
+    assert fake_mcp.last_event["idempotency_key"] == first
