@@ -267,3 +267,115 @@ async def test_gateway_stops_reading_oversized_response() -> None:
         await gateway.generate(_invocation(), ArchitectOutput)
 
     await client.aclose()
+
+
+# --- inline prompt transport -------------------------------------------------
+
+from spaces.learning.services.course_factory.model_gateway import (  # noqa: E402
+    ROLE_PROMPTS,
+    GatewayInputError,
+    _canonical_json,
+    build_openfang_model_gateway,
+)
+
+
+def _completion(content: str) -> dict:
+    return {"id": "inline-1", "choices": [{"message": {"content": content}}]}
+
+
+async def _run_inline(invocation: ModelInvocation, reply: str, output_model=ArchitectOutput):
+    captured: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_completion(reply))
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://openfang.test"
+    )
+    gateway = OpenFangModelGateway(
+        "http://openfang.test", "k" * 32, client=client, prompt_transport="inline"
+    )
+    try:
+        result = await gateway.generate(invocation, output_model)
+    finally:
+        await client.aclose()
+    return captured["body"], result
+
+
+@pytest.mark.asyncio
+async def test_inline_transport_sends_one_user_message_with_role_prompt() -> None:
+    invocation = _invocation()
+    body, _ = await _run_inline(invocation, json.dumps(_architect_payload()))
+
+    assert [m["role"] for m in body["messages"]] == ["user"]
+    assert "response_format" not in body
+    text = body["messages"][0]["content"]
+    assert text.startswith(ROLE_PROMPTS["architect"])
+    assert "Return only JSON matching schema architect-v1." in text
+    assert text.rstrip().endswith(_canonical_json(invocation.input_payload))
+
+
+@pytest.mark.asyncio
+async def test_inline_transport_extracts_fenced_json() -> None:
+    reply = "Here:\n```json\n" + json.dumps(_architect_payload()) + "\n```"
+    _, result = await _run_inline(_invocation(), reply)
+
+    assert result.output.schema_version == "architect-v1"
+    assert result.evidence_ref == "openfang://completion/inline-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["no json", '{"a":1} {"b":2}'])
+async def test_inline_transport_rejects_zero_or_two_json_objects(reply: str) -> None:
+    with pytest.raises(GatewaySchemaError):
+        await _run_inline(_invocation(), reply)
+
+
+@pytest.mark.asyncio
+async def test_inline_transport_refuses_image_roles() -> None:
+    from spaces.learning.services.evaluation.schemas import RubricModelOutput
+
+    png = b"\x89PNG\r\n\x1a\nverified-canvas"
+    invocation = ModelInvocation(
+        role="rubric_evaluator",
+        stage="evaluation",
+        correlation_id=str(uuid4()),
+        prompt_version="rubric-prompt-v1",
+        output_schema_version="rubric-evaluation-v1",
+        input_payload={"response": {"kind": "penecho_canvas"}},
+        image_inputs=(ModelImageInput(
+            media_type="image/png", content=png,
+            sha256=hashlib.sha256(png).hexdigest(),
+        ),),
+    )
+    with pytest.raises(GatewayInputError):
+        await _run_inline(invocation, "{}", RubricModelOutput)
+
+
+def test_builder_reads_transport_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("LEARNING_OPENFANG_API_KEY", "k" * 32)
+    monkeypatch.setenv("LEARNING_OPENFANG_PROMPT_TRANSPORT", "inline")
+    monkeypatch.setenv("LEARNING_OPENFANG_TIMEOUT_SECONDS", "600")
+    gateway = build_openfang_model_gateway()
+    assert gateway.prompt_transport == "inline"
+    assert gateway.timeout_seconds == 600
+
+
+def test_builder_defaults_to_system_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("LEARNING_OPENFANG_API_KEY", "k" * 32)
+    monkeypatch.delenv("LEARNING_OPENFANG_PROMPT_TRANSPORT", raising=False)
+    monkeypatch.delenv("LEARNING_OPENFANG_TIMEOUT_SECONDS", raising=False)
+    gateway = build_openfang_model_gateway()
+    assert gateway.prompt_transport == "system"
+    assert gateway.timeout_seconds == 60
+
+
+def test_builder_rejects_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("LEARNING_OPENFANG_API_KEY", "k" * 32)
+    monkeypatch.setenv("LEARNING_OPENFANG_PROMPT_TRANSPORT", "shell")
+    with pytest.raises(ValueError):
+        build_openfang_model_gateway()

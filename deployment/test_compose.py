@@ -269,6 +269,12 @@ def test_course_factory_model_authority_is_scoped_to_learning_worker() -> None:
     assert worker_environment["LEARNING_OPENFANG_MODEL"] == (
         "${LEARNING_OPENFANG_MODEL:-learning-course-factory}"
     )
+    assert worker_environment["LEARNING_OPENFANG_PROMPT_TRANSPORT"] == (
+        "${LEARNING_OPENFANG_PROMPT_TRANSPORT:-system}"
+    )
+    assert worker_environment["LEARNING_OPENFANG_TIMEOUT_SECONDS"] == (
+        "${LEARNING_OPENFANG_TIMEOUT_SECONDS:-60}"
+    )
     for service_name, service in services.items():
         environment = service.get("environment", {})
         if service_name != "learning-worker":

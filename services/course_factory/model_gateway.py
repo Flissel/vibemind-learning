@@ -5,9 +5,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypeVar, cast
 from uuid import UUID
 
 import httpx
@@ -58,6 +59,8 @@ _SECRET_KEYS = ("api_key", "token", "secret", "password", "credential")
 _MAX_REQUEST_BYTES = 500_000
 _MAX_RESPONSE_BYTES = 1_000_000
 _MAX_IMAGE_BYTES = 5_000_000
+_PROMPT_TRANSPORTS = ("system", "inline")
+_FENCE_PATTERN = re.compile(r"```[A-Za-z0-9_-]*\s*(.*?)```", re.DOTALL)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -156,6 +159,7 @@ class OpenFangModelGateway:
         max_attempts: int = 3,
         client: httpx.AsyncClient | None = None,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        prompt_transport: Literal["system", "inline"] = "system",
     ) -> None:
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("OpenFang URL must use HTTP or HTTPS")
@@ -165,6 +169,10 @@ class OpenFangModelGateway:
             raise ValueError("OpenFang model gateway configuration is invalid")
         if max_attempts < 1 or max_attempts > 3:
             raise ValueError("OpenFang attempts must stay between one and three")
+        if prompt_transport not in _PROMPT_TRANSPORTS:
+            raise ValueError("OpenFang prompt transport must be system or inline")
+        self._prompt_transport = prompt_transport
+        self._timeout_seconds = timeout_seconds
         self._api_key = api_key
         self._model = model
         self._max_attempts = max_attempts
@@ -173,9 +181,20 @@ class OpenFangModelGateway:
             base_url=base_url.rstrip("/"), timeout=timeout_seconds
         )
 
+    @property
+    def prompt_transport(self) -> Literal["system", "inline"]:
+        return self._prompt_transport
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self._timeout_seconds
+
     async def generate(
         self, invocation: ModelInvocation, output_model: type[OutputT]
     ) -> GatewayResult[OutputT]:
+        inline = self._prompt_transport == "inline"
+        if inline and invocation.image_inputs:
+            raise GatewayInputError("inline prompt transport cannot carry image input")
         user_content: str | list[dict[str, object]] = _canonical_json(
             invocation.input_payload
         )
@@ -192,26 +211,7 @@ class OpenFangModelGateway:
                     },
                 },
             ]
-        body = {
-            "model": self._model,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        ROLE_PROMPTS[invocation.role]
-                        + " Return only JSON matching schema "
-                        + invocation.output_schema_version
-                        + "."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": user_content,
-                },
-            ],
-        }
+        body = self._build_body(invocation, user_content, inline=inline)
         for attempt in range(self._max_attempts):
             try:
                 async with self._client.stream(
@@ -240,17 +240,61 @@ class OpenFangModelGateway:
                 continue
             if status_code < 200 or status_code >= 300:
                 raise GatewayRejected("OpenFang model request was rejected")
-            return _validated_result(content, invocation, output_model)
+            return _validated_result(content, invocation, output_model, inline=inline)
         raise GatewayUnavailable("OpenFang model gateway is unavailable")
+
+    def _build_body(
+        self,
+        invocation: ModelInvocation,
+        user_content: str | list[dict[str, object]],
+        *,
+        inline: bool,
+    ) -> dict[str, object]:
+        instruction = (
+            ROLE_PROMPTS[invocation.role]
+            + " Return only JSON matching schema "
+            + invocation.output_schema_version
+            + "."
+        )
+        if inline:
+            # OpenFang forwards only the last user message, so the role prompt
+            # and schema instruction travel inside it.
+            return {
+                "model": self._model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": instruction + "\n\n" + cast(str, user_content),
+                    }
+                ],
+            }
+        return {
+            "model": self._model,
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": user_content},
+            ],
+        }
 
 
 def build_openfang_model_gateway() -> OpenFangModelGateway:
+    transport = (
+        os.environ.get("LEARNING_OPENFANG_PROMPT_TRANSPORT", "system").strip()
+        or "system"
+    )
+    if transport not in _PROMPT_TRANSPORTS:
+        raise ValueError("LEARNING_OPENFANG_PROMPT_TRANSPORT must be system or inline")
+    timeout_raw = os.environ.get("LEARNING_OPENFANG_TIMEOUT_SECONDS", "").strip()
     return OpenFangModelGateway(
         os.environ.get("LEARNING_OPENFANG_URL", "").strip(),
         os.environ.get("LEARNING_OPENFANG_API_KEY", ""),
         model=os.environ.get(
             "LEARNING_OPENFANG_MODEL", "learning-course-factory"
         ).strip(),
+        timeout_seconds=float(timeout_raw) if timeout_raw else 60.0,
+        prompt_transport=cast(Literal["system", "inline"], transport),
     )
 
 
@@ -258,6 +302,8 @@ def _validated_result(
     content_bytes: bytes,
     invocation: ModelInvocation,
     output_model: type[OutputT],
+    *,
+    inline: bool = False,
 ) -> GatewayResult[OutputT]:
     try:
         envelope = json.loads(content_bytes)
@@ -267,7 +313,9 @@ def _validated_result(
             raise ValueError
         if not isinstance(content, str):
             raise ValueError
-        output = output_model.model_validate(json.loads(content))
+        output = output_model.model_validate(
+            _extract_json_object(content) if inline else json.loads(content)
+        )
         if getattr(output, "schema_version", None) != invocation.output_schema_version:
             raise ValueError
     except (KeyError, IndexError, TypeError, ValueError, ValidationError) as error:
@@ -276,6 +324,18 @@ def _validated_result(
         output=output,
         evidence_ref=f"openfang://completion/{completion_id}",
     )
+
+
+def _extract_json_object(text: str) -> object:
+    fence = _FENCE_PATTERN.search(text)
+    candidate = fence.group(1) if fence else text
+    start = candidate.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in model reply")
+    value, end = json.JSONDecoder().raw_decode(candidate, start)
+    if candidate[end:].strip():
+        raise ValueError("unexpected content after the JSON object")
+    return value
 
 
 async def _read_bounded_response(response: httpx.Response) -> bytes:
