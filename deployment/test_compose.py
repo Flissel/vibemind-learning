@@ -30,6 +30,7 @@ STATEFUL_VOLUMES = {
     "qdrant-data",
     "learnhouse-content",
     "learning-artifacts",
+    "learning-imports",
     "penecho-state",
 }
 SECRET_VARIABLES = {
@@ -176,6 +177,7 @@ def test_learning_service_credentials_are_limited_to_authorized_services() -> No
     api = services["learnhouse-api"]
     mcp = services["learning-mcp"]
     worker = services["learning-worker"]
+    learning_api = services["learning-api"]
     assert isinstance(api, dict)
     assert isinstance(mcp, dict)
     assert isinstance(worker, dict)
@@ -198,11 +200,17 @@ def test_learning_service_credentials_are_limited_to_authorized_services() -> No
     assert worker_environment["LEARNHOUSE_LEARNING_SERVICE_URL"] == (
         "http://learnhouse-api:9000/api/v1/learning"
     )
+    # The HTTP Course Factory adapter imports material and publishes drafts.
+    assert learning_api["environment"]["LEARNHOUSE_LEARNING_SERVICE_KEY"] == key_reference
+    assert learning_api["environment"]["LEARNHOUSE_LEARNING_SERVICE_URL"] == (
+        "http://learnhouse-api:9000/api/v1/learning"
+    )
+    authorized = {"learnhouse-api", "learning-api", "learning-mcp", "learning-worker"}
     for service_name, service in services.items():
         assert isinstance(service, dict)
         environment = service.get("environment", {})
         assert isinstance(environment, dict)
-        if service_name not in {"learnhouse-api", "learning-mcp", "learning-worker"}:
+        if service_name not in authorized:
             assert "LEARNHOUSE_LEARNING_SERVICE_KEY" not in environment
             assert "LEARNHOUSE_LEARNING_SERVICE_URL" not in environment
 
@@ -366,3 +374,29 @@ def test_canvas_runtime_keeps_penecho_on_the_mcp_loopback_boundary() -> None:
     assert mcp["volumes"] == ["learning-artifacts:/var/lib/vibemind-learning/artifacts"]
     assert penecho["environment"]["PENECHO_LEARNING_ORIGIN"] == mcp["environment"]["LEARNING_PENECHO_ORIGIN"]
     assert penecho["environment"]["PENECHO_LEARNING_TOKEN"] == mcp["environment"]["PENECHO_LEARNING_TOKEN"]
+
+
+def test_learning_api_has_vibemind_course_factory_secrets_and_import_volume() -> None:
+    services = _load(COMPOSE_PATH)["services"]
+    api = services["learning-api"]
+    environment = api["environment"]
+    vibemind_key = "${LEARNING_VIBEMIND_SERVICE_KEY:?set LEARNING_VIBEMIND_SERVICE_KEY}"
+
+    assert environment["LEARNING_VIBEMIND_SERVICE_KEY"] == vibemind_key
+    assert environment["LEARNING_IMPORT_ROOT"] == "/var/lib/vibemind-learning/imports"
+    assert "learning-imports:/var/lib/vibemind-learning/imports:ro" in api["volumes"]
+    assert api["depends_on"]["learnhouse-api"] == {"condition": "service_healthy"}
+    assert services["learning-mcp"]["environment"]["LEARNING_VIBEMIND_SERVICE_KEY"] == (
+        vibemind_key
+    )
+    for service_name, service in services.items():
+        if service_name not in {"learning-api", "learning-mcp"}:
+            assert "LEARNING_VIBEMIND_SERVICE_KEY" not in service.get("environment", {})
+        if service_name != "learning-api":
+            assert not any(
+                "learning-imports" in str(mount) for mount in service.get("volumes", [])
+            )
+    assert re.search(
+        r"(?m)^LEARNING_VIBEMIND_SERVICE_KEY=<[^>]+>$",
+        ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+    )

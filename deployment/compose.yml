@@ -161,16 +161,24 @@ services:
       LEARNING_RETRIEVAL_SERVICE_KEY: ${LEARNING_RETRIEVAL_SERVICE_KEY:?set LEARNING_RETRIEVAL_SERVICE_KEY}
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_SERVICE_ROLE: api
+      # VibeMind Course Factory HTTP adapter (/api/v1); loopback-only caller key.
+      LEARNING_VIBEMIND_SERVICE_KEY: ${LEARNING_VIBEMIND_SERVICE_KEY:?set LEARNING_VIBEMIND_SERVICE_KEY}
+      LEARNING_IMPORT_ROOT: /var/lib/vibemind-learning/imports
+      LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
+      LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
     ports:
       - "127.0.0.1:${LEARNING_API_PORT:-8090}:8090"
     volumes:
       - learning-artifacts:/var/lib/vibemind-learning/artifacts
+      - learning-imports:/var/lib/vibemind-learning/imports:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      learnhouse-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)"]
@@ -228,6 +236,7 @@ services:
       LEARNING_QDRANT_URL: http://qdrant:6333
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_SERVICE_ROLE: mcp
+      LEARNING_VIBEMIND_SERVICE_KEY: ${LEARNING_VIBEMIND_SERVICE_KEY:?set LEARNING_VIBEMIND_SERVICE_KEY}
       LEARNING_EVALUATION_SERVICE_URL: http://learning-worker:8092
       LEARNING_EVALUATION_SERVICE_KEY: ${LEARNING_EVALUATION_SERVICE_KEY:?set LEARNING_EVALUATION_SERVICE_KEY}
       LEARNING_PENECHO_URL: http://127.0.0.1:3888
@@ -284,4 +293,5 @@ volumes:
   qdrant-data:
   learnhouse-content:
   learning-artifacts:
+  learning-imports:
   penecho-state:

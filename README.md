@@ -93,6 +93,58 @@ These are upstream/environment baseline limitations, not green-suite claims.
 They must be refreshed after the required isolated toolchains are provisioned;
 they are not repaired as part of the parent pin commit.
 
+## VibeMind Course Factory HTTP API
+
+`learning-api` exposes a loopback HTTP adapter at `http://127.0.0.1:8090/api/v1`
+for the same Course Factory operations the `spaces-learning` MCP tools provide.
+Every route builds one Learning event and dispatches it through the durable
+dispatcher, so receipts, revisions, review, publication, and readback are
+identical across both transports. The registry records the adapter as
+`http_api` on the existing `learning` Space; it is not a second authority.
+
+| Method | Path | Role |
+| --- | --- | --- |
+| `POST` | `/materials/import` | `learning.author` |
+| `GET` | `/materials/{source_id}` | any Learning role |
+| `POST` | `/course-factory/jobs` | `learning.author` |
+| `GET` | `/course-factory/jobs/{job_id}` | any Learning role |
+| `POST` | `/course-factory/jobs/{job_id}/review` | `learning.reviewer` |
+| `POST` | `/course-factory/jobs/{job_id}/publish` | `learning.publisher` |
+| `GET` | `/courses/{course_id}` | any Learning role |
+
+Request flow: import material (a path relative to `LEARNING_IMPORT_ROOT`, or a
+public HTTPS URL) -> create a job from the returned `source_id` -> poll the job
+until `review_ready` -> review -> publish with `confirmed: true` and an
+`approval_ref`. Generation never publishes on its own. All AI stages run
+through OpenFang in `learning-worker`; the API never holds a provider key.
+
+Every mutation needs an `Idempotency-Key`; replaying it returns the original
+result, reusing it for a different request is `409`. Errors use
+`{code, message, retryable, correlation_id}` and never echo request input.
+
+```powershell
+$headers = @{
+  Authorization = "Bearer $env:LEARNING_VIBEMIND_SERVICE_KEY"
+  "X-VibeMind-Actor-ID" = "local-owner"
+  "X-VibeMind-Space-ID" = "learning"
+  "X-VibeMind-Roles" = "learning.author"
+  "X-VibeMind-Correlation-ID" = [guid]::NewGuid().ToString()
+  "Idempotency-Key" = [guid]::NewGuid().ToString()
+}
+$body = @{
+  course_id = "<course-uuid>"
+  expected_course_revision = 1
+  title = "Industrial AI Safety"
+  audience = "Maintenance engineers"
+  level = "advanced"
+  locale = "de-DE"
+  learning_objectives = @("Assess AI-assisted maintenance risks")
+  source_ids = @("<source-uuid-from-material-import>")
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8090/api/v1/course-factory/jobs `
+  -Headers $headers -ContentType application/json -Body $body
+```
+
 ## Current Evidence Boundary
 
 The pins and registry documentation are structural evidence only. They do not

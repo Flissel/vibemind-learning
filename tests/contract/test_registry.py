@@ -70,3 +70,11 @@ def test_bridge_map_claims_only_the_canonical_learning_agent() -> None:
     assert mappings["learning"] == "brain-learning"
     assert "learn" not in mappings
     assert "quiz" not in mappings
+
+
+def test_learning_registry_declares_http_adapter_without_new_space() -> None:
+    registry = _registry()
+
+    assert registry["spaces"]["learning"]["http_api"] == "http://127.0.0.1:8090/api/v1"
+    assert "course-factory" not in registry["spaces"]
+    assert "course_factory" not in registry["spaces"]
