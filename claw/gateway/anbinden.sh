@@ -48,8 +48,9 @@ echo "2) Saat -> Laufzeit-Volume (Konfig; AGENTS.md und Fertigkeiten aus claw/, 
 # sonst ein neues erzeugen.
 TOKEN="$(docker compose exec -T learning-claw openclaw config get gateway.auth.token 2>/dev/null | tr -d '\r\n "' || true)"
 NEU=0
-if [ -z "$TOKEN" ]; then
-  echo "   Gateway-Token fehlt -> neues erzeugen"
+# Nur ein wohlgeformtes Token weiterverwenden; Fehlermeldungen oder Reste der CLI-Ausgabe nicht.
+if ! printf '%s' "$TOKEN" | grep -qE '^[A-Za-z0-9_-]{32,}$'; then
+  echo "   Gateway-Token fehlt oder ist ungueltig -> neues erzeugen"
   TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-40)"
   NEU=1
 fi

@@ -24,7 +24,8 @@
     `Authorization: Bearer <LEARNING_CLAW_MCP_TOKEN>` (mindestens 32 Zeichen). Ist die Variable
     nicht gesetzt, erzeugt dieses Skript je Start ein frisches Zufallstoken (kryptografischer RNG)
     und gibt es NUR an die Umgebung der beiden Kindprozesse; es steht in keinem Log und auf keiner
-    Platte. Wer anbinden.sh oder die Probe nutzt, setzt LEARNING_CLAW_MCP_TOKEN selbst (gleicher Wert).
+    Platte. Wer anbinden.sh oder die Probe nutzt, setzt LEARNING_CLAW_MCP_TOKEN VOR dem Start selbst.
+    Mit -Nur fuer nur einen Dienst ist ein vorab gesetztes Token Pflicht.
 
 .PARAMETER Pruefen
     Nur nachsehen und berichten, nichts starten.
@@ -122,6 +123,10 @@ function Test-Port([int]$Port) {
 }
 
 # Ein frisch erzeugtes Token kennt kein bereits laufender Dienst: Sidecar und Shim muessen zusammen starten.
+# Mit -Nur fuer weniger als beide Dienste waere das Token des anderen unbekannt.
+if ($TokenErzeugt -and $Dienste.Count -lt $Alle.Count) {
+    throw 'Mit -Nur fuer einen Teil der Dienste braucht es ein vorab gesetztes LEARNING_CLAW_MCP_TOKEN (gleicher Wert wie beim anderen Dienst) - Variable setzen oder ohne -Nur starten.'
+}
 if ($TokenErzeugt -and -not $Pruefen) {
     $laeuft = @($Alle | Where-Object { Test-Port $_.Port })
     if ($laeuft.Count -gt 0 -and $laeuft.Count -lt $Alle.Count) {

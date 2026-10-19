@@ -68,10 +68,38 @@ def test_compose_publishes_no_host_port():
 
 def test_workspace_copies_are_not_duplicated_in_git():
     workspace = GATEWAY / "config" / "workspace"
-    assert not list(workspace.rglob("AGENTS.md"))
-    assert not list(workspace.rglob("SKILL.md"))
+    assert not workspace.exists()
     text = ANBINDEN.read_text(encoding="utf-8")
     assert "$CLAW/AGENTS.md" in text and "$CLAW/skills/" in text
+
+
+def test_compose_mounts_no_unused_seed_workspace():
+    service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["learning-claw"]
+    assert not any("/seed/" in v or "config/workspace" in v for v in service["volumes"])
+
+
+def test_acceptance_script_reuses_only_a_well_formed_gateway_token():
+    text = ANBINDEN.read_text(encoding="utf-8")
+    code = re.sub(r"(?m)^\s*#.*$", "", text)
+    assert "^[A-Za-z0-9_-]{32,}$" in code
+    lines = code.splitlines()
+    check = next(i for i, ln in enumerate(lines) if "^[A-Za-z0-9_-]{32,}$" in ln)
+    fetch = next(i for i, ln in enumerate(lines) if ln.startswith('TOKEN="$(docker compose exec'))
+    assert fetch < check
+
+
+def test_start_script_refuses_partial_start_without_preset_token():
+    text = START.read_text(encoding="utf-8")
+    assert "if ($TokenErzeugt -and $Dienste.Count -lt $Alle.Count) {" in text
+    block = text[text.index("if ($TokenErzeugt -and $Dienste.Count -lt $Alle.Count) {"):]
+    assert "throw" in block.split("}")[0] and "-Nur" in block.split("}")[0]
+    # the check comes before anything is started
+    assert text.index("$Dienste.Count -lt $Alle.Count") < text.index("Start-Process")
+
+
+def test_readme_says_to_set_the_token_before_starting():
+    readme = (CLAW_DIR.parent / "README.md").read_text(encoding="utf-8")
+    assert "LEARNING_CLAW_MCP_TOKEN" in readme and "vor dem Start" in readme
 
 
 def test_start_script_declares_both_services_on_their_ports():

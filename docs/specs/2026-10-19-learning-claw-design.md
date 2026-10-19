@@ -86,7 +86,7 @@ loop, and a budget identity in `config/agent_budget.yaml`.
 
 - `spaces/learning/claw/` in the Learning repository: `server.py`, `werkzeuge.py`,
   `learning-mcp.json`, `AGENTS.md`, `skills/*/SKILL.md`, `gateway/` (compose,
-  `config/openclaw.json`, `config/workspace/`, `anbinden.sh`), and
+  `config/openclaw.json`, `anbinden.sh`; AGENTS.md and skills are copied from `claw/`), and
   `scripts/learning-claw-starten.ps1`.
 - The shim is reused, not copied: the start script runs
   `vibemind-os/spaces/marketing/claw/shim/marketing_shim.py` on port 8141. The path is
