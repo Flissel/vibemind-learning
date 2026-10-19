@@ -223,3 +223,24 @@ def test_readiness_requires_embedding_only_where_it_is_configured(
     service = build_health_service()
 
     assert ("embedding" in service._dependency_probes) is expects_embedding
+
+
+def test_worker_runs_every_job_on_one_event_loop() -> None:
+    # The OpenFang HTTP client is created once and keeps pooled connections bound
+    # to the loop that opened them; a fresh asyncio.run() per job breaks the next
+    # job with "Event loop is closed" (seen live).
+    import asyncio
+
+    loops: list[object] = []
+
+    class _Runner:
+        async def run_job(self, job_id: str) -> None:
+            del job_id
+            loops.append(asyncio.get_running_loop())
+
+    with worker.JobExecutor(_Runner()) as executor:
+        executor.run("job-1")
+        executor.run("job-2")
+
+    assert len(loops) == 2
+    assert loops[0] is loops[1]

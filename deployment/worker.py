@@ -41,6 +41,27 @@ from spaces.learning.deployment.evaluation_api import run as run_evaluation_api
 logger = logging.getLogger(__name__)
 
 
+class JobExecutor:
+    """Runs course factory jobs on one event loop for the worker's lifetime.
+
+    The OpenFang HTTP client is built once and pools connections bound to the
+    loop that opened them; asyncio.run() per job would close that loop.
+    """
+
+    def __init__(self, course_runner: CourseFactoryRunner) -> None:
+        self._course_runner = course_runner
+        self._loop = asyncio.Runner()
+
+    def __enter__(self) -> JobExecutor:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._loop.close()
+
+    def run(self, job_id: str) -> None:
+        self._loop.run(self._course_runner.run_job(job_id))
+
+
 def _heartbeat_path() -> Path:
     return Path(
         os.environ.get("LEARNING_WORKER_HEARTBEAT", "/tmp/learning-worker-heartbeat")
@@ -108,6 +129,7 @@ def run() -> None:
         daemon=True,
     )
     evaluation_api.start()
+    executor = JobExecutor(course_runner)
     try:
         while True:
             projected = projection.run_once()
@@ -115,7 +137,7 @@ def run() -> None:
             generated = queued is not None
             if queued is not None:
                 try:
-                    asyncio.run(course_runner.run_job(queued.id))
+                    executor.run(queued.id)
                 except Exception:
                     logger.exception(
                         "learning_course_factory_job_failed",
@@ -124,6 +146,7 @@ def run() -> None:
             _heartbeat_path().touch()
             time.sleep(0.1 if projected or generated else 2.0)
     finally:
+        executor.__exit__(None, None, None)
         index.close()
         engine.dispose()
 
