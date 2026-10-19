@@ -8,6 +8,8 @@ Every tool returns ``{"ok": True, "daten": {...}}`` or ``{"ok": False,
 - ``material_importieren``: ``source_id``, ``revision``, ``verarbeitung``
 - ``material_status``: ``source_id``, ``kurs_id``, ``revision``, ``verarbeitung``
 - ``kurs_lesen``: ``kurs_id``, ``revision``, ``kurs``
+- practice and canvas tools: the ``result`` object of the Learning MCP answer
+  (e.g. ``session``, ``hint``, ``tutor``, ``progress``, ``canvas``, ``review``)
 
 Author tools send role ``learning.author``; ``entwurf_ablehnen`` sends
 ``learning.reviewer``.
@@ -19,7 +21,7 @@ import logging
 import os
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -262,3 +264,143 @@ def veroeffentlichen(job_id: str, token: str) -> dict[str, Any]:
         return _job(data)
 
     return _run(act)
+
+
+# --- Practice and canvas tools (Learning MCP) -------------------------------
+#
+# There is deliberately no tool that saves or submits a canvas: the learner
+# does that in the canvas UI, and a submission needs their own confirmation.
+
+_ACTOR = {"actor_id": "learning-claw", "actor_type": "local_user"}
+_DEFAULT_BLUEPRINT = {"max_attempts": 3}
+
+
+def _mcp(
+    event_type: str,
+    tool: str,
+    *,
+    write: bool = False,
+    course_id: str | None = None,
+    session_id: str | None = None,
+    expected_revision: int | None = None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    def act(client: LearningClient) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "event_type": event_type,
+            "invocation_id": str(uuid4()),
+            "correlation_id": str(uuid4()),
+            "actor": dict(_ACTOR),
+            "payload": payload or {},
+        }
+        if course_id is not None:
+            event["course_id"] = _uuid(course_id)
+        if session_id is not None:
+            event["session_id"] = _uuid(session_id)
+        if expected_revision is not None:
+            event["expected_revision"] = expected_revision
+        if write:
+            keyed = {k: v for k, v in event.items() if k not in ("invocation_id", "correlation_id")}
+            event["idempotency_key"] = idempotency_key(tool, keyed)
+
+        answer = client.mcp_call(tool, event)
+        result = answer.get("result")
+        return result if isinstance(result, dict) else answer
+
+    return _run(act)
+
+
+def sitzung_starten(
+    course_id: str,
+    kurs_revision: int,
+    modus: str,
+    blueprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _mcp(
+        "learning.session.start",
+        "learning_session_start",
+        write=True,
+        course_id=course_id,
+        payload={
+            "course_revision": kurs_revision,
+            "mode": modus,
+            "blueprint": dict(blueprint) if blueprint is not None else dict(_DEFAULT_BLUEPRINT),
+        },
+    )
+
+
+def naechste_aufgabe(session_id: str) -> dict[str, Any]:
+    return _mcp("learning.task.next", "learning_task_next", session_id=session_id)
+
+
+def antwort_geben(session_id: str, revision: int, antwort: dict[str, Any]) -> dict[str, Any]:
+    return _mcp(
+        "learning.task.answer",
+        "learning_task_answer",
+        write=True,
+        session_id=session_id,
+        expected_revision=revision,
+        payload={"answer": antwort},
+    )
+
+
+def hinweis(session_id: str, task_id: str) -> dict[str, Any]:
+    return _mcp(
+        "learning.hint.request",
+        "learning_hint_request",
+        session_id=session_id,
+        payload={"task_id": task_id},
+    )
+
+
+def tutor_fragen(course_id: str, session_id: str, frage: str) -> dict[str, Any]:
+    return _mcp(
+        "learning.tutor.ask",
+        "learning_tutor_ask",
+        course_id=course_id,
+        session_id=session_id,
+        payload={"question": frage},
+    )
+
+
+def fortschritt(session_id: str) -> dict[str, Any]:
+    return _mcp("learning.progress.show", "learning_progress_show", session_id=session_id)
+
+
+def zeichenaufgabe_oeffnen(session_id: str, activity_id: str, session_ref: str) -> dict[str, Any]:
+    return _mcp(
+        "learning.canvas.open",
+        "learning_canvas_open",
+        session_id=session_id,
+        payload={"activity_id": activity_id, "session_ref": session_ref},
+    )
+
+
+def zeichenhinweis(
+    session_id: str,
+    activity_id: str,
+    canvas_revision: int,
+    session_ref: str,
+    objekt_ids: list[str],
+) -> dict[str, Any]:
+    return _mcp(
+        "learning.canvas.hint",
+        "learning_canvas_hint",
+        session_id=session_id,
+        expected_revision=canvas_revision,
+        payload={
+            "activity_id": activity_id,
+            "session_ref": session_ref,
+            "selection": {"object_ids": list(objekt_ids)},
+        },
+    )
+
+
+def bewertung_zeigen(evaluation_id: str, session_id: str, session_ref: str) -> dict[str, Any]:
+    return _mcp(
+        "learning.canvas.review",
+        "learning_canvas_review",
+        write=True,
+        session_id=session_id,
+        payload={"evaluation_id": evaluation_id, "session_ref": session_ref},
+    )
