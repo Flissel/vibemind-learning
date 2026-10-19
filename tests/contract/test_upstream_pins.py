@@ -7,20 +7,22 @@ from pathlib import Path
 import yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-LOCK_PATH = REPO_ROOT / "spaces" / "learning" / "deployment" / "upstream-lock.yml"
-README_PATH = REPO_ROOT / "spaces" / "learning" / "README.md"
+# The Learning Space is its own repository (mounted at spaces/learning in
+# vibemind-os); it owns the LearnHouse and PenEcho gitlinks itself.
+LEARNING_ROOT = Path(__file__).resolve().parents[2]
+LOCK_PATH = LEARNING_ROOT / "deployment" / "upstream-lock.yml"
+README_PATH = LEARNING_ROOT / "README.md"
 
 EXPECTED = {
     "learnhouse": {
-        "path": "spaces/learning/learnhouse",
+        "path": "learnhouse",
         "url": "https://github.com/Flissel/learnhouse.git",
         "upstream": "https://github.com/learnhouse/learnhouse.git",
         "commit": "136347810737fd5230f99e58d5abfa25a38b173d",
         "license": "AGPL-3.0-only",
     },
     "penecho": {
-        "path": "spaces/learning/penecho",
+        "path": "penecho",
         "url": "https://github.com/Flissel/penecho.git",
         "upstream": "https://github.com/penecho/penecho.git",
         "commit": "0327c3977fdfad861a218d96b5522f3da284d68d",
@@ -31,8 +33,8 @@ EXPECTED = {
 
 def _gitlinks() -> dict[str, tuple[str, str]]:
     result = subprocess.run(
-        ["git", "ls-files", "--stage", "--", "spaces/learning"],
-        cwd=REPO_ROOT,
+        ["git", "ls-files", "--stage", "--", "learnhouse", "penecho"],
+        cwd=LEARNING_ROOT,
         check=True,
         capture_output=True,
         text=True,
@@ -48,7 +50,7 @@ def _gitlinks() -> dict[str, tuple[str, str]]:
 
 def test_learning_upstreams_are_exact_controlled_gitlinks() -> None:
     modules = configparser.ConfigParser()
-    modules.read(REPO_ROOT / ".gitmodules", encoding="utf-8")
+    modules.read(LEARNING_ROOT / ".gitmodules", encoding="utf-8")
     links = _gitlinks()
 
     for expected in EXPECTED.values():

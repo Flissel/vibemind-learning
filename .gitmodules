@@ -1,0 +1,8 @@
+[submodule "learnhouse"]
+	path = learnhouse
+	url = https://github.com/Flissel/learnhouse.git
+	branch = dev
+[submodule "penecho"]
+	path = penecho
+	url = https://github.com/Flissel/penecho.git
+	branch = main

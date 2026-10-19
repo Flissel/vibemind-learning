@@ -19,10 +19,18 @@ VibeMind does not claim a right to relicense either embedded application.
 
 ## Clone
 
-Clone the parent repository recursively or initialize these paths afterward:
+This repository owns the LearnHouse and PenEcho gitlinks (`.gitmodules` at the
+repository root). Inside a standalone clone:
 
 ```powershell
-git submodule update --init --recursive spaces/learning/learnhouse spaces/learning/penecho
+git submodule update --init learnhouse penecho
+```
+
+From the vibemind-os parent, where this repository is mounted at
+`spaces/learning`:
+
+```powershell
+git submodule update --init --recursive spaces/learning
 ```
 
 ## Upstream Update Procedure
