@@ -12,11 +12,17 @@ from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect, text
 
+from spaces.learning.contracts.course_factory_api import ApiErrorV1
+from spaces.learning.deployment.course_factory_routes import (
+    router as course_factory_router,
+)
 from spaces.learning.deployment.health import HealthService
+from spaces.learning.deployment.vibemind_auth import ApiError
 from spaces.learning.mcp.server import handle_message
 from spaces.learning.services.course_factory import models as course_factory_models  # noqa: F401
 from spaces.learning.services.adaptive_engine import models as adaptive_models  # noqa: F401
@@ -144,7 +150,38 @@ def _require_retrieval_key(supplied_key: str) -> None:
         )
 
 
-app = FastAPI(title="VibeMind Learning Runtime", version="1.0.0")
+app = FastAPI(title="VibeMind Learning Runtime", version="1.1.0")
+app.include_router(course_factory_router)
+
+
+def _correlation(request: Request) -> UUID | None:
+    try:
+        return UUID(request.headers.get("X-VibeMind-Correlation-ID", ""))
+    except ValueError:
+        return None
+
+
+@app.exception_handler(ApiError)
+async def api_error(request: Request, error: ApiError) -> JSONResponse:
+    body = ApiErrorV1(
+        code=error.code,
+        message=error.message or error.code,
+        retryable=error.retryable,
+        correlation_id=_correlation(request),
+    )
+    return JSONResponse(body.model_dump(mode="json"), status_code=error.status_code)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
+    # Never echo the rejected input: it may carry secrets or host paths.
+    body = ApiErrorV1(
+        code="invalid_request",
+        message="Request validation failed",
+        retryable=False,
+        correlation_id=_correlation(request),
+    )
+    return JSONResponse(body.model_dump(mode="json"), status_code=400)
 
 
 @app.get("/health/live")

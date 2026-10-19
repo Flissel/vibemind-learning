@@ -204,6 +204,11 @@ def _runtime_ui_delivery() -> UiIntentDelivery | None:
 _DEFAULT_DISPATCHER = build_default_dispatcher(ui_delivery=_runtime_ui_delivery())
 
 
+def default_dispatcher() -> LearningDispatcher:
+    """The process dispatcher shared by the MCP endpoint and the HTTP adapter."""
+    return _DEFAULT_DISPATCHER
+
+
 def _mcp_result(payload: Mapping[str, Any], *, is_error: bool) -> dict[str, Any]:
     return {
         "content": [

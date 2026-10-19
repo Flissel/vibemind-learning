@@ -17,6 +17,7 @@ from spaces.learning.contracts.course_factory_api import (
 from spaces.learning.services.db.models import Base, LearningArtifact
 from spaces.learning.services.ingestion.material_staging import (
     MAX_MATERIAL_BYTES,
+    MaterialStageConflict,
     MaterialStageRejected,
     MaterialStagingService,
     RemoteResponse,
@@ -238,6 +239,21 @@ def test_remote_import_timeout_is_a_rejection(roots) -> None:
         _stager(roots, fetcher=failing).stage(
             HttpsImportSourceV1(kind="https", url="https://example.com/a.md")
         )
+
+
+def test_replayed_artifact_identity_reuses_identical_bytes(roots) -> None:
+    (roots[0] / "manual.md").write_text("# Safety", encoding="utf-8")
+    source = LocalImportSourceV1(kind="local_import", relative_path="manual.md")
+    stager = _stager(roots)
+    artifact_id = "6f1b7c1e-8d55-4f63-9c1e-2b9a3f0c7d10"
+    first = stager.stage(source, artifact_id=artifact_id)
+    again = stager.stage(source, artifact_id=artifact_id)
+
+    assert first == again
+    assert len([path for path in roots[1].rglob("*") if path.is_file()]) == 1
+    (roots[0] / "manual.md").write_text("# Changed", encoding="utf-8")
+    with pytest.raises(MaterialStageConflict):
+        stager.stage(source, artifact_id=artifact_id)
 
 
 def test_limit_is_fifty_megabytes() -> None:

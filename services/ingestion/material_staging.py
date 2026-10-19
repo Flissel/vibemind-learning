@@ -64,6 +64,10 @@ class MaterialStageRejected(ValueError):
     """The referenced material cannot be staged; the message is public-safe."""
 
 
+class MaterialStageConflict(MaterialStageRejected):
+    """A replayed artifact identity now refers to different bytes."""
+
+
 @dataclass(frozen=True)
 class StagedMaterial:
     artifact_id: str
@@ -123,12 +127,24 @@ class MaterialStagingService:
         self._fetcher = fetcher or httpx_fetcher
         self._resolver = resolver or resolve_host
 
-    def stage(self, source: LocalImportSourceV1 | HttpsImportSourceV1) -> StagedMaterial:
-        if isinstance(source, LocalImportSourceV1):
-            return self._stage_local(source)
-        return self._stage_remote(source)
+    def stage(
+        self,
+        source: LocalImportSourceV1 | HttpsImportSourceV1,
+        *,
+        artifact_id: str | None = None,
+    ) -> StagedMaterial:
+        """Stage ``source``; a given ``artifact_id`` makes replays reuse one artifact.
 
-    def _stage_local(self, source: LocalImportSourceV1) -> StagedMaterial:
+        Re-staging under an existing identity returns the original artifact
+        when the bytes are identical and raises ``MaterialStageConflict``
+        when they differ, so an idempotent caller never creates a second row.
+        """
+        identity = artifact_id or str(uuid4())
+        if isinstance(source, LocalImportSourceV1):
+            return self._stage_local(source, identity)
+        return self._stage_remote(source, identity)
+
+    def _stage_local(self, source: LocalImportSourceV1, artifact_id: str) -> StagedMaterial:
         candidate = self._import_root.joinpath(*PurePosixPath(source.relative_path).parts)
         try:
             info = os.lstat(candidate)
@@ -145,9 +161,9 @@ class MaterialStagingService:
         if resolved.stat().st_size > MAX_MATERIAL_BYTES:
             raise MaterialStageRejected("material exceeds the size limit")
         with resolved.open("rb") as handle:
-            return self._store(_chunks(handle), media_type=media_type)
+            return self._store(_chunks(handle), media_type=media_type, artifact_id=artifact_id)
 
-    def _stage_remote(self, source: HttpsImportSourceV1) -> StagedMaterial:
+    def _stage_remote(self, source: HttpsImportSourceV1, artifact_id: str) -> StagedMaterial:
         url = source.url
         for _hop in range(MAX_REDIRECTS + 1):
             self._assert_public(url)
@@ -170,7 +186,7 @@ class MaterialStagingService:
                 media_type = _media_from_suffix(urlsplit(url).path)
             else:
                 raise MaterialStageRejected("material media type is not supported")
-            return self._store(response.body, media_type=media_type)
+            return self._store(response.body, media_type=media_type, artifact_id=artifact_id)
         raise MaterialStageRejected("remote material exceeded the redirect limit")
 
     def _assert_public(self, url: str) -> None:
@@ -189,11 +205,12 @@ class MaterialStagingService:
             if not ipaddress.ip_address(address).is_global:
                 raise MaterialStageRejected("remote material must use a public address")
 
-    def _store(self, chunks: Iterator[bytes], *, media_type: str) -> StagedMaterial:
-        artifact_id = str(uuid4())
+    def _store(
+        self, chunks: Iterator[bytes], *, media_type: str, artifact_id: str
+    ) -> StagedMaterial:
         relative = f"uploads/{artifact_id}{_SUFFIX_BY_MEDIA[media_type]}"
         target = self._artifact_root / "uploads" / f"{artifact_id}{_SUFFIX_BY_MEDIA[media_type]}"
-        partial = target.with_name(target.name + ".partial")
+        partial = target.with_name(f"{target.name}.{uuid4().hex}.partial")
         target.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
         size = 0
@@ -207,6 +224,15 @@ class MaterialStagingService:
                     handle.write(chunk)
             if size == 0:
                 raise MaterialStageRejected("material is empty")
+            existing = self._existing(artifact_id)
+            if existing is not None:
+                partial.unlink(missing_ok=True)
+                if (
+                    existing.content_hash != digest.hexdigest()
+                    or existing.media_type != media_type
+                ):
+                    raise MaterialStageConflict("artifact identity refers to different material")
+                return existing
             partial.replace(target)
             with self._session_factory() as session, session.begin():
                 session.add(LearningArtifact(
@@ -219,15 +245,33 @@ class MaterialStagingService:
                     aggregate_id=artifact_id,
                     revision=1,
                 ))
+        except MaterialStageConflict:
+            raise
         except BaseException:
             partial.unlink(missing_ok=True)
-            target.unlink(missing_ok=True)
+            if self._existing(artifact_id) is None:
+                target.unlink(missing_ok=True)
             raise
         return StagedMaterial(
             artifact_id=artifact_id,
             media_type=media_type,
             content_hash=digest.hexdigest(),
             size_bytes=size,
+        )
+
+
+    def _existing(self, artifact_id: str) -> StagedMaterial | None:
+        with self._session_factory() as session:
+            artifact = session.get(LearningArtifact, artifact_id)
+        if artifact is None:
+            return None
+        if artifact.aggregate_type != "source_upload":
+            raise MaterialStageConflict("artifact identity is already in use")
+        return StagedMaterial(
+            artifact_id=artifact.id,
+            media_type=artifact.media_type,
+            content_hash=artifact.content_hash,
+            size_bytes=artifact.size_bytes,
         )
 
 

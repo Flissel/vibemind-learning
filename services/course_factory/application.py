@@ -39,7 +39,10 @@ from spaces.learning.services.course_factory.repository import (
     SessionFactory,
     SourceProvenance,
 )
-from spaces.learning.services.course_factory.state_machine import FactoryState
+from spaces.learning.services.course_factory.state_machine import (
+    FactoryState,
+    InvalidFactoryTransition,
+)
 from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.services.ingestion.models import (
     LearningSource,
@@ -86,6 +89,8 @@ class CourseFactoryApplication:
             return _rejected("revision_conflict", str(error))
         except SourceNotReady as error:
             return _rejected("source_not_ready", str(error))
+        except InvalidFactoryTransition as error:
+            return _rejected("invalid_transition", str(error))
         except LookupError as error:
             return _rejected("not_found", str(error))
         except ValueError as error:
