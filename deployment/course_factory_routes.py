@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from spaces.learning.bridge.dispatcher import LearningDispatcher
+from spaces.learning.bridge.learnhouse_client import STAGED_ARTIFACT_SCHEME
 from spaces.learning.contracts.course_factory_api import (
     CourseGenerationRequestV1,
     CourseProjectionResponseV1,
@@ -223,6 +224,13 @@ def read_course(course_id: UUID, context: Context, runtime: Runtime) -> JSONResp
     return JSONResponse(response.model_dump(mode="json"), status_code=status.HTTP_200_OK)
 
 
+def _source_url(body: MaterialImportRequestV1, artifact_id: str) -> str:
+    """Provenance LearnHouse records for the source: the web URL, else the staged artifact."""
+    if body.source.kind == "https":
+        return str(body.source.url)
+    return f"{STAGED_ARTIFACT_SCHEME}://{artifact_id}"
+
+
 @router.post("/materials/import", status_code=status.HTTP_202_ACCEPTED)
 def import_material(
     body: MaterialImportRequestV1,
@@ -256,7 +264,11 @@ def import_material(
             idempotency_key=key,
             course_id=body.course_id,
             expected_revision=body.expected_course_revision,
-            payload={"artifact_id": staged.artifact_id, "title": body.title},
+            payload={
+                "artifact_id": staged.artifact_id,
+                "title": body.title,
+                "source_url": _source_url(body, staged.artifact_id),
+            },
         ),
         context,
     )

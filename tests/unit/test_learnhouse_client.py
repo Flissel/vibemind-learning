@@ -820,3 +820,33 @@ def test_client_rejects_a_write_response_that_skips_the_cas_successor_revision(
 
     with pytest.raises(LearnHouseStaleRevision, match="revision"):
         client.execute(request)
+
+
+@pytest.mark.parametrize(
+    ("source_url", "accepted"),
+    [
+        ("https://example.invalid/source", True),
+        (f"learning-artifact://{SOURCE_ID}", True),
+        ("learning-artifact://not-a-uuid", False),
+        ("learning-artifact:///", False),
+        ("ftp://example.invalid/source", False),
+    ],
+)
+def test_service_source_import_accepts_only_web_or_staged_artifact_urls(
+    source_url: str, accepted: bool
+) -> None:
+    request = _request(
+        LearningEventType.MATERIAL_IMPORT,
+        course_id=COURSE_ID,
+        expected_revision=3,
+        payload={"title": "Source", "source_url": source_url},
+    )
+    client = LearnHouseClient(
+        base_url="http://learnhouse-api:9000/api/v1/learning", service_key="k" * 32
+    )
+
+    if accepted:
+        assert client._operation_for(request).payload["source_url"] == source_url
+    else:
+        with pytest.raises(LearnHouseMalformedResponse):
+            client._operation_for(request)

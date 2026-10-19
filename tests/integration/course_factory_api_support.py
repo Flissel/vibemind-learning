@@ -18,6 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from spaces.learning.bridge.dispatcher import ApplicationOutcomeV1, LearningDispatcher
+from spaces.learning.bridge.learnhouse_client import LearnHouseClient
 from spaces.learning.contracts.events import LearningToolName
 from spaces.learning.contracts.mcp_models import ToolRequestV1
 from spaces.learning.contracts.outcomes import (
@@ -72,6 +73,7 @@ class RecordingLearnHouse:
 
     courses: dict[str, int] = field(default_factory=dict)
     calls: list[LearningToolName] = field(default_factory=list)
+    source_operations: list[Any] = field(default_factory=list)
 
     def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         self.calls.append(request.tool)
@@ -91,6 +93,14 @@ class RecordingLearnHouse:
                 result={"course_id": course_id, "title": "Grounded", "published": False},
             )
         if request.tool is LearningToolName.MATERIAL_IMPORT:
+            # Build the request exactly as the real service client would, so a
+            # payload LearnHouse cannot accept fails here and not only live.
+            self.source_operations.append(
+                LearnHouseClient(
+                    base_url="http://learnhouse-api:9000/api/v1/learning",
+                    service_key="k" * 32,
+                )._operation_for(request)
+            )
             return ApplicationOutcomeV1(
                 state="completed",
                 aggregate=AggregateRefV1(

@@ -70,6 +70,8 @@ def _validate_loopback_url(value: str) -> str:
     return value.rstrip("/")
 
 
+# Local imports have no web URL; LearnHouse records the staged artifact instead.
+STAGED_ARTIFACT_SCHEME = "learning-artifact"
 _INTERNAL_SERVICE_URL = "http://learnhouse-api:9000/api/v1/learning"
 _SERVICE_KEY_ENV = "LEARNHOUSE_LEARNING_SERVICE_KEY"
 _SERVICE_KEY_HEADER = "X-LearnHouse-Learning-Service-Key"
@@ -606,10 +608,7 @@ class LearnHouseClient:
     def _source_import_payload(
         self, payload: Mapping[str, object]
     ) -> dict[str, object]:
-        source_url = self._string(payload, "source_url")
-        parsed = urlsplit(source_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise LearnHouseMalformedResponse("malformed source import request")
+        source_url = self._source_url(payload)
         return {
             "org_id": self._integer(payload, "org_id"),
             "name": self._string(payload, "title"),
@@ -617,6 +616,24 @@ class LearnHouseClient:
             "url": source_url,
             "public": "false",
         }
+
+    def _source_url(self, payload: Mapping[str, object]) -> str:
+        """A web URL, or the staged Learning artifact a local import came from."""
+        source_url = self._string(payload, "source_url")
+        parsed = urlsplit(source_url)
+        if parsed.scheme == STAGED_ARTIFACT_SCHEME:
+            try:
+                UUID(parsed.netloc)
+            except ValueError as error:
+                raise LearnHouseMalformedResponse(
+                    "malformed source import request"
+                ) from error
+            if parsed.path or parsed.query or parsed.fragment:
+                raise LearnHouseMalformedResponse("malformed source import request")
+            return source_url
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise LearnHouseMalformedResponse("malformed source import request")
+        return source_url
 
     def _service_operation_for(self, request: ToolRequestV1) -> _Operation:
         event = request.event
@@ -644,10 +661,7 @@ class LearnHouseClient:
                 "GET", f"/chapters/{self._uuid_string(payload, 'chapter_id')}"
             )
         if tool is LearningToolName.MATERIAL_IMPORT:
-            source_url = self._string(payload, "source_url")
-            parsed = urlsplit(source_url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise LearnHouseMalformedResponse("malformed source import request")
+            source_url = self._source_url(payload)
             return _Operation(
                 "POST",
                 f"/courses/{self._course_id(event.course_id)}/sources",

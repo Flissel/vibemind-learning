@@ -142,3 +142,20 @@ def test_material_import_requires_author_and_idempotency(client, harness) -> Non
 def test_unknown_material_is_not_found(client, harness) -> None:
     response = client.get(f"/api/v1/materials/{uuid4()}", headers=headers("learning.author"))
     assert response.status_code == 404
+
+
+def test_material_import_gives_learnhouse_a_source_url(client, harness) -> None:
+    (harness.import_root / "manual.md").write_text(
+        "# Safety\n\nCheck the tool.\n", encoding="utf-8"
+    )
+    response = client.post(
+        "/api/v1/materials/import",
+        headers=headers("learning.author", "material-url-1"),
+        json=_payload(harness),
+    )
+
+    assert response.status_code == 202
+    (operation,) = harness.learnhouse.source_operations
+    assert operation.payload["source_url"] == (
+        f"learning-artifact://{response.json()['artifact_id']}"
+    )
