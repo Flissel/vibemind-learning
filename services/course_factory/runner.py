@@ -130,14 +130,22 @@ class CourseFactoryRunner:
             )
             return GenerationRunResult(job=promoted.job, report=promoted.report)
         except (LookupError, ValidationError, ValueError):
-            current = self._repository.get(job.id)
-            if current.state not in {
-                FactoryState.QUALITY_GATE,
-                FactoryState.REVIEW_READY,
-                FactoryState.FAILED,
-            }:
-                self._fail(job.id, "generation_validation_failed")
+            self._fail_unless_resting(job.id, "generation_validation_failed")
             raise
+        except Exception:
+            # The worker claims only queued jobs: a job left in a working state
+            # after an unexpected error would hang forever without a signal.
+            self._fail_unless_resting(job.id, "generation_runtime_failed")
+            raise
+
+    def _fail_unless_resting(self, job_id: str, reason_code: str) -> None:
+        current = self._repository.get(job_id)
+        if current.state not in {
+            FactoryState.QUALITY_GATE,
+            FactoryState.REVIEW_READY,
+            FactoryState.FAILED,
+        }:
+            self._fail(job_id, reason_code)
 
     def _complete_ingestion(
         self, job: FactoryJobRecord, snapshots: tuple[SourceSnapshot, ...]

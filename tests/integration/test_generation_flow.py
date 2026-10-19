@@ -43,6 +43,7 @@ from spaces.learning.contracts.mcp_models import (
     ToolRequestV1,
 )
 from spaces.learning.services.db.models import Base, LearningArtifact
+from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.services.ingestion.models import (
     LearningSource,
     LearningSourceChunk,
@@ -375,3 +376,29 @@ async def test_restart_resumes_from_persisted_authoring_stage(generation_context
         "source_verifier",
         "quality_reviewer",
     ]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_runtime_error_fails_the_job_visibly(generation_context) -> None:
+    # A job must never stay in a working state after its run raised: the worker
+    # only claims queued jobs, so a stuck job would hang without any signal.
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(draft)
+
+    class _BrokenRepository:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+        def record_stage_artifact(self, *args, **kwargs):
+            raise PersistenceConflict("course factory artifact conflict")
+
+    runner = _runner(factory, root, _BrokenRepository(repository), gateway)
+
+    with pytest.raises(PersistenceConflict):
+        await runner.run_job(job.id)
+
+    failed = repository.get(job.id)
+    assert failed.state is FactoryState.FAILED
