@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "learning": {
+      "type": "http",
+      "url": "http://127.0.0.1:8139/mcp",
+      "timeout": 900000
+    }
+  },
+  "allowedTools": [
+    "mcp__learning__material_importieren",
+    "mcp__learning__material_status",
+    "mcp__learning__kurs_erzeugen",
+    "mcp__learning__kurs_status",
+    "mcp__learning__kurs_lesen",
+    "mcp__learning__entwurf_ablehnen",
+    "mcp__learning__veroeffentlichung_anzeigen",
+    "mcp__learning__veroeffentlichen",
+    "mcp__learning__sitzung_starten",
+    "mcp__learning__naechste_aufgabe",
+    "mcp__learning__antwort_geben",
+    "mcp__learning__hinweis",
+    "mcp__learning__tutor_fragen",
+    "mcp__learning__fortschritt",
+    "mcp__learning__zeichenaufgabe_oeffnen",
+    "mcp__learning__zeichenhinweis",
+    "mcp__learning__bewertung_zeigen"
+  ]
+}
