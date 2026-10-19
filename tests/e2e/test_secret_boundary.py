@@ -13,8 +13,10 @@ from spaces.learning.contracts.events import LearningEventType
 from spaces.learning.contracts.mcp_models import ActorV1, EventEnvelopeV1
 
 
-ROOT = Path(__file__).resolve().parents[4]
-COMPOSE = ROOT / "spaces" / "learning" / "deployment" / "compose.yml"
+# This test lives in the standalone Learning repository (mounted at
+# spaces/learning in vibemind-os); it scans the files this repository tracks.
+LEARNING_ROOT = Path(__file__).resolve().parents[2]
+COMPOSE = LEARNING_ROOT / "deployment" / "compose.yml"
 SECRET_VARIABLES = {
     "LEARNING_POSTGRES_PASSWORD",
     "LEARNHOUSE_AUTH_JWT_SECRET_KEY",
@@ -65,8 +67,8 @@ def test_browser_facing_compose_environment_contains_no_secret_variable() -> Non
 
 def test_tracked_runtime_and_browser_sources_have_no_embedded_provider_keys() -> None:
     paths = subprocess.run(
-        ["git", "ls-files", "spaces/learning"],
-        cwd=ROOT,
+        ["git", "ls-files"],
+        cwd=LEARNING_ROOT,
         check=True,
         capture_output=True,
         text=True,
@@ -74,10 +76,10 @@ def test_tracked_runtime_and_browser_sources_have_no_embedded_provider_keys() ->
     scanned = 0
     findings: list[str] = []
     for relative in paths:
-        normalized = relative.replace("\\", "/")
+        normalized = "/" + relative.replace("\\", "/")
         if any(part in normalized for part in ("/tests/", "/docs/", "package-lock")):
             continue
-        path = ROOT / relative
+        path = LEARNING_ROOT / relative
         if not path.is_file() or path.stat().st_size > 2_000_000:
             continue
         content = path.read_bytes()
