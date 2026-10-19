@@ -26,7 +26,7 @@ ROLE_CONTRACTS = {
     ),
     "source_verifier": (
         "verifying",
-        "source-verification-prompt-v2",
+        "source-verification-prompt-v3",
         "source-verification-v2",
     ),
     "quality_reviewer": (
@@ -50,7 +50,7 @@ ROLE_PROMPTS = {
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure.",
     "lesson_author": "Draft rigorous lessons from the supplied structure and source references, using only facts stated in the supplied sources; add no outside knowledge, examples, or reasons the sources do not give.",
     "assessment_designer": "Design authentic activities that assess the mapped concepts, using only facts stated in the supplied sources; never invent facts or expected answers.",
-    "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim.",
+    "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim. Put introductions, overviews, and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
     "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied source references.",
     "learning_tutor": "Coach the learner using only the supplied course sources. Ask guiding questions and never reveal a hidden expected answer.",

@@ -471,3 +471,14 @@ def test_authoring_roles_forbid_knowledge_beyond_the_sources(role: str) -> None:
 
     assert "only facts stated in the supplied sources" in ROLE_PROMPTS[role]
     assert ROLE_CONTRACTS[role][1].endswith("-v2")
+
+
+def test_source_verifier_keeps_framing_sentences_out_of_claims() -> None:
+    # Live, intro sentences ("This lesson introduces ...") were listed as claims
+    # without citations, and the strict gate held an otherwise clean draft.
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    prompt = ROLE_PROMPTS["source_verifier"]
+    assert "introductions" in prompt and "lesson body" in prompt
+    assert "at least one citation" in prompt
+    assert ROLE_CONTRACTS["source_verifier"][1] == "source-verification-prompt-v3"
