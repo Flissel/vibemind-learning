@@ -34,13 +34,13 @@ from spaces.learning.services.ingestion.retrieval import (
     GroundedRetrievalUnavailable,
     GroundedRetriever,
     OpenFangEmbeddingGateway,
+    embedding_dimension,
 )
 
 
 RETRIEVAL_KEY_ENV = "LEARNING_RETRIEVAL_SERVICE_KEY"
 RETRIEVAL_KEY_HEADER = "X-VibeMind-Learning-Retrieval-Key"
 RETRIEVAL_KEY_MIN_LENGTH = 32
-QDRANT_VECTOR_SIZE = 3072
 
 
 class RetrievalRequest(BaseModel):
@@ -130,7 +130,7 @@ def _build_grounded_retriever() -> GroundedRetriever:
     embedding_url = os.environ.get("LEARNING_EMBEDDING_URL", "").strip()
     return GroundedRetriever(
         OpenFangEmbeddingGateway(embedding_url),
-        QdrantIndex(qdrant_url, vector_size=QDRANT_VECTOR_SIZE),
+        QdrantIndex(qdrant_url, vector_size=embedding_dimension()),
     )
 
 

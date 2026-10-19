@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from typing import Protocol
 
 import httpx
@@ -9,8 +10,27 @@ import httpx
 from spaces.learning.services.ingestion.qdrant_index import QdrantHit
 
 
+DEFAULT_EMBEDDING_DIMENSION = 3072
+MAX_EMBEDDING_DIMENSION = 65536
+
+
 class GroundedRetrievalUnavailable(RuntimeError):
     pass
+
+
+def embedding_dimension() -> int:
+    """Vector width of the configured embedding service.
+
+    It must match the model behind LEARNING_EMBEDDING_URL; the Qdrant
+    collection is created with this width and refuses any other.
+    """
+    raw = os.environ.get("LEARNING_EMBEDDING_DIMENSION")
+    if raw is None:
+        return DEFAULT_EMBEDDING_DIMENSION
+    value = raw.strip()
+    if not (value.isascii() and value.isdigit()) or not 1 <= int(value) <= MAX_EMBEDDING_DIMENSION:
+        raise ValueError("LEARNING_EMBEDDING_DIMENSION must be a positive integer")
+    return int(value)
 
 
 class EmbeddingGateway(Protocol):

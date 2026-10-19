@@ -8,6 +8,7 @@ from spaces.learning.services.ingestion.qdrant_index import QdrantHit
 from spaces.learning.services.ingestion.retrieval import (
     GroundedRetrievalUnavailable,
     GroundedRetriever,
+    embedding_dimension,
 )
 
 
@@ -99,3 +100,22 @@ def test_retrieval_fails_closed_when_qdrant_is_unavailable() -> None:
 
     with pytest.raises(GroundedRetrievalUnavailable, match="unavailable"):
         retriever.retrieve("What requires review?", course_id="course-1", limit=3)
+
+
+def test_embedding_dimension_defaults_to_3072(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEARNING_EMBEDDING_DIMENSION", raising=False)
+    assert embedding_dimension() == 3072
+
+
+def test_embedding_dimension_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_EMBEDDING_DIMENSION", " 1024 ")
+    assert embedding_dimension() == 1024
+
+
+@pytest.mark.parametrize("value", ["", "abc", "0", "-5", "1.5", "70000"])
+def test_embedding_dimension_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("LEARNING_EMBEDDING_DIMENSION", value)
+    with pytest.raises(ValueError):
+        embedding_dimension()

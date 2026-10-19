@@ -22,7 +22,10 @@ from spaces.learning.services.ingestion.models import (
 )
 from spaces.learning.services.ingestion.outbox_worker import QdrantOutboxWorker
 from spaces.learning.services.ingestion.qdrant_index import QdrantHit, QdrantIndex
-from spaces.learning.services.ingestion.retrieval import OpenFangEmbeddingGateway
+from spaces.learning.services.ingestion.retrieval import (
+    OpenFangEmbeddingGateway,
+    embedding_dimension,
+)
 
 
 SessionFactory = Callable[[], Session]
@@ -210,7 +213,7 @@ def run_rebuild(*, verify: bool, timeout_seconds: float = 300.0) -> RebuildManif
     migrate(database_url)
     engine = create_learning_engine(database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
-    index = QdrantIndex(qdrant_url, vector_size=3072)
+    index = QdrantIndex(qdrant_url, vector_size=embedding_dimension())
     service = QdrantRebuildService(factory)
     worker = QdrantOutboxWorker(
         factory,

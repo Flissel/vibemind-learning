@@ -16,7 +16,10 @@ from spaces.learning.deployment.migrate import migrate
 from spaces.learning.services.db.session import create_learning_engine
 from spaces.learning.services.ingestion.outbox_worker import QdrantOutboxWorker
 from spaces.learning.services.ingestion.qdrant_index import QdrantIndex
-from spaces.learning.services.ingestion.retrieval import OpenFangEmbeddingGateway
+from spaces.learning.services.ingestion.retrieval import (
+    OpenFangEmbeddingGateway,
+    embedding_dimension,
+)
 from spaces.learning.services.course_factory.artifact_store import (
     CourseFactoryArtifactStore,
 )
@@ -35,7 +38,6 @@ from spaces.learning.services.course_factory.team import CourseAgentTeam
 from spaces.learning.deployment.evaluation_api import run as run_evaluation_api
 
 
-EMBEDDING_DIMENSION = 3072
 logger = logging.getLogger(__name__)
 
 
@@ -77,7 +79,7 @@ def run() -> None:
     migrate(database_url)
     engine = create_learning_engine(database_url)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
-    index = QdrantIndex(qdrant_url, vector_size=EMBEDDING_DIMENSION)
+    index = QdrantIndex(qdrant_url, vector_size=embedding_dimension())
     projection = QdrantOutboxWorker(
         factory,
         index=index,
