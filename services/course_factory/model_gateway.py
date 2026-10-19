@@ -215,7 +215,7 @@ class OpenFangModelGateway:
                     },
                 },
             ]
-        body = self._build_body(invocation, user_content, inline=inline)
+        body = self._build_body(invocation, user_content, output_model, inline=inline)
         for attempt in range(self._max_attempts):
             try:
                 async with self._client.stream(
@@ -251,14 +251,18 @@ class OpenFangModelGateway:
         self,
         invocation: ModelInvocation,
         user_content: str | list[dict[str, object]],
+        output_model: type[BaseModel],
         *,
         inline: bool,
     ) -> dict[str, object]:
+        # The model is validated against this exact schema; a version name alone
+        # does not tell it the field names.
         instruction = (
             ROLE_PROMPTS[invocation.role]
             + " Return only JSON matching schema "
             + invocation.output_schema_version
-            + "."
+            + ". JSON Schema: "
+            + _canonical_json(output_model.model_json_schema())
         )
         if inline:
             # OpenFang forwards only the last user message, so the role prompt
