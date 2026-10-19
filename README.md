@@ -174,9 +174,12 @@ Abnahme (`anbinden.sh`): die 17 erwarteten Werkzeugnamen (`werkzeug_probe.py` be
 mit `send`/`approve`/`save`/`submit`, kein LearnHouse-/PenEcho-Port und kein MCP-Eintrag in `openclaw.json`,
 die drei Fertigkeiten sichtbar. Das Shim-Skript laesst sich mit `LEARNING_CLAW_SHIM_SCRIPT` ueberschreiben.
 
-Veroeffentlichungsregel: der Agent entwirft nur. `veroeffentlichen` verlangt das Token aus
-`veroeffentlichung_anzeigen`, das erst nach der ausdruecklichen Freigabe durch einen Menschen gilt; es gibt
-kein Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
+Veroeffentlichungsregel: der Agent entwirft nur. `veroeffentlichung_anzeigen` zeigt Titel, unbelegte Aussagen,
+`revision` (Auftrag) und `kurs_revision` (LearnHouse-Kurs) und merkt sich die Anzeige samt MCP-Sitzung; ein Token
+gibt es nicht. `veroeffentlichen(job_id, revision, kurs_revision)` gilt nur, wenn genau diese Anzeige aus einer
+frueheren, anderen MCP-Sitzung stammt (der Shim startet je Nachricht ein frisches `claude -p`), hoechstens
+10 Minuten alt ist und Auftrag wie Kurs noch auf diesen Revisionen stehen; einmal verwendbar. Ohne
+Sitzungskennung wird abgelehnt. Es gibt kein Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
 
 ## Current Evidence Boundary
 

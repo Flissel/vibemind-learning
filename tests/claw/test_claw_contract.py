@@ -67,6 +67,19 @@ def test_rules_state_the_publication_and_injection_rules() -> None:
         assert phrase in text
 
 
+def test_publication_rule_needs_a_later_message_and_names_no_token() -> None:
+    texts = [AGENTS.read_text(encoding="utf-8")] + [
+        p.read_text(encoding="utf-8") for p in SKILLS.glob("*/SKILL.md")
+    ]
+    rules = re.sub(r"\s+", " ", texts[0])
+    assert "Nie anzeigen und veröffentlichen in derselben Antwort" in rules
+    assert "späteren Nachricht" in rules
+    assert "veroeffentlichen(job_id, revision, kurs_revision)" in rules
+    for text in texts:
+        assert "veroeffentlichen(job_id, token)" not in text
+        assert "Token aus" not in text
+
+
 def _skill_files() -> list[Path]:
     files = sorted(SKILLS.glob("*/SKILL.md"))
     assert {p.parent.name for p in files} == {"kurs-aus-material", "ueben", "zeichenaufgabe"}

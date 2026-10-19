@@ -196,16 +196,22 @@ tool, and no LearnHouse or PenEcho address in the sidecar.
 This follows the sales agent's rule "yes only directly after display":
 
 1. `veroeffentlichung_anzeigen` returns title, chapters, lesson count, unsupported
-   claims, the factory revision, and a one-time token bound to (job, revision,
-   conversation), valid 10 minutes, stored in the sidecar.
-2. The claw shows that summary and asks for a yes.
-3. Only after the person's yes may the claw call `veroeffentlichen(job_id, token)`.
-   The sidecar refuses unknown, expired, reused, or revision-mismatched tokens and
-   uses the token as `approval_ref`.
+   claims, the factory `revision` and the LearnHouse `kurs_revision`. It returns no
+   token. The sidecar records the display (job, both revisions, MCP session id,
+   time).
+2. The claw shows that summary, asks for a yes and ends its turn.
+3. Only after the person's yes in a later message may the claw call
+   `veroeffentlichen(job_id, revision, kurs_revision)`. The sidecar accepts it only if
+   a display of exactly those revisions exists, is younger than 10 minutes and came
+   from a different, earlier MCP session than the current call (the shim runs a fresh
+   `claude -p`, and so a fresh MCP session, per chat turn); job and course must still
+   be at those revisions. The display is used once. Without an MCP session id the
+   sidecar refuses. `approval_ref` is a token derived from the display record.
 
-`AGENTS.md` states: never call `veroeffentlichen` without a yes that came after the
-display in the same conversation. The sidecar's token is the structural backstop; it
-cannot prove the yes came from a person, which is the documented residual risk.
+`AGENTS.md` states: never display and publish in the same turn; publish only after a
+yes that came in a later message. The session check is the structural backstop; it
+cannot prove the yes came from a person, which is the documented residual risk
+(revision ruling of the final review, 2026-10-19).
 
 ## 10. Agent rules and skills
 

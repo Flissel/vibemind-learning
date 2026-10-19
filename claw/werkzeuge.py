@@ -204,12 +204,18 @@ def entwurf_ablehnen(job_id: str, revision: int, grund: str) -> dict[str, Any]:
     return _run(act)
 
 
-def _anzeigen(client: LearningClient, job_id: str) -> dict[str, Any]:
+def _anzeigen(client: LearningClient, job_id: str, sitzung: str | None) -> dict[str, Any]:
     job = client.get(f"/course-factory/jobs/{job_id}", roles=ROLE_AUTHOR)
     if job["state"] != _REVIEW_READY:
         raise ValueError("Der Kurs ist noch nicht zur Veroeffentlichung bereit")
-    kurs = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)["course"]
+    course = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)
+    kurs = course["course"]
     titel = kurs.get("title") if isinstance(kurs, dict) else None
+    revision, kurs_revision = job["revision"], course["revision"]
+    if sitzung:
+        _freigaben.merken(job_id, revision, kurs_revision, sitzung)
+    else:
+        logger.warning("Publication display without an MCP session id; it authorizes nothing")
     return {
         "job_id": job["job_id"],
         "titel": titel,
@@ -217,48 +223,69 @@ def _anzeigen(client: LearningClient, job_id: str) -> dict[str, Any]:
         "kapitel": None,
         "lektionen": None,
         "unbelegte_aussagen": list(job.get("unsupported_claim_ids") or []),
-        "revision": job["revision"],
-        "token": _freigaben.ausstellen(job_id, job["revision"]),
+        "revision": revision,
+        "kurs_revision": kurs_revision,
     }
 
 
-def veroeffentlichung_anzeigen(job_id: str) -> dict[str, Any]:
-    """Return the summary to show the person plus a one-time publication token.
+def veroeffentlichung_anzeigen(job_id: str, *, mcp_sitzung: str | None = None) -> dict[str, Any]:
+    """Return the summary to show the person: title, claims, ``revision``, ``kurs_revision``.
 
-    Only a ``review_ready`` job can be displayed. The token is valid 10 minutes
-    and bound to (job, revision).
+    Only a ``review_ready`` job can be displayed. The sidecar records the display (job,
+    both revisions, MCP session, time); there is no token. ``mcp_sitzung`` is filled by
+    the server from the MCP request, never by the model.
     """
     try:
         job_id = _uuid(job_id)
     except ValueError as error:
         return {"ok": False, "fehler": f"Ungueltige Eingabe: {error}"[:_MESSAGE_LIMIT]}
-    return _run(lambda client: _anzeigen(client, job_id))
+    return _run(lambda client: _anzeigen(client, job_id, mcp_sitzung))
 
 
-def veroeffentlichen(job_id: str, token: str) -> dict[str, Any]:
-    """Publish a displayed course. Call only after the person said yes post-display.
+_STAND_GEAENDERT = "Der Stand hat sich geaendert, bitte erneut anzeigen"
 
-    The token is consumed (one-time use) before the publish call, so a failed or
-    unavailable publish needs a fresh display; a retry with the same token is
-    refused. The idempotency key derives from (job_id, token).
+
+def veroeffentlichen(
+    job_id: str, revision: int, kurs_revision: int, *, mcp_sitzung: str | None = None
+) -> dict[str, Any]:
+    """Publish a displayed course. Only after the person's yes in a LATER message.
+
+    ``revision`` and ``kurs_revision`` are the two values from the summary of
+    ``veroeffentlichung_anzeigen``. Accepted only if that display came from an earlier,
+    different MCP session (a person turn in between), less than 10 minutes ago, and job and
+    course are still at those revisions. The display is used up (one-time), also when the
+    publish call then fails; a retry needs a fresh display.
     """
+    if not mcp_sitzung:
+        return {"ok": False, "fehler": "Keine MCP-Sitzungskennung - Veroeffentlichung abgelehnt"}
+    try:
+        job_id_norm = _uuid(job_id)
+    except ValueError as error:
+        return {"ok": False, "fehler": f"Ungueltige Eingabe: {error}"[:_MESSAGE_LIMIT]}
 
     def act(client: LearningClient) -> dict[str, Any]:
-        job_id_norm = _uuid(job_id)
-        job = client.get(f"/course-factory/jobs/{job_id_norm}", roles=ROLE_AUTHOR)
         try:
-            _freigaben.einloesen(job_id_norm, job["revision"], token)
+            anzeige = _freigaben.einloesen(job_id_norm, revision, kurs_revision, mcp_sitzung)
         except FreigabeAbgelehnt as error:
             raise LearningRejected("freigabe_abgelehnt", error.grund, 0) from error
+        job = client.get(f"/course-factory/jobs/{job_id_norm}", roles=ROLE_AUTHOR)
         if job["state"] != _REVIEW_READY:
-            raise ValueError("Der Kurs ist nicht zur Veroeffentlichung bereit")
-        body = {"expected_revision": job["revision"], "confirmed": True, "approval_ref": token}
+            raise LearningRejected(
+                "freigabe_abgelehnt", "Der Kurs ist nicht zur Veroeffentlichung bereit", 0
+            )
+        if job["revision"] != revision:
+            raise LearningRejected("freigabe_abgelehnt", _STAND_GEAENDERT, 0)
+        course = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)
+        if course["revision"] != kurs_revision:
+            raise LearningRejected("freigabe_abgelehnt", _STAND_GEAENDERT, 0)
+        ref = anzeige.approval_ref
+        body = {"expected_revision": revision, "confirmed": True, "approval_ref": ref}
         data = client.post(
             f"/course-factory/jobs/{job_id_norm}/publish",
             body,
             roles=ROLE_PUBLISHER,
             idempotency_key_value=idempotency_key(
-                "veroeffentlichen", {"job_id": job_id_norm, "token": token}
+                "veroeffentlichen", {"job_id": job_id_norm, "approval_ref": ref}
             ),
         )
         return _job(data)

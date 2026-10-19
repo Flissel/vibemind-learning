@@ -9,8 +9,10 @@ Zweige stehen hier, der passende gewinnt zur Laufzeit.
 """
 
 import hmac
+import inspect
 import os
 import sys
+import typing
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +54,8 @@ def _load_env_fallback() -> None:
 
 
 WERKZEUGE = (
-    # Kurs aus Material (Autor-Rolle). Veroeffentlichen nur mit Token aus der Anzeige.
+    # Kurs aus Material (Autor-Rolle). Veroeffentlichen nur nach einer Anzeige aus einer
+    # frueheren MCP-Sitzung (eine Runde der Person dazwischen), siehe freigabe.py.
     werkzeuge.material_importieren,
     werkzeuge.material_status,
     werkzeuge.kurs_erzeugen,
@@ -74,6 +77,82 @@ WERKZEUGE = (
     werkzeuge.zeichenhinweis,
     werkzeuge.bewertung_zeigen,
 )
+
+SESSION_HEADER = "mcp-session-id"
+SESSION_PARAM = "mcp_sitzung"
+
+
+def sitzungs_id(ctx: Any) -> str | None:
+    """Kennung der MCP-Sitzung aus dem Request (Header `mcp-session-id`), sonst None.
+
+    Ausserhalb einer Anfrage, ohne Request oder ohne Header gibt es keine Kennung; die
+    Veroeffentlichung lehnt dann ab (fail closed).
+    """
+    if ctx is None:
+        return None
+    try:
+        request = ctx.request_context.request
+    except (AttributeError, ValueError):
+        return None
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get(SESSION_HEADER)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _context_class() -> Any:
+    try:
+        from mcp.server.mcpserver import Context  # mcp 2.0
+    except ImportError:
+        from mcp.server.fastmcp import Context  # mcp 1.x
+    return Context
+
+
+def mit_sitzung(fn: Any, context_cls: Any = None) -> Any:
+    """Werkzeug mit `mcp_sitzung` als MCP-Werkzeug ohne diesen Parameter verpacken.
+
+    Das Modell sieht nur die fachlichen Parameter; der Server haengt einen Context-
+    Parameter an (vom mcp-Paket injiziert, nicht im Schema) und fuellt daraus
+    `mcp_sitzung`. Ein vom Modell mitgeschicktes `mcp_sitzung` erreicht das Werkzeug nie.
+    """
+    if SESSION_PARAM not in inspect.signature(fn).parameters:
+        return fn
+    context_cls = context_cls or _context_class()
+    hints = typing.get_type_hints(fn)
+    params = [
+        p.replace(annotation=hints.get(p.name, p.annotation))
+        for p in inspect.signature(fn).parameters.values()
+        if p.name != SESSION_PARAM
+    ]
+    params.append(
+        inspect.Parameter("ctx", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=context_cls)
+    )
+
+    def wrapper(*args: Any, ctx: Any = None, **kwargs: Any) -> Any:
+        kwargs.pop(SESSION_PARAM, None)
+        return fn(*args, **kwargs, **{SESSION_PARAM: sitzungs_id(ctx)})
+
+    wrapper.__name__ = fn.__name__
+    wrapper.__qualname__ = fn.__qualname__
+    wrapper.__doc__ = fn.__doc__
+    wrapper.__module__ = fn.__module__
+    wrapper.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+        params, return_annotation=hints.get("return", inspect.Signature.empty)
+    )
+    wrapper.__annotations__ = {
+        **{p.name: p.annotation for p in params},
+        **({"return": hints["return"]} if "return" in hints else {}),
+    }
+    return wrapper
+
+
+def register_tools(server: Any) -> None:
+    for fn in WERKZEUGE:
+        server.tool()(mit_sitzung(fn))
+
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8139
@@ -176,8 +255,7 @@ def main() -> None:
             port=port,
             transport_security=transport_security_settings(port),
         )
-    for fn in WERKZEUGE:
-        server.tool()(fn)
+    register_tools(server)
     uvicorn.run(build_app(server, token), host=host, port=port, log_level="warning")
 
 
