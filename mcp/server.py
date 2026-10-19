@@ -40,8 +40,14 @@ from spaces.learning.services.course_factory.artifact_store import (
 from spaces.learning.services.course_factory.learnhouse_gateway import (
     build_learnhouse_http_gateway,
 )
+from spaces.learning.services.course_factory.application import (
+    CourseFactoryApplication,
+)
 from spaces.learning.services.course_factory.publisher import CourseDraftPublisher
-from spaces.learning.services.course_factory.repository import CourseFactoryRepository
+from spaces.learning.services.course_factory.repository import (
+    CourseFactoryRepository,
+    SessionFactory,
+)
 from spaces.learning.services.db.session import build_session_factory, create_learning_engine
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
 from spaces.learning.services.evaluation.canvas_artifacts import CanvasArtifactStore
@@ -72,6 +78,47 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# Material import and the Course Factory are shared by the HTTP adapter (api)
+# and the MCP server (mcp); sessions, tutor, and canvas stay MCP-only.
+_COURSE_FACTORY_ROLES = frozenset({"api", "mcp"})
+
+
+def build_course_factory_gateways(
+    *,
+    session_factory: SessionFactory,
+    artifact_root: Path,
+    learnhouse: ApplicationGateway,
+) -> dict[LearningToolName, ApplicationGateway]:
+    """Build material import plus one shared Course Factory application."""
+    gateways: dict[LearningToolName, ApplicationGateway] = dict(
+        build_material_gateway(
+            learnhouse=learnhouse,
+            pipeline=IngestionPipeline(
+                SourceRepository(session_factory, artifact_root=artifact_root),
+                artifact_root=artifact_root,
+            ),
+            session_factory=session_factory,
+            artifact_root=artifact_root,
+        )
+    )
+    store = CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root)
+    repository = CourseFactoryRepository(session_factory)
+    application = CourseFactoryApplication(
+        session_factory=session_factory,
+        repository=repository,
+        publisher=CourseDraftPublisher(
+            repository=repository,
+            artifact_store=store,
+            learnhouse=build_learnhouse_http_gateway(),
+        ),
+        artifact_store=store,
+    )
+    gateways.update(
+        build_generation_gateways(application=application, learnhouse_fallback=learnhouse)
+    )
+    return gateways
+
+
 def build_default_dispatcher(
     *,
     learnhouse: ApplicationGateway | None = None,
@@ -83,22 +130,21 @@ def build_default_dispatcher(
     gateways.update(build_navigation_gateways(admitted_learnhouse))
     database_url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
     artifact_root = os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip()
-    if database_url and os.environ.get("LEARNING_SERVICE_ROLE") == "mcp":
+    role = os.environ.get("LEARNING_SERVICE_ROLE")
+    if database_url and role in _COURSE_FACTORY_ROLES:
         engine = create_learning_engine(database_url)
         session_factory = build_session_factory(engine)
-        selected_artifact_root = Path(artifact_root) if artifact_root else None
-        if selected_artifact_root is not None:
-            source_repository = SourceRepository(
-                session_factory, artifact_root=selected_artifact_root
+        if artifact_root:
+            gateways.update(
+                build_course_factory_gateways(
+                    session_factory=session_factory,
+                    artifact_root=Path(artifact_root),
+                    learnhouse=admitted_learnhouse,
+                )
             )
-            gateways.update(build_material_gateway(
-                learnhouse=admitted_learnhouse,
-                pipeline=IngestionPipeline(
-                    source_repository, artifact_root=selected_artifact_root
-                ),
-                session_factory=session_factory,
-                artifact_root=selected_artifact_root,
-            ))
+    if database_url and role == "mcp":
+        engine = create_learning_engine(database_url)
+        session_factory = build_session_factory(engine)
         evaluation_url = os.environ.get("LEARNING_EVALUATION_SERVICE_URL", "").strip()
         evaluation_key = os.environ.get("LEARNING_EVALUATION_SERVICE_KEY", "")
         evaluation_client = (
@@ -136,25 +182,6 @@ def build_default_dispatcher(
                     evaluations=evaluation_client,
                     tutor=evaluation_client,
                 )))
-        if artifact_root:
-            store = CourseFactoryArtifactStore(
-                session_factory, artifact_root=Path(artifact_root)
-            )
-            repository = CourseFactoryRepository(session_factory)
-            publisher = CourseDraftPublisher(
-                repository=repository,
-                artifact_store=store,
-                learnhouse=build_learnhouse_http_gateway(),
-            )
-            gateways.update(
-                build_generation_gateways(
-                    session_factory=session_factory,
-                    repository=repository,
-                    publisher=publisher,
-                    artifact_store=store,
-                    learnhouse_fallback=admitted_learnhouse,
-                )
-            )
     return build_status_dispatcher(
         gateways=gateways,
         receipts=receipts,

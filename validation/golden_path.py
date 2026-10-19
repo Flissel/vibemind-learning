@@ -33,6 +33,7 @@ from spaces.learning.mcp.tools.canvas import (
     build_canvas_gateways,
 )
 from spaces.learning.mcp.tools.generation import build_generation_gateways
+from spaces.learning.services.course_factory.application import CourseFactoryApplication
 from spaces.learning.mcp.tools.materials import MaterialImportGateway
 from spaces.learning.mcp.tools.navigation import build_navigation_gateways
 from spaces.learning.mcp.tools.sessions import build_session_gateways
@@ -644,10 +645,12 @@ def run_deterministic(workdir: Path, *, fixture_path: Path) -> dict[str, Any]:
             artifact_root=artifact_root,
         ),
         **build_generation_gateways(
-            session_factory=factory,
-            repository=repository,
-            publisher=publisher,
-            artifact_store=factory_store,
+            application=CourseFactoryApplication(
+                session_factory=factory,
+                repository=repository,
+                publisher=publisher,
+                artifact_store=factory_store,
+            ),
             learnhouse_fallback=learnhouse,
         ),
         **build_navigation_gateways(learnhouse),
