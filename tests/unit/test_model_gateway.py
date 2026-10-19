@@ -9,11 +9,15 @@ import httpx
 import pytest
 
 from spaces.learning.services.course_factory.model_gateway import (
+    ROLE_PROMPTS,
+    GatewayInputError,
     GatewaySchemaError,
     GatewayUnavailable,
     ModelInvocation,
     ModelImageInput,
     OpenFangModelGateway,
+    _canonical_json,
+    build_openfang_model_gateway,
 )
 from spaces.learning.services.course_factory.roles.schemas import ArchitectOutput
 
@@ -271,14 +275,6 @@ async def test_gateway_stops_reading_oversized_response() -> None:
 
 # --- inline prompt transport -------------------------------------------------
 
-from spaces.learning.services.course_factory.model_gateway import (  # noqa: E402
-    ROLE_PROMPTS,
-    GatewayInputError,
-    _canonical_json,
-    build_openfang_model_gateway,
-)
-
-
 def _completion(content: str) -> dict:
     return {"id": "inline-1", "choices": [{"message": {"content": content}}]}
 
@@ -325,11 +321,46 @@ async def test_inline_transport_extracts_fenced_json() -> None:
     assert result.evidence_ref == "openfang://completion/inline-1"
 
 
+_VALID = json.dumps(_architect_payload())
+_FENCED = "```json\n" + _VALID + "\n```"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply", ["no json", '{"a":1} {"b":2}'])
-async def test_inline_transport_rejects_zero_or_two_json_objects(reply: str) -> None:
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "no json",
+        _VALID + " " + _VALID,
+        _VALID + "\nHope that helps!",
+        _FENCED + "\n" + _FENCED,
+        _VALID + "\n" + _FENCED,
+    ],
+)
+async def test_inline_transport_requires_exactly_one_json_object(reply: str) -> None:
     with pytest.raises(GatewaySchemaError):
         await _run_inline(_invocation(), reply)
+
+
+@pytest.mark.asyncio
+async def test_inline_transport_allows_prose_before_the_object() -> None:
+    _, result = await _run_inline(_invocation(), "Sure, here it is: " + _VALID)
+    assert result.output.schema_version == "architect-v1"
+
+
+@pytest.mark.asyncio
+async def test_inline_transport_refuses_text_only_rubric_evaluator() -> None:
+    from spaces.learning.services.evaluation.schemas import RubricModelOutput
+
+    invocation = ModelInvocation(
+        role="rubric_evaluator",
+        stage="evaluation",
+        correlation_id=str(uuid4()),
+        prompt_version="rubric-prompt-v1",
+        output_schema_version="rubric-evaluation-v1",
+        input_payload={"response": {"kind": "text"}},
+    )
+    with pytest.raises(GatewayInputError):
+        await _run_inline(invocation, "{}", RubricModelOutput)
 
 
 @pytest.mark.asyncio
@@ -378,4 +409,15 @@ def test_builder_rejects_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("LEARNING_OPENFANG_API_KEY", "k" * 32)
     monkeypatch.setenv("LEARNING_OPENFANG_PROMPT_TRANSPORT", "shell")
     with pytest.raises(ValueError):
+        build_openfang_model_gateway()
+
+
+@pytest.mark.parametrize("value", ["abc", "nan", "inf", "-inf"])
+def test_builder_rejects_non_finite_or_non_numeric_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("LEARNING_OPENFANG_URL", "http://openfang.test")
+    monkeypatch.setenv("LEARNING_OPENFANG_API_KEY", "k" * 32)
+    monkeypatch.setenv("LEARNING_OPENFANG_TIMEOUT_SECONDS", value)
+    with pytest.raises(ValueError, match="LEARNING_OPENFANG_TIMEOUT_SECONDS"):
         build_openfang_model_gateway()

@@ -4,8 +4,8 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import os
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Generic, Literal, Protocol, TypeVar, cast
@@ -60,7 +60,6 @@ _MAX_REQUEST_BYTES = 500_000
 _MAX_RESPONSE_BYTES = 1_000_000
 _MAX_IMAGE_BYTES = 5_000_000
 _PROMPT_TRANSPORTS = ("system", "inline")
-_FENCE_PATTERN = re.compile(r"```[A-Za-z0-9_-]*\s*(.*?)```", re.DOTALL)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -193,8 +192,10 @@ class OpenFangModelGateway:
         self, invocation: ModelInvocation, output_model: type[OutputT]
     ) -> GatewayResult[OutputT]:
         inline = self._prompt_transport == "inline"
-        if inline and invocation.image_inputs:
-            raise GatewayInputError("inline prompt transport cannot carry image input")
+        if inline and (invocation.image_inputs or invocation.role == "rubric_evaluator"):
+            raise GatewayInputError(
+                "inline prompt transport cannot serve image or rubric evaluation"
+            )
         user_content: str | list[dict[str, object]] = _canonical_json(
             invocation.input_payload
         )
@@ -287,13 +288,19 @@ def build_openfang_model_gateway() -> OpenFangModelGateway:
     if transport not in _PROMPT_TRANSPORTS:
         raise ValueError("LEARNING_OPENFANG_PROMPT_TRANSPORT must be system or inline")
     timeout_raw = os.environ.get("LEARNING_OPENFANG_TIMEOUT_SECONDS", "").strip()
+    try:
+        timeout = float(timeout_raw) if timeout_raw else 60.0
+    except ValueError as error:
+        raise ValueError("LEARNING_OPENFANG_TIMEOUT_SECONDS must be a number") from error
+    if not math.isfinite(timeout):
+        raise ValueError("LEARNING_OPENFANG_TIMEOUT_SECONDS must be finite")
     return OpenFangModelGateway(
         os.environ.get("LEARNING_OPENFANG_URL", "").strip(),
         os.environ.get("LEARNING_OPENFANG_API_KEY", ""),
         model=os.environ.get(
             "LEARNING_OPENFANG_MODEL", "learning-course-factory"
         ).strip(),
-        timeout_seconds=float(timeout_raw) if timeout_raw else 60.0,
+        timeout_seconds=timeout,
         prompt_transport=cast(Literal["system", "inline"], transport),
     )
 
@@ -327,13 +334,12 @@ def _validated_result(
 
 
 def _extract_json_object(text: str) -> object:
-    fence = _FENCE_PATTERN.search(text)
-    candidate = fence.group(1) if fence else text
-    start = candidate.find("{")
+    start = text.find("{")
     if start < 0:
         raise ValueError("no JSON object in model reply")
-    value, end = json.JSONDecoder().raw_decode(candidate, start)
-    if candidate[end:].strip():
+    value, end = json.JSONDecoder().raw_decode(text, start)
+    # Only an optional closing code fence may follow the single object.
+    if text[end:].strip() not in ("", "```"):
         raise ValueError("unexpected content after the JSON object")
     return value
 
