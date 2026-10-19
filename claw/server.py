@@ -11,6 +11,7 @@ Zweige stehen hier, der passende gewinnt zur Laufzeit.
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # Startbar als Modul und als Datei; PKG_ROOT wie bei den Nachbar-Sidecars.
 PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
@@ -68,30 +69,60 @@ WERKZEUGE = (
     werkzeuge.bewertung_zeigen,
 )
 
-_load_env_fallback()
-HOST = os.environ.get("LEARNING_CLAW_MCP_HOST", "127.0.0.1")
-PORT = int(os.environ.get("LEARNING_CLAW_MCP_PORT", "8139"))
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8139
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def resolve_host_port() -> tuple[str, int]:
+    """Host und Port aus der Umgebung; nur loopback ist erlaubt.
+
+    Der Sidecar haelt den Schluessel mit Veroeffentlichungs-Rolle und darf nie
+    im Netz lauschen.
+    """
+    host = os.environ.get("LEARNING_CLAW_MCP_HOST", DEFAULT_HOST).strip()
+    port = int(os.environ.get("LEARNING_CLAW_MCP_PORT", str(DEFAULT_PORT)))
+    if host.lower() not in _LOOPBACK_HOSTS:
+        raise SystemExit(f"learning-claw bindet nur loopback, nicht {host!r}")
+    return host, port
+
+
+def transport_security_settings(port: int) -> Any:
+    """DNS-Rebinding-Schutz des mcp-Pakets (1.x), auf loopback eingeschraenkt."""
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    hosts = [f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=[f"http://{h}" for h in hosts],
+    )
 
 
 def main() -> None:
-    global HOST, PORT
     _load_env_fallback()
-    HOST = os.environ.get("LEARNING_CLAW_MCP_HOST", HOST)
-    PORT = int(os.environ.get("LEARNING_CLAW_MCP_PORT", str(PORT)))
+    host, port = resolve_host_port()
     try:
         from mcp.server.mcpserver import MCPServer
-
+    except ImportError:
+        MCPServer = None  # noqa: N806
+    if MCPServer is not None:
         server = MCPServer("learning-claw")
         for fn in WERKZEUGE:
             server.tool()(fn)
-        server.run(transport="streamable-http", host=HOST, port=PORT)
-    except ImportError:
-        from mcp.server.fastmcp import FastMCP
+        server.run(transport="streamable-http", host=host, port=port)
+        return
+    from mcp.server.fastmcp import FastMCP
 
-        server = FastMCP("learning-claw", host=HOST, port=PORT)
-        for fn in WERKZEUGE:
-            server.tool()(fn)
-        server.run(transport="streamable-http")
+    server = FastMCP(
+        "learning-claw",
+        host=host,
+        port=port,
+        transport_security=transport_security_settings(port),
+    )
+    for fn in WERKZEUGE:
+        server.tool()(fn)
+    server.run(transport="streamable-http")
 
 
 if __name__ == "__main__":

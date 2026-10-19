@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import os
@@ -70,28 +71,24 @@ def _skill_files() -> list[Path]:
     return files
 
 
+_CALL = re.compile(r"`([a-z][a-z_]*)\(([^`)]*)\)`")
+
+
 def test_every_skill_names_only_existing_tools() -> None:
+    public = {n for n in dir(werkzeuge) if not n.startswith("_") and callable(getattr(werkzeuge, n))}
     for path in _skill_files():
-        text = path.read_text(encoding="utf-8")
-        assert text.startswith("---\nname: " + path.parent.name)
-        for name in re.findall(r"`([a-z_]+)(?:\(|`)", text):
-            if "_" in name and name in SPEC_TOOLS | set(dir(werkzeuge)):
-                assert name in SPEC_TOOLS, f"{path.parent.name}: {name}"
-        mentioned = {n for n in SPEC_TOOLS if n in text}
-        assert mentioned, path
-
-
-def test_skill_parameters_exist_in_signatures() -> None:
-    expected = {
-        "kurs-aus-material": {"material_importieren": "kurs_revision", "kurs_erzeugen": "kurs_revision"},
-        "ueben": {"sitzung_starten": "kurs_revision", "tutor_fragen": "session_id"},
-        "zeichenaufgabe": {"zeichenaufgabe_oeffnen": "session_ref", "zeichenhinweis": "session_ref"},
-    }
-    for skill, tools in expected.items():
-        text = (SKILLS / skill / "SKILL.md").read_text(encoding="utf-8")
-        for tool, param in tools.items():
-            assert param in inspect.signature(getattr(werkzeuge, tool)).parameters
-            assert param in text, (skill, param)
+        text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+        assert text.startswith("--- name: " + path.parent.name)
+        calls = _CALL.findall(text)
+        assert calls, path
+        for name, args in calls:
+            if name in SPEC_TOOLS:
+                params = inspect.signature(getattr(werkzeuge, name)).parameters
+                for arg in (a.strip() for a in args.split(",") if a.strip()):
+                    arg = arg.split("=")[0].strip()
+                    assert arg in params, (path.parent.name, name, arg)
+            else:
+                assert name not in public, f"{path.parent.name}: {name} is not a spec tool"
 
 
 def test_sidecar_config_has_no_learnhouse_or_penecho_address() -> None:
@@ -122,6 +119,49 @@ def test_env_fallback_never_overwrites_and_reads_only_allowed_keys(
     monkeypatch.delenv("LEARNING_CLAW_API_URL", raising=False)
 
 
-def test_host_and_port_defaults() -> None:
-    assert server.HOST == "127.0.0.1"
-    assert server.PORT == 8139
+def test_host_and_port_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEARNING_CLAW_MCP_HOST", raising=False)
+    monkeypatch.delenv("LEARNING_CLAW_MCP_PORT", raising=False)
+    assert server.resolve_host_port() == ("127.0.0.1", 8139)
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "example.com", ""])
+def test_non_loopback_host_is_refused(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    monkeypatch.setenv("LEARNING_CLAW_MCP_HOST", host)
+    with pytest.raises(SystemExit) as exc:
+        server.resolve_host_port()
+    assert exc.value.code != 0
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_loopback_hosts_are_accepted(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    monkeypatch.setenv("LEARNING_CLAW_MCP_HOST", host)
+    monkeypatch.setenv("LEARNING_CLAW_MCP_PORT", "9123")
+    assert server.resolve_host_port() == (host, 9123)
+
+
+def test_main_refuses_non_loopback_before_serving(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_CLAW_MCP_HOST", "0.0.0.0")
+    monkeypatch.setattr(server, "_load_env_fallback", lambda: None)
+    with pytest.raises(SystemExit):
+        server.main()
+
+
+def test_transport_security_settings() -> None:
+    settings = server.transport_security_settings(8139)
+    assert settings.enable_dns_rebinding_protection is True
+    assert "127.0.0.1:8139" in settings.allowed_hosts
+    assert "localhost:8139" in settings.allowed_hosts
+    assert all(o.startswith("http://") for o in settings.allowed_origins)
+
+
+def test_import_does_not_touch_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEARNING_VIBEMIND_SERVICE_KEY", raising=False)
+    monkeypatch.delenv("LEARNING_CLAW_API_URL", raising=False)
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+    monkeypatch.setattr(
+        Path, "read_text", lambda self, *a, **k: "LEARNING_VIBEMIND_SERVICE_KEY=leak\n"
+    )
+    before = dict(os.environ)
+    importlib.reload(server)
+    assert dict(os.environ) == before
