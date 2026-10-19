@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from collections.abc import Mapping
@@ -54,6 +55,8 @@ from spaces.learning.services.evaluation.canvas_artifacts import CanvasArtifactS
 from spaces.learning.services.ingestion.pipeline import IngestionPipeline
 from spaces.learning.services.ingestion.repository import SourceRepository
 
+
+logger = logging.getLogger(__name__)
 
 SERVER_NAME = "spaces-learning"
 SERVER_VERSION = "1.0.0"
@@ -135,13 +138,22 @@ def build_default_dispatcher(
         engine = create_learning_engine(database_url)
         session_factory = build_session_factory(engine)
         if artifact_root:
-            gateways.update(
-                build_course_factory_gateways(
-                    session_factory=session_factory,
-                    artifact_root=Path(artifact_root),
-                    learnhouse=admitted_learnhouse,
+            try:
+                gateways.update(
+                    build_course_factory_gateways(
+                        session_factory=session_factory,
+                        artifact_root=Path(artifact_root),
+                        learnhouse=admitted_learnhouse,
+                    )
                 )
-            )
+            except (OSError, ValueError):
+                # Fail closed per tool, not per process: without these gateways
+                # the dispatcher answers learning_backend_unavailable, while
+                # health, retrieval and the other tools keep serving.
+                logger.warning(
+                    "learning_course_factory_unavailable",
+                    extra={"service_role": role, "error_code": "configuration_invalid"},
+                )
     if database_url and role == "mcp":
         engine = create_learning_engine(database_url)
         session_factory = build_session_factory(engine)

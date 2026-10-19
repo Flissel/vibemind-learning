@@ -142,7 +142,7 @@ OpenFang not executed**
 | Compose and registry wiring | `deployment/test_compose.py`, `test_registry.py`, `docker compose config --quiet` with sentinels | passed |
 | Transport equivalence and OpenFang boundary | `test_course_factory_transport_equivalence.py`, `test_secret_boundary.py` | passed |
 | Golden Path (HTTP import + job, MCP status/review/publish/...) | `test_golden_path.py`, `scripts/run_learning_golden_path.py` | 16 steps, 9/9 terminal receipts, published |
-| Learning Python suite | `python -m pytest spaces/learning/tests spaces/learning/deployment/test_compose.py` | 467 passed, 12 skipped, 2 failed (see below) |
+| Learning Python suite | `python -m pytest spaces/learning/tests spaces/learning/deployment/test_compose.py` | 468 passed, 12 skipped, 2 failed (see below) |
 | Static quality | `ruff check spaces/learning scripts/run_learning_golden_path.py` | passed |
 
 The two failing tests (`test_openfang_scope.py`) read the `brain-learning` manifest from
