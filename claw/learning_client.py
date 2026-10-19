@@ -60,6 +60,15 @@ class LearningClient:
         self._key = service_key
         self._http = httpx.Client(transport=transport, timeout=_TIMEOUT_SECONDS)
 
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> LearningClient:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def post(
         self,
         path: str,

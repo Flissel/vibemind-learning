@@ -88,3 +88,30 @@ def test_build_app_wraps_the_server_app() -> None:
 def test_build_app_refuses_server_without_asgi_app() -> None:
     with pytest.raises(SystemExit):
         server.build_app(object(), TOKEN)
+
+
+@pytest.mark.parametrize("value", [None, "", "k" * 31])
+def test_main_refuses_without_service_key(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    monkeypatch.setenv(server.TOKEN_ENV, "a" * 40)
+    monkeypatch.delenv("LEARNING_CLAW_MCP_HOST", raising=False)
+    monkeypatch.delenv("LEARNING_CLAW_MCP_PORT", raising=False)
+    if value is None:
+        monkeypatch.delenv("LEARNING_VIBEMIND_SERVICE_KEY", raising=False)
+    else:
+        monkeypatch.setenv("LEARNING_VIBEMIND_SERVICE_KEY", value)
+    monkeypatch.setattr(server, "_load_env_fallback", lambda: None)
+    import uvicorn
+
+    def never_serve(*args: object, **kwargs: object) -> None:
+        raise SystemExit("would serve")
+
+    monkeypatch.setattr(uvicorn, "run", never_serve)
+    with pytest.raises(SystemExit) as info:
+        server.main()
+    assert "LEARNING_VIBEMIND_SERVICE_KEY" in str(info.value.code)
+    assert "k" * 31 not in str(info.value.code)
+
+
+def test_service_key_of_32_chars_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_VIBEMIND_SERVICE_KEY", "k" * 32)
+    assert server.require_service_key() == "k" * 32

@@ -373,3 +373,20 @@ def test_entwurf_ablehnen_key_uses_the_normalized_job_id(fake: Fake) -> None:
     werkzeuge.entwurf_ablehnen(JOB.replace("-", ""), 4, "grund")
     k = [r.headers["Idempotency-Key"] for r in fake.requests]
     assert k[0] == k[1]
+
+
+def test_each_call_closes_its_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[LearningClient] = []
+
+    def factory() -> LearningClient:
+        client = LearningClient(
+            API, MCP, KEY, transport=httpx.MockTransport(lambda r: httpx.Response(503))
+        )
+        made.append(client)
+        return client
+
+    monkeypatch.setattr(werkzeuge, "_client", factory)
+    werkzeuge.kurs_status(JOB)
+    werkzeuge.naechste_aufgabe(SOURCE)
+    assert len(made) == 2
+    assert all(c._http.is_closed for c in made)

@@ -195,6 +195,23 @@ def require_token() -> str:
     return token
 
 
+SERVICE_KEY_ENV = "LEARNING_VIBEMIND_SERVICE_KEY"
+
+
+def require_service_key() -> str:
+    """Dienstschluessel fuer die Learning-Schicht; ohne ausreichend langen startet der Sidecar nicht.
+
+    Gelesen nach dem .env-Rueckfall; der Wert erscheint in keiner Meldung.
+    """
+    key = os.environ.get(SERVICE_KEY_ENV, "").strip()
+    if len(key) < MIN_TOKEN_LENGTH:
+        raise SystemExit(
+            f"{SERVICE_KEY_ENV} fehlt oder ist kuerzer als {MIN_TOKEN_LENGTH} Zeichen "
+            "(Prozessumgebung oder deployment/.env)"
+        )
+    return key
+
+
 class BearerAuth:
     """ASGI-Huelle: jede HTTP-Anfrage braucht `Authorization: Bearer <token>`.
 
@@ -238,6 +255,7 @@ def main() -> None:
     _load_env_fallback()
     host, port = resolve_host_port()
     token = require_token()
+    require_service_key()
     import uvicorn
 
     try:

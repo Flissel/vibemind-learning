@@ -104,7 +104,9 @@ def _client() -> LearningClient:
 
 def _run(action: Callable[[LearningClient], dict[str, Any]]) -> dict[str, Any]:
     try:
-        return {"ok": True, "daten": action(_client())}
+        # One client per call, closed afterwards: the sidecar runs for days.
+        with _client() as client:
+            return {"ok": True, "daten": action(client)}
     except LearningRejected as error:
         reason = _REASONS.get(error.code) or (error.message or error.code)[:_MESSAGE_LIMIT]
         logger.info("Learning rejected a claw call: %s", error.code)
