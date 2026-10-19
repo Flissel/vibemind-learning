@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import hashlib
 from pathlib import Path
 from uuid import uuid4
@@ -169,6 +171,11 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
     )
 
     assert result.state is FactoryState.QUALITY_GATE
+    # The draft schema carries job_id and the gate rejects a mismatch, so every
+    # role must be told the job id (live, the model put the course id there).
+    assert all(
+        json.dumps(call.input_payload).count(job.id) >= 1 for call in gateway.calls
+    )
     assert [call.role for call in gateway.calls] == [
         "architect",
         "concept_mapper",

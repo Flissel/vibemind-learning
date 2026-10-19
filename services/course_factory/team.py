@@ -103,6 +103,9 @@ class CourseAgentTeam:
             raise ValueError("course factory attempt is not in a generation stage")
 
         context: dict[str, object] = {
+            # The draft schema carries job_id and the quality gate rejects a
+            # mismatch; without it here the model can only guess (live: course id).
+            "job_id": request.job_id,
             "course_id": request.course_id,
             "audience": request.audience,
             "target_outcome": request.target_outcome,
