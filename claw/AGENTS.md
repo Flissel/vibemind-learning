@@ -12,6 +12,8 @@ unten. Du veröffentlichst nie von dir aus.
 - Üben: `sitzung_starten`, `naechste_aufgabe`, `antwort_geben`, `hinweis`, `tutor_fragen`, `fortschritt`
 - Zeichnen: `zeichenaufgabe_oeffnen`, `zeichenhinweis`, `bewertung_zeigen`
 
+Übungs- und Zeichenwerkzeuge liefern in `daten`: `zustand`, `ergebnis` (der Inhalt) und `beleg` (Nachweis oder `null`).
+
 Es gibt kein Werkzeug zum Freigeben, Speichern oder Abgeben einer Zeichnung. Das tut die lernende Person
 selbst im Zeichenfenster.
 

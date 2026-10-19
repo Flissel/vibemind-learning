@@ -8,8 +8,15 @@ Every tool returns ``{"ok": True, "daten": {...}}`` or ``{"ok": False,
 - ``material_importieren``: ``source_id``, ``revision``, ``verarbeitung``
 - ``material_status``: ``source_id``, ``kurs_id``, ``revision``, ``verarbeitung``
 - ``kurs_lesen``: ``kurs_id``, ``revision``, ``kurs``
-- practice and canvas tools: the ``result`` object of the Learning MCP answer
-  (e.g. ``session``, ``hint``, ``tutor``, ``progress``, ``canvas``, ``review``)
+- practice and canvas tools: ``zustand`` (the MCP answer's ``state``), ``ergebnis``
+  (its ``result`` object, e.g. ``session``, ``hint``, ``tutor``, ``progress``,
+  ``canvas``, ``review``) and ``beleg`` (its ``evidence`` or ``None``); an answer
+  without ``result`` is reported as unavailable, never passed through
+- ``veroeffentlichung_anzeigen``: ``job_id``, ``titel``, ``kapitel``, ``lektionen``,
+  ``unbelegte_aussagen``, ``revision``, ``kurs_revision``
+
+``kurs_erzeugen`` and ``sitzung_starten`` reuse their idempotency key for the same
+arguments for 600 s, then mint a new one; the other write tools key deterministically.
 
 Author tools send role ``learning.author``; ``entwurf_ablehnen`` sends
 ``learning.reviewer``.
@@ -80,6 +87,8 @@ _MESSAGE_LIMIT = 300
 _REASONS = {
     "source_not_ready": "Quelle ist noch nicht verarbeitet",
     "revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
+    "session_revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
+    "canvas_revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
     "not_found": "Nicht gefunden",
     "idempotency_conflict": "Gleiche Anfrage mit anderem Inhalt",
 }
@@ -370,7 +379,9 @@ def _mcp(
 
         answer = client.mcp_call(tool, event)
         result = answer.get("result")
-        return result if isinstance(result, dict) else answer
+        if not isinstance(result, dict):
+            raise LearningUnavailable("Learning lieferte kein Ergebnis")
+        return {"zustand": answer.get("state"), "ergebnis": result, "beleg": answer.get("evidence")}
 
     return _run(act)
 

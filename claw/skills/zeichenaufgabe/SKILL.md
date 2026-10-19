@@ -6,6 +6,7 @@ description: "Zeichenaufgabe in einer Übungssitzung: Zeichenfenster-Link öffne
 # Zeichenaufgabe
 
 Du zeichnest, speicherst und gibst nichts für die Person ab. Das macht sie im Zeichenfenster.
+Die Werkzeuge liefern `zustand`, `ergebnis` und `beleg`; Link, Revision und Bewertung stehen in `ergebnis`.
 
 1. **Voraussetzung.** Du hast eine `session_id` (aus `sitzung_starten`) und die `activity_id` der
    Zeichenaufgabe aus `naechste_aufgabe`. Ohne beides zuerst den Skill `ueben` nutzen.

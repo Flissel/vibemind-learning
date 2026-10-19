@@ -29,6 +29,7 @@ class FakeMcp:
         self.requests: list[dict[str, Any]] = []
         self.error: dict[str, Any] | None = None
         self.status = 200
+        self.payload: dict[str, Any] = {"state": "completed", "result": {"session": {"x": 1}}}
 
     @property
     def last_tool(self) -> str:
@@ -46,7 +47,7 @@ class FakeMcp:
         if self.error is not None:
             payload, is_error = {"error": self.error}, True
         else:
-            payload, is_error = {"state": "completed", "result": {"session": {"x": 1}}}, False
+            payload, is_error = self.payload, False
         return httpx.Response(
             200,
             json={
@@ -91,7 +92,33 @@ CALLS = [
 def test_tool_maps_to_exact_learning_mcp_tool(fake_mcp: FakeMcp, call: Any, tool: str) -> None:
     out = call()
     assert out["ok"] is True and fake_mcp.last_tool == tool
-    assert out["daten"] == {"session": {"x": 1}}
+    assert out["daten"] == {"zustand": "completed", "ergebnis": {"session": {"x": 1}}, "beleg": None}
+
+
+def test_result_carries_state_and_evidence(fake_mcp: FakeMcp) -> None:
+    evidence = {"evidence_id": "ev-1", "evidence_type": "application_readback"}
+    fake_mcp.payload = {"state": "completed", "result": {"hint": "h"}, "evidence": evidence}
+    out = werkzeuge.hinweis(SESSION, TASK)
+    assert out == {
+        "ok": True,
+        "daten": {"zustand": "completed", "ergebnis": {"hint": "h"}, "beleg": evidence},
+    }
+
+
+@pytest.mark.parametrize("payload", [{"state": "accepted"}, {"state": "completed", "result": "x"}])
+def test_missing_result_is_unavailable_not_a_fallback(
+    fake_mcp: FakeMcp, payload: dict[str, Any]
+) -> None:
+    fake_mcp.payload = payload
+    out = werkzeuge.fortschritt(SESSION)
+    assert out["ok"] is False and "Ergebnis" in out["fehler"]
+
+
+@pytest.mark.parametrize("code", ["session_revision_conflict", "canvas_revision_conflict"])
+def test_revision_conflicts_become_reload_hint(fake_mcp: FakeMcp, code: str) -> None:
+    fake_mcp.error = {"code": code, "message": "stale"}
+    out = werkzeuge.antwort_geben(SESSION, 1, {"choice_id": "a"})
+    assert out == {"ok": False, "fehler": "Der Stand hat sich geaendert, bitte neu laden"}
 
 
 def test_envelope_shape_and_actor(fake_mcp: FakeMcp) -> None:
