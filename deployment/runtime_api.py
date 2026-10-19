@@ -111,13 +111,16 @@ def build_health_service() -> HealthService:
     redis_url = os.environ.get("LEARNING_REDIS_URL", "").strip()
     qdrant_url = os.environ.get("LEARNING_QDRANT_URL", "").strip()
     embedding_url = os.environ.get("LEARNING_EMBEDDING_URL", "").strip()
+    dependency_probes = {
+        "postgres": lambda: _database_probe(database_url),
+        "redis": _tcp_probe(redis_url, 6379),
+        "qdrant": _tcp_probe(qdrant_url, 6333),
+    }
+    # learning-mcp is not given the embedding service (compose contract).
+    if os.environ.get("LEARNING_SERVICE_ROLE") != "mcp":
+        dependency_probes["embedding"] = lambda: _embedding_probe(embedding_url)
     return HealthService(
-        dependency_probes={
-            "postgres": lambda: _database_probe(database_url),
-            "redis": _tcp_probe(redis_url, 6379),
-            "qdrant": _tcp_probe(qdrant_url, 6333),
-            "embedding": lambda: _embedding_probe(embedding_url),
-        },
+        dependency_probes=dependency_probes,
         migration_probe=lambda: _migration_probe(database_url),
         structural_probe=lambda: [],
         golden_path_probe=lambda: None,

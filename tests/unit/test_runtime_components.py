@@ -9,7 +9,7 @@ import pytest
 
 from spaces.learning.deployment import worker
 from spaces.learning.deployment.migrate import migrate
-from spaces.learning.deployment.runtime_api import _migration_probe
+from spaces.learning.deployment.runtime_api import _migration_probe, build_health_service
 from spaces.learning.deployment.runtime_smoke import RESTART_ORDER, _status_request
 from spaces.learning.deployment.runtime_smoke import _run as run_compose
 from spaces.learning.services.db.models import Base, LearningInvocationReceipt
@@ -205,3 +205,21 @@ def test_runtime_smoke_covers_every_learning_service() -> None:
         "learning-mcp",
         "penecho",
     )
+
+
+@pytest.mark.parametrize(
+    ("role", "expects_embedding"),
+    [("api", True), ("worker", True), ("mcp", False)],
+)
+def test_readiness_requires_embedding_only_where_it_is_configured(
+    monkeypatch: pytest.MonkeyPatch, role: str, expects_embedding: bool
+) -> None:
+    # learning-mcp never receives LEARNING_EMBEDDING_URL (compose contract), so
+    # its readiness must not wait for an embedder it is not allowed to know.
+    monkeypatch.setenv("LEARNING_SERVICE_ROLE", role)
+    monkeypatch.delenv("LEARNING_EMBEDDING_URL", raising=False)
+    monkeypatch.delenv("LEARNING_DATABASE_URL", raising=False)
+
+    service = build_health_service()
+
+    assert ("embedding" in service._dependency_probes) is expects_embedding
