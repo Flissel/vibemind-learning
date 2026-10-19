@@ -19,13 +19,6 @@ PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == 
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-try:
-    # Das Paket `mcp` frueh festnageln: andere Module (z. B. brain/the_brain) legen einen eigenen
-    # `mcp`-Ordner vorn in sys.path; ein spaeter, traeger Import fiele dann auf den falschen.
-    import mcp.server.transport_security  # noqa: F401, E402
-except ImportError:  # pragma: no cover -- ohne mcp-Paket gibt es nichts zu pinnen
-    pass
-
 from spaces.learning.claw import werkzeuge  # noqa: E402
 
 ENV_FILE = Path(__file__).resolve().parents[1] / "deployment" / ".env"
@@ -45,12 +38,13 @@ MIN_TOKEN_LENGTH = 32
 
 def _load_env_fallback() -> None:
     """Fehlende Schluessel aus der Learning-.env nachladen; nie ueberschreiben, nie loggen."""
-    if not ENV_FILE.exists():
+    env_file = Path(os.environ.get("LEARNING_CLAW_ENV_FILE") or ENV_FILE)
+    if not env_file.exists():
         return
     missing = [k for k in _ENV_KEYS if not os.environ.get(k)]
     if not missing:
         return
-    for line in ENV_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         for k in missing:
             if line.startswith(k + "="):

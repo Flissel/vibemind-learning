@@ -157,17 +157,27 @@ def test_transport_security_settings() -> None:
     assert all(o.startswith("http://") for o in settings.allowed_origins)
 
 
-def test_import_does_not_touch_environment() -> None:
-    # Frischer Interpreter statt reload() im Testprozess: kein globales Patchen von Path, und das
-    # geteilte Modul `server` bleibt unveraendert. Das echte ENV_FILE darf beim Import nicht gelesen werden.
+def test_import_does_not_touch_environment(tmp_path: Path) -> None:
+    # Frischer Interpreter, kein globales Patchen. Eine echte .env liegt bereit (ueber
+    # LEARNING_CLAW_ENV_FILE); der Import darf sie nicht lesen, main() -> _load_env_fallback() schon.
+    env_file = tmp_path / "learning.env"
+    env_file.write_text(
+        "\n".join(["LEARNING_VIBEMIND_SERVICE_KEY=from-file", "LEARNING_CLAW_MCP_PORT=9999", ""]),
+        encoding="utf-8",
+    )
     code = "; ".join([
         "import os",
         "before = dict(os.environ)",
-        "import spaces.learning.claw.server",
+        "import spaces.learning.claw.server as s",
         "assert dict(os.environ) == before, 'import veraendert die Umgebung'",
+        "assert 'LEARNING_VIBEMIND_SERVICE_KEY' not in os.environ",
+        "s._load_env_fallback()",
+        "assert os.environ['LEARNING_VIBEMIND_SERVICE_KEY'] == 'from-file'",
     ])
     repo_root = str(CLAW_DIR.parents[2])
-    env = {**os.environ, "PYTHONPATH": repo_root}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("LEARNING_VIBEMIND_SERVICE_KEY", "LEARNING_CLAW_MCP_PORT")}
+    env.update({"PYTHONPATH": repo_root, "LEARNING_CLAW_ENV_FILE": str(env_file)})
     run = subprocess.run([sys.executable, "-c", code], cwd=repo_root, env=env,
                          capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr

@@ -165,3 +165,17 @@ def test_probe_requires_token_and_sends_bearer():
 def test_gitattributes_forces_lf_for_shell_scripts():
     attrs = (Path(__file__).resolve().parents[2] / ".gitattributes").read_text(encoding="utf-8")
     assert "*.sh text eol=lf" in attrs
+
+
+def test_acceptance_script_tolerates_missing_gateway_token_under_pipefail():
+    text = ANBINDEN.read_text(encoding="utf-8")
+    assert "set -euo pipefail" in text
+    line = next(ln for ln in text.splitlines() if ln.startswith('TOKEN="$(docker compose exec'))
+    assert "|| true)" in line
+
+
+def test_start_script_rejects_short_preset_token():
+    text = START.read_text(encoding="utf-8")
+    assert "kuerzer als 32 Zeichen" in text
+    assert "if ($McpToken -and $McpToken.Length -lt 32) {" in text
+    assert "if (-not $McpToken) {" in text

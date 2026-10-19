@@ -46,7 +46,7 @@ if [ "$ROT" -ne 0 ]; then echo "ROT: $ROT" >&2; exit "$ROT"; fi
 echo "2) Saat -> Laufzeit-Volume (Konfig; AGENTS.md und Fertigkeiten aus claw/, kein zweiter Stand im Git)"
 # Das Kopieren der Saat loescht das Gateway-Token. Vorhandenes zuerst lesen (nur in einer Variable),
 # sonst ein neues erzeugen.
-TOKEN="$(docker compose exec -T learning-claw openclaw config get gateway.auth.token 2>/dev/null | tr -d '\r\n "')"
+TOKEN="$(docker compose exec -T learning-claw openclaw config get gateway.auth.token 2>/dev/null | tr -d '\r\n "' || true)"
 NEU=0
 if [ -z "$TOKEN" ]; then
   echo "   Gateway-Token fehlt -> neues erzeugen"

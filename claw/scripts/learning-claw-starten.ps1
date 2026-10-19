@@ -53,7 +53,10 @@ if (-not $ShimSkript) { $ShimSkript = Join-Path $OsRoot 'spaces\marketing\claw\s
 # Token fuer Sidecar UND Shim: vorhandenes nehmen, sonst frisch erzeugen (nie in Log/Datei).
 $TokenErzeugt = $false
 $McpToken = $env:LEARNING_CLAW_MCP_TOKEN
-if (-not $McpToken -or $McpToken.Length -lt 32) {
+if ($McpToken -and $McpToken.Length -lt 32) {
+    throw 'LEARNING_CLAW_MCP_TOKEN ist gesetzt, aber kuerzer als 32 Zeichen - laengeres Token setzen oder die Variable entfernen.'
+}
+if (-not $McpToken) {
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $bytes = New-Object byte[] 32
     $rng.GetBytes($bytes)

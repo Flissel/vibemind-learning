@@ -167,6 +167,9 @@ docker compose -f spaces/learning/claw/gateway/docker-compose.yml up -d
 bash spaces/learning/claw/gateway/anbinden.sh
 ```
 
+Vor `anbinden.sh` und vor der Probe setzt der Betreiber `LEARNING_CLAW_MCP_TOKEN` in der Umgebung (derselbe Wert
+wie beim laufenden Sidecar und Shim; das Startskript speichert ein selbst erzeugtes Token bewusst nirgends).
+
 Abnahme (`anbinden.sh`): die 17 erwarteten Werkzeugnamen (`werkzeug_probe.py` befragt den Sidecar), kein Name
 mit `send`/`approve`/`save`/`submit`, kein LearnHouse-/PenEcho-Port und kein MCP-Eintrag in `openclaw.json`,
 die drei Fertigkeiten sichtbar. Das Shim-Skript laesst sich mit `LEARNING_CLAW_SHIM_SCRIPT` ueberschreiben.
