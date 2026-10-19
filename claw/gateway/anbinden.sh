@@ -5,8 +5,12 @@
 # Claude-CLI des Host-Shims (:8141). Die MCP-Probe von openclaw sieht sie darum nie.
 # Statt dessen befragt werkzeug_probe.py den Sidecar (127.0.0.1:8139) selbst.
 #
-# Das Gateway-Token wird nur ueber Umgebung/Dateien weitergereicht, nie als Argument
-# und nie in einer Ablaufverfolgung der Shell ausgegeben.
+# Das Gateway-Token steht nie in einer Befehlszeile (Argument) und nie in einer Ablaufverfolgung
+# der Shell: es geht ueber stdin in eine Temp-Datei (Modus 600), die per `docker compose cp`
+# ins Volume kommt und danach geloescht wird.
+#
+# Voraussetzung: LEARNING_CLAW_MCP_TOKEN steht in der Umgebung (dasselbe Token wie beim Sidecar);
+# die Probe sendet es als Bearer.
 set -euo pipefail
 
 HIER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,34 +26,50 @@ if [ "$(docker inspect -f '{{.State.Status}}' learning-claw 2>/dev/null || echo 
   exit 1
 fi
 
+if [ -z "${LEARNING_CLAW_MCP_TOKEN:-}" ]; then
+  echo "ABBRUCH: LEARNING_CLAW_MCP_TOKEN ist nicht gesetzt (gleiches Token wie beim Sidecar)." >&2
+  exit 1
+fi
+
 ROT=0
 
 echo "1) Konfiguration pruefen, bevor sie eingespielt wird"
 # Kein LearnHouse-/PenEcho-Port und kein MCP-Server in der Gateway-Konfiguration.
-for port in 1338 9000 13000 3888; do
-  if grep -q "$port" config/openclaw.json; then
-    echo "   FEHL openclaw.json nennt Port $port (LearnHouse/PenEcho)"; ROT=$((ROT+1))
-  fi
-done
+if grep -qE ":(1338|9000|13000|3888)([^0-9]|$)" config/openclaw.json; then
+  echo "   FEHL openclaw.json nennt einen LearnHouse-/PenEcho-Port (1338|9000|13000|3888)"; ROT=$((ROT+1))
+fi
 if grep -q '"mcp"' config/openclaw.json; then
   echo "   FEHL openclaw.json enthaelt einen mcp-Eintrag (Werkzeuge gehoeren in den Shim)"; ROT=$((ROT+1))
 fi
 if [ "$ROT" -ne 0 ]; then echo "ROT: $ROT" >&2; exit "$ROT"; fi
 
 echo "2) Saat -> Laufzeit-Volume (Konfig; AGENTS.md und Fertigkeiten aus claw/, kein zweiter Stand im Git)"
-docker compose cp config/openclaw.json learning-claw:/home/node/.openclaw/openclaw.json
+# Das Kopieren der Saat loescht das Gateway-Token. Vorhandenes zuerst lesen (nur in einer Variable),
+# sonst ein neues erzeugen.
+TOKEN="$(docker compose exec -T learning-claw openclaw config get gateway.auth.token 2>/dev/null | tr -d '\r\n "')"
+NEU=0
+if [ -z "$TOKEN" ]; then
+  echo "   Gateway-Token fehlt -> neues erzeugen"
+  TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-40)"
+  NEU=1
+fi
+umask 077
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+# Token ueber stdin, nicht als Argument: die fertige Konfiguration entsteht nur in der Temp-Datei.
+printf '%s' "$TOKEN" | "${PYTHON:-python}" -c '
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+cfg["gateway"]["auth"]["token"] = sys.stdin.read()
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
+' config/openclaw.json "$TMP"
+unset TOKEN
+docker compose cp "$TMP" learning-claw:/home/node/.openclaw/openclaw.json
+rm -f "$TMP"
 docker compose exec -T learning-claw mkdir -p /home/node/.openclaw/workspace/skills
 docker compose cp "$CLAW/AGENTS.md" learning-claw:/home/node/.openclaw/workspace/AGENTS.md
 docker compose cp "$CLAW/skills/." learning-claw:/home/node/.openclaw/workspace/skills/
-
-# Die Saat traegt KEIN Gateway-Token — das Kopieren loescht jedes vorhandene. Also hier eins
-# setzen, wenn keins dasteht (idempotent, bleibt im Volume).
-if [ -z "$(docker compose exec -T learning-claw openclaw config get gateway.auth.token 2>/dev/null | tr -d '\r\n "')" ]; then
-  echo "   Gateway-Token fehlt -> neues erzeugen"
-  NEUES_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-40)"
-  docker compose exec -T -e NEU="$NEUES_TOKEN" learning-claw \
-    node -e 'require("node:child_process").execFileSync("openclaw",["config","set","gateway.auth.token",process.env.NEU],{stdio:"ignore"})'
-  unset NEUES_TOKEN
+if [ "$NEU" -eq 1 ]; then
   docker compose restart learning-claw >/dev/null
   sleep 5
 fi

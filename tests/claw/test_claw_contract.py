@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,7 @@ def test_allowed_tools_match_server_tools() -> None:
     entry = config["mcpServers"]["learning"]
     assert entry["url"] == "http://127.0.0.1:8139/mcp"
     assert entry["timeout"] == 900000
+    assert entry["headers"] == {"Authorization": "Bearer ${LEARNING_CLAW_MCP_TOKEN}"}
 
 
 def test_no_forbidden_tool_names() -> None:
@@ -155,13 +157,17 @@ def test_transport_security_settings() -> None:
     assert all(o.startswith("http://") for o in settings.allowed_origins)
 
 
-def test_import_does_not_touch_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LEARNING_VIBEMIND_SERVICE_KEY", raising=False)
-    monkeypatch.delenv("LEARNING_CLAW_API_URL", raising=False)
-    monkeypatch.setattr(Path, "exists", lambda self: True)
-    monkeypatch.setattr(
-        Path, "read_text", lambda self, *a, **k: "LEARNING_VIBEMIND_SERVICE_KEY=leak\n"
-    )
-    before = dict(os.environ)
-    importlib.reload(server)
-    assert dict(os.environ) == before
+def test_import_does_not_touch_environment() -> None:
+    # Frischer Interpreter statt reload() im Testprozess: kein globales Patchen von Path, und das
+    # geteilte Modul `server` bleibt unveraendert. Das echte ENV_FILE darf beim Import nicht gelesen werden.
+    code = "; ".join([
+        "import os",
+        "before = dict(os.environ)",
+        "import spaces.learning.claw.server",
+        "assert dict(os.environ) == before, 'import veraendert die Umgebung'",
+    ])
+    repo_root = str(CLAW_DIR.parents[2])
+    env = {**os.environ, "PYTHONPATH": repo_root}
+    run = subprocess.run([sys.executable, "-c", code], cwd=repo_root, env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr

@@ -3,6 +3,9 @@
     "learning": {
       "type": "http",
       "url": "http://127.0.0.1:8139/mcp",
+      "headers": {
+        "Authorization": "Bearer ${LEARNING_CLAW_MCP_TOKEN}"
+      },
       "timeout": 900000
     }
   },

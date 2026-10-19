@@ -6,11 +6,13 @@ selbst per MCP (streamable-http) nach `tools/list` und gibt die Namen aus, einen
 je Zeile, sortiert. Nur Standardbibliothek; nur loopback.
 
 Aufruf: python werkzeug_probe.py [URL]   (Vorgabe http://127.0.0.1:8139/mcp)
+Das Bearer-Token kommt aus LEARNING_CLAW_MCP_TOKEN (Pflicht).
 Rueckgabe 0 mit Namen auf stdout; 1 mit Meldung auf stderr.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.request
 from urllib.parse import urlparse
@@ -54,10 +56,21 @@ def tool_names(body: str) -> list[str]:
     return sorted(names)
 
 
+TOKEN_ENV = "LEARNING_CLAW_MCP_TOKEN"
+
+
+def auth_headers(env: dict[str, str]) -> dict[str, str]:
+    token = env.get(TOKEN_ENV, "").strip()
+    if not token:
+        raise ValueError(f"{TOKEN_ENV} ist nicht gesetzt")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _post(url: str, message: dict, session: str | None) -> tuple[str, str | None]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
+        **auth_headers(dict(os.environ)),
     }
     if session:
         headers["Mcp-Session-Id"] = session
@@ -84,7 +97,7 @@ def main(argv: list[str]) -> int:
     try:
         names = fetch_tool_names(url)
     except Exception as exc:  # noqa: BLE001 -- jede Stoerung ist ein Abnahmefehler
-        print(f"FEHL Sidecar nicht befragbar ({url}): {exc}", file=sys.stderr)
+        print(f"FEHL Sidecar nicht befragbar ({url}): {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     if not names:
         print(f"FEHL Sidecar lieferte keine Werkzeugliste ({url})", file=sys.stderr)

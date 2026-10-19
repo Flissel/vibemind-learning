@@ -131,3 +131,37 @@ def test_probe_allows_only_loopback_url():
 def test_mcp_json_matches_probe_expectation():
     allowed = json.loads(MCP_JSON.read_text(encoding="utf-8"))["allowedTools"]
     assert {a.split("__")[-1] for a in allowed} == {f.__name__ for f in server.WERKZEUGE}
+
+
+def test_acceptance_script_keeps_gateway_token_off_command_lines():
+    text = ANBINDEN.read_text(encoding="utf-8")
+    code = re.sub(r"(?m)^\s*#.*$", "", text)
+    assert "-e NEU" not in code and "config set" not in code
+    assert "mktemp" in code and "umask 077" in code
+    assert "docker compose cp \"$TMP\"" in code
+    assert "LEARNING_CLAW_MCP_TOKEN" in code
+    assert re.search(r'grep -qE ":\(1338\|9000\|13000\|3888\)', code)
+
+
+def test_start_script_passes_token_only_to_both_children_and_restores_env():
+    text = START.read_text(encoding="utf-8")
+    assert "RandomNumberGenerator" in text
+    assert text.count("LEARNING_CLAW_MCP_TOKEN = $McpToken") == 2
+    assert "} finally {" in text
+    # no token in logs or on disk
+    assert "Out-File" not in text and "Set-Content" not in text and "Add-Content" not in text
+    assert "Write-Output $McpToken" not in text and "Write-Host $McpToken" not in text
+
+
+def test_probe_requires_token_and_sends_bearer():
+    probe = _load_probe()
+    assert probe.auth_headers({"LEARNING_CLAW_MCP_TOKEN": "x" * 40}) == {"Authorization": "Bearer " + "x" * 40}
+    import pytest
+
+    with pytest.raises(ValueError):
+        probe.auth_headers({})
+
+
+def test_gitattributes_forces_lf_for_shell_scripts():
+    attrs = (Path(__file__).resolve().parents[2] / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.sh text eol=lf" in attrs

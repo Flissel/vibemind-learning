@@ -8,6 +8,7 @@ im Konstruktor), neuere Container 2.0 (MCPServer, host/port in run()). Beide
 Zweige stehen hier, der passende gewinnt zur Laufzeit.
 """
 
+import hmac
 import os
 import sys
 from pathlib import Path
@@ -17,6 +18,13 @@ from typing import Any
 PKG_ROOT = next(p.parent for p in Path(__file__).resolve().parents if p.name == "spaces")
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
+
+try:
+    # Das Paket `mcp` frueh festnageln: andere Module (z. B. brain/the_brain) legen einen eigenen
+    # `mcp`-Ordner vorn in sys.path; ein spaeter, traeger Import fiele dann auf den falschen.
+    import mcp.server.transport_security  # noqa: F401, E402
+except ImportError:  # pragma: no cover -- ohne mcp-Paket gibt es nichts zu pinnen
+    pass
 
 from spaces.learning.claw import werkzeuge  # noqa: E402
 
@@ -29,6 +37,10 @@ _ENV_KEYS = (
     "LEARNING_CLAW_MCP_HOST",
     "LEARNING_CLAW_MCP_PORT",
 )
+
+# Das Token kommt nur aus der Prozessumgebung (Startskript), nie aus einer Datei.
+TOKEN_ENV = "LEARNING_CLAW_MCP_TOKEN"
+MIN_TOKEN_LENGTH = 32
 
 
 def _load_env_fallback() -> None:
@@ -99,30 +111,80 @@ def transport_security_settings(port: int) -> Any:
     )
 
 
+def require_token() -> str:
+    """Gemeinsames Bearer-Geheimnis; ohne ausreichend langes Token startet der Sidecar nicht.
+
+    Der Container erreicht jeden Loopback-Port des Hosts ueber host.docker.internal.
+    """
+    token = os.environ.get(TOKEN_ENV, "").strip()
+    if len(token) < MIN_TOKEN_LENGTH:
+        raise SystemExit(f"{TOKEN_ENV} fehlt oder ist kuerzer als {MIN_TOKEN_LENGTH} Zeichen")
+    return token
+
+
+class BearerAuth:
+    """ASGI-Huelle: jede HTTP-Anfrage braucht `Authorization: Bearer <token>`.
+
+    Vergleich in konstanter Zeit; die 401-Antwort gibt nichts zurueck.
+    """
+
+    def __init__(self, app: Any, token: str) -> None:
+        self._app = app
+        self._token = token.encode("utf-8")
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and not self._authorized(scope):
+            await send({"type": "http.response.start", "status": 401,
+                        "headers": [(b"content-length", b"0")]})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await self._app(scope, receive, send)
+
+    def _authorized(self, scope: Any) -> bool:
+        for key, value in scope.get("headers", []):
+            if key.lower() == b"authorization":
+                prefix = b"Bearer "
+                if not value.startswith(prefix):
+                    return False
+                return hmac.compare_digest(value[len(prefix):], self._token)
+        return False
+
+
+def build_app(server: Any, token: str) -> Any:
+    """Streamable-HTTP-App des MCP-Servers, hinter BearerAuth."""
+    factory = getattr(server, "streamable_http_app", None)
+    if factory is None:
+        raise SystemExit("MCP-Paket bietet keine ASGI-App; ohne Token-Pruefung wird nicht gestartet")
+    return BearerAuth(factory(), token)
+
+
 def main() -> None:
     _load_env_fallback()
     host, port = resolve_host_port()
+    token = require_token()
+    import uvicorn
+
     try:
         from mcp.server.mcpserver import MCPServer
     except ImportError:
         MCPServer = None  # noqa: N806
     if MCPServer is not None:
         server = MCPServer("learning-claw")
-        for fn in WERKZEUGE:
-            server.tool()(fn)
-        server.run(transport="streamable-http", host=host, port=port)
-        return
-    from mcp.server.fastmcp import FastMCP
+    else:
+        from mcp.server.fastmcp import FastMCP
 
-    server = FastMCP(
-        "learning-claw",
-        host=host,
-        port=port,
-        transport_security=transport_security_settings(port),
-    )
+        server = FastMCP(
+            "learning-claw",
+            host=host,
+            port=port,
+            transport_security=transport_security_settings(port),
+        )
     for fn in WERKZEUGE:
         server.tool()(fn)
-    server.run(transport="streamable-http")
+    uvicorn.run(build_app(server, token), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

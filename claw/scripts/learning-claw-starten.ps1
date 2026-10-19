@@ -19,6 +19,13 @@
     Shim-Skript: Umgebung LEARNING_CLAW_SHIM_SCRIPT, sonst
     <vibemind-os>\spaces\marketing\claw\shim\marketing_shim.py.
 
+    BEARER-TOKEN. Der Sidecar haelt den Schluessel mit Veroeffentlichungs-Rolle und der
+    Container erreicht jeden Loopback-Port des Hosts. Darum verlangt der Sidecar
+    `Authorization: Bearer <LEARNING_CLAW_MCP_TOKEN>` (mindestens 32 Zeichen). Ist die Variable
+    nicht gesetzt, erzeugt dieses Skript je Start ein frisches Zufallstoken (kryptografischer RNG)
+    und gibt es NUR an die Umgebung der beiden Kindprozesse; es steht in keinem Log und auf keiner
+    Platte. Wer anbinden.sh oder die Probe nutzt, setzt LEARNING_CLAW_MCP_TOKEN selbst (gleicher Wert).
+
 .PARAMETER Pruefen
     Nur nachsehen und berichten, nichts starten.
 
@@ -43,6 +50,18 @@ $LogDir       = Join-Path $Root 'logs\learning'
 $ShimSkript = $env:LEARNING_CLAW_SHIM_SCRIPT
 if (-not $ShimSkript) { $ShimSkript = Join-Path $OsRoot 'spaces\marketing\claw\shim\marketing_shim.py' }
 
+# Token fuer Sidecar UND Shim: vorhandenes nehmen, sonst frisch erzeugen (nie in Log/Datei).
+$TokenErzeugt = $false
+$McpToken = $env:LEARNING_CLAW_MCP_TOKEN
+if (-not $McpToken -or $McpToken.Length -lt 32) {
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $bytes = New-Object byte[] 32
+    $rng.GetBytes($bytes)
+    $rng.Dispose()
+    $McpToken = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    $TokenErzeugt = $true
+}
+
 $Dienste = @(
     @{
         Name = 'learning_claw_mcp'
@@ -50,7 +69,7 @@ $Dienste = @(
         Args = @('-u', '-m', 'spaces.learning.claw.server')
         Cwd  = $OsRoot
         # Schluessel holt der Sidecar selbst aus der Learning-.env (server.py::_load_env_fallback).
-        Env  = @{}
+        Env  = @{ LEARNING_CLAW_MCP_TOKEN = $McpToken }
         Was  = 'MCP-Sidecar (die Werkzeuge des Agenten, nur 127.0.0.1)'
     },
     @{
@@ -59,6 +78,8 @@ $Dienste = @(
         Args = @($ShimSkript, '--host', '127.0.0.1', '--port', '8141')
         Cwd  = $Root
         Env  = @{
+            # Der Shim reicht das Token ueber ${LEARNING_CLAW_MCP_TOKEN} in learning-mcp.json an die CLI.
+            LEARNING_CLAW_MCP_TOKEN = $McpToken
             # Ohne diese Datei sieht die Claude-CLI die Learning-Werkzeuge nicht.
             SHIM_EXTRA_MCP_CONFIG = (Join-Path $LearningRoot 'claw\learning-mcp.json')
             # Kurserzeugung und Veroeffentlichen warten laenger als der CLI-Vorgabewert.
@@ -73,6 +94,7 @@ $Dienste = @(
     }
 )
 
+$Alle = $Dienste
 if ($Liste) {
     # -InputObject statt Pipe: bleibt auch in Windows PowerShell 5.1 ein JSON-Array.
     ConvertTo-Json -Depth 3 -Compress -InputObject @($Dienste | ForEach-Object {
@@ -94,6 +116,14 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Forc
 function Test-Port([int]$Port) {
     $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
                Select-Object -First 1)
+}
+
+# Ein frisch erzeugtes Token kennt kein bereits laufender Dienst: Sidecar und Shim muessen zusammen starten.
+if ($TokenErzeugt -and -not $Pruefen) {
+    $laeuft = @($Alle | Where-Object { Test-Port $_.Port })
+    if ($laeuft.Count -gt 0 -and $laeuft.Count -lt $Alle.Count) {
+        throw 'LEARNING_CLAW_MCP_TOKEN ist nicht gesetzt und ein Dienst laeuft schon: ohne bekanntes Token passen Sidecar und Shim nicht zusammen. Variable setzen oder beide beenden.'
+    }
 }
 
 $gestartet = 0
@@ -127,13 +157,16 @@ foreach ($d in $Dienste) {
         Set-Item -Path "env:$k" -Value $d.Env[$k]
     }
 
-    $p = Start-Process -FilePath $Venv -ArgumentList $d.Args -WorkingDirectory $d.Cwd `
-        -RedirectStandardOutput (Join-Path $LogDir "$($d.Name).log") `
-        -RedirectStandardError  (Join-Path $LogDir "$($d.Name).err.log") `
-        -WindowStyle Hidden -PassThru
-    foreach ($k in $d.Env.Keys) {
-        if ($null -eq $vorher[$k]) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }
-        else { Set-Item -Path "env:$k" -Value $vorher[$k] }
+    try {
+        $p = Start-Process -FilePath $Venv -ArgumentList $d.Args -WorkingDirectory $d.Cwd `
+            -RedirectStandardOutput (Join-Path $LogDir "$($d.Name).log") `
+            -RedirectStandardError  (Join-Path $LogDir "$($d.Name).err.log") `
+            -WindowStyle Hidden -PassThru
+    } finally {
+        foreach ($k in $d.Env.Keys) {
+            if ($null -eq $vorher[$k]) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }
+            else { Set-Item -Path "env:$k" -Value $vorher[$k] }
+        }
     }
     Write-Output ("  gestartet :{0,-5} PID {1,-6} {2}" -f $d.Port, $p.Id, $d.Was)
     $gestartet++
