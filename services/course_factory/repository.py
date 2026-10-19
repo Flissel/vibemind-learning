@@ -583,6 +583,9 @@ class CourseFactoryRepository:
                     created_at=utc_now(),
                 )
             )
+            # No relationship() orders these inserts; the stage row references
+            # the artifact, so it must exist first (Postgres enforces the key).
+            session.flush()
         session.add(row)
         session.flush()
         return row

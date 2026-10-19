@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
 from spaces.learning.services.course_factory.artifact_store import (
@@ -29,6 +29,13 @@ def _hash(value: str) -> str:
 @pytest.fixture()
 def factory_store(tmp_path: Path):
     engine = create_engine(f"sqlite:///{tmp_path / 'factory-artifacts.db'}")
+
+    # Postgres enforces these; without the pragma SQLite hides insert-order bugs.
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, connection_record) -> None:
+        del connection_record
+        connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     root = tmp_path / "artifacts"
