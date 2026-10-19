@@ -1,0 +1,133 @@
+"""Deployment of the Learning claw: gateway container, acceptance script, start script.
+
+Nothing here starts a container, a service or a script -- the files are only inspected.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import re
+from pathlib import Path
+
+import yaml
+
+from spaces.learning.claw import server
+
+CLAW_DIR = Path(__file__).resolve().parents[2] / "claw"
+GATEWAY = CLAW_DIR / "gateway"
+OPENCLAW_JSON = GATEWAY / "config" / "openclaw.json"
+COMPOSE = GATEWAY / "docker-compose.yml"
+ANBINDEN = GATEWAY / "anbinden.sh"
+PROBE = GATEWAY / "werkzeug_probe.py"
+START = CLAW_DIR / "scripts" / "learning-claw-starten.ps1"
+MCP_JSON = CLAW_DIR / "learning-mcp.json"
+
+
+def _load_probe():
+    spec = importlib.util.spec_from_file_location("learning_werkzeug_probe", PROBE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_gateway_has_no_channels_and_loopback_port():
+    cfg = json.loads(OPENCLAW_JSON.read_text(encoding="utf-8"))
+    assert cfg["gateway"]["port"] == 18897
+    assert cfg["gateway"]["bind"] == "loopback"
+    assert cfg["gateway"]["auth"]["mode"] == "token"
+    assert "channels" not in cfg
+    shim = cfg["models"]["providers"]["shim"]
+    assert shim["baseUrl"] == "http://host.docker.internal:8141/v1"
+    assert [m["id"] for m in shim["models"]] == ["claude-code-sonnet"]
+    assert cfg["agents"]["defaults"]["model"]["primary"] == "shim/claude-code-sonnet"
+    assert cfg["tools"]["web"]["search"]["enabled"] is False
+    assert cfg["tools"]["web"]["fetch"]["enabled"] is False
+
+
+def test_gateway_configures_no_mcp_server():
+    # The tools run inside the Claude CLI loop of the host shim, not in the gateway.
+    text = OPENCLAW_JSON.read_text(encoding="utf-8")
+    cfg = json.loads(text)
+    assert "mcp" not in cfg
+    assert "8139" not in text
+    for port in ("1338", "9000", "13000", "3888"):
+        assert port not in text
+
+
+def test_compose_publishes_no_host_port():
+    service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["learning-claw"]
+    assert "ports" not in service
+    assert service["container_name"] == "learning-claw"
+    assert "host.docker.internal:host-gateway" in service["extra_hosts"]
+    assert "18897" in json.dumps(service["healthcheck"])
+    assert any(v.startswith("learning-claw-state:") for v in service["volumes"])
+    assert any(v.startswith("learning-claw-keys:") for v in service["volumes"])
+
+
+def test_workspace_copies_are_not_duplicated_in_git():
+    workspace = GATEWAY / "config" / "workspace"
+    assert not list(workspace.rglob("AGENTS.md"))
+    assert not list(workspace.rglob("SKILL.md"))
+    text = ANBINDEN.read_text(encoding="utf-8")
+    assert "$CLAW/AGENTS.md" in text and "$CLAW/skills/" in text
+
+
+def test_start_script_declares_both_services_on_their_ports():
+    text = START.read_text(encoding="utf-8")
+    assert "learning_claw_mcp" in text and "learning_claw_shim" in text
+    assert "8139" in text and "8141" in text
+    assert "VIBEMIND_AGENT" in text and "learning-claw" in text
+    assert "SHIM_EXTRA_MCP_CONFIG" in text and "learning-mcp.json" in text
+    assert "MCP_TOOL_TIMEOUT" in text and "900000" in text
+    assert "VIBEMIND_BUDGET_MODUL" in text and "claude_budget.py" in text
+    assert "LEARNING_CLAW_SHIM_SCRIPT" in text and "marketing_shim.py" in text
+    assert "spaces.learning.claw.server" in text
+    assert "127.0.0.1" in text
+    assert "logs\\learning" in text
+    assert "-RedirectStandardOutput" in text and "-RedirectStandardError" in text
+    assert "$Liste" in text and "$Nur" in text
+
+
+def test_acceptance_script_checks_forbidden_tools():
+    text = ANBINDEN.read_text(encoding="utf-8")
+    assert re.search(r"send\\\|approve\\\|save\\\|submit", text)
+    assert "werkzeug_probe.py" in text
+    for port in ("1338", "9000", "13000", "3888"):
+        assert port in text
+    assert "docker compose cp" in text
+    assert "openclaw skills" in text
+    for skill in ("kurs-aus-material", "ueben", "zeichenaufgabe"):
+        assert skill in text
+    assert "bash -x" not in text
+    assert "set -x" not in text
+    assert "mcp probe" not in re.sub(r"(?m)^\s*#.*$", "", text)
+
+
+def test_acceptance_script_lists_all_expected_tools():
+    text = ANBINDEN.read_text(encoding="utf-8")
+    for name in server.WERKZEUGE:
+        assert name.__name__ in text
+
+
+def test_probe_extracts_tool_names_from_json_and_sse():
+    probe = _load_probe()
+    body = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "b"}, {"name": "a"}]}}
+    assert probe.tool_names(json.dumps(body)) == ["a", "b"]
+    sse = "event: message\ndata: " + json.dumps(body) + "\n\n"
+    assert probe.tool_names(sse) == ["a", "b"]
+    assert probe.tool_names("") == []
+
+
+def test_probe_allows_only_loopback_url():
+    probe = _load_probe()
+    assert probe.DEFAULT_URL == "http://127.0.0.1:8139/mcp"
+    assert probe.is_loopback("http://127.0.0.1:8139/mcp")
+    assert not probe.is_loopback("http://192.168.1.5:8139/mcp")
+    assert not probe.is_loopback("http://host.docker.internal:8139/mcp")
+
+
+def test_mcp_json_matches_probe_expectation():
+    allowed = json.loads(MCP_JSON.read_text(encoding="utf-8"))["allowedTools"]
+    assert {a.split("__")[-1] for a in allowed} == {f.__name__ for f in server.WERKZEUGE}

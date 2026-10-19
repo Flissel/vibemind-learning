@@ -145,6 +145,36 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8090/api/v1/course-factory/
   -Headers $headers -ContentType application/json -Body $body
 ```
 
+## Learning-Claw
+
+Konversations-Agent fuer Kurs-Erzeugung und Ueben (Spec 2026-10-19). Code-Stand: nichts davon ist
+gestartet oder abgenommen.
+
+| Teil | Ort | Port |
+| --- | --- | --- |
+| MCP-Sidecar (17 Werkzeuge, nur loopback) | `claw/server.py` | `127.0.0.1:8139` |
+| Modell-Tuer (Shim, Werkzeuge ueber `SHIM_EXTRA_MCP_CONFIG`) | `marketing_shim.py` | `127.0.0.1:8141` |
+| openclaw-Gateway (Container `learning-claw`, ohne Kanaele, ohne MCP-Eintrag) | `claw/gateway/` | `18897` (loopback im Container, nicht veroeffentlicht) |
+
+Der Gateway kennt den Sidecar nicht: die Werkzeuge laufen in der Claude-CLI des Shims. `AGENTS.md` und
+`skills/` liegen nur unter `claw/`; `anbinden.sh` kopiert sie ins Container-Volume.
+
+```powershell
+# Host-Dienste (idempotent; -Pruefen, -Liste, -Nur learning_claw_mcp)
+powershell -File spaces\learning\claw\scripts\learning-claw-starten.ps1
+# Gateway (Container) hochfahren, dann abnehmen
+docker compose -f spaces/learning/claw/gateway/docker-compose.yml up -d
+bash spaces/learning/claw/gateway/anbinden.sh
+```
+
+Abnahme (`anbinden.sh`): die 17 erwarteten Werkzeugnamen (`werkzeug_probe.py` befragt den Sidecar), kein Name
+mit `send`/`approve`/`save`/`submit`, kein LearnHouse-/PenEcho-Port und kein MCP-Eintrag in `openclaw.json`,
+die drei Fertigkeiten sichtbar. Das Shim-Skript laesst sich mit `LEARNING_CLAW_SHIM_SCRIPT` ueberschreiben.
+
+Veroeffentlichungsregel: der Agent entwirft nur. `veroeffentlichen` verlangt das Token aus
+`veroeffentlichung_anzeigen`, das erst nach der ausdruecklichen Freigabe durch einen Menschen gilt; es gibt
+kein Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
+
 ## Current Evidence Boundary
 
 The pins and registry documentation are structural evidence only. They do not

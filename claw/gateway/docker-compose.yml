@@ -1,0 +1,34 @@
+# learning-claw Gateway — openclaw als Gespraechs-Oberflaeche vor dem Learning-Host-Shim.
+# BEWUSST OHNE KANAELE UND OHNE MCP-SERVER: die 17 Werkzeuge laufen im Host-Shim
+# (SHIM_EXTRA_MCP_CONFIG, Port 8141), nicht im Container. Der Sidecar (127.0.0.1:8139)
+# ist fuer den Container nie erreichbar und haelt den Schluessel mit Veroeffentlichungs-Rolle.
+#
+# Schluessel (Gateway-Token) kommen NIE hierher oder in die Saat — anbinden.sh setzt
+# sie ins Laufzeit-Volume. AGENTS.md und skills/ liegen nur unter claw/ im Git; anbinden.sh
+# kopiert sie ins Volume (kein zweiter Stand im Repo).
+services:
+  learning-claw:
+    image: ghcr.io/openclaw/openclaw:2026.7.1-slim
+    container_name: learning-claw
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+    volumes:
+      - learning-claw-state:/home/node/.openclaw
+      - learning-claw-keys:/home/node/.config/openclaw
+      - ./config/workspace:/seed/workspace:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Der Image-Healthcheck probt fest 127.0.0.1:18789; unser Gateway bindet
+    # loopback:18897 (config/openclaw.json). Gleiche Probe, richtiger Port.
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18897/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 3m
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+volumes:
+  learning-claw-state:
+  learning-claw-keys:
