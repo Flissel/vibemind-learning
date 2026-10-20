@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spaces.learning.services.course_factory.schemas import learnhouse_payload
+
 import json
 from uuid import uuid4
 
@@ -24,7 +26,8 @@ async def test_gateway_stages_exact_factory_draft_with_internal_credentials() ->
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         payload = json.loads(request.content)
-        assert payload["draft"] == draft.model_dump(mode="json")
+        # Exactly the LearnHouse-schema form of the draft (no Learning-only fields).
+        assert payload["draft"] == learnhouse_payload(draft)
         return httpx.Response(
             200,
             json={
@@ -144,3 +147,34 @@ def test_gateway_survives_one_event_loop_per_call() -> None:
             assert readback.revision == 5
     finally:
         server.shutdown()
+
+
+def test_learnhouse_payload_matches_the_learnhouse_draft_schema() -> None:
+    # The LearnHouse fork forbids unknown fields and needs a non-empty
+    # expected_answer; live a draft with structured quizzes was refused with 422.
+    from spaces.learning.services.course_factory.schemas import QuizOptionDraft, learnhouse_payload
+    from spaces.learning.tests.unit.test_source_verification import _draft, _ids
+
+    draft = _draft(_ids())
+    quiz = draft.activities[0].model_copy(
+        update={
+            "activity_id": "quiz-1",
+            "type": "quiz",
+            "expected_answer": "",
+            "rubric": [],
+            "options": [
+                QuizOptionDraft(option_id="a", text="Akku entnehmen"),
+                QuizOptionDraft(option_id="b", text="Weiterarbeiten"),
+                QuizOptionDraft(option_id="c", text="Schutzbrille"),
+            ],
+            "correct_option_ids": ["a", "c"],
+        }
+    )
+    draft = draft.model_copy(update={"activities": [*draft.activities, quiz]})
+
+    payload = learnhouse_payload(draft)
+
+    for activity in payload["activities"]:
+        assert "options" not in activity and "correct_option_ids" not in activity
+        assert activity["expected_answer"]
+    assert payload["activities"][1]["expected_answer"] == "Akku entnehmen; Schutzbrille"

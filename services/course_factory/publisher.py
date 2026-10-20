@@ -21,7 +21,7 @@ from spaces.learning.services.course_factory.repository import (
     FactoryJobRecord,
     PublicationInput,
 )
-from spaces.learning.services.course_factory.schemas import CourseDraft
+from spaces.learning.services.course_factory.schemas import CourseDraft, learnhouse_payload
 from spaces.learning.services.course_factory.state_machine import FactoryState
 
 
@@ -263,8 +263,9 @@ class CourseDraftPublisher:
 
 
 def _hash_draft(draft: CourseDraft) -> str:
+    # Hash exactly what LearnHouse receives; it recomputes the hash on its side.
     payload = json.dumps(
-        draft.model_dump(mode="json"),
+        learnhouse_payload(draft),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,

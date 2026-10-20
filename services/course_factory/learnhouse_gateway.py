@@ -12,7 +12,7 @@ from spaces.learning.services.course_factory.publisher import (
     DraftDeliveryReceipt,
     LearnHouseCourseReadback,
 )
-from spaces.learning.services.course_factory.schemas import CourseDraft
+from spaces.learning.services.course_factory.schemas import CourseDraft, learnhouse_payload
 
 
 _SERVICE_KEY_HEADER = "X-LearnHouse-Learning-Service-Key"
@@ -62,7 +62,7 @@ class LearnHouseHttpGateway:
             payload={
                 "expected_revision": expected_revision,
                 "draft_hash": draft_hash,
-                "draft": draft.model_dump(mode="json"),
+                "draft": learnhouse_payload(draft),
             },
         )
         try:

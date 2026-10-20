@@ -93,3 +93,21 @@ class CourseDraft(_StrictDraft):
     chapters: list[ChapterDraft] = Field(min_length=1, max_length=500)
     lessons: list[LessonDraft] = Field(min_length=1, max_length=5_000)
     activities: list[ActivityDraft] = Field(min_length=1, max_length=10_000)
+
+
+def learnhouse_payload(draft: CourseDraft) -> dict[str, object]:
+    """The draft in the LearnHouse fork's schema (extra fields forbidden).
+
+    Structured quiz options stay in Learning's practice catalog; LearnHouse gets the
+    quiz with its correct options as text in `expected_answer`.
+    """
+    payload = draft.model_dump(mode="json")
+    for activity, source in zip(payload["activities"], draft.activities, strict=True):
+        activity.pop("options", None)
+        activity.pop("correct_option_ids", None)
+        if source.type == "quiz" and not source.expected_answer.strip():
+            texts = {option.option_id: option.text for option in source.options}
+            activity["expected_answer"] = "; ".join(
+                texts[option_id] for option_id in source.correct_option_ids if option_id in texts
+            )
+    return payload
