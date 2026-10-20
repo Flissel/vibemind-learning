@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spaces.learning.services.course_factory.chapter_verification import fragment_from_draft
+
 import json
 
 import hashlib
@@ -29,7 +31,6 @@ from spaces.learning.services.course_factory.roles.schemas import (
     ConceptMapOutput,
     LessonOutput,
     QualityReviewOutput,
-    SourceVerificationOutput,
 )
 from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.services.course_factory.team import (
@@ -112,11 +113,7 @@ def _role_output(role: str):
             schema_version="assessment-v1",
             activities=[{"concept": "authority", "type": "case", "prompt": "Decide"}],
         ),
-        "source_verifier": SourceVerificationOutput(
-            schema_version="source-verification-v2",
-            draft=_draft(_ids()),
-            unsupported_claim_ids=[],
-        ),
+        "chapter_verifier": fragment_from_draft(_draft(_ids()), 1),
         "quality_reviewer": QualityReviewOutput(
             schema_version="quality-review-v1",
             decision="pass",
@@ -125,6 +122,19 @@ def _role_output(role: str):
         ),
     }
     return values[role]
+
+
+_SOURCE_REF = json.dumps(
+    {
+        "source_id": "00000000-0000-4000-8000-000000000001",
+        "source_revision": 2,
+        "source_content_hash": "a" * 64,
+        "chunk_id": "00000000-0000-4000-8000-000000000002",
+        "chunk_content_hash": "b" * 64,
+        "locator": {"page": 4},
+        "content": "Provider execution stays behind OpenFang.",
+    }
+)
 
 
 class _Gateway:
@@ -166,7 +176,7 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
             course_id=job.course_id,
             audience="Professionals",
             target_outcome="Apply grounded AI safely",
-            source_refs=("source://one/1",),
+            source_refs=(_SOURCE_REF,),
         )
     )
 
@@ -181,7 +191,7 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
         "concept_mapper",
         "lesson_author",
         "assessment_designer",
-        "source_verifier",
+        "chapter_verifier",
     ]
     assert {call.correlation_id for call in gateway.calls} == {correlation_id}
     with session_factory() as session:
@@ -212,7 +222,7 @@ async def test_autogen_team_runs_fixed_roles_and_persists_each_stage(session_fac
         course_id=result.course_id,
         audience="Professionals",
         target_outcome="Apply grounded AI safely",
-        source_refs=("source://one/1",),
+        source_refs=(_SOURCE_REF,),
     )
     review = await team.run_quality_review(
         review_request,
@@ -253,7 +263,7 @@ async def test_quality_reviewer_is_not_called_after_deterministic_failure(
         course_id=job.course_id,
         audience="Professionals",
         target_outcome="Apply grounded AI safely",
-        source_refs=("source://one/1",),
+        source_refs=(_SOURCE_REF,),
     )
     gated = await team.run(request)
 
@@ -296,7 +306,7 @@ async def test_team_stops_after_gateway_failure_and_persists_terminal_state(
                 course_id=job.course_id,
                 audience="Professionals",
                 target_outcome="Apply grounded AI safely",
-                source_refs=("source://one/1",),
+                source_refs=(_SOURCE_REF,),
             )
         )
 
@@ -350,7 +360,7 @@ async def test_rejected_job_has_zero_agent_or_gateway_calls(session_factory) -> 
                 course_id=job.course_id,
                 audience="Professionals",
                 target_outcome="Apply grounded AI safely",
-                source_refs=("source://one/1",),
+                source_refs=(_SOURCE_REF,),
             )
         )
 

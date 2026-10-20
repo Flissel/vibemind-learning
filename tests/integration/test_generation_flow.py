@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spaces.learning.services.course_factory.chapter_verification import fragment_from_draft
+
 import json
 
 import hashlib
@@ -32,7 +34,6 @@ from spaces.learning.services.course_factory.roles.schemas import (
     ConceptMapOutput,
     LessonOutput,
     QualityReviewOutput,
-    SourceVerificationOutput,
 )
 from spaces.learning.services.course_factory.runner import CourseFactoryRunner
 from spaces.learning.services.course_factory.state_machine import FactoryState
@@ -128,7 +129,7 @@ def generation_context(tmp_path: Path):
         generation_request=GenerationRequest(
             correlation_id=str(uuid4()),
             audience="AI operations students",
-            target_outcome="Operate an authorized AI workflow",
+            target_outcome="Course: Grounded AI Operations\nOperate an authorized AI workflow",
         ),
     )
     ids["job"] = job.id
@@ -184,11 +185,13 @@ class _GenerationGateway:
                     }
                 ],
             ),
-            "source_verifier": SourceVerificationOutput(
-                schema_version="source-verification-v2",
-                draft=self.draft,
-                unsupported_claim_ids=list(self.unsupported),
-            ),
+            "chapter_verifier": fragment_from_draft(
+                self.draft,
+                int(invocation.input_payload.get("chapter_index", 1)),
+                self.unsupported,
+            )
+            if invocation.role == "chapter_verifier"
+            else None,
             "quality_reviewer": QualityReviewOutput(
                 schema_version="quality-review-v1",
                 decision=self.review_decision,
@@ -320,7 +323,8 @@ async def test_unsupported_claim_stays_visible_without_ai_quality_call(
         )
     )
     assert status.result is not None
-    assert status.result["unsupported_claim_ids"] == ["claim-authority"]
+    # Chapter-wise verification prefixes ids with the chapter (k1-, k2-, ...).
+    assert status.result["unsupported_claim_ids"] == ["k1-claim-authority"]
     # Why the draft is held: live only unsupported claims were visible, other
     # reasons (e.g. draft_job_mismatch) left the job silently in quality_gate.
     assert status.result["quality_issue_codes"] == ["unsupported_claim"]
@@ -395,7 +399,7 @@ async def test_restart_resumes_from_persisted_authoring_stage(generation_context
     assert gateway.calls == [
         "lesson_author",
         "assessment_designer",
-        "source_verifier",
+        "chapter_verifier",
         "quality_reviewer",
     ]
 

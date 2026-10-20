@@ -13,6 +13,7 @@ from spaces.learning.services.course_factory.roles.schemas import (
     ConceptMapOutput,
     LessonOutput,
     QualityReviewOutput,
+    ChapterVerificationOutput,
     SourceVerificationOutput,
 )
 
@@ -23,6 +24,7 @@ ROLE_OUTPUTS: dict[str, type[BaseModel]] = {
     "lesson_author": LessonOutput,
     "assessment_designer": AssessmentOutput,
     "source_verifier": SourceVerificationOutput,
+    "chapter_verifier": ChapterVerificationOutput,
     "quality_reviewer": QualityReviewOutput,
 }
 ROLE_DESCRIPTIONS = {
@@ -31,6 +33,7 @@ ROLE_DESCRIPTIONS = {
     "lesson_author": "Drafts source-grounded lessons.",
     "assessment_designer": "Creates authentic assessment activities.",
     "source_verifier": "Maps claims to source evidence and flags unsupported claims.",
+    "chapter_verifier": "Verifies one chapter against the sources.",
     "quality_reviewer": "Reviews quality without lifecycle or publish authority.",
 }
 

@@ -4,7 +4,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spaces.learning.services.course_factory.schemas import CourseDraft, QuizOptionDraft
+from spaces.learning.services.course_factory.schemas import (
+    ActivityDraft as CourseActivityDraft,
+)
+from spaces.learning.services.course_factory.schemas import (
+    ChapterDraft,
+    Citation,
+    ConceptDraft,
+    CourseDraft,
+    QuizOptionDraft,
+)
+from spaces.learning.services.course_factory.schemas import (
+    LessonDraft as CourseLessonDraft,
+)
 
 
 class _StrictOutput(BaseModel):
@@ -61,6 +73,18 @@ class AssessmentOutput(_StrictOutput):
 class SourceVerificationOutput(_StrictOutput):
     schema_version: Literal["source-verification-v2"]
     draft: CourseDraft
+    unsupported_claim_ids: list[str] = Field(max_length=5_000)
+
+
+class ChapterVerificationOutput(_StrictOutput):
+    """One chapter of the verified draft; chapters are merged without a model."""
+
+    schema_version: Literal["chapter-verification-v1"]
+    chapter: ChapterDraft
+    concepts: list[ConceptDraft] = Field(min_length=1, max_length=500)
+    citations: list[Citation] = Field(max_length=5_000)
+    lessons: list[CourseLessonDraft] = Field(min_length=1, max_length=500)
+    activities: list[CourseActivityDraft] = Field(min_length=1, max_length=1_000)
     unsupported_claim_ids: list[str] = Field(max_length=5_000)
 
 

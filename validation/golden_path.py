@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spaces.learning.services.course_factory.chapter_verification import fragment_from_draft
+
 import asyncio
 import base64
 import hashlib
@@ -74,7 +76,6 @@ from spaces.learning.services.course_factory.roles.schemas import (
     ConceptMapOutput,
     LessonOutput,
     QualityReviewOutput,
-    SourceVerificationOutput,
 )
 from spaces.learning.services.course_factory.runner import CourseFactoryRunner
 from spaces.learning.services.course_factory.schemas import (
@@ -282,12 +283,10 @@ class _GenerationGateway:
                 schema_version="quality-review-v1", decision="pass", issues=[], score=0.95
             ),
         }
-        if invocation.role == "source_verifier":
+        if invocation.role == "chapter_verifier":
             assert self.draft is not None
-            values["source_verifier"] = SourceVerificationOutput(
-                schema_version="source-verification-v2",
-                draft=self.draft,
-                unsupported_claim_ids=[],
+            values["chapter_verifier"] = fragment_from_draft(
+                self.draft, int(invocation.input_payload.get("chapter_index", 1))
             )
         output = values[invocation.role]
         assert isinstance(output, output_model)

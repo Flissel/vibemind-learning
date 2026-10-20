@@ -251,7 +251,7 @@ def test_complete_semantic_mcp_golden_path(tmp_path: Path) -> None:
         "concept_mapper",
         "lesson_author",
         "assessment_designer",
-        "source_verifier",
+        "chapter_verifier",
         "quality_reviewer",
     ]
     assert report["rag"]["point_count"] >= 1

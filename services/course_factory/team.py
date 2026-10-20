@@ -7,9 +7,15 @@ from uuid import UUID
 
 from autogen_agentchat.teams import RoundRobinGroupChat
 
+from spaces.learning.services.course_factory.chapter_verification import (
+    course_title,
+    merge_chapters,
+    split_by_chapter,
+)
 from spaces.learning.services.course_factory.model_gateway import (
     ModelGateway,
     ModelGatewayError,
+    ModelInvocation,
     ROLE_CONTRACTS,
 )
 from spaces.learning.services.course_factory.artifact_store import (
@@ -23,7 +29,10 @@ from spaces.learning.services.course_factory.repository import (
 from spaces.learning.services.course_factory.roles import build_role_agent
 from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.services.course_factory.schemas import CourseDraft
-from spaces.learning.services.course_factory.roles.schemas import QualityReviewOutput
+from spaces.learning.services.course_factory.roles.schemas import (
+    ChapterVerificationOutput,
+    QualityReviewOutput,
+)
 from spaces.learning.services.db.repository import PersistenceConflict
 
 
@@ -72,7 +81,7 @@ _STAGE_GROUPS = (
     ),
     (
         FactoryState.VERIFYING,
-        ("source_verifier",),
+        ("chapter_verifier",),
         FactoryState.QUALITY_GATE,
     ),
 )
@@ -132,47 +141,14 @@ class CourseAgentTeam:
                     continue
                 if job.state is not stage:
                     raise PersistenceConflict("course factory stage changed concurrently")
-                agents = [
-                    build_role_agent(
-                        role,
-                        correlation_id=request.correlation_id,
-                        gateway=self._gateway,
+                if stage is FactoryState.VERIFYING:
+                    input_hash, role_outputs, evidence_refs = await self._verify_by_chapter(
+                        job, request, context
                     )
-                    for role in roles
-                ]
-                stage_input = {
-                    "context": context,
-                    "role_contracts": [
-                        {
-                            "role": role,
-                            "stage": ROLE_CONTRACTS[role][0],
-                            "prompt_version": ROLE_CONTRACTS[role][1],
-                            "output_schema_version": ROLE_CONTRACTS[role][2],
-                        }
-                        for role in roles
-                    ],
-                }
-                input_hash = _hash_json(stage_input)
-                autogen_team = RoundRobinGroupChat(agents, max_turns=len(agents))
-                try:
-                    await autogen_team.run(task=_canonical_json(stage_input))
-                except RuntimeError as error:
-                    gateway_error = next(
-                        (agent.last_error for agent in agents if agent.last_error),
-                        None,
+                else:
+                    input_hash, role_outputs, evidence_refs = await self._run_roles(
+                        roles, request, context
                     )
-                    if gateway_error is not None:
-                        raise gateway_error from error
-                    raise
-                role_outputs: dict[str, object] = {}
-                evidence_refs: list[str] = []
-                for agent in agents:
-                    if agent.last_result is None:
-                        raise RuntimeError("AutoGen role completed without durable output")
-                    role_outputs[agent.name] = agent.last_result.output.model_dump(
-                        mode="json"
-                    )
-                    evidence_refs.append(agent.last_result.evidence_ref)
                 context["role_outputs"] = {
                     **dict(context["role_outputs"]),
                     **role_outputs,
@@ -209,6 +185,108 @@ class CourseAgentTeam:
         except RuntimeError:
             self._mark_failed(job.id, "agent_team_failed")
             raise
+
+    async def _run_roles(
+        self, roles: tuple[str, ...], request: CourseTeamInput, context: dict[str, object]
+    ) -> tuple[str, dict[str, object], list[str]]:
+        agents = [
+            build_role_agent(role, correlation_id=request.correlation_id, gateway=self._gateway)
+            for role in roles
+        ]
+        stage_input = {
+            "context": context,
+            "role_contracts": [
+                {
+                    "role": role,
+                    "stage": ROLE_CONTRACTS[role][0],
+                    "prompt_version": ROLE_CONTRACTS[role][1],
+                    "output_schema_version": ROLE_CONTRACTS[role][2],
+                }
+                for role in roles
+            ],
+        }
+        input_hash = _hash_json(stage_input)
+        autogen_team = RoundRobinGroupChat(agents, max_turns=len(agents))
+        try:
+            await autogen_team.run(task=_canonical_json(stage_input))
+        except RuntimeError as error:
+            gateway_error = next(
+                (agent.last_error for agent in agents if agent.last_error),
+                None,
+            )
+            if gateway_error is not None:
+                raise gateway_error from error
+            raise
+        role_outputs: dict[str, object] = {}
+        evidence_refs: list[str] = []
+        for agent in agents:
+            if agent.last_result is None:
+                raise RuntimeError("AutoGen role completed without durable output")
+            role_outputs[agent.name] = agent.last_result.output.model_dump(mode="json")
+            evidence_refs.append(agent.last_result.evidence_ref)
+        return input_hash, role_outputs, evidence_refs
+
+    async def _verify_by_chapter(
+        self, job: FactoryJobRecord, request: CourseTeamInput, context: dict[str, object]
+    ) -> tuple[str, dict[str, object], list[str]]:
+        """One short verifier call per chapter, merged without a model.
+
+        A single call rewriting the whole draft exceeded the subscription's 540 s
+        limit once a course had more than about a dozen tasks.
+        """
+        role_outputs = dict(context["role_outputs"])
+        slices = split_by_chapter(role_outputs)
+        contract = ROLE_CONTRACTS["chapter_verifier"]
+        stage_inputs = [
+            {
+                "job_id": request.job_id,
+                "course_id": request.course_id,
+                "audience": request.audience,
+                "target_outcome": request.target_outcome,
+                "chapter_index": piece.index,
+                "chapter_title": piece.title,
+                "concepts": piece.concepts,
+                "lessons": piece.lessons,
+                "activities": piece.activities,
+                "source_refs": list(request.source_refs),
+                **(
+                    {"reviewer_feedback": list(request.revision_notes)}
+                    if request.revision_notes
+                    else {}
+                ),
+            }
+            for piece in slices
+        ]
+        fragments: list[ChapterVerificationOutput] = []
+        evidence_refs: list[str] = []
+        for stage_input in stage_inputs:
+            result = await self._gateway.generate(
+                ModelInvocation(
+                    role="chapter_verifier",
+                    stage=contract[0],
+                    correlation_id=request.correlation_id,
+                    prompt_version=contract[1],
+                    output_schema_version=contract[2],
+                    input_payload=stage_input,
+                ),
+                ChapterVerificationOutput,
+            )
+            fragments.append(result.output)
+            evidence_refs.append(result.evidence_ref)
+        architect = role_outputs["architect"]
+        merged = merge_chapters(
+            fragments,
+            job_id=job.id,
+            attempt_number=job.attempt_number,
+            title=course_title(request.target_outcome, fallback=slices[0].title if slices else "Kurs"),
+            outcomes=[str(item) for item in architect.get("outcomes", [])],
+            source_refs=request.source_refs,
+        )
+        return (
+            _hash_json(stage_inputs),
+            {"source_verifier": merged.model_dump(mode="json")},
+            evidence_refs,
+        )
 
     async def run_quality_review(
         self,
