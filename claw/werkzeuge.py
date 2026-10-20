@@ -395,10 +395,17 @@ _ACTOR = {"actor_id": "learning-claw", "actor_type": "local_user"}
 _DEFAULT_BLUEPRINT = {"max_attempts": 3}
 
 
+# Calls that run a model through OpenFang (grading, tutor, canvas hints) wait
+# longer than reads: wrapper 540 s < gateway 600 s < evaluation client 630 s <
+# this < the CLI's MCP tool timeout (900 s).
+MODEL_TIMEOUT_SECONDS = 660.0
+
+
 def _mcp(
     event_type: str,
     tool: str,
     *,
+    model: bool = False,
     write: bool = False,
     windowed: bool = False,
     course_id: str | None = None,
@@ -426,7 +433,9 @@ def _mcp(
                 _fenster.key(tool, keyed) if windowed else idempotency_key(tool, keyed)
             )
 
-        answer = client.mcp_call(tool, event)
+        answer = client.mcp_call(
+            tool, event, timeout=MODEL_TIMEOUT_SECONDS if model else None
+        )
         result = answer.get("result")
         if not isinstance(result, dict):
             raise LearningUnavailable("Learning lieferte kein Ergebnis")
@@ -475,6 +484,7 @@ def antwort_geben(session_id: str, revision: int, antwort: dict[str, Any]) -> di
     return _mcp(
         "learning.task.answer",
         "learning_task_answer",
+        model=True,
         write=True,
         session_id=session_id,
         expected_revision=revision,
@@ -500,6 +510,7 @@ def tutor_fragen(course_id: str, session_id: str, frage: str) -> dict[str, Any]:
     return _mcp(
         "learning.tutor.ask",
         "learning_tutor_ask",
+        model=True,
         course_id=course_id,
         session_id=session_id,
         payload={"question": frage},
@@ -538,6 +549,7 @@ def zeichenhinweis(
     return _mcp(
         "learning.canvas.hint",
         "learning_canvas_hint",
+        model=True,
         session_id=session_id,
         expected_revision=canvas_revision,
         payload={

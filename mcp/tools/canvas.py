@@ -187,7 +187,8 @@ class CanvasEvaluationClient:
         *,
         base_url: str,
         service_key: str,
-        timeout_seconds: float = 90.0,
+        # Above the OpenFang gateway timeout (600 s): grading must not be cut off.
+        timeout_seconds: float = 630.0,
         http_client: httpx.Client | None = None,
     ) -> None:
         parsed = httpx.URL(base_url)

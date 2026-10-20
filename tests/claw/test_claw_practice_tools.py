@@ -43,6 +43,7 @@ class FakeMcp:
         if self.status >= 500:
             return httpx.Response(self.status)
         body = json.loads(request.content)
+        body["_timeout"] = request.extensions.get("timeout", {}).get("read")
         self.requests.append(body)
         if self.error is not None:
             payload, is_error = {"error": self.error}, True
@@ -233,3 +234,17 @@ def test_antwort_geben_key_stays_deterministic(
     clock.now += 10_000
     werkzeuge.antwort_geben(SESSION, 4, {"choice_id": "a"})
     assert fake_mcp.last_event["idempotency_key"] == first
+
+
+def test_model_backed_tools_wait_longer_than_reads(fake_mcp: FakeMcp) -> None:
+    # Live, grading and tutor answers take 13-60 s through OpenFang; the 30 s
+    # client timeout reported "Learning ist nicht erreichbar" while the call ran.
+    werkzeuge.antwort_geben(SESSION, 1, {"text": "x"})
+    werkzeuge.tutor_fragen(COURSE, SESSION, "Warum?")
+    werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 1, REF, ["o1"])
+    werkzeuge.naechste_aufgabe(SESSION)
+
+    timeouts = [request["_timeout"] for request in fake_mcp.requests]
+    assert timeouts[:3] == [werkzeuge.MODEL_TIMEOUT_SECONDS] * 3
+    assert timeouts[3] < werkzeuge.MODEL_TIMEOUT_SECONDS
+    assert werkzeuge.MODEL_TIMEOUT_SECONDS > 630

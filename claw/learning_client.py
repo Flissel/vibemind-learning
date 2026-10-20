@@ -85,14 +85,18 @@ class LearningClient:
     def get(self, path: str, *, roles: str) -> dict[str, Any]:
         return self._request("GET", self.api_url + path, roles)
 
-    def mcp_call(self, tool: str, event: dict[str, Any]) -> dict[str, Any]:
+    def mcp_call(
+        self, tool: str, event: dict[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
         envelope = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": {"name": tool, "arguments": event},
         }
-        message = self._request("POST", self.mcp_url, None, json_body=envelope)
+        message = self._request(
+            "POST", self.mcp_url, None, json_body=envelope, timeout=timeout
+        )
         result = message.get("result")
         if not isinstance(result, dict):
             raise LearningUnavailable("Learning MCP lieferte keine Antwort")
@@ -115,6 +119,7 @@ class LearningClient:
         *,
         json_body: dict[str, Any] | None = None,
         extra: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self._key}",
@@ -126,7 +131,13 @@ class LearningClient:
             headers["X-VibeMind-Roles"] = roles
         headers.update(extra or {})
         try:
-            response = self._http.request(method, url, json=json_body, headers=headers)
+            response = self._http.request(
+                method,
+                url,
+                json=json_body,
+                headers=headers,
+                timeout=timeout if timeout is not None else _TIMEOUT_SECONDS,
+            )
         except httpx.HTTPError as error:
             logger.warning("Learning request failed: %s", type(error).__name__)
             raise LearningUnavailable("Learning ist nicht erreichbar") from error
