@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable, Mapping
-from typing import cast
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -58,6 +58,9 @@ from spaces.learning.services.ingestion.models import (
 
 _MAX_ATTEMPTS = 3
 
+# (course_id, correlation_id) -> object with `published` and `revision` (LearnHouse readback).
+CourseStateReader = Callable[[str, str], Awaitable[Any]]
+
 
 class SourceNotReady(ValueError):
     """A requested source is unknown, stale, or not durably stored/indexed."""
@@ -71,7 +74,11 @@ class CourseFactoryApplication:
         repository: CourseFactoryRepository,
         publisher: CourseDraftPublisher,
         artifact_store: CourseFactoryArtifactStore,
+        course_state: CourseStateReader | None = None,
     ) -> None:
+        # Reads the LearnHouse course before a job is queued; None (tests, offline)
+        # leaves the check to draft delivery as before.
+        self._course_state = course_state
         self._session_factory = session_factory
         self._repository = repository
         self._publisher = publisher
@@ -163,6 +170,17 @@ class CourseFactoryApplication:
         audience = _string(request.event.payload, "audience", maximum=1_000)
         target = _string(request.event.payload, "target_outcome", maximum=2_000)
         source_ids = _source_ids(request.event.payload)
+        if self._course_state is not None:
+            current = asyncio.run(
+                self._course_state(course_id, str(request.event.correlation_id))
+            )
+            if current.published:
+                return _rejected(
+                    "course_published",
+                    "the course is published and immutable; create a new course for new content",
+                )
+            if current.revision != request.event.expected_revision:
+                return _rejected("revision_conflict", "course revision is stale")
         provenance = self._current_provenance(course_id, source_ids)
         generation_request = GenerationRequest(
             correlation_id=str(request.event.correlation_id),

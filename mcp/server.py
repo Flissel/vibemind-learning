@@ -107,16 +107,24 @@ def build_course_factory_gateways(
     )
     store = CourseFactoryArtifactStore(session_factory, artifact_root=artifact_root)
     repository = CourseFactoryRepository(session_factory)
+    factory_learnhouse = build_learnhouse_http_gateway()
+
+    async def course_state(course_id: str, correlation_id: str):
+        return await factory_learnhouse.read_course(
+            course_id=course_id, correlation_id=correlation_id
+        )
+
     application = CourseFactoryApplication(
         session_factory=session_factory,
         repository=repository,
         publisher=CourseDraftPublisher(
             repository=repository,
             artifact_store=store,
-            learnhouse=build_learnhouse_http_gateway(),
+            learnhouse=factory_learnhouse,
             practice_catalog=PracticeCatalogProjector(session_factory),
         ),
         artifact_store=store,
+        course_state=course_state,
     )
     gateways.update(
         build_generation_gateways(application=application, learnhouse_fallback=learnhouse)

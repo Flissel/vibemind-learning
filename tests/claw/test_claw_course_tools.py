@@ -409,3 +409,11 @@ def test_status_says_why_the_quality_gate_holds_the_draft(fake: Fake) -> None:
     assert daten["zustand"] == "quality_gate"
     assert daten["unbelegte_aussagen"] == ["claim-intro-1"]
     assert daten["pruefung_haelt_an"] == ["claim_missing_citation", "unsupported_claim"]
+
+
+def test_job_for_a_published_course_says_why(fake: Fake) -> None:
+    fake.override = lambda request: httpx.Response(
+        422, json=_err("course_published", "the course is published and immutable")
+    )
+    out = _create()
+    assert out["ok"] is False and "schon veroeffentlicht" in out["fehler"]

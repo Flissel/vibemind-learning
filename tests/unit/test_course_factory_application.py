@@ -255,3 +255,37 @@ def test_mcp_gateway_is_a_thin_adapter_over_the_application(env: _Env) -> None:
     assert outcome.state == "completed"
     assert gateway.readback(request, outcome) is not None
     assert gateway.application is env.application
+
+
+@pytest.mark.parametrize(
+    ("published", "revision", "code"),
+    [(True, 2, "course_published"), (False, 3, "revision_conflict"), (False, 2, None)],
+)
+def test_generation_checks_the_learnhouse_course_before_queueing(
+    tmp_path: Path, published: bool, revision: int, code: str | None
+) -> None:
+    # Live: four jobs ran ~10 minutes each on an already published course and only
+    # then failed - LearnHouse keeps published courses immutable.
+    from types import SimpleNamespace
+
+    env = _Env(tmp_path)
+    reads: list[str] = []
+
+    async def course_state(course_id: str, correlation_id: str):
+        reads.append(course_id)
+        return SimpleNamespace(published=published, revision=revision)
+
+    application = CourseFactoryApplication(
+        session_factory=env.session_factory,
+        repository=env.repository,
+        publisher=env.publisher,
+        artifact_store=CourseFactoryArtifactStore(env.session_factory, artifact_root=tmp_path / "artifacts"),
+        course_state=course_state,
+    )
+    result = application.execute(_generate(env, env.ready_source))
+
+    assert reads == [env.course_id]
+    if code is None:
+        assert result.state == "completed" and result.result["state"] == "queued"
+    else:
+        assert result.state == "rejected" and result.error.code == code

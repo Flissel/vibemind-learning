@@ -90,6 +90,7 @@ _REASONS = {
     "session_revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
     "canvas_revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
     "no_open_task": "Gerade ist keine Aufgabe offen - erst naechste_aufgabe oder eine neue Sitzung",
+    "course_published": "Der Kurs ist schon veroeffentlicht und unveraenderlich - fuer neue Inhalte einen neuen Kurs anlegen",
     "not_found": "Nicht gefunden",
     "idempotency_conflict": "Gleiche Anfrage mit anderem Inhalt",
 }
