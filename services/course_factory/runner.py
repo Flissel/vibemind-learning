@@ -114,13 +114,18 @@ class CourseFactoryRunner:
                     draft=verified.draft,
                     deterministic_issue_codes=(),
                 )
-            await self._publisher.stage_review_draft(
-                job_id=job.id,
-                expected_factory_revision=job.revision,
-                expected_learnhouse_revision=request.learnhouse_revision,
-                draft=verified.draft,
-                correlation_id=request.correlation_id,
-            )
+            try:
+                await self._publisher.stage_review_draft(
+                    job_id=job.id,
+                    expected_factory_revision=job.revision,
+                    expected_learnhouse_revision=request.learnhouse_revision,
+                    draft=verified.draft,
+                    correlation_id=request.correlation_id,
+                )
+            except Exception:
+                # The gate approved; quality_gate would look like a held draft forever.
+                self._fail(job.id, "draft_delivery_failed")
+                raise
             promoted = self._quality_gate.evaluate_and_promote(
                 job.id,
                 expected_revision=job.revision,

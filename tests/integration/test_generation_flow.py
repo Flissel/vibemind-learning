@@ -416,3 +416,21 @@ async def test_unexpected_runtime_error_fails_the_job_visibly(generation_context
 
     failed = repository.get(job.id)
     assert failed.state is FactoryState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_draft_delivery_failure_fails_the_job_visibly(generation_context) -> None:
+    # Live: LearnHouse refused the draft (published course, 409) after an approved
+    # gate, and the job stayed in quality_gate without any reason.
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(draft)
+
+    class _Refusing(_LearnHouse):
+        async def stage_draft(self, **kwargs):
+            raise RuntimeError("LearnHouse request was rejected with 409")
+
+    with pytest.raises(RuntimeError):
+        await _runner(factory, root, repository, gateway, _Refusing()).run_job(job.id)
+
+    failed = repository.get(job.id)
+    assert failed.state is FactoryState.FAILED
