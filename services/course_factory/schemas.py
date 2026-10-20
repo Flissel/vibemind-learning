@@ -53,6 +53,11 @@ class RubricCriterion(_StrictDraft):
     points: int = Field(ge=1, le=1_000)
 
 
+class QuizOptionDraft(_StrictDraft):
+    option_id: str = Field(min_length=1, max_length=50)
+    text: str = Field(min_length=1, max_length=2_000)
+
+
 class ActivityDraft(_StrictDraft):
     activity_id: str = Field(min_length=1, max_length=200)
     chapter_id: str = Field(min_length=1, max_length=200)
@@ -62,6 +67,9 @@ class ActivityDraft(_StrictDraft):
     expected_answer: str = Field(max_length=50_000)
     citation_ids: list[str] = Field(max_length=100)
     rubric: list[RubricCriterion] = Field(max_length=100)
+    # Quiz only: answer options and the correct ones, kept out of the prompt text.
+    options: list[QuizOptionDraft] = Field(default_factory=list, max_length=12)
+    correct_option_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
 class ChapterDraft(_StrictDraft):

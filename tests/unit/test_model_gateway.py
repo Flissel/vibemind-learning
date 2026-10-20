@@ -515,4 +515,17 @@ def test_task_prompts_never_reveal_the_answer(role: str, version: str) -> None:
     from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
 
     assert "never contains the answer" in ROLE_PROMPTS[role]
-    assert ROLE_CONTRACTS[role][1] == version
+    assert ROLE_CONTRACTS[role][1] >= version
+
+
+def test_assessment_roles_ask_for_structured_quiz_and_full_concept_coverage() -> None:
+    # Live: quiz options sat inside the prompt; a draft was held for a concept
+    # without any activity (concept_missing_activity).
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    designer = ROLE_PROMPTS["assessment_designer"]
+    assert "options" in designer and "correct_option_ids" in designer
+    assert "every concept" in designer
+    assert "options" in ROLE_PROMPTS["source_verifier"]
+    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v4"
+    assert ROLE_CONTRACTS["source_verifier"][1] == "source-verification-prompt-v5"

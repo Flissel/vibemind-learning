@@ -498,8 +498,9 @@ def naechste_aufgabe(session_id: str) -> dict[str, Any]:
 
 
 def antwort_geben(session_id: str, revision: int, antwort: dict[str, Any]) -> dict[str, Any]:
-    """Submit the person's own answer to the current task. `antwort` is an object such as
-    {"text": "..."} with exactly what the person wrote; `revision` is the session revision from
+    """Submit the person's own answer to the current task. `antwort` is {"text": "..."} for
+    open tasks, {"choice_id": "<id>"} for single choice and {"choice_ids": ["<id>", ...]} for
+    multiple choice (ids from the task's options), with exactly what the person chose or wrote; `revision` is the session revision from
     the last result. Never invent or improve the answer.
     """
     return _mcp(

@@ -248,3 +248,45 @@ def test_deterministic_preflight_surfaces_declared_unsupported_claims(
     assert report.approved is False
     assert report.issue_codes == ["unsupported_claim"]
     assert repository.get(job.id).state is FactoryState.QUALITY_GATE
+
+
+def _quiz(options, correct):
+    from spaces.learning.services.course_factory.schemas import ActivityDraft, QuizOptionDraft
+
+    return ActivityDraft(
+        activity_id="quiz-1",
+        chapter_id="foundations",
+        type="quiz",
+        concept_ids=["authority"],
+        prompt="Which path is authorized?",
+        expected_answer="The OpenFang path.",
+        citation_ids=[],
+        rubric=[],
+        options=[QuizOptionDraft(option_id=o, text=f"Option {o}") for o in options],
+        correct_option_ids=correct,
+    )
+
+
+@pytest.mark.parametrize(
+    ("options", "correct", "valid"),
+    [
+        (["a", "b", "c"], ["b"], True),
+        (["a", "b", "c"], ["a", "c"], True),
+        (["a"], ["a"], False),
+        (["a", "b"], [], False),
+        (["a", "b"], ["z"], False),
+        (["a", "a"], ["a"], False),
+    ],
+)
+def test_quiz_needs_structured_options_with_a_correct_answer(options, correct, valid) -> None:
+    # Live, quiz options and the solution sat inside the prompt text; practice
+    # could not score them without a model and the learner saw the answer.
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    ids = _ids()
+    draft = _draft(ids)
+    draft.activities.append(_quiz(options, correct))
+    draft.chapters[0].activity_ids.append("quiz-1")
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+    assert ("quiz_options_invalid" not in codes) is valid

@@ -98,6 +98,15 @@ class PracticeCatalogProjector:
             return written
 
 
+def _choice(activity: ActivityDraft) -> tuple[str, dict[str, object]] | None:
+    """A structured quiz becomes a choice item the engine scores without a model."""
+    if activity.type != "quiz" or len(activity.options) < 2 or not activity.correct_option_ids:
+        return None
+    if len(activity.correct_option_ids) == 1:
+        return "single_choice", {"choice_id": activity.correct_option_ids[0]}
+    return "multiple_choice", {"choice_ids": list(activity.correct_option_ids)}
+
+
 def _item(
     item_id: str,
     course_id: str,
@@ -107,24 +116,30 @@ def _item(
 ) -> AdaptiveItem:
     rubric = [criterion.model_dump(mode="json") for criterion in activity.rubric]
     cited = [refs[c] for c in activity.citation_ids if c in refs]
+    choice = _choice(activity)
     return AdaptiveItem(
         id=item_id,
         course_id=course_id,
         course_revision=course_revision,
         activity_id=activity.activity_id,
-        item_type=_ITEM_TYPES[activity.type],
+        item_type=choice[0] if choice else _ITEM_TYPES[activity.type],
         difficulty=STARTING_DIFFICULTY,
         # The draft passed the factory quality gate before it could be published.
         quality_status="approved",
-        expected_answer={"text": activity.expected_answer or activity.prompt},
+        expected_answer=choice[1] if choice else {"text": activity.expected_answer or activity.prompt},
         scoring_config={
             "prompt": activity.prompt,
             "source_refs": cited,
             "hints": _section_hints(cited),
-            "options": [],
+            "options": [
+                {"id": option.option_id, "label": option.text} for option in activity.options
+            ]
+            if choice
+            else [],
             "presentation": {},
         },
-        rubric=rubric or [dict(_FALLBACK_CRITERION)],
+        # Choice items are scored deterministically and carry no rubric.
+        rubric=[] if choice else (rubric or [dict(_FALLBACK_CRITERION)]),
     )
 
 

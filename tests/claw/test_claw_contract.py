@@ -209,3 +209,10 @@ def test_every_tool_tells_the_model_what_it_does_and_its_formats() -> None:
         assert tool.description and len(tool.description.strip()) >= 30, name
     modus = tools["sitzung_starten"].inputSchema["properties"]["modus"]
     assert modus.get("enum") == ["training", "exam"]
+
+
+def test_answer_tool_explains_the_choice_format() -> None:
+    import inspect as _inspect
+
+    doc = _inspect.getdoc(werkzeuge.antwort_geben) or ""
+    assert '{"choice_id"' in doc and '{"choice_ids"' in doc

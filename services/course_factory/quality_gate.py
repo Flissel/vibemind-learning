@@ -9,7 +9,7 @@ from spaces.learning.services.course_factory.repository import (
     FactoryJobRecord,
 )
 from spaces.learning.services.course_factory.roles.schemas import QualityReviewOutput
-from spaces.learning.services.course_factory.schemas import CourseDraft
+from spaces.learning.services.course_factory.schemas import ActivityDraft, CourseDraft
 from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.services.course_factory.verification import (
     SourceSnapshot,
@@ -152,6 +152,8 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
             issues.append(QualityIssue("expected_answer_missing", activity.activity_id))
         if activity.type != "quiz" and not activity.rubric:
             issues.append(QualityIssue("rubric_missing", activity.activity_id))
+        if activity.type == "quiz" and not _quiz_options_valid(activity):
+            issues.append(QualityIssue("quiz_options_invalid", activity.activity_id))
 
     lesson_coverage = {
         concept_id for lesson in draft.lessons for concept_id in lesson.concept_ids
@@ -172,6 +174,18 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
         if len(counts) < 2 or max(counts.values()) / len(draft.activities) > 0.75:
             issues.append(QualityIssue("task_type_distribution", draft.job_id))
     return issues
+
+
+def _quiz_options_valid(activity: ActivityDraft) -> bool:
+    option_ids = [option.option_id for option in activity.options]
+    correct = activity.correct_option_ids
+    return (
+        len(option_ids) >= 2
+        and len(set(option_ids)) == len(option_ids)
+        and bool(correct)
+        and len(set(correct)) == len(correct)
+        and set(correct) <= set(option_ids)
+    )
 
 
 def _normalize(value: str) -> str:

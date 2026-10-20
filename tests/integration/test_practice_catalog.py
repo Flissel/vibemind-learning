@@ -146,3 +146,49 @@ def test_items_carry_a_section_hint_the_engine_serves(factory, monkeypatch) -> N
     )
     hint = service.hint(turn.session_id, actor_id="local-owner")
     assert hint == "Lies noch einmal den Abschnitt „Vor der Arbeit“ in der Unterlage."
+
+
+@pytest.mark.parametrize(
+    ("correct", "item_type", "expected"),
+    [(["b"], "single_choice", {"choice_id": "b"}), (["a", "c"], "multiple_choice", {"choice_ids": ["a", "c"]})],
+)
+def test_structured_quiz_becomes_a_choice_item_scored_without_a_model(
+    factory, correct, item_type, expected
+) -> None:
+    from spaces.learning.services.course_factory.schemas import QuizOptionDraft
+
+    ids = _ids()
+    draft = _draft(ids)
+    quiz = draft.activities[0].model_copy(
+        update={
+            "activity_id": "quiz-structured",
+            "type": "quiz",
+            "rubric": [],
+            "options": [QuizOptionDraft(option_id=o, text=f"Option {o}") for o in ("a", "b", "c")],
+            "correct_option_ids": correct,
+        }
+    )
+    draft = draft.model_copy(update={"activities": [quiz]})
+    course_id = str(uuid4())
+    PracticeCatalogProjector(factory).project(course_id=course_id, course_revision=5, draft=draft)
+
+    with factory() as session:
+        item = session.scalar(select(AdaptiveItem))
+    assert item.item_type == item_type
+    assert item.expected_answer == expected
+    assert item.scoring_config["options"] == [
+        {"id": o, "label": f"Option {o}"} for o in ("a", "b", "c")
+    ]
+
+    # No rubric evaluator: the engine scores choice items deterministically.
+    service = AdaptiveSessionService(factory)
+    turn = service.start(
+        SessionStartCommand(
+            course_id=course_id,
+            course_revision=5,
+            actor_id="local-owner",
+            mode="training",
+            blueprint={"max_attempts": 1},
+        )
+    )
+    assert turn.task is not None and [o.id for o in turn.task.options] == ["a", "b", "c"]
