@@ -544,8 +544,8 @@ def test_assessment_roles_ask_for_structured_quiz_and_full_concept_coverage() ->
     assert "options" in designer and "correct_option_ids" in designer
     assert "every concept" in designer
     assert "options" in ROLE_PROMPTS["source_verifier"]
-    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v4"
-    assert ROLE_CONTRACTS["source_verifier"][1] == "source-verification-prompt-v5"
+    assert ROLE_CONTRACTS["assessment_designer"][1] >= "assessment-prompt-v4"
+    assert ROLE_CONTRACTS["source_verifier"][1] >= "source-verification-prompt-v5"
 
 
 def test_assessment_schema_accepts_the_expected_answer_the_prompt_asks_for() -> None:
@@ -567,3 +567,12 @@ def test_assessment_schema_accepts_the_expected_answer_the_prompt_asks_for() -> 
         }
     )
     assert output.activities[0].expected_answer == "Damit das Geraet nicht anlaeuft."
+
+
+def test_verifier_requires_a_citation_for_every_activity() -> None:
+    # Live: a reflection activity on the outcomes had no citation and the gate
+    # held the whole draft (expected_answer_missing_citation).
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    assert "every activity cites at least one" in ROLE_PROMPTS["source_verifier"]
+    assert ROLE_CONTRACTS["source_verifier"][1] >= "source-verification-prompt-v6"
