@@ -220,3 +220,38 @@ async def test_unverified_publish_readback_leaves_factory_review_ready(
     assert repository.get(job.id).state is FactoryState.REVIEW_READY
     with factory() as session:
         assert session.scalar(select(CourseFactoryPublication)) is None
+
+
+@pytest.mark.asyncio
+async def test_publish_writes_the_practice_catalog_for_the_published_revision(
+    publish_context,
+) -> None:
+    from spaces.learning.services.adaptive_engine.models import AdaptiveConcept
+    from spaces.learning.services.course_factory.practice_catalog import (
+        PracticeCatalogProjector,
+    )
+
+    factory, repository, store, job, draft = publish_context
+    publisher = CourseDraftPublisher(
+        repository=repository,
+        artifact_store=store,
+        learnhouse=_LearnHouse(),
+        practice_catalog=PracticeCatalogProjector(factory),
+    )
+    await publisher.stage_review_draft(
+        job_id=job.id,
+        expected_factory_revision=job.revision,
+        expected_learnhouse_revision=1,
+        draft=draft,
+        correlation_id=str(uuid4()),
+    )
+    await publisher.publish(
+        job_id=job.id,
+        expected_factory_revision=job.revision,
+        confirmation=PublishConfirmation(confirmed=True, approval_ref="human-approval-3"),
+        correlation_id=str(uuid4()),
+    )
+
+    with factory() as session:
+        revisions = set(session.scalars(select(AdaptiveConcept.course_revision)))
+    assert revisions == {4}

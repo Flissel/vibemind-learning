@@ -44,6 +44,7 @@ from spaces.learning.services.course_factory.learnhouse_gateway import (
 from spaces.learning.services.course_factory.application import (
     CourseFactoryApplication,
 )
+from spaces.learning.services.course_factory.practice_catalog import PracticeCatalogProjector
 from spaces.learning.services.course_factory.publisher import CourseDraftPublisher
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
@@ -113,6 +114,7 @@ def build_course_factory_gateways(
             repository=repository,
             artifact_store=store,
             learnhouse=build_learnhouse_http_gateway(),
+            practice_catalog=PracticeCatalogProjector(session_factory),
         ),
         artifact_store=store,
     )

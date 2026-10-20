@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from typing import Literal, Protocol
 from uuid import UUID
@@ -11,6 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from spaces.learning.services.course_factory.artifact_store import (
     CourseFactoryArtifactStore,
 )
+from spaces.learning.services.course_factory.practice_catalog import (
+    PracticeCatalogProjector,
+)
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
     DraftDeliveryInput,
@@ -19,6 +23,9 @@ from spaces.learning.services.course_factory.repository import (
 )
 from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.course_factory.state_machine import FactoryState
+
+
+logger = logging.getLogger(__name__)
 
 
 _EVIDENCE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
@@ -97,10 +104,12 @@ class CourseDraftPublisher:
         repository: CourseFactoryRepository,
         artifact_store: CourseFactoryArtifactStore,
         learnhouse: LearnHouseFactoryGateway,
+        practice_catalog: PracticeCatalogProjector | None = None,
     ) -> None:
         self._repository = repository
         self._artifact_store = artifact_store
         self._learnhouse = learnhouse
+        self._practice_catalog = practice_catalog
 
     async def stage_review_draft(
         self,
@@ -196,7 +205,7 @@ class CourseDraftPublisher:
             expected_revision=published.revision,
             published=True,
         )
-        return self._repository.mark_published(
+        published_job = self._repository.mark_published(
             job.id,
             expected_revision=job.revision,
             publication=PublicationInput(
@@ -208,6 +217,21 @@ class CourseDraftPublisher:
                 ),
             ),
         )
+        if self._practice_catalog is not None:
+            # After the publication is recorded: a catalog failure never hides it.
+            # The projection is idempotent and can be repeated for this revision.
+            try:
+                self._practice_catalog.project(
+                    course_id=job.course_id,
+                    course_revision=readback.revision,
+                    draft=self._load_verified_draft(job),
+                )
+            except Exception:
+                logger.exception(
+                    "learning_practice_catalog_projection_failed",
+                    extra={"job_id": job.id, "course_revision": readback.revision},
+                )
+        return published_job
 
     def _load_verified_draft(self, job: FactoryJobRecord) -> CourseDraft:
         payload = self._artifact_store.read_stage_output(

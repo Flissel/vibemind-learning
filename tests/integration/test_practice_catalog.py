@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.orm import sessionmaker
+
+from spaces.learning.services.adaptive_engine.models import (
+    AdaptiveConcept,
+    AdaptiveItem,
+    ItemConcept,
+)
+from spaces.learning.services.adaptive_engine.session_service import (
+    AdaptiveSessionService,
+    SessionStartCommand,
+)
+from spaces.learning.services.course_factory.practice_catalog import (
+    PracticeCatalogProjector,
+)
+from spaces.learning.services.course_factory.schemas import ActivityDraft
+from spaces.learning.services.db.models import Base
+from spaces.learning.tests.unit.test_source_verification import _draft, _ids
+
+
+class _NoEvaluator:
+    def evaluate(self, request):  # pragma: no cover - never called here
+        raise AssertionError("not evaluated in this test")
+
+
+@pytest.fixture()
+def factory(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'practice.db'}")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, connection_record) -> None:
+        del connection_record
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def _quiz_draft(ids: dict[str, str]):
+    draft = _draft(ids)
+    quiz = ActivityDraft(
+        activity_id="activity-quiz",
+        chapter_id="foundations",
+        type="quiz",
+        concept_ids=["authority"],
+        prompt="Which path is authorized?",
+        expected_answer="The OpenFang path.",
+        citation_ids=[ids["citation"]],
+        rubric=[],
+    )
+    return draft.model_copy(update={"activities": [*draft.activities, quiz]})
+
+
+def test_published_draft_becomes_a_practice_catalog_the_engine_can_serve(factory) -> None:
+    # Live, practice failed for every factory course: publishing wrote no
+    # adaptive concepts or items ("adaptive course revision has no concepts").
+    ids = _ids()
+    course_id = str(uuid4())
+    draft = _quiz_draft(ids)
+
+    written = PracticeCatalogProjector(factory).project(
+        course_id=course_id, course_revision=5, draft=draft
+    )
+
+    assert written == 2
+    with factory() as session:
+        concepts = session.scalars(select(AdaptiveConcept)).all()
+        items = {item.activity_id: item for item in session.scalars(select(AdaptiveItem))}
+        links = session.scalar(select(func.count()).select_from(ItemConcept))
+    assert [(c.concept_key, c.title, c.course_revision) for c in concepts] == [
+        ("authority", "Authority", 5)
+    ]
+    assert links == 2
+    case = items["activity-authority"]
+    assert case.item_type == "case" and case.quality_status == "approved"
+    assert case.expected_answer == {"text": "Route the request through OpenFang."}
+    assert case.scoring_config["prompt"] == "Choose the authorized execution path."
+    assert case.rubric == [
+        {"criterion_id": "routing", "description": "Uses the authority chain", "points": 2}
+    ]
+    # Quiz has no structured options yet: it is graded by rubric against the answer.
+    quiz = items["activity-quiz"]
+    assert quiz.item_type == "open"
+    assert len(quiz.rubric) == 1 and quiz.rubric[0]["points"] == 1
+
+    service = AdaptiveSessionService(factory, rubric_evaluator=_NoEvaluator())
+    turn = service.start(
+        SessionStartCommand(
+            course_id=course_id,
+            course_revision=5,
+            actor_id="local-owner",
+            mode="training",
+            blueprint={"max_attempts": 3},
+        )
+    )
+    assert turn.task is not None
+    assert turn.task.prompt in {
+        "Choose the authorized execution path.",
+        "Which path is authorized?",
+    }
+
+
+def test_projection_is_idempotent_per_course_revision(factory) -> None:
+    ids = _ids()
+    course_id = str(uuid4())
+    projector = PracticeCatalogProjector(factory)
+
+    assert projector.project(course_id=course_id, course_revision=5, draft=_draft(ids)) == 1
+    assert projector.project(course_id=course_id, course_revision=5, draft=_draft(ids)) == 0
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(AdaptiveItem)) == 1
