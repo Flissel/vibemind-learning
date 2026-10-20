@@ -106,6 +106,7 @@ def _item(
     refs: dict[str, str],
 ) -> AdaptiveItem:
     rubric = [criterion.model_dump(mode="json") for criterion in activity.rubric]
+    cited = [refs[c] for c in activity.citation_ids if c in refs]
     return AdaptiveItem(
         id=item_id,
         course_id=course_id,
@@ -118,12 +119,26 @@ def _item(
         expected_answer={"text": activity.expected_answer or activity.prompt},
         scoring_config={
             "prompt": activity.prompt,
-            "source_refs": [refs[c] for c in activity.citation_ids if c in refs],
+            "source_refs": cited,
+            "hints": _section_hints(cited),
             "options": [],
             "presentation": {},
         },
         rubric=rubric or [dict(_FALLBACK_CRITERION)],
     )
+
+
+def _section_hints(refs: list[str]) -> list[str]:
+    """Point to the cited section; never the answer, no model call."""
+    headings: list[str] = []
+    for ref in refs:
+        try:
+            heading = json.loads(ref).get("locator", {}).get("heading")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(heading, str) and heading.strip() and heading not in headings:
+            headings.append(heading.strip())
+    return [f"Lies noch einmal den Abschnitt „{heading}“ in der Unterlage." for heading in headings]
 
 
 def _source_refs(session: Session, draft: CourseDraft) -> dict[str, str]:

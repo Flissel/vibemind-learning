@@ -116,3 +116,33 @@ def test_projection_is_idempotent_per_course_revision(factory) -> None:
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(AdaptiveItem)) == 1
+
+
+def test_items_carry_a_section_hint_the_engine_serves(factory, monkeypatch) -> None:
+    # Live, every hint request failed: "no approved hint is available".
+    import json
+
+    from spaces.learning.services.course_factory import practice_catalog
+
+    ids = _ids()
+    ref = json.dumps({"chunk_id": ids["chunk"], "locator": {"heading": "Vor der Arbeit"}})
+    monkeypatch.setattr(
+        practice_catalog, "_source_refs", lambda session, draft: {ids["citation"]: ref}
+    )
+    course_id = str(uuid4())
+    PracticeCatalogProjector(factory).project(
+        course_id=course_id, course_revision=5, draft=_draft(ids)
+    )
+
+    service = AdaptiveSessionService(factory, rubric_evaluator=_NoEvaluator())
+    turn = service.start(
+        SessionStartCommand(
+            course_id=course_id,
+            course_revision=5,
+            actor_id="local-owner",
+            mode="training",
+            blueprint={"max_attempts": 1},
+        )
+    )
+    hint = service.hint(turn.session_id, actor_id="local-owner")
+    assert hint == "Lies noch einmal den Abschnitt „Vor der Arbeit“ in der Unterlage."
