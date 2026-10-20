@@ -420,6 +420,7 @@ def _job_response(
         revision=result.aggregate.revision,
         publish_confirmation_required=bool(data.get("publish_confirmation_required", False)),
         unsupported_claim_ids=tuple(unsupported) if isinstance(unsupported, list) else (),
+        draft_summary=data.get("draft_summary"),
         evidence=result.evidence,
     )
     return JSONResponse(response.model_dump(mode="json"), status_code=status_code)

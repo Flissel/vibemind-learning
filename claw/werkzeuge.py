@@ -255,23 +255,45 @@ def _anzeigen(client: LearningClient, job_id: str, sitzung: str | None) -> dict[
     if job["state"] != _REVIEW_READY:
         raise ValueError("Der Kurs ist noch nicht zur Veroeffentlichung bereit")
     course = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)
-    kurs = course["course"]
-    titel = kurs.get("title") if isinstance(kurs, dict) else None
     revision, kurs_revision = job["revision"], course["revision"]
     if sitzung:
         _freigaben.merken(job_id, revision, kurs_revision, sitzung)
     else:
         logger.warning("Publication display without an MCP session id; it authorizes nothing")
+    entwurf = job.get("draft_summary")
+    kapitel = _kapitel(entwurf)
     return {
         "job_id": job["job_id"],
-        "titel": titel,
-        # The course projection does not carry these; never invented.
-        "kapitel": None,
-        "lektionen": None,
+        "titel": (entwurf or {}).get("title") or _kurstitel(course),
+        # From the verified draft the person approves; absent means unknown, never invented.
+        "kapitel": kapitel,
+        "lektionen": sum(len(k["lektionen"]) for k in kapitel) if kapitel is not None else None,
         "unbelegte_aussagen": list(job.get("unsupported_claim_ids") or []),
         "revision": revision,
         "kurs_revision": kurs_revision,
     }
+
+
+def _kurstitel(course: dict[str, Any]) -> str | None:
+    # The projection nests the LearnHouse course: {"course": {"course": {...}}}.
+    kurs = course.get("course")
+    if isinstance(kurs, dict) and isinstance(kurs.get("course"), dict):
+        kurs = kurs["course"]
+    titel = kurs.get("title") if isinstance(kurs, dict) else None
+    return titel if isinstance(titel, str) else None
+
+
+def _kapitel(entwurf: object) -> list[dict[str, Any]] | None:
+    if not isinstance(entwurf, dict) or not isinstance(entwurf.get("chapters"), list):
+        return None
+    return [
+        {
+            "titel": kapitel["title"],
+            "lektionen": list(kapitel["lessons"]),
+            "aufgaben": kapitel["activity_count"],
+        }
+        for kapitel in entwurf["chapters"]
+    ]
 
 
 def veroeffentlichung_anzeigen(job_id: str, *, mcp_sitzung: str | None = None) -> dict[str, Any]:

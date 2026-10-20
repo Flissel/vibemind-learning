@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from typing import cast
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from spaces.learning.bridge.dispatcher import ApplicationOutcomeV1
@@ -39,6 +40,7 @@ from spaces.learning.services.course_factory.repository import (
     SessionFactory,
     SourceProvenance,
 )
+from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.course_factory.state_machine import (
     FactoryState,
     InvalidFactoryTransition,
@@ -202,6 +204,9 @@ class CourseFactoryApplication:
                     isinstance(item, str) for item in unsupported
                 ):
                     result["unsupported_claim_ids"] = unsupported
+                summary = _draft_summary(verifier.get("draft"))
+                if summary is not None:
+                    result["draft_summary"] = summary
         return ApplicationOutcomeV1(
             state="completed",
             aggregate=_aggregate(job.id, job.revision),
@@ -379,3 +384,27 @@ def _generation_hash(
             "provenance": [item.__dict__ for item in provenance],
         }
     )
+
+
+def _draft_summary(raw: object) -> dict[str, object] | None:
+    """Outline of the verified draft, so the person sees what they approve."""
+    try:
+        draft = CourseDraft.model_validate(raw)
+    except ValidationError:
+        return None
+    lesson_titles = {lesson.lesson_id: lesson.title for lesson in draft.lessons}
+    return {
+        "title": draft.title,
+        "chapters": [
+            {
+                "title": chapter.title,
+                "lessons": [
+                    lesson_titles[lesson_id]
+                    for lesson_id in chapter.lesson_ids
+                    if lesson_id in lesson_titles
+                ],
+                "activity_count": len(chapter.activity_ids),
+            }
+            for chapter in draft.chapters
+        ],
+    }

@@ -187,3 +187,51 @@ def test_course_projection_reads_through_learnhouse(client, harness) -> None:
     assert found.json()["revision"] == 4
     assert found.json()["course"]["title"] == "Grounded"
     assert missing.status_code == 404
+
+
+def test_job_response_carries_the_draft_outline() -> None:
+    import json
+    from uuid import uuid4 as _uuid4
+
+    from spaces.learning.contracts.outcomes import (
+        AggregateRefV1,
+        EvidenceRefV1,
+        ToolResultV1,
+    )
+    from spaces.learning.deployment.course_factory_routes import _job_response
+    from spaces.learning.deployment.vibemind_auth import VibeMindRequestContext
+
+    job_id = str(_uuid4())
+    summary = {
+        "title": "Akku-Werkzeug sicher nutzen",
+        "chapters": [
+            {"title": "Vor der Arbeit", "lessons": ["Sichtpruefung"], "activity_count": 3}
+        ],
+    }
+    result = ToolResultV1(
+        invocation_id=_uuid4(),
+        correlation_id=_uuid4(),
+        state="completed",
+        aggregate=AggregateRefV1(aggregate_type="factory_job", aggregate_id=job_id, revision=8),
+        evidence=EvidenceRefV1(
+            owner="course-factory",
+            evidence_id=f"factory:{job_id}:8",
+            evidence_type="job_readback",
+        ),
+        result={
+            "course_id": str(_uuid4()),
+            "state": "review_ready",
+            "attempt_number": 1,
+            "draft_summary": summary,
+        },
+    )
+    context = VibeMindRequestContext(
+        actor_id="local-owner",
+        space_id="learning",
+        roles=frozenset({"learning.author"}),
+        correlation_id=_uuid4(),
+    )
+
+    body = json.loads(_job_response(result, context, 200).body)
+
+    assert body["draft_summary"] == summary

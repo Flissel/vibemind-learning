@@ -67,6 +67,13 @@ class Fake:
             "attempt_number": 1,
             "revision": self.revision,
             "unsupported_claim_ids": ["claim-1"],
+            "draft_summary": {
+                "title": "Sicherheit im Betrieb",
+                "chapters": [
+                    {"title": "Vor der Arbeit", "lessons": ["Sichtpruefung", "Akku"], "activity_count": 3},
+                    {"title": "Laden", "lessons": ["Ladegeraet"], "activity_count": 2},
+                ],
+            },
         }
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -82,7 +89,8 @@ class Fake:
                     "outcome": "completed",
                     "course_id": COURSE,
                     "revision": self.course_revision,
-                    "course": {"title": "Sicherheit"},
+                    # Real shape (live): the projection nests the LearnHouse course.
+                    "course": {"course": {"title": "Sicherheit"}},
                 },
             )
         if request.method == "POST" and path.endswith("/publish"):
@@ -124,8 +132,13 @@ def _publish(
 
 def test_display_shows_both_revisions_and_no_token(fake: Fake) -> None:
     daten = _display()
-    assert daten["titel"] == "Sicherheit"
-    assert daten["kapitel"] is None and daten["lektionen"] is None
+    # Live the display showed null title/chapters/lessons: the person approved blind.
+    assert daten["titel"] == "Sicherheit im Betrieb"
+    assert daten["kapitel"] == [
+        {"titel": "Vor der Arbeit", "lektionen": ["Sichtpruefung", "Akku"], "aufgaben": 3},
+        {"titel": "Laden", "lektionen": ["Ladegeraet"], "aufgaben": 2},
+    ]
+    assert daten["lektionen"] == 3
     assert daten["unbelegte_aussagen"] == ["claim-1"]
     assert daten["revision"] == 7 and daten["kurs_revision"] == 3
     assert "token" not in daten
@@ -262,3 +275,17 @@ def test_tool_signature_has_no_token(fake: Fake) -> None:
     params = list(inspect.signature(werkzeuge.veroeffentlichen).parameters)
     assert params[:3] == ["job_id", "revision", "kurs_revision"]
     assert "token" not in params
+
+
+def test_display_falls_back_to_the_course_title_without_an_outline(fake: Fake) -> None:
+    original = fake._job
+
+    def without_outline(job_id: str, state: str) -> dict[str, object]:
+        job = original(job_id, state)
+        job.pop("draft_summary")
+        return job
+
+    fake._job = without_outline  # type: ignore[method-assign]
+    daten = _display()
+    assert daten["titel"] == "Sicherheit"
+    assert daten["kapitel"] is None and daten["lektionen"] is None

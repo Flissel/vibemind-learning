@@ -313,6 +313,17 @@ async def test_unsupported_claim_stays_visible_without_ai_quality_call(
     )
     assert status.result is not None
     assert status.result["unsupported_claim_ids"] == ["claim-authority"]
+    # The person must see what they approve: the verified draft's outline.
+    assert status.result["draft_summary"] == {
+        "title": "Grounded AI Operations",
+        "chapters": [
+            {
+                "title": "Foundations",
+                "lessons": ["Authority boundaries"],
+                "activity_count": 1,
+            }
+        ],
+    }
 
 
 @pytest.mark.asyncio

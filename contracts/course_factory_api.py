@@ -152,6 +152,21 @@ OutcomeState = Literal[
 ]
 
 
+class DraftChapterSummaryV1(ContractModel):
+    title: Annotated[str, Field(min_length=1, max_length=300)]
+    lessons: tuple[Annotated[str, Field(min_length=1, max_length=300)], ...] = Field(
+        max_length=1_000
+    )
+    activity_count: Annotated[int, Field(ge=0, le=2_000)]
+
+
+class DraftSummaryV1(ContractModel):
+    """Outline of the verified draft; what the person approves for publication."""
+
+    title: Annotated[str, Field(min_length=1, max_length=500)]
+    chapters: tuple[DraftChapterSummaryV1, ...] = Field(max_length=500)
+
+
 class FactoryJobResponseV1(ContractModel):
     correlation_id: UUID
     outcome: OutcomeState
@@ -162,6 +177,7 @@ class FactoryJobResponseV1(ContractModel):
     revision: Annotated[int, Field(ge=0)]
     publish_confirmation_required: bool = False
     unsupported_claim_ids: tuple[SafeToken, ...] = ()
+    draft_summary: DraftSummaryV1 | None = None
     evidence: EvidenceRefV1 | None = None
 
 
