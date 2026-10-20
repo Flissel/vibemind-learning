@@ -39,9 +39,11 @@ class LearnHouseHttpGateway:
             raise ValueError("LearnHouse service key is not configured securely")
         if timeout_seconds <= 0 or timeout_seconds > 60:
             raise ValueError("LearnHouse gateway timeout is invalid")
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/") + "/", timeout=timeout_seconds
-        )
+        # Without an injected client, each request opens its own: callers run us
+        # via asyncio.run() per request, and pooled connections die with their loop.
+        self._client = client
+        self._base_url = base_url.rstrip("/") + "/"
+        self._timeout_seconds = timeout_seconds
         self._service_key = service_key
 
     async def stage_draft(
@@ -125,6 +127,34 @@ class LearnHouseHttpGateway:
         )
         return _parse_course(value)
 
+    async def _read(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        correlation_id: str,
+        payload: dict[str, object] | None,
+    ) -> bytearray:
+        async with client.stream(
+            method,
+            path,
+            headers={
+                _SERVICE_KEY_HEADER: self._service_key,
+                _CORRELATION_HEADER: correlation_id,
+            },
+            json=payload,
+        ) as response:
+            if response.status_code < 200 or response.status_code >= 300:
+                raise LearnHouseGatewayError(
+                    f"LearnHouse request was rejected with {response.status_code}"
+                )
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content.extend(chunk)
+                if len(content) > _MAX_RESPONSE_BYTES:
+                    raise LearnHouseGatewayError("LearnHouse response exceeds the size limit")
+        return content
+
     async def _request_json(
         self,
         method: str,
@@ -134,26 +164,13 @@ class LearnHouseHttpGateway:
         payload: dict[str, object] | None = None,
     ) -> dict[str, object]:
         try:
-            async with self._client.stream(
-                method,
-                path,
-                headers={
-                    _SERVICE_KEY_HEADER: self._service_key,
-                    _CORRELATION_HEADER: correlation_id,
-                },
-                json=payload,
-            ) as response:
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise LearnHouseGatewayError(
-                        f"LearnHouse request was rejected with {response.status_code}"
-                    )
-                content = bytearray()
-                async for chunk in response.aiter_bytes():
-                    content.extend(chunk)
-                    if len(content) > _MAX_RESPONSE_BYTES:
-                        raise LearnHouseGatewayError(
-                            "LearnHouse response exceeds the size limit"
-                        )
+            if self._client is not None:
+                content = await self._read(self._client, method, path, correlation_id, payload)
+            else:
+                async with httpx.AsyncClient(
+                    base_url=self._base_url, timeout=self._timeout_seconds
+                ) as client:
+                    content = await self._read(client, method, path, correlation_id, payload)
         except (httpx.TimeoutException, httpx.NetworkError) as error:
             raise LearnHouseGatewayError("LearnHouse is unavailable") from error
         try:

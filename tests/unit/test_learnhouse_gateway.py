@@ -90,3 +90,57 @@ async def test_gateway_rejects_unbounded_responses() -> None:
             course_id=str(uuid4()), correlation_id=str(uuid4())
         )
     await client.aclose()
+
+
+def test_gateway_survives_one_event_loop_per_call() -> None:
+    # The application publishes via asyncio.run() per request; a client created
+    # once kept pooled connections of the closed loop (live "Event loop is closed").
+    import asyncio
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from uuid import uuid4 as _uuid4
+
+    from spaces.learning.services.course_factory.learnhouse_gateway import (
+        LearnHouseHttpGateway,
+    )
+
+    course_id = str(_uuid4())
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:  # noqa: N802
+            body = _json.dumps(
+                {
+                    "course": {
+                        "course_id": course_id,
+                        "revision": 5,
+                        "review_status": "approved",
+                        "published": True,
+                    }
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            del args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        gateway = LearnHouseHttpGateway(
+            f"http://127.0.0.1:{server.server_port}/api/v1/learning", "k" * 32
+        )
+        for _ in range(3):
+            readback = asyncio.run(
+                gateway.read_course(course_id=course_id, correlation_id=str(_uuid4()))
+            )
+            assert readback.revision == 5
+    finally:
+        server.shutdown()
