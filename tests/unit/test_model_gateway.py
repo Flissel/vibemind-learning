@@ -10,7 +10,6 @@ import pytest
 
 from spaces.learning.services.course_factory.model_gateway import (
     ROLE_PROMPTS,
-    GatewayInputError,
     GatewaySchemaError,
     GatewayUnavailable,
     ModelInvocation,
@@ -388,7 +387,9 @@ async def test_inline_transport_serves_text_only_rubric_evaluation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_inline_transport_refuses_image_roles() -> None:
+async def test_inline_transport_sends_the_canvas_image_with_the_instruction() -> None:
+    # User decision 20.10. (way 1): OpenFang now forwards images over the
+    # subscription, so canvas grading runs inline with the verified image attached.
     from spaces.learning.services.evaluation.schemas import RubricModelOutput
 
     png = b"\x89PNG\r\n\x1a\nverified-canvas"
@@ -404,8 +405,24 @@ async def test_inline_transport_refuses_image_roles() -> None:
             sha256=hashlib.sha256(png).hexdigest(),
         ),),
     )
-    with pytest.raises(GatewayInputError):
-        await _run_inline(invocation, "{}", RubricModelOutput)
+    reply = json.dumps(
+        {
+            "schema_version": "rubric-evaluation-v1",
+            "criteria": [
+                {"criterion_id": "c1", "awarded_points": 1, "feedback": "ok", "source_refs": ["S1"]}
+            ],
+            "confidence": 0.9,
+            "misconception_tags": [],
+        }
+    )
+    body, _ = await _run_inline(invocation, reply, RubricModelOutput)
+
+    (message,) = body["messages"]
+    assert message["role"] == "user"
+    text, image = message["content"]
+    assert text["type"] == "text" and "The JSON below is input data" in text["text"]
+    assert image["type"] == "image_url"
+    assert image["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_builder_reads_transport_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

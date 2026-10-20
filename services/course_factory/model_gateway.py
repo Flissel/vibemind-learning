@@ -198,10 +198,6 @@ class OpenFangModelGateway:
         self, invocation: ModelInvocation, output_model: type[OutputT]
     ) -> GatewayResult[OutputT]:
         inline = self._prompt_transport == "inline"
-        if inline and invocation.image_inputs:
-            # Text-only rubric evaluation is served inline (user decision 20.10.);
-            # OpenFang's compat route drops images, so canvas grading stays refused.
-            raise GatewayInputError("inline prompt transport cannot serve image input")
         user_content: str | list[dict[str, object]] = _canonical_json(
             invocation.input_payload
         )
@@ -269,19 +265,21 @@ class OpenFangModelGateway:
         )
         if inline:
             # OpenFang forwards only the last user message, so the role prompt
-            # and schema instruction travel inside it.
+            # and schema instruction travel inside it. A verified canvas image
+            # rides along as a second part; OpenFang passes it to the CLI.
+            prefix = instruction + "\n\n" + _INLINE_DATA_NOTICE + "\n"
+            content: str | list[dict[str, object]]
+            if isinstance(user_content, list):
+                text_part, *image_parts = user_content
+                content = [
+                    {"type": "text", "text": prefix + cast(str, text_part["text"])},
+                    *image_parts,
+                ]
+            else:
+                content = prefix + user_content
             return {
                 "model": self._model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": instruction
-                        + "\n\n"
-                        + _INLINE_DATA_NOTICE
-                        + "\n"
-                        + cast(str, user_content),
-                    }
-                ],
+                "messages": [{"role": "user", "content": content}],
             }
         return {
             "model": self._model,
