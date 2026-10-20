@@ -119,3 +119,38 @@ async def test_tutor_rejects_unsupported_sources_and_exam_queries() -> None:
             question="Was ist die Loesung?",
             correlation_id=str(uuid4()),
         )
+
+
+def test_tutor_gateway_says_when_no_task_is_open() -> None:
+    # Live, a tutor question after the last task came back only as "the admitted
+    # backend call failed"; the person could not know why.
+    from spaces.learning.contracts.events import LearningToolName
+    from spaces.learning.contracts.mcp_models import ActorV1, EventEnvelopeV1, ToolRequestV1
+    from spaces.learning.mcp.tools.tutor import TutorGateway
+
+    class Done(SessionStub):
+        def current(self, session_id: str, *, actor_id: str) -> SessionTurn:
+            return super().current(session_id, actor_id=actor_id).model_copy(
+                update={"state": "completed", "task": None}
+            )
+
+    class NeverAsked:
+        async def ask(self, **kwargs):
+            raise AssertionError("backend must not be asked without an open task")
+
+    request = ToolRequestV1(
+        tool=LearningToolName.TUTOR_ASK,
+        event=EventEnvelopeV1(
+            event_type="learning.tutor.ask",
+            invocation_id=uuid4(),
+            correlation_id=uuid4(),
+            actor=ActorV1(actor_id="student-1", actor_type="local_user"),
+            course_id=uuid4(),
+            session_id=uuid4(),
+            payload={"question": "Warum?"},
+        ),
+    )
+    outcome = TutorGateway(sessions=Done(), tutor=NeverAsked()).execute(request)
+
+    assert outcome.state == "rejected"
+    assert outcome.error is not None and outcome.error.code == "no_open_task"

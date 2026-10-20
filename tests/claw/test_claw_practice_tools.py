@@ -248,3 +248,10 @@ def test_model_backed_tools_wait_longer_than_reads(fake_mcp: FakeMcp) -> None:
     assert timeouts[:3] == [werkzeuge.MODEL_TIMEOUT_SECONDS] * 3
     assert timeouts[3] < werkzeuge.MODEL_TIMEOUT_SECONDS
     assert werkzeuge.MODEL_TIMEOUT_SECONDS > 630
+
+
+def test_tutor_without_open_task_says_so(fake_mcp: FakeMcp) -> None:
+    fake_mcp.error = {"code": "no_open_task", "message": "no task is open in this session"}
+    out = werkzeuge.tutor_fragen(COURSE, SESSION, "Warum?")
+    assert out["ok"] is False
+    assert "keine Aufgabe offen" in out["fehler"]

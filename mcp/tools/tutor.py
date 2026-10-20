@@ -110,6 +110,16 @@ class TutorGateway:
         if session_id is None or not isinstance(question, str):
             return _rejected("invalid_tutor_request", "tutor requires session and question")
         try:
+            # The tutor answers about the current task only; say so instead of
+            # letting the backend fail without a reason.
+            current = self._sessions.current(
+                str(session_id), actor_id=request.event.actor.actor_id
+            )
+            if current.task is None:
+                return _rejected(
+                    "no_open_task",
+                    "no task is open in this session; start a new session or get the next task",
+                )
             answer = asyncio.run(
                 self._tutor.ask(
                     session_id=str(session_id),

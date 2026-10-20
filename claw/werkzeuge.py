@@ -89,6 +89,7 @@ _REASONS = {
     "revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
     "session_revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
     "canvas_revision_conflict": "Der Stand hat sich geaendert, bitte neu laden",
+    "no_open_task": "Gerade ist keine Aufgabe offen - erst naechste_aufgabe oder eine neue Sitzung",
     "not_found": "Nicht gefunden",
     "idempotency_conflict": "Gleiche Anfrage mit anderem Inhalt",
 }
@@ -228,17 +229,23 @@ def kurs_status(job_id: str) -> dict[str, Any]:
     """State of a course factory job. `zustand` runs queued, ingesting, structuring, authoring,
     assessing, verifying, quality_gate, review_ready; it ends in review_ready (ready to show),
     failed, rejected or published. `quality_gate` that does not move on means the quality check
-    held the draft; `unbelegte_aussagen` lists claims without a source.
+    held the draft: `pruefung_haelt_an` names the reasons (e.g. unsupported_claim,
+    claim_missing_citation), `unbelegte_aussagen` lists claims without a source. A held draft
+    is not published; start a new job instead.
     """
     def act(client: LearningClient) -> dict[str, Any]:
         data = client.get(f"/course-factory/jobs/{_uuid(job_id)}", roles=ROLE_AUTHOR)
-        return {
+        out = {
             "job_id": data["job_id"],
             "kurs_id": data["course_id"],
             "zustand": data["state"],
             "revision": data["revision"],
             "versuch": data["attempt_number"],
+            "unbelegte_aussagen": list(data.get("unsupported_claim_ids") or []),
         }
+        if data.get("quality_issue_codes") is not None:
+            out["pruefung_haelt_an"] = list(data["quality_issue_codes"])
+        return out
 
     return _run(act)
 
