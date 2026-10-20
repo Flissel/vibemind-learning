@@ -529,3 +529,24 @@ def test_assessment_roles_ask_for_structured_quiz_and_full_concept_coverage() ->
     assert "options" in ROLE_PROMPTS["source_verifier"]
     assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v4"
     assert ROLE_CONTRACTS["source_verifier"][1] == "source-verification-prompt-v5"
+
+
+def test_assessment_schema_accepts_the_expected_answer_the_prompt_asks_for() -> None:
+    # Live: the prompt said "the solution goes only into expected_answer" but the
+    # assessment schema forbade the field - two activities failed the whole job.
+    from spaces.learning.services.course_factory.roles.schemas import AssessmentOutput
+
+    output = AssessmentOutput.model_validate(
+        {
+            "schema_version": "assessment-v1",
+            "activities": [
+                {
+                    "concept": "c",
+                    "type": "open",
+                    "prompt": "Warum?",
+                    "expected_answer": "Damit das Geraet nicht anlaeuft.",
+                }
+            ],
+        }
+    )
+    assert output.activities[0].expected_answer == "Damit das Geraet nicht anlaeuft."

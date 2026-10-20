@@ -46,6 +46,8 @@ class AssessmentDraft(_StrictOutput):
     concept: str = Field(min_length=1, max_length=300)
     type: Literal["quiz", "open", "case", "code", "penecho_canvas"]
     prompt: str = Field(min_length=1, max_length=20_000)
+    # The solution, kept out of the prompt (the role prompt asks for it).
+    expected_answer: str = Field(default="", max_length=50_000)
     # Quiz only: options and correct ids; the prompt holds just the question.
     options: list[QuizOptionDraft] = Field(default_factory=list, max_length=12)
     correct_option_ids: list[str] = Field(default_factory=list, max_length=12)
