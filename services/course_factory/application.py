@@ -30,16 +30,20 @@ from spaces.learning.contracts.outcomes import (
 from spaces.learning.services.course_factory.artifact_store import (
     CourseFactoryArtifactStore,
 )
+from spaces.learning.services.course_factory.catalog import SourceCatalogLoader
 from spaces.learning.services.course_factory.publisher import (
     CourseDraftPublisher,
     PublishConfirmation,
 )
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
+    FactoryJobRecord,
     GenerationRequest,
     SessionFactory,
     SourceProvenance,
 )
+from spaces.learning.services.course_factory.quality_gate import QualityGate
+from spaces.learning.services.course_factory.roles.schemas import SourceVerificationOutput
 from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.course_factory.state_machine import (
     FactoryState,
@@ -207,11 +211,36 @@ class CourseFactoryApplication:
                 summary = _draft_summary(verifier.get("draft"))
                 if summary is not None:
                     result["draft_summary"] = summary
+                if job.state is FactoryState.QUALITY_GATE:
+                    codes = self._quality_issue_codes(job, verifier)
+                    if codes is not None:
+                        result["quality_issue_codes"] = codes
         return ApplicationOutcomeV1(
             state="completed",
             aggregate=_aggregate(job.id, job.revision),
             result=result,
         )
+
+    def _quality_issue_codes(
+        self, job: FactoryJobRecord, verifier: Mapping[str, object]
+    ) -> list[str] | None:
+        """Why the gate holds the draft; recomputed read-only from the verified draft."""
+        try:
+            verified = SourceVerificationOutput.model_validate(verifier)
+            attempt = self._repository.get_current_attempt(job.id)
+            catalog = SourceCatalogLoader(self._session_factory).load(
+                course_id=job.course_id, provenance=attempt.provenance
+            )
+            report = QualityGate(self._repository).inspect(
+                job.id,
+                expected_revision=job.revision,
+                draft=verified.draft,
+                sources=catalog.snapshots,
+                declared_unsupported_claim_ids=tuple(verified.unsupported_claim_ids),
+            )
+        except (LookupError, ValidationError, ValueError):
+            return None
+        return report.issue_codes
 
     def _review(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         job = self._repository.get(_uuid(request.event.payload, "job_id"))

@@ -178,6 +178,8 @@ class FactoryJobResponseV1(ContractModel):
     publish_confirmation_required: bool = False
     unsupported_claim_ids: tuple[SafeToken, ...] = ()
     draft_summary: DraftSummaryV1 | None = None
+    # Why the quality gate holds the draft (only while in quality_gate).
+    quality_issue_codes: tuple[SafeToken, ...] | None = None
     evidence: EvidenceRefV1 | None = None
 
 

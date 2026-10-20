@@ -390,3 +390,22 @@ def test_each_call_closes_its_http_client(monkeypatch: pytest.MonkeyPatch) -> No
     werkzeuge.naechste_aufgabe(SOURCE)
     assert len(made) == 2
     assert all(c._http.is_closed for c in made)
+
+
+def test_status_says_why_the_quality_gate_holds_the_draft(fake: Fake) -> None:
+    # Live a draft sat in quality_gate with no visible reason (draft_job_mismatch).
+    def held(request: httpx.Request) -> httpx.Response:
+        job = _job("quality_gate", 7)
+        job.update(
+            {
+                "unsupported_claim_ids": ["claim-intro-1"],
+                "quality_issue_codes": ["claim_missing_citation", "unsupported_claim"],
+            }
+        )
+        return httpx.Response(200, json=job)
+
+    fake.override = held
+    daten = werkzeuge.kurs_status(JOB)["daten"]
+    assert daten["zustand"] == "quality_gate"
+    assert daten["unbelegte_aussagen"] == ["claim-intro-1"]
+    assert daten["pruefung_haelt_an"] == ["claim_missing_citation", "unsupported_claim"]

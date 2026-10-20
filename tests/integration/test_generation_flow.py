@@ -313,6 +313,9 @@ async def test_unsupported_claim_stays_visible_without_ai_quality_call(
     )
     assert status.result is not None
     assert status.result["unsupported_claim_ids"] == ["claim-authority"]
+    # Why the draft is held: live only unsupported claims were visible, other
+    # reasons (e.g. draft_job_mismatch) left the job silently in quality_gate.
+    assert status.result["quality_issue_codes"] == ["unsupported_claim"]
     # The person must see what they approve: the verified draft's outline.
     assert status.result["draft_summary"] == {
         "title": "Grounded AI Operations",
