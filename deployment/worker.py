@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import time
+import threading
 from threading import Thread
 import urllib.error
 import urllib.request
@@ -76,6 +77,29 @@ def resume_orphaned_jobs(repository: CourseFactoryRepository, executor: JobExecu
             logger.exception("learning_course_factory_resume_failed", extra={"job_id": job_id})
 
 
+def start_heartbeat(
+    *, interval_seconds: float = 5.0, stop: threading.Event | None = None
+) -> Thread:
+    """Touch the heartbeat independently of job work.
+
+    A course job runs for minutes; a heartbeat written only between jobs made the
+    worker look dead during every job and at start-up resume.
+    """
+    stop = stop or threading.Event()
+
+    def beat() -> None:
+        while not stop.is_set():
+            try:
+                _heartbeat_path().touch()
+            except OSError:
+                logger.warning("learning worker heartbeat could not be written")
+            stop.wait(interval_seconds)
+
+    thread = Thread(target=beat, name="learning-worker-heartbeat", daemon=True)
+    thread.start()
+    return thread
+
+
 def _heartbeat_path() -> Path:
     return Path(
         os.environ.get("LEARNING_WORKER_HEARTBEAT", "/tmp/learning-worker-heartbeat")
@@ -144,6 +168,7 @@ def run() -> None:
     )
     evaluation_api.start()
     executor = JobExecutor(course_runner)
+    start_heartbeat()
     try:
         resume_orphaned_jobs(repository, executor)
         while True:

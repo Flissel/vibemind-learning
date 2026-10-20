@@ -265,3 +265,23 @@ def test_worker_resumes_jobs_left_in_a_working_state() -> None:
     worker.resume_orphaned_jobs(_Repository(), _Executor())
 
     assert resumed == ["job-a", "job-b"]
+
+
+def test_heartbeat_keeps_beating_while_a_job_runs(tmp_path: Path, monkeypatch) -> None:
+    # Live: a long job (and the resume at start) blocked the loop's heartbeat; the
+    # worker turned unhealthy and learning-mcp, which waits for it, did not start.
+    import threading
+
+    heartbeat = tmp_path / "heartbeat"
+    monkeypatch.setenv("LEARNING_WORKER_HEARTBEAT", os.fspath(heartbeat))
+    stop = threading.Event()
+    beater = worker.start_heartbeat(interval_seconds=0.05, stop=stop)
+    try:
+        time.sleep(0.3)
+        assert heartbeat.exists()
+        first = heartbeat.stat().st_mtime_ns
+        time.sleep(0.3)
+        assert heartbeat.stat().st_mtime_ns > first
+    finally:
+        stop.set()
+        beater.join(timeout=2)
