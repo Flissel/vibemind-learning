@@ -41,7 +41,7 @@ ROLE_CONTRACTS = {
     ),
     "learning_tutor": (
         "tutoring",
-        "learning-tutor-prompt-v1",
+        "learning-tutor-prompt-v2",
         "learning-tutor-v1",
     ),
 }
@@ -53,7 +53,7 @@ ROLE_PROMPTS = {
     "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim. Put introductions, overviews, and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation. An activity prompt never contains the answer; the solution goes only into expected_answer.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
     "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied sources; cite them in source_refs by their key (for example \"S1\").",
-    "learning_tutor": "Coach the learner using only the supplied course sources. Ask guiding questions and never reveal a hidden expected answer.",
+    "learning_tutor": "Coach the learner using only the supplied course sources. Ask guiding questions and never reveal a hidden expected answer. Cite sources in source_refs by their key (for example \"S1\").",
 }
 _SECRET_KEYS = ("api_key", "token", "secret", "password", "credential")
 _MAX_REQUEST_BYTES = 500_000
@@ -182,6 +182,9 @@ class OpenFangModelGateway:
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=timeout_seconds
         )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     @property
     def prompt_transport(self) -> Literal["system", "inline"]:

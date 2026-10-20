@@ -76,7 +76,30 @@ async def test_tutor_uses_authorized_openfang_role_and_current_task_sources() ->
     assert result.source_refs == ("source://course/4",)
     assert result.evidence_ref == "openfang://completion/tutor-1"
     assert gateway.invocation.role == "learning_tutor"
-    assert gateway.invocation.input_payload["source_refs"] == ["source://course/4"]
+    assert gateway.invocation.input_payload["sources"] == [
+        {"key": "S1", "source": "source://course/4"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tutor_cites_short_source_keys_mapped_back_to_full_refs() -> None:
+    # Live the long canonical refs were not echoed verbatim and every tutor
+    # answer failed with "unsupported source references".
+    class KeyStub(GatewayStub):
+        async def generate(self, invocation, output_model):
+            result = await super().generate(invocation, output_model)
+            return GatewayResult(
+                output=result.output.model_copy(update={"source_refs": ["S1"]}),
+                evidence_ref=result.evidence_ref,
+            )
+
+    result = await TutorService(sessions=SessionStub(), gateway=KeyStub()).ask(
+        session_id=str(uuid4()),
+        actor_id="student-1",
+        question="Wie gehe ich vor?",
+        correlation_id=str(uuid4()),
+    )
+    assert result.source_refs == ("source://course/4",)
 
 
 @pytest.mark.asyncio

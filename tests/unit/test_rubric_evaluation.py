@@ -261,3 +261,23 @@ async def test_model_cites_short_source_keys_mapped_back_to_full_refs() -> None:
         ["source://authority/3"],
         ["source://readback/2"],
     ]
+
+
+def test_session_evaluator_builds_a_fresh_gateway_per_call() -> None:
+    # Each call runs on its own event loop (asyncio.run); a shared OpenFang
+    # client kept connections of a closed loop - live "Event loop is closed".
+    from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
+
+    built = []
+
+    def factory():
+        gateway = _Gateway([_output()])
+        built.append(gateway)
+        return gateway
+
+    evaluator = SessionRubricEvaluator(factory)
+    evaluator.evaluate(_request())
+    evaluator.evaluate(_request())
+
+    assert len(built) == 2
+    assert [gateway.calls for gateway in built] == [1, 1]

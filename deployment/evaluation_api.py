@@ -74,7 +74,7 @@ def _services() -> _EvaluationServices:
             ),
             gateway=gateway,
         ),
-        rubric=SessionRubricEvaluator(gateway),
+        rubric=SessionRubricEvaluator(build_openfang_model_gateway),
     )
 
 

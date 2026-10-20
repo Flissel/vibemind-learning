@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spaces.learning.services.course_factory.model_gateway import ModelGateway
@@ -36,18 +37,30 @@ class _DeferredMastery:
 class SessionRubricEvaluator:
     """Runs the validated rubric boundary while deferring persistence to the session UoW."""
 
-    def __init__(self, gateway: ModelGateway) -> None:
-        self._gateway = gateway
+    def __init__(self, gateway_factory: Callable[[], ModelGateway]) -> None:
+        # One gateway per call: each call runs on its own event loop
+        # (asyncio.run), and a pooled HTTP client must not outlive its loop.
+        self._gateway_factory = gateway_factory
 
     def evaluate(self, request: RubricEvaluationRequest) -> RubricDecision:
         recorder = _DecisionRecorder()
-        evaluator = RubricEvaluator(
-            gateway=self._gateway,
-            recorder=recorder,
-            review_queue=_ReviewCapture(),
-            mastery=_DeferredMastery(),
-        )
-        decision = asyncio.run(evaluator.evaluate(request))
+        decision = asyncio.run(self._evaluate(request, recorder))
         if recorder.decision != decision:
             raise RuntimeError("rubric decision capture failed")
         return decision
+
+    async def _evaluate(
+        self, request: RubricEvaluationRequest, recorder: _DecisionRecorder
+    ) -> RubricDecision:
+        gateway = self._gateway_factory()
+        try:
+            return await RubricEvaluator(
+                gateway=gateway,
+                recorder=recorder,
+                review_queue=_ReviewCapture(),
+                mastery=_DeferredMastery(),
+            ).evaluate(request)
+        finally:
+            close = getattr(gateway, "aclose", None)
+            if close is not None:
+                await close()

@@ -62,12 +62,15 @@ class TutorService:
             raise PermissionError("exam sessions do not expose tutor guidance")
         if turn.task is None or not turn.task.source_refs:
             raise LookupError("current task has no tutor sources")
+        # Canonical refs are long JSON with the chunk text; the model cites short
+        # keys instead, mapped back before the grounding check.
+        keys = {f"S{index}": ref for index, ref in enumerate(turn.task.source_refs, start=1)}
         result = await self._gateway.generate(
             ModelInvocation(
                 role="learning_tutor",
                 stage="tutoring",
                 correlation_id=correlation_id,
-                prompt_version="learning-tutor-prompt-v1",
+                prompt_version="learning-tutor-prompt-v2",
                 output_schema_version="learning-tutor-v1",
                 input_payload={
                     "question": question.strip(),
@@ -76,18 +79,19 @@ class TutorService:
                         "type": turn.task.type,
                         "difficulty": turn.task.difficulty,
                     },
-                    "source_refs": list(turn.task.source_refs),
+                    "sources": [{"key": key, "source": ref} for key, ref in keys.items()],
                     "policy": "guide_without_revealing_expected_answer",
                 },
             ),
             TutorModelOutput,
         )
+        cited = [keys.get(ref, ref) for ref in result.output.source_refs]
         allowed = set(turn.task.source_refs)
-        if not result.output.source_refs or not set(result.output.source_refs) <= allowed:
+        if not cited or not set(cited) <= allowed:
             raise ValueError("tutor returned unsupported source references")
         return TutorAnswer(
             answer=result.output.answer,
-            source_refs=tuple(result.output.source_refs),
+            source_refs=tuple(cited),
             next_step=result.output.next_step,
             evidence_ref=result.evidence_ref,
         )
