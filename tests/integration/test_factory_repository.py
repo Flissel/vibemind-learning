@@ -454,3 +454,43 @@ def test_postgresql_guards_prior_attempts_and_stage_evidence(
                 .values(output_hash=_hash("forbidden-stage-overwrite"))
             )
             session.commit()
+
+
+def test_working_job_ids_lists_only_jobs_mid_generation(tmp_path) -> None:
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy import create_engine as _engine
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+    from spaces.learning.services.course_factory.repository import (
+        CourseFactoryRepository as _Repo,
+        GenerationRequest as _Request,
+        SourceProvenance as _Prov,
+    )
+    from spaces.learning.services.course_factory.state_machine import FactoryState as _S
+    from spaces.learning.services.db.models import Base as _Base
+
+    engine = _engine(f"sqlite:///{tmp_path / 'working.db'}")
+    _Base.metadata.create_all(engine)
+    repo = _Repo(_sessionmaker(bind=engine, expire_on_commit=False))
+
+    def job():
+        return repo.create_job(
+            course_id=str(_uuid4()),
+            request_hash="a" * 64,
+            provenance=(_Prov(source_id=str(_uuid4()), revision=1, content_hash="b" * 64),),
+            generation_request=_Request(
+                correlation_id=str(_uuid4()), audience="A", target_outcome="B"
+            ),
+        )
+
+    queued = job()
+    working = job()
+    working = repo.advance(working.id, expected_revision=working.revision, target=_S.INGESTING)
+    failed = job()
+    repo.advance(
+        failed.id, expected_revision=failed.revision, target=_S.FAILED, reason_code="test"
+    )
+
+    assert repo.working_job_ids() == [working.id]
+    assert queued.id not in repo.working_job_ids()

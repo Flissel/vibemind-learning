@@ -193,6 +193,28 @@ class CourseFactoryRepository:
                 raise LookupError("course factory job not found")
             return _attempt_record(_current_attempt(session, job))
 
+    def working_job_ids(self) -> list[str]:
+        """Jobs mid-generation (ingesting .. quality_gate), oldest first."""
+        working = [
+            state.value
+            for state in (
+                FactoryState.INGESTING,
+                FactoryState.STRUCTURING,
+                FactoryState.AUTHORING,
+                FactoryState.ASSESSING,
+                FactoryState.VERIFYING,
+                FactoryState.QUALITY_GATE,
+            )
+        ]
+        with self._session_factory() as session:
+            return list(
+                session.scalars(
+                    select(CourseFactoryJob.id)
+                    .where(CourseFactoryJob.state.in_(working))
+                    .order_by(CourseFactoryJob.created_at, CourseFactoryJob.id)
+                )
+            )
+
     def claim_next_queued(self) -> FactoryJobRecord | None:
         try:
             with self._session_factory() as session, session.begin():

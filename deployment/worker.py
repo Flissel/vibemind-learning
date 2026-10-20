@@ -62,6 +62,20 @@ class JobExecutor:
         self._loop.run(self._course_runner.run_job(job_id))
 
 
+def resume_orphaned_jobs(repository: CourseFactoryRepository, executor: JobExecutor) -> None:
+    """Resume jobs a crash or restart left mid-generation.
+
+    Only queued jobs are claimed in the loop. With one worker (compose runs one),
+    every working job at start is orphaned; the runner resumes from its persisted
+    stage, and a held quality_gate draft returns without a model call.
+    """
+    for job_id in repository.working_job_ids():
+        try:
+            executor.run(job_id)
+        except Exception:
+            logger.exception("learning_course_factory_resume_failed", extra={"job_id": job_id})
+
+
 def _heartbeat_path() -> Path:
     return Path(
         os.environ.get("LEARNING_WORKER_HEARTBEAT", "/tmp/learning-worker-heartbeat")
@@ -131,6 +145,7 @@ def run() -> None:
     evaluation_api.start()
     executor = JobExecutor(course_runner)
     try:
+        resume_orphaned_jobs(repository, executor)
         while True:
             projected = projection.run_once()
             queued = repository.claim_next_queued()

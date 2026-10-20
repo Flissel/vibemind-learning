@@ -244,3 +244,24 @@ def test_worker_runs_every_job_on_one_event_loop() -> None:
 
     assert len(loops) == 2
     assert loops[0] is loops[1]
+
+
+def test_worker_resumes_jobs_left_in_a_working_state() -> None:
+    # The worker claims only queued jobs; a crash or restart mid-generation left
+    # the job in its stage forever. With one worker, every working job at start
+    # is orphaned and is resumed from its persisted stage.
+    resumed: list[str] = []
+
+    class _Repository:
+        def working_job_ids(self) -> list[str]:
+            return ["job-a", "job-b"]
+
+    class _Executor:
+        def run(self, job_id: str) -> None:
+            resumed.append(job_id)
+            if job_id == "job-a":
+                raise RuntimeError("stage failed")
+
+    worker.resume_orphaned_jobs(_Repository(), _Executor())
+
+    assert resumed == ["job-a", "job-b"]
