@@ -149,9 +149,19 @@ class CourseFactoryApplication:
                 return _rejected("revision_conflict", "factory revision is stale")
             if previous.generation_request is None:
                 raise ValueError("retry has no durable generation request")
-            generation_request = previous.generation_request.model_copy(
-                update={"correlation_id": str(request.event.correlation_id)}
-            )
+            update: dict[str, object] = {"correlation_id": str(request.event.correlation_id)}
+            if self._course_state is not None:
+                # An earlier attempt may have staged a draft and advanced the course.
+                current = asyncio.run(
+                    self._course_state(job.course_id, str(request.event.correlation_id))
+                )
+                if current.published:
+                    return _rejected(
+                        "course_published",
+                        "the course is published and immutable; create a new course for new content",
+                    )
+                update["learnhouse_revision"] = current.revision
+            generation_request = previous.generation_request.model_copy(update=update)
             job = self._repository.retry(
                 job.id,
                 expected_revision=job.revision,

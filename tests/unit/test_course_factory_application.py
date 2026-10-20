@@ -289,3 +289,43 @@ def test_generation_checks_the_learnhouse_course_before_queueing(
         assert result.state == "completed" and result.result["state"] == "queued"
     else:
         assert result.state == "rejected" and result.error.code == code
+
+
+def test_manual_retry_expects_the_current_learnhouse_revision(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from spaces.learning.services.course_factory.state_machine import FactoryState as _S
+
+    env = _Env(tmp_path)
+
+    async def course_state(course_id: str, correlation_id: str):
+        return SimpleNamespace(published=False, revision=2)
+
+    application = CourseFactoryApplication(
+        session_factory=env.session_factory,
+        repository=env.repository,
+        publisher=env.publisher,
+        artifact_store=CourseFactoryArtifactStore(env.session_factory, artifact_root=tmp_path / "artifacts"),
+        course_state=course_state,
+    )
+    created = application.execute(_generate(env, env.ready_source))
+    job_id = created.aggregate.aggregate_id
+    job = env.repository.get(job_id)
+    env.repository.advance(job_id, expected_revision=job.revision, target=_S.FAILED, reason_code="test")
+    failed = env.repository.get(job_id)
+
+    async def moved(course_id: str, correlation_id: str):
+        return SimpleNamespace(published=False, revision=5)
+
+    application._course_state = moved
+    retry = _request(
+        LearningToolName.COURSE_GENERATE,
+        LearningEventType.COURSE_GENERATE,
+        course_id=env.course_id,
+        expected_revision=failed.revision,
+        payload={"retry_job_id": job_id},
+    )
+    result = application.execute(retry)
+
+    assert result.state == "completed"
+    assert env.repository.get_current_attempt(job_id).generation_request.learnhouse_revision == 5

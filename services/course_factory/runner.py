@@ -158,11 +158,18 @@ class CourseFactoryRunner:
 
     def _retry_with_feedback(self, job, attempt, review) -> FactoryJobRecord:
         """End this attempt and queue the next one with the reviewer's reasons."""
+        # This attempt already staged its draft, which advanced the LearnHouse
+        # revision; the next attempt must expect the new one.
+        try:
+            learnhouse_revision = self._repository.get_draft_delivery(job.id).learnhouse_revision
+        except LookupError:
+            learnhouse_revision = attempt.generation_request.learnhouse_revision
         self._fail(job.id, "ai_review_revise")
         failed = self._repository.get(job.id)
         request = attempt.generation_request.model_copy(
             update={
                 "correlation_id": str(uuid4()),
+                "learnhouse_revision": learnhouse_revision,
                 "revision_notes": tuple(str(issue)[:1_000] for issue in review.issues[:20]),
             }
         )
