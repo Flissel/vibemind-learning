@@ -30,7 +30,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
@@ -134,6 +134,12 @@ def material_importieren(
     pfad: str | None = None,
     url: str | None = None,
 ) -> dict[str, Any]:
+    """Import material into an existing course. Give exactly one of `pfad` (a path relative to
+    the Learning import folder, e.g. "kurs/skript.md") or `url` (a public https address).
+    `kurs_revision` is the current revision from `kurs_lesen`; the course revision increases by
+    one after the import. Returns `source_id`; then wait with `material_status` until
+    `verarbeitung` is "complete".
+    """
     if (pfad is None) == (url is None):
         return {"ok": False, "fehler": "Genau eines von pfad oder url angeben"}
     source = (
@@ -165,6 +171,9 @@ def material_importieren(
 
 
 def material_status(source_id: str) -> dict[str, Any]:
+    """Processing state of imported material: `verarbeitung` is "pending", "complete" or
+    "failed". Only complete material can be used in `kurs_erzeugen`.
+    """
     def act(client: LearningClient) -> dict[str, Any]:
         data = client.get(f"/materials/{_uuid(source_id)}", roles=ROLE_AUTHOR)
         return {
@@ -181,12 +190,17 @@ def kurs_erzeugen(
     course_id: str,
     titel: str,
     zielgruppe: str,
-    niveau: str,
+    niveau: Literal["beginner", "intermediate", "advanced", "expert"],
     sprache: str,
     lernziele: list[str],
     source_ids: list[str],
     kurs_revision: int,
 ) -> dict[str, Any]:
+    """Start the course factory for an existing course from imported material. `source_ids`
+    must be complete (`material_status`); `kurs_revision` is the current revision from
+    `kurs_lesen`; `sprache` is a locale such as "de-DE". Generation runs in the background for
+    about ten minutes and never publishes. Returns `job_id`; follow it with `kurs_status`.
+    """
     body = {
         "course_id": course_id,
         "expected_course_revision": kurs_revision,
@@ -211,6 +225,11 @@ def kurs_erzeugen(
 
 
 def kurs_status(job_id: str) -> dict[str, Any]:
+    """State of a course factory job. `zustand` runs queued, ingesting, structuring, authoring,
+    assessing, verifying, quality_gate, review_ready; it ends in review_ready (ready to show),
+    failed, rejected or published. `quality_gate` that does not move on means the quality check
+    held the draft; `unbelegte_aussagen` lists claims without a source.
+    """
     def act(client: LearningClient) -> dict[str, Any]:
         data = client.get(f"/course-factory/jobs/{_uuid(job_id)}", roles=ROLE_AUTHOR)
         return {
@@ -225,6 +244,9 @@ def kurs_status(job_id: str) -> dict[str, Any]:
 
 
 def kurs_lesen(course_id: str) -> dict[str, Any]:
+    """Read a course: title and its current `revision`. Every write on the course (import,
+    factory job, practice session) needs this current revision.
+    """
     def act(client: LearningClient) -> dict[str, Any]:
         data = client.get(f"/courses/{_uuid(course_id)}", roles=ROLE_AUTHOR)
         return {"kurs_id": data["course_id"], "revision": data["revision"], "kurs": data["course"]}
@@ -233,6 +255,9 @@ def kurs_lesen(course_id: str) -> dict[str, Any]:
 
 
 def entwurf_ablehnen(job_id: str, revision: int, grund: str) -> dict[str, Any]:
+    """Reject a review_ready draft with a short reason the person gave. `revision` is the job
+    revision from `kurs_status`. Nothing is published.
+    """
     body = {"expected_revision": revision, "decision": "reject", "reason": grund}
 
     def act(client: LearningClient) -> dict[str, Any]:
@@ -413,9 +438,14 @@ def _mcp(
 def sitzung_starten(
     course_id: str,
     kurs_revision: int,
-    modus: str,
+    modus: Literal["training", "exam"],
     blueprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Start a practice session for a published course. `modus` is "training" (feedback and
+    hints; `blueprint` may set {"max_attempts": 1-500}) or "exam" (no hints; `blueprint` must
+    be {"item_count": 1-200}, optionally "item_types"). `kurs_revision` is the current revision
+    from `kurs_lesen`. Returns the session with its `session_id` and `revision`.
+    """
     return _mcp(
         "learning.session.start",
         "learning_session_start",
@@ -431,10 +461,17 @@ def sitzung_starten(
 
 
 def naechste_aufgabe(session_id: str) -> dict[str, Any]:
+    """Next task in a practice session, chosen by the adaptive engine. Show the task to the
+    person; never answer it for them.
+    """
     return _mcp("learning.task.next", "learning_task_next", session_id=session_id)
 
 
 def antwort_geben(session_id: str, revision: int, antwort: dict[str, Any]) -> dict[str, Any]:
+    """Submit the person's own answer to the current task. `antwort` is an object such as
+    {"text": "..."} with exactly what the person wrote; `revision` is the session revision from
+    the last result. Never invent or improve the answer.
+    """
     return _mcp(
         "learning.task.answer",
         "learning_task_answer",
@@ -446,6 +483,8 @@ def antwort_geben(session_id: str, revision: int, antwort: dict[str, Any]) -> di
 
 
 def hinweis(session_id: str, task_id: str) -> dict[str, Any]:
+    """A hint for the current task (`task_id` from `naechste_aufgabe`). Only in training mode.
+    """
     return _mcp(
         "learning.hint.request",
         "learning_hint_request",
@@ -455,6 +494,9 @@ def hinweis(session_id: str, task_id: str) -> dict[str, Any]:
 
 
 def tutor_fragen(course_id: str, session_id: str, frage: str) -> dict[str, Any]:
+    """Ask the course tutor a question of the person. It answers only from the course sources
+    and never reveals an expected answer.
+    """
     return _mcp(
         "learning.tutor.ask",
         "learning_tutor_ask",
@@ -465,10 +507,16 @@ def tutor_fragen(course_id: str, session_id: str, frage: str) -> dict[str, Any]:
 
 
 def fortschritt(session_id: str) -> dict[str, Any]:
+    """Learning progress of a practice session (mastery per concept).
+    """
     return _mcp("learning.progress.show", "learning_progress_show", session_id=session_id)
 
 
 def zeichenaufgabe_oeffnen(session_id: str, activity_id: str, session_ref: str) -> dict[str, Any]:
+    """Open the drawing canvas (PenEcho) for a canvas task of the session. `activity_id` comes
+    from the task; `session_ref` from the session. The person draws; the agent never draws or
+    submits.
+    """
     return _mcp(
         "learning.canvas.open",
         "learning_canvas_open",
@@ -484,6 +532,9 @@ def zeichenhinweis(
     session_ref: str,
     objekt_ids: list[str],
 ) -> dict[str, Any]:
+    """A hint about the person's drawing. `canvas_revision` is the current canvas revision;
+    `objekt_ids` are the drawing objects the hint is about.
+    """
     return _mcp(
         "learning.canvas.hint",
         "learning_canvas_hint",
@@ -498,6 +549,8 @@ def zeichenhinweis(
 
 
 def bewertung_zeigen(evaluation_id: str, session_id: str, session_ref: str) -> dict[str, Any]:
+    """Show the evaluation of a submitted drawing (`evaluation_id` from the task result).
+    """
     return _mcp(
         "learning.canvas.review",
         "learning_canvas_review",

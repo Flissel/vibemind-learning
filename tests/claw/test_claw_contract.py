@@ -194,3 +194,21 @@ def test_import_does_not_touch_environment(tmp_path: Path) -> None:
     run = subprocess.run([sys.executable, "-c", code], cwd=repo_root, env=env,
                          capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr
+
+
+def test_every_tool_tells_the_model_what_it_does_and_its_formats() -> None:
+    # Through the shim the model sees only tool schemas and descriptions (no
+    # AGENTS.md, no skills). Live it could not know modus must be training|exam.
+    import asyncio
+
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("probe")
+    server.register_tools(mcp)
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert set(tools) == {f.__name__ for f in server.WERKZEUGE}
+    for name, tool in tools.items():
+        assert tool.description and len(tool.description.strip()) >= 30, name
+    modus = tools["sitzung_starten"].inputSchema["properties"]["modus"]
+    assert modus.get("enum") == ["training", "exam"]
