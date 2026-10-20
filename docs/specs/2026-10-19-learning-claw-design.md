@@ -184,34 +184,33 @@ conversation and the arguments, so a retried turn replays instead of duplicating
 | `kurs_lesen(course_id)` | `GET /courses/{id}` | author |
 | `entwurf_ablehnen(job_id, grund)` | `POST .../review` decision `reject` | reviewer |
 | `veroeffentlichung_anzeigen(job_id)` | status + course read; issues a one-time token | author |
-| `veroeffentlichen(job_id, token)` | `POST .../publish` | publisher (sidecar only) |
+| (no model tool) local approval page `/freigabe/<secret>` | `POST .../publish` | publisher (sidecar only) |
 | `sitzung_starten`, `naechste_aufgabe`, `antwort_geben`, `hinweis`, `tutor_fragen`, `fortschritt` | Learning MCP session/tutor tools | - |
 | `zeichenaufgabe_oeffnen`, `zeichenhinweis`, `bewertung_zeigen` | Learning MCP canvas open/hint/review | - |
 
 There is no tool to save or submit a canvas on the learner's behalf, no approve
 tool, and no LearnHouse or PenEcho address in the sidecar.
 
-### 9.1 Publication needs the person, right after display (author's call)
+### 9.1 Only the person publishes, on a local page (user decision 2026-10-20)
 
-This follows the sales agent's rule "yes only directly after display":
+Replaces the earlier "yes in a later MCP session" rule, whose documented residual risk
+was that the model still relayed the yes.
 
-1. `veroeffentlichung_anzeigen` returns title, chapters, lesson count, unsupported
-   claims, the factory `revision` and the LearnHouse `kurs_revision`. It returns no
-   token. The sidecar records the display (job, both revisions, MCP session id,
-   time).
-2. The claw shows that summary, asks for a yes and ends its turn.
-3. Only after the person's yes in a later message may the claw call
-   `veroeffentlichen(job_id, revision, kurs_revision)`. The sidecar accepts it only if
-   a display of exactly those revisions exists, is younger than 10 minutes and came
-   from a different, earlier MCP session than the current call (the shim runs a fresh
-   `claude -p`, and so a fresh MCP session, per chat turn); job and course must still
-   be at those revisions. The display is used once. Without an MCP session id the
-   sidecar refuses. `approval_ref` is a token derived from the display record.
+1. `veroeffentlichung_anzeigen` returns title, chapters with lessons, unsupported
+   claims, the factory `revision`, the LearnHouse `kurs_revision` and a `freigabe_link`
+   `http://127.0.0.1:8139/freigabe/<secret>` (random, one-time, valid 10 minutes).
+2. The claw shows the summary and passes the link on unchanged. There is no model
+   tool that publishes.
+3. The person opens the link in a browser on this machine and presses the button. The
+   page accepts only loopback clients with a loopback `Host` (no DNS rebinding) and,
+   for the POST, its own `Origin` (no cross-site form post). It re-reads job and course;
+   both must still be at the displayed revisions. The approval is used once, also when
+   publishing then fails. `approval_ref` is derived from the display record.
 
-`AGENTS.md` states: never display and publish in the same turn; publish only after a
-yes that came in a later message. The session check is the structural backstop; it
-cannot prove the yes came from a person, which is the documented residual risk
-(revision ruling of the final review, 2026-10-19).
+The model sees the link but cannot use it: in the shim's `claude -p` without a permission
+mode, `Bash` and `WebFetch` are not allowed, and the page refuses posts without its own
+Origin. Read-only built-in tools (`Read`, `Grep`) remain available to the CLI; closing
+that needs `--tools ""` in the shim (owned by the marketing space).
 
 ## 10. Agent rules and skills
 
@@ -231,7 +230,7 @@ Learning tools). Skills:
 - Probe lists exactly the tools in section 9; none named `send`, `approve`, `save`,
   `submit`; no LearnHouse/PenEcho URL in the sidecar config.
 - Deterministic tests for every tool against a fake Learning API/MCP, including
-  idempotent replay and every refusal of `veroeffentlichen`.
+  idempotent replay and every refusal of the approval page.
 - Gateway test for inline prompt transport, fenced-JSON extraction, and the
   `rubric_evaluator` refusal.
 - Live proof (gated, needs a running Learning runtime): one course from the golden

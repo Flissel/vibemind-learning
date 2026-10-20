@@ -152,7 +152,7 @@ gestartet oder abgenommen.
 
 | Teil | Ort | Port |
 | --- | --- | --- |
-| MCP-Sidecar (17 Werkzeuge, nur loopback) | `claw/server.py` | `127.0.0.1:8139` |
+| MCP-Sidecar (16 Werkzeuge, nur loopback) | `claw/server.py` | `127.0.0.1:8139` |
 | Modell-Tuer (Shim, Werkzeuge ueber `SHIM_EXTRA_MCP_CONFIG`) | `marketing_shim.py` | `127.0.0.1:8141` |
 | openclaw-Gateway (Container `learning-claw`, ohne Kanaele, ohne MCP-Eintrag) | `claw/gateway/` | `18897` (loopback im Container, nicht veroeffentlicht) |
 
@@ -171,16 +171,16 @@ Wer `anbinden.sh` oder die Probe nutzen will, setzt `LEARNING_CLAW_MCP_TOKEN` (m
 des Startskripts in der Umgebung und nutzt denselben Wert danach; ein vom Skript selbst erzeugtes Token wird bewusst
 nirgends gespeichert und ist danach unbekannt. Mit `-Nur` fuer nur einen Dienst verlangt das Skript ein vorab gesetztes Token.
 
-Abnahme (`anbinden.sh`): die 17 erwarteten Werkzeugnamen (`werkzeug_probe.py` befragt den Sidecar), kein Name
+Abnahme (`anbinden.sh`): die 16 erwarteten Werkzeugnamen (`werkzeug_probe.py` befragt den Sidecar), kein Name
 mit `send`/`approve`/`save`/`submit`, kein LearnHouse-/PenEcho-Port und kein MCP-Eintrag in `openclaw.json`,
 die drei Fertigkeiten sichtbar. Das Shim-Skript laesst sich mit `LEARNING_CLAW_SHIM_SCRIPT` ueberschreiben.
 
-Veroeffentlichungsregel: der Agent entwirft nur. `veroeffentlichung_anzeigen` zeigt Titel, unbelegte Aussagen,
-`revision` (Auftrag) und `kurs_revision` (LearnHouse-Kurs) und merkt sich die Anzeige samt MCP-Sitzung; ein Token
-gibt es nicht. `veroeffentlichen(job_id, revision, kurs_revision)` gilt nur, wenn genau diese Anzeige aus einer
-frueheren, anderen MCP-Sitzung stammt (der Shim startet je Nachricht ein frisches `claude -p`), hoechstens
-10 Minuten alt ist und Auftrag wie Kurs noch auf diesen Revisionen stehen; einmal verwendbar. Ohne
-Sitzungskennung wird abgelehnt. Es gibt kein Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
+Veroeffentlichungsregel: der Agent entwirft nur und hat kein Werkzeug zum Veroeffentlichen.
+`veroeffentlichung_anzeigen` zeigt Titel, Kapitel mit Lektionen, unbelegte Aussagen und beide Revisionen und liefert einen
+einmaligen `freigabe_link` (`http://127.0.0.1:8139/freigabe/<geheimnis>`, 10 Minuten gueltig). Die Person oeffnet ihn im
+Browser dieses Rechners und veroeffentlicht dort mit einem Knopf; die Seite nimmt nur Loopback mit Loopback-Host und beim
+Absenden den eigenen Origin an und prueft, dass Auftrag und Kurs noch auf den gezeigten Revisionen stehen. Es gibt kein
+Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
 
 ## Current Evidence Boundary
 

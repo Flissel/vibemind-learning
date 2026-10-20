@@ -282,19 +282,15 @@ def entwurf_ablehnen(job_id: str, revision: int, grund: str) -> dict[str, Any]:
     return _run(act)
 
 
-def _anzeigen(client: LearningClient, job_id: str, sitzung: str | None) -> dict[str, Any]:
+def _anzeigen(client: LearningClient, job_id: str) -> dict[str, Any]:
     job = client.get(f"/course-factory/jobs/{job_id}", roles=ROLE_AUTHOR)
     if job["state"] != _REVIEW_READY:
         raise ValueError("Der Kurs ist noch nicht zur Veroeffentlichung bereit")
     course = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)
     revision, kurs_revision = job["revision"], course["revision"]
-    if sitzung:
-        _freigaben.merken(job_id, revision, kurs_revision, sitzung)
-    else:
-        logger.warning("Publication display without an MCP session id; it authorizes nothing")
     entwurf = job.get("draft_summary")
     kapitel = _kapitel(entwurf)
-    return {
+    inhalt = {
         "job_id": job["job_id"],
         "titel": (entwurf or {}).get("title") or _kurstitel(course),
         # From the verified draft the person approves; absent means unknown, never invented.
@@ -304,6 +300,15 @@ def _anzeigen(client: LearningClient, job_id: str, sitzung: str | None) -> dict[
         "revision": revision,
         "kurs_revision": kurs_revision,
     }
+    anzeige = _freigaben.merken(job_id, revision, kurs_revision, inhalt)
+    return {**inhalt, "freigabe_link": freigabe_link(anzeige.geheimnis)}
+
+
+def freigabe_link(geheimnis: str) -> str:
+    """Link to the local approval page; only a person in a browser on this machine uses it."""
+    host = os.environ.get("LEARNING_CLAW_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = os.environ.get("LEARNING_CLAW_MCP_PORT", "8139").strip() or "8139"
+    return f"http://{host}:{port}/freigabe/{geheimnis}"
 
 
 def _kurstitel(course: dict[str, Any]) -> str | None:
@@ -328,64 +333,53 @@ def _kapitel(entwurf: object) -> list[dict[str, Any]] | None:
     ]
 
 
-def veroeffentlichung_anzeigen(job_id: str, *, mcp_sitzung: str | None = None) -> dict[str, Any]:
-    """Return the summary to show the person: title, claims, ``revision``, ``kurs_revision``.
-
-    Only a ``review_ready`` job can be displayed. The sidecar records the display (job,
-    both revisions, MCP session, time); there is no token. ``mcp_sitzung`` is filled by
-    the server from the MCP request, never by the model.
+def veroeffentlichung_anzeigen(job_id: str) -> dict[str, Any]:
+    """Show what would be published: title, chapters with lessons, unsupported claims, and
+    a `freigabe_link`. Only a review_ready job can be shown. Pass the link to the person
+    unchanged: they open it in a browser on this machine and publish there with a button.
+    There is no tool that publishes; never claim a course is published before
+    `kurs_status` says so.
     """
     try:
         job_id = _uuid(job_id)
     except ValueError as error:
         return {"ok": False, "fehler": f"Ungueltige Eingabe: {error}"[:_MESSAGE_LIMIT]}
-    return _run(lambda client: _anzeigen(client, job_id, mcp_sitzung))
+    return _run(lambda client: _anzeigen(client, job_id))
 
 
 _STAND_GEAENDERT = "Der Stand hat sich geaendert, bitte erneut anzeigen"
 
 
-def veroeffentlichen(
-    job_id: str, revision: int, kurs_revision: int, *, mcp_sitzung: str | None = None
-) -> dict[str, Any]:
-    """Publish a displayed course. Only after the person's yes in a LATER message.
+def freigeben(geheimnis: str) -> dict[str, Any]:
+    """Publish after the person pressed the button on the approval page (not a model tool).
 
-    ``revision`` and ``kurs_revision`` are the two values from the summary of
-    ``veroeffentlichung_anzeigen``. Accepted only if that display came from an earlier,
-    different MCP session (a person turn in between), less than 10 minutes ago, and job and
-    course are still at those revisions. The display is used up (one-time), also when the
-    publish call then fails; a retry needs a fresh display.
+    The approval is used up even if publishing then fails; job and course must still be
+    at the displayed revisions.
     """
-    if not mcp_sitzung:
-        return {"ok": False, "fehler": "Keine MCP-Sitzungskennung - Veroeffentlichung abgelehnt"}
-    try:
-        job_id_norm = _uuid(job_id)
-    except ValueError as error:
-        return {"ok": False, "fehler": f"Ungueltige Eingabe: {error}"[:_MESSAGE_LIMIT]}
 
     def act(client: LearningClient) -> dict[str, Any]:
         try:
-            anzeige = _freigaben.einloesen(job_id_norm, revision, kurs_revision, mcp_sitzung)
+            anzeige = _freigaben.einloesen(geheimnis)
         except FreigabeAbgelehnt as error:
             raise LearningRejected("freigabe_abgelehnt", error.grund, 0) from error
-        job = client.get(f"/course-factory/jobs/{job_id_norm}", roles=ROLE_AUTHOR)
+        job = client.get(f"/course-factory/jobs/{anzeige.job_id}", roles=ROLE_AUTHOR)
         if job["state"] != _REVIEW_READY:
             raise LearningRejected(
                 "freigabe_abgelehnt", "Der Kurs ist nicht zur Veroeffentlichung bereit", 0
             )
-        if job["revision"] != revision:
+        if job["revision"] != anzeige.revision:
             raise LearningRejected("freigabe_abgelehnt", _STAND_GEAENDERT, 0)
         course = client.get(f"/courses/{_uuid(job['course_id'])}", roles=ROLE_AUTHOR)
-        if course["revision"] != kurs_revision:
+        if course["revision"] != anzeige.kurs_revision:
             raise LearningRejected("freigabe_abgelehnt", _STAND_GEAENDERT, 0)
         ref = anzeige.approval_ref
-        body = {"expected_revision": revision, "confirmed": True, "approval_ref": ref}
+        body = {"expected_revision": anzeige.revision, "confirmed": True, "approval_ref": ref}
         data = client.post(
-            f"/course-factory/jobs/{job_id_norm}/publish",
+            f"/course-factory/jobs/{anzeige.job_id}/publish",
             body,
             roles=ROLE_PUBLISHER,
             idempotency_key_value=idempotency_key(
-                "veroeffentlichen", {"job_id": job_id_norm, "approval_ref": ref}
+                "freigeben", {"job_id": anzeige.job_id, "approval_ref": ref}
             ),
         )
         return _job(data)

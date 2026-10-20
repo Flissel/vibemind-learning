@@ -19,7 +19,7 @@ cd "$HIER"
 
 ERWARTET="antwort_geben bewertung_zeigen entwurf_ablehnen fortschritt hinweis kurs_erzeugen \
 kurs_lesen kurs_status material_importieren material_status naechste_aufgabe sitzung_starten \
-tutor_fragen veroeffentlichen veroeffentlichung_anzeigen zeichenaufgabe_oeffnen zeichenhinweis"
+tutor_fragen veroeffentlichung_anzeigen zeichenaufgabe_oeffnen zeichenhinweis"
 
 if [ "$(docker inspect -f '{{.State.Status}}' learning-claw 2>/dev/null || echo fehlt)" != "running" ]; then
   echo "ABBRUCH: learning-claw laeuft nicht (docker compose up -d in $HIER)." >&2
@@ -108,4 +108,4 @@ if [ "$ROT" -ne 0 ]; then
   echo "ROT: $ROT" >&2
   exit "$ROT"
 fi
-echo "Gateway abgenommen: 17 Werkzeuge, 3 Fertigkeiten, nichts Sendendes, kein MCP im Gateway, kein LearnHouse-/PenEcho-Port."
+echo "Gateway abgenommen: 16 Werkzeuge, 3 Fertigkeiten, nichts Sendendes, kein MCP im Gateway, kein LearnHouse-/PenEcho-Port."
