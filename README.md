@@ -176,11 +176,11 @@ mit `send`/`approve`/`save`/`submit`, kein LearnHouse-/PenEcho-Port und kein MCP
 die drei Fertigkeiten sichtbar. Das Shim-Skript laesst sich mit `LEARNING_CLAW_SHIM_SCRIPT` ueberschreiben.
 
 Veroeffentlichungsregel: der Agent entwirft nur und hat kein Werkzeug zum Veroeffentlichen.
-`veroeffentlichung_anzeigen` zeigt Titel, Kapitel mit Lektionen, unbelegte Aussagen und beide Revisionen und liefert einen
-einmaligen `freigabe_link` (`http://127.0.0.1:8139/freigabe/<geheimnis>`, 10 Minuten gueltig). Die Person oeffnet ihn im
-Browser dieses Rechners und veroeffentlicht dort mit einem Knopf; die Seite nimmt nur Loopback mit Loopback-Host und beim
-Absenden den eigenen Origin an und prueft, dass Auftrag und Kurs noch auf den gezeigten Revisionen stehen. Es gibt kein
-Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
+`veroeffentlichung_anzeigen` zeigt Titel, Kapitel mit Lektionen, unbelegte Aussagen und beide Revisionen und oeffnet die
+Freigabe-Seite (`http://127.0.0.1:8139/freigabe/<geheimnis>`, einmalig, 10 Minuten) im Browser dieses Rechners; das
+Geheimnis bekommt das Modell nie. Die Person veroeffentlicht dort per Knopf; die Seite nimmt nur Loopback mit Loopback-Host
+und beim Absenden den eigenen Origin an und prueft, dass Auftrag und Kurs noch auf den gezeigten Revisionen stehen.
+Freigeben geht deshalb nur am Rechner selbst. Es gibt kein Werkzeug, das im Namen der lernenden Person speichert oder abgibt.
 
 ## Current Evidence Boundary
 

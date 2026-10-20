@@ -191,26 +191,26 @@ conversation and the arguments, so a retried turn replays instead of duplicating
 There is no tool to save or submit a canvas on the learner's behalf, no approve
 tool, and no LearnHouse or PenEcho address in the sidecar.
 
-### 9.1 Only the person publishes, on a local page (user decision 2026-10-20)
+### 9.1 Only the person publishes, at this machine (user decision 2026-10-20)
 
 Replaces the earlier "yes in a later MCP session" rule, whose documented residual risk
 was that the model still relayed the yes.
 
 1. `veroeffentlichung_anzeigen` returns title, chapters with lessons, unsupported
-   claims, the factory `revision`, the LearnHouse `kurs_revision` and a `freigabe_link`
-   `http://127.0.0.1:8139/freigabe/<secret>` (random, one-time, valid 10 minutes).
-2. The claw shows the summary and passes the link on unchanged. There is no model
-   tool that publishes.
-3. The person opens the link in a browser on this machine and presses the button. The
-   page accepts only loopback clients with a loopback `Host` (no DNS rebinding) and,
-   for the POST, its own `Origin` (no cross-site form post). It re-reads job and course;
-   both must still be at the displayed revisions. The approval is used once, also when
-   publishing then fails. `approval_ref` is derived from the display record.
+   claims and both revisions. It records an approval under a random one-time secret
+   (10 minutes) and opens `http://127.0.0.1:8139/freigabe/<secret>` in the default
+   browser of this machine. The secret is never returned to the model; it only gets
+   `freigabe` ("opened" or "could not be opened").
+2. There is no model tool that publishes.
+3. On the page the person presses the button. The page accepts only loopback clients
+   with a loopback `Host` (no DNS rebinding) and, for the POST, its own `Origin` (no
+   cross-site form post). It re-reads job and course; both must still be at the
+   displayed revisions. The approval is used once, also when publishing then fails.
 
-The model sees the link but cannot use it: in the shim's `claude -p` without a permission
-mode, `Bash` and `WebFetch` are not allowed, and the page refuses posts without its own
-Origin. Read-only built-in tools (`Read`, `Grep`) remain available to the CLI; closing
-that needs `--tools ""` in the shim (owned by the marketing space).
+Why the secret stays out of the model (security review 2026-10-20): whoever knows it can
+publish with any local HTTP client and a forged Origin, and the claw's container reaches
+the host's loopback ports. Publishing therefore needs a person at this machine; approving
+from a remote channel is not possible.
 
 ## 10. Agent rules and skills
 

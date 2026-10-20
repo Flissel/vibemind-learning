@@ -122,8 +122,21 @@ def _display(job_id: str = JOB) -> dict[str, object]:
     return out["daten"]
 
 
+OPENED: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def browser(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    OPENED.clear()
+    monkeypatch.setattr(werkzeuge, "_browser_oeffnen", lambda url: OPENED.append(url) or True)
+    yield OPENED
+
+
 def _secret(daten: dict[str, object]) -> str:
-    link = str(daten["freigabe_link"])
+    # The secret never reaches the model: only the browser on this machine gets the link.
+    assert "freigabe_link" not in daten
+    assert not any(part in json.dumps(daten) for part in ("/freigabe/", OPENED[-1].rsplit("/", 1)[1]))
+    link = OPENED[-1]
     assert link.startswith("http://127.0.0.1:8139/freigabe/")
     return link.rsplit("/", 1)[1]
 
@@ -224,3 +237,17 @@ def test_unavailable_publish_uses_the_approval_up(fake: Fake) -> None:
     fake.publish_status = 200
     assert werkzeuge.freigeben(secret)["ok"] is False
     assert fake.publish_calls == 1
+
+
+def test_display_tells_the_model_only_that_the_page_was_opened(fake: Fake) -> None:
+    daten = _display()
+    assert daten["freigabe"] == "Freigabe-Seite im Browser dieses Rechners geoeffnet"
+    assert len(OPENED) == 1
+
+
+def test_display_says_so_when_no_browser_could_be_opened(
+    fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(werkzeuge, "_browser_oeffnen", lambda url: False)
+    daten = _display()
+    assert "nicht geoeffnet" in daten["freigabe"]

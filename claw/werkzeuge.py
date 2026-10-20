@@ -301,7 +301,27 @@ def _anzeigen(client: LearningClient, job_id: str) -> dict[str, Any]:
         "kurs_revision": kurs_revision,
     }
     anzeige = _freigaben.merken(job_id, revision, kurs_revision, inhalt)
-    return {**inhalt, "freigabe_link": freigabe_link(anzeige.geheimnis)}
+    # The secret goes only to the browser on this machine, never into the model's output:
+    # whoever knows it can publish, and the model or its container could send HTTP.
+    geoeffnet = _browser_oeffnen(freigabe_link(anzeige.geheimnis))
+    return {
+        **inhalt,
+        "freigabe": (
+            "Freigabe-Seite im Browser dieses Rechners geoeffnet"
+            if geoeffnet
+            else "Freigabe-Seite konnte nicht geoeffnet werden - bitte erneut anzeigen"
+        ),
+    }
+
+
+def _browser_oeffnen(url: str) -> bool:
+    import webbrowser
+
+    try:
+        return bool(webbrowser.open(url, new=2))
+    except webbrowser.Error:
+        logger.warning("Approval page could not be opened in a browser")
+        return False
 
 
 def freigabe_link(geheimnis: str) -> str:
@@ -334,11 +354,11 @@ def _kapitel(entwurf: object) -> list[dict[str, Any]] | None:
 
 
 def veroeffentlichung_anzeigen(job_id: str) -> dict[str, Any]:
-    """Show what would be published: title, chapters with lessons, unsupported claims, and
-    a `freigabe_link`. Only a review_ready job can be shown. Pass the link to the person
-    unchanged: they open it in a browser on this machine and publish there with a button.
-    There is no tool that publishes; never claim a course is published before
-    `kurs_status` says so.
+    """Show what would be published: title, chapters with lessons, unsupported claims. Only a
+    review_ready job can be shown. It also opens the approval page in the browser on this
+    machine (`freigabe` says whether that worked); the person publishes there with a
+    button, valid once for 10 minutes. There is no tool that publishes; never claim a
+    course is published before `kurs_status` says so.
     """
     try:
         job_id = _uuid(job_id)
