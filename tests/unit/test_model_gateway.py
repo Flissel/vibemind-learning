@@ -576,3 +576,12 @@ def test_verifier_requires_a_citation_for_every_activity() -> None:
 
     assert "every activity cites at least one" in ROLE_PROMPTS["source_verifier"]
     assert ROLE_CONTRACTS["source_verifier"][1] >= "source-verification-prompt-v6"
+
+
+def test_assessment_designer_caps_the_number_of_activities() -> None:
+    # Live: 22 activities with quiz options made the verifier rewrite run 544 s,
+    # past the subscription wrapper's 540 s limit.
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    assert "at most 12 activities" in ROLE_PROMPTS["assessment_designer"]
+    assert ROLE_CONTRACTS["assessment_designer"][1] >= "assessment-prompt-v5"
