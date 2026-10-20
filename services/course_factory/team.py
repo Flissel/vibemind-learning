@@ -36,6 +36,8 @@ class CourseTeamInput:
     audience: str
     target_outcome: str
     source_refs: tuple[str, ...]
+    # Reasons the AI reviewer gave on the previous attempt.
+    revision_notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         UUID(self.job_id)
@@ -112,6 +114,9 @@ class CourseAgentTeam:
             "source_refs": list(request.source_refs),
             "role_outputs": {},
         }
+        if request.revision_notes:
+            # The previous attempt was sent back; every role addresses these points.
+            context["reviewer_feedback"] = list(request.revision_notes)
         try:
             for stage, roles, next_state in _STAGE_GROUPS:
                 if _stage_position(job.state) > _stage_position(stage):

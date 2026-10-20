@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import hashlib
 from pathlib import Path
 from uuid import uuid4
@@ -143,9 +145,11 @@ class _GenerationGateway:
         self.unsupported = unsupported
         self.review_decision = review_decision
         self.calls: list[str] = []
+        self.payloads: list[object] = []
 
     async def generate(self, invocation, output_model):
         self.calls.append(invocation.role)
+        self.payloads.append(invocation.input_payload)
         values = {
             "architect": ArchitectOutput(
                 schema_version="architect-v1",
@@ -225,7 +229,7 @@ class _LearnHouse:
         raise AssertionError("generation must not read a published course")
 
 
-def _runner(factory, root, repository, gateway, learnhouse=None):
+def _runner(factory, root, repository, gateway, learnhouse=None, max_attempts=3):
     store = CourseFactoryArtifactStore(factory, artifact_root=root)
     learnhouse = learnhouse or _LearnHouse()
     return CourseFactoryRunner(
@@ -239,6 +243,7 @@ def _runner(factory, root, repository, gateway, learnhouse=None):
             artifact_store=store,
             learnhouse=learnhouse,
         ),
+        max_attempts=max_attempts,
     )
 
 
@@ -445,7 +450,8 @@ async def test_status_shows_when_the_ai_review_asks_for_a_revision(generation_co
     # quality_gate with no reason at all.
     factory, root, repository, job, draft = generation_context
     gateway = _GenerationGateway(draft, review_decision="revise")
-    await _runner(factory, root, repository, gateway).run_job(job.id)
+    # Last allowed attempt: the draft stays held and shows why.
+    await _runner(factory, root, repository, gateway, max_attempts=1).run_job(job.id)
 
     status_gateway = CourseFactoryGateway(
         session_factory=factory,
@@ -469,3 +475,36 @@ async def test_status_shows_when_the_ai_review_asks_for_a_revision(generation_co
     assert status.result["state"] == "quality_gate"
     assert "ai_review_not_approved" in status.result["quality_issue_codes"]
     assert status.result["ai_review_issues"] == ["Make the tasks apply the rules."]
+
+
+@pytest.mark.asyncio
+async def test_ai_revision_request_starts_a_new_attempt_with_the_feedback(
+    generation_context,
+) -> None:
+    # Live: the AI reviewer asked for concrete revisions and the job just sat in
+    # quality_gate. Now the feedback drives a new attempt (up to three).
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(draft, review_decision="revise")
+
+    await _runner(factory, root, repository, gateway).run_job(job.id)
+
+    retried = repository.get(job.id)
+    assert retried.state is FactoryState.QUEUED and retried.attempt_number == 2
+    request = repository.get_current_attempt(job.id).generation_request
+    assert request is not None
+    assert request.revision_notes == ("Make the tasks apply the rules.",)
+
+
+@pytest.mark.asyncio
+async def test_feedback_reaches_the_roles_of_the_next_attempt(generation_context) -> None:
+    factory, root, repository, job, draft = generation_context
+    reviewing = _GenerationGateway(draft, review_decision="revise")
+    await _runner(factory, root, repository, reviewing).run_job(job.id)
+
+    retry_draft = draft.model_copy(update={"attempt_number": 2})
+    seen = _GenerationGateway(retry_draft)
+    claimed = repository.claim_next_queued()
+    assert claimed is not None
+    await _runner(factory, root, repository, seen).run_job(claimed.id)
+
+    assert any("Make the tasks apply the rules." in json.dumps(p) for p in seen.payloads)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -17,6 +18,7 @@ from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
     FactoryJobRecord,
     StageArtifactInput,
+    generation_request_hash,
 )
 from spaces.learning.services.course_factory.roles.schemas import (
     QualityReviewOutput,
@@ -43,7 +45,9 @@ class CourseFactoryRunner:
         team: CourseAgentTeam,
         quality_gate: QualityGate,
         publisher: CourseDraftPublisher,
+        max_attempts: int = 3,
     ) -> None:
+        self._max_attempts = max_attempts
         self._repository = repository
         self._artifact_store = artifact_store
         self._catalog = catalog
@@ -79,6 +83,7 @@ class CourseFactoryRunner:
                 audience=request.audience,
                 target_outcome=request.target_outcome,
                 source_refs=catalog.model_refs,
+                revision_notes=request.revision_notes,
             )
             if job.state in {
                 FactoryState.STRUCTURING,
@@ -133,6 +138,14 @@ class CourseFactoryRunner:
                 sources=catalog.snapshots,
                 ai_review=review,
             )
+            if (
+                "ai_review_not_approved" in promoted.report.issue_codes
+                and promoted.job.attempt_number < self._max_attempts
+            ):
+                return GenerationRunResult(
+                    job=self._retry_with_feedback(promoted.job, attempt, review),
+                    report=promoted.report,
+                )
             return GenerationRunResult(job=promoted.job, report=promoted.report)
         except (LookupError, ValidationError, ValueError):
             self._fail_unless_resting(job.id, "generation_validation_failed")
@@ -142,6 +155,26 @@ class CourseFactoryRunner:
             # after an unexpected error would hang forever without a signal.
             self._fail_unless_resting(job.id, "generation_runtime_failed")
             raise
+
+    def _retry_with_feedback(self, job, attempt, review) -> FactoryJobRecord:
+        """End this attempt and queue the next one with the reviewer's reasons."""
+        self._fail(job.id, "ai_review_revise")
+        failed = self._repository.get(job.id)
+        request = attempt.generation_request.model_copy(
+            update={
+                "correlation_id": str(uuid4()),
+                "revision_notes": tuple(str(issue)[:1_000] for issue in review.issues[:20]),
+            }
+        )
+        return self._repository.retry(
+            job.id,
+            expected_revision=failed.revision,
+            request_hash=generation_request_hash(
+                course_id=job.course_id, request=request, provenance=attempt.provenance
+            ),
+            provenance=attempt.provenance,
+            generation_request=request,
+        )
 
     def _fail_unless_resting(self, job_id: str, reason_code: str) -> None:
         current = self._repository.get(job_id)

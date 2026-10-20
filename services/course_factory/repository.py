@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,6 +57,8 @@ class GenerationRequest(BaseModel):
     audience: str = Field(min_length=1, max_length=1_000)
     target_outcome: str = Field(min_length=1, max_length=2_000)
     learnhouse_revision: int = Field(default=1, ge=0)
+    # The AI reviewer's reasons from the previous attempt; the roles address them.
+    revision_notes: tuple[str, ...] = Field(default=(), max_length=20)
 
     @field_validator("correlation_id")
     @classmethod
@@ -777,3 +781,20 @@ def _validate_publication(publication: PublicationInput) -> None:
         or len(publication.readback_evidence_ref) > 512
     ):
         raise ValueError("factory publication evidence is invalid")
+
+
+def generation_request_hash(
+    *, course_id: str, request: GenerationRequest, provenance: tuple[SourceProvenance, ...]
+) -> str:
+    """Hash identifying one generation attempt's request (course, request, sources)."""
+    encoded = json.dumps(
+        {
+            "course_id": course_id,
+            "request": request.model_dump(mode="json"),
+            "provenance": [item.__dict__ for item in provenance],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

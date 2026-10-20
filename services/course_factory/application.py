@@ -41,6 +41,7 @@ from spaces.learning.services.course_factory.repository import (
     GenerationRequest,
     SessionFactory,
     SourceProvenance,
+    generation_request_hash,
 )
 from spaces.learning.services.course_factory.quality_gate import QualityGate
 from spaces.learning.services.course_factory.roles.schemas import SourceVerificationOutput
@@ -444,13 +445,7 @@ def _generation_hash(
     request: GenerationRequest,
     provenance: tuple[SourceProvenance, ...],
 ) -> str:
-    return _hash_json(
-        {
-            "course_id": course_id,
-            "request": request.model_dump(mode="json"),
-            "provenance": [item.__dict__ for item in provenance],
-        }
-    )
+    return generation_request_hash(course_id=course_id, request=request, provenance=provenance)
 
 
 def _draft_summary(raw: object) -> dict[str, object] | None:

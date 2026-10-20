@@ -36,7 +36,7 @@ def _invocation() -> ModelInvocation:
         role="architect",
         stage="structuring",
         correlation_id=str(uuid4()),
-        prompt_version="architect-prompt-v1",
+        prompt_version="architect-prompt-v2",
         output_schema_version="architect-v1",
         input_payload={"course_id": str(uuid4()), "source_refs": ["source://one/2"]},
     )
@@ -183,7 +183,7 @@ def test_gateway_rejects_unapproved_roles_and_credential_fields() -> None:
         "role": "architect",
         "stage": "structuring",
         "correlation_id": str(uuid4()),
-        "prompt_version": "architect-prompt-v1",
+        "prompt_version": "architect-prompt-v2",
         "output_schema_version": "architect-v1",
         "input_payload": {"course_id": str(uuid4())},
     }
@@ -243,7 +243,7 @@ def test_gateway_rejects_images_for_non_evaluator_roles() -> None:
     with pytest.raises(ValueError, match="not authorized"):
         ModelInvocation(
             role="architect", stage="structuring", correlation_id=str(uuid4()),
-            prompt_version="architect-prompt-v1", output_schema_version="architect-v1",
+            prompt_version="architect-prompt-v2", output_schema_version="architect-v1",
             input_payload={"course_id": str(uuid4())},
             image_inputs=(ModelImageInput(
                 media_type="image/png", content=png,
@@ -585,3 +585,8 @@ def test_assessment_designer_caps_the_number_of_activities() -> None:
 
     assert "at most 12 activities" in ROLE_PROMPTS["assessment_designer"]
     assert ROLE_CONTRACTS["assessment_designer"][1] >= "assessment-prompt-v5"
+
+
+@pytest.mark.parametrize("role", ["architect", "lesson_author", "assessment_designer", "source_verifier"])
+def test_generating_roles_address_reviewer_feedback(role: str) -> None:
+    assert "reviewer_feedback" in ROLE_PROMPTS[role]
