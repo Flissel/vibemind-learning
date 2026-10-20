@@ -231,6 +231,10 @@ class CourseFactoryApplication:
                     result["draft_summary"] = summary
                 if job.state is FactoryState.QUALITY_GATE:
                     codes = self._quality_issue_codes(job, verifier)
+                    review_issues = self._ai_review_issues(job)
+                    if review_issues is not None:
+                        codes = [*(codes or []), "ai_review_not_approved"]
+                        result["ai_review_issues"] = review_issues
                     if codes is not None:
                         result["quality_issue_codes"] = codes
         return ApplicationOutcomeV1(
@@ -259,6 +263,22 @@ class CourseFactoryApplication:
         except (LookupError, ValidationError, ValueError):
             return None
         return report.issue_codes
+
+    def _ai_review_issues(self, job: FactoryJobRecord) -> list[str] | None:
+        """The AI reviewer's issues when it asked for a revision, else None."""
+        try:
+            payload = self._artifact_store.read_stage_output(
+                job.id, attempt_number=job.attempt_number, stage=FactoryState.QUALITY_GATE
+            )
+        except LookupError:
+            return None
+        review = payload.get("quality_reviewer")
+        if not isinstance(review, dict) or review.get("decision") == "pass":
+            return None
+        issues = review.get("issues")
+        if not isinstance(issues, list):
+            return []
+        return [str(issue)[:1_000] for issue in issues[:20]]
 
     def _review(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         job = self._repository.get(_uuid(request.event.payload, "job_id"))

@@ -136,9 +136,12 @@ def generation_context(tmp_path: Path):
 
 
 class _GenerationGateway:
-    def __init__(self, draft, *, unsupported: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, draft, *, unsupported: tuple[str, ...] = (), review_decision: str = "pass"
+    ) -> None:
         self.draft = draft
         self.unsupported = unsupported
+        self.review_decision = review_decision
         self.calls: list[str] = []
 
     async def generate(self, invocation, output_model):
@@ -184,8 +187,8 @@ class _GenerationGateway:
             ),
             "quality_reviewer": QualityReviewOutput(
                 schema_version="quality-review-v1",
-                decision="pass",
-                issues=[],
+                decision=self.review_decision,
+                issues=[] if self.review_decision == "pass" else ["Make the tasks apply the rules."],
                 score=0.9,
             ),
         }
@@ -434,3 +437,35 @@ async def test_draft_delivery_failure_fails_the_job_visibly(generation_context) 
 
     failed = repository.get(job.id)
     assert failed.state is FactoryState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_status_shows_when_the_ai_review_asks_for_a_revision(generation_context) -> None:
+    # Live: the AI reviewer said "revise" with concrete issues; the status showed
+    # quality_gate with no reason at all.
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(draft, review_decision="revise")
+    await _runner(factory, root, repository, gateway).run_job(job.id)
+
+    status_gateway = CourseFactoryGateway(
+        session_factory=factory,
+        repository=repository,
+        publisher=object(),
+        artifact_store=CourseFactoryArtifactStore(factory, artifact_root=root),
+    )
+    status = status_gateway.execute(
+        ToolRequestV1(
+            tool=LearningToolName.GENERATION_STATUS,
+            event=EventEnvelopeV1(
+                event_type=LearningEventType.GENERATION_STATUS,
+                invocation_id=uuid4(),
+                correlation_id=uuid4(),
+                actor=ActorV1(actor_id="local-owner", actor_type="local_user"),
+                course_id=job.course_id,
+                payload={"job_id": job.id},
+            ),
+        )
+    )
+    assert status.result["state"] == "quality_gate"
+    assert "ai_review_not_approved" in status.result["quality_issue_codes"]
+    assert status.result["ai_review_issues"] == ["Make the tasks apply the rules."]

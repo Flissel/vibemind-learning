@@ -180,6 +180,8 @@ class FactoryJobResponseV1(ContractModel):
     draft_summary: DraftSummaryV1 | None = None
     # Why the quality gate holds the draft (only while in quality_gate).
     quality_issue_codes: tuple[SafeToken, ...] | None = None
+    # The AI reviewer's reasons when it asked for a revision.
+    ai_review_issues: tuple[Annotated[str, Field(max_length=1_000)], ...] | None = None
     evidence: EvidenceRefV1 | None = None
 
 

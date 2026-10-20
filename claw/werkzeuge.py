@@ -246,6 +246,8 @@ def kurs_status(job_id: str) -> dict[str, Any]:
         }
         if data.get("quality_issue_codes") is not None:
             out["pruefung_haelt_an"] = list(data["quality_issue_codes"])
+        if data.get("ai_review_issues"):
+            out["ki_pruefung"] = list(data["ai_review_issues"])
         return out
 
     return _run(act)

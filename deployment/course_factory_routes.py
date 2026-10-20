@@ -422,6 +422,7 @@ def _job_response(
         unsupported_claim_ids=tuple(unsupported) if isinstance(unsupported, list) else (),
         draft_summary=data.get("draft_summary"),
         quality_issue_codes=data.get("quality_issue_codes"),
+        ai_review_issues=data.get("ai_review_issues"),
         evidence=result.evidence,
     )
     return JSONResponse(response.model_dump(mode="json"), status_code=status_code)
