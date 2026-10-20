@@ -149,9 +149,10 @@ class CourseFactoryApplication:
                 return _rejected("revision_conflict", "factory revision is stale")
             if previous.generation_request is None:
                 raise ValueError("retry has no durable generation request")
+            if request.event.course_id is not None and str(request.event.course_id) != job.course_id:
+                raise ValueError("factory job does not belong to the requested course")
             update: dict[str, object] = {"correlation_id": str(request.event.correlation_id)}
             if self._course_state is not None:
-                # An earlier attempt may have staged a draft and advanced the course.
                 current = asyncio.run(
                     self._course_state(job.course_id, str(request.event.correlation_id))
                 )
@@ -160,6 +161,16 @@ class CourseFactoryApplication:
                         "course_published",
                         "the course is published and immutable; create a new course for new content",
                     )
+                # Adopt only a revision this job caused (its own staged draft) or the
+                # unchanged one; anything else means someone edited the course, and a
+                # new draft would overwrite that.
+                own = {previous.generation_request.learnhouse_revision}
+                try:
+                    own.add(self._repository.get_draft_delivery(job.id).learnhouse_revision)
+                except LookupError:
+                    pass
+                if current.revision not in own:
+                    return _rejected("revision_conflict", "the course changed outside this job")
                 update["learnhouse_revision"] = current.revision
             generation_request = previous.generation_request.model_copy(update=update)
             job = self._repository.retry(

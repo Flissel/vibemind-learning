@@ -327,5 +327,35 @@ def test_manual_retry_expects_the_current_learnhouse_revision(tmp_path: Path) ->
     )
     result = application.execute(retry)
 
-    assert result.state == "completed"
-    assert env.repository.get_current_attempt(job_id).generation_request.learnhouse_revision == 5
+    # Security review: a revision this job did not cause (someone edited the course)
+    # must not be adopted - the new draft would overwrite those edits.
+    assert result.state == "rejected" and result.error.code == "revision_conflict"
+
+    application._course_state = course_state  # unchanged course: retry proceeds
+    retry_again = _request(
+        LearningToolName.COURSE_GENERATE,
+        LearningEventType.COURSE_GENERATE,
+        course_id=env.course_id,
+        expected_revision=failed.revision,
+        payload={"retry_job_id": job_id},
+    )
+    assert application.execute(retry_again).state == "completed"
+    assert env.repository.get_current_attempt(job_id).generation_request.learnhouse_revision == 2
+
+
+def test_manual_retry_refuses_a_job_of_another_course(tmp_path: Path) -> None:
+    from spaces.learning.services.course_factory.state_machine import FactoryState as _S
+
+    env = _Env(tmp_path)
+    created = env.application.execute(_generate(env, env.ready_source))
+    job_id = created.aggregate.aggregate_id
+    job = env.repository.get(job_id)
+    env.repository.advance(job_id, expected_revision=job.revision, target=_S.FAILED, reason_code="test")
+    retry = _request(
+        LearningToolName.COURSE_GENERATE,
+        LearningEventType.COURSE_GENERATE,
+        course_id=str(uuid4()),
+        expected_revision=env.repository.get(job_id).revision,
+        payload={"retry_job_id": job_id},
+    )
+    assert env.application.execute(retry).state != "completed"
