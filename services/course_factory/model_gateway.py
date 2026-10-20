@@ -21,12 +21,12 @@ ROLE_CONTRACTS = {
     "lesson_author": ("authoring", "lesson-prompt-v2", "lesson-v1"),
     "assessment_designer": (
         "assessing",
-        "assessment-prompt-v2",
+        "assessment-prompt-v3",
         "assessment-v1",
     ),
     "source_verifier": (
         "verifying",
-        "source-verification-prompt-v3",
+        "source-verification-prompt-v4",
         "source-verification-v2",
     ),
     "quality_reviewer": (
@@ -49,8 +49,8 @@ ROLE_PROMPTS = {
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome.",
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure.",
     "lesson_author": "Draft rigorous lessons from the supplied structure and source references, using only facts stated in the supplied sources; add no outside knowledge, examples, or reasons the sources do not give.",
-    "assessment_designer": "Design authentic activities that assess the mapped concepts, using only facts stated in the supplied sources; never invent facts or expected answers.",
-    "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim. Put introductions, overviews, and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation.",
+    "assessment_designer": "Design authentic activities that assess the mapped concepts, using only facts stated in the supplied sources; never invent facts or expected answers. A task prompt never contains the answer; the solution goes only into expected_answer.",
+    "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim. Put introductions, overviews, and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation. An activity prompt never contains the answer; the solution goes only into expected_answer.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
     "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied source references.",
     "learning_tutor": "Coach the learner using only the supplied course sources. Ask guiding questions and never reveal a hidden expected answer.",
@@ -195,10 +195,10 @@ class OpenFangModelGateway:
         self, invocation: ModelInvocation, output_model: type[OutputT]
     ) -> GatewayResult[OutputT]:
         inline = self._prompt_transport == "inline"
-        if inline and (invocation.image_inputs or invocation.role == "rubric_evaluator"):
-            raise GatewayInputError(
-                "inline prompt transport cannot serve image or rubric evaluation"
-            )
+        if inline and invocation.image_inputs:
+            # Text-only rubric evaluation is served inline (user decision 20.10.);
+            # OpenFang's compat route drops images, so canvas grading stays refused.
+            raise GatewayInputError("inline prompt transport cannot serve image input")
         user_content: str | list[dict[str, object]] = _canonical_json(
             invocation.input_payload
         )
