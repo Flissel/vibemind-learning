@@ -4,6 +4,7 @@ from typing import Protocol
 from uuid import UUID
 
 from spaces.learning.services.course_factory.model_gateway import (
+    ROLE_CONTRACTS,
     GatewaySchemaError,
     GatewayUnavailable,
     ModelGateway,
@@ -54,17 +55,20 @@ class RubricEvaluator:
 
     async def evaluate(self, request: RubricEvaluationRequest) -> RubricDecision:
         UUID(request.evaluation_id)
+        # Source refs can be long canonical JSON with the chunk text; a model does
+        # not echo those verbatim. It cites short keys, mapped back below.
+        keys = {f"S{index}": ref for index, ref in enumerate(request.source_refs, start=1)}
         invocation = ModelInvocation(
             role="rubric_evaluator",
             stage="evaluation",
             correlation_id=request.evaluation_id,
-            prompt_version="rubric-prompt-v1",
+            prompt_version=ROLE_CONTRACTS["rubric_evaluator"][1],
             output_schema_version="rubric-evaluation-v1",
             input_payload={
                 "response": request.response,
                 "expected_answer": request.expected_answer,
                 "rubric": [item.model_dump(mode="json") for item in request.rubric],
-                "source_refs": request.source_refs,
+                "sources": [{"key": key, "source": ref} for key, ref in keys.items()],
                 "declared_versions": {
                     "model": request.model_version,
                     "prompt": request.prompt_version,
@@ -91,7 +95,16 @@ class RubricEvaluator:
         if result is None:
             raise RubricEvaluationUnavailable("rubric evaluator produced no result")
 
-        output = result.output
+        output = result.output.model_copy(
+            update={
+                "criteria": [
+                    item.model_copy(
+                        update={"source_refs": [keys.get(ref, ref) for ref in item.source_refs]}
+                    )
+                    for item in result.output.criteria
+                ]
+            }
+        )
         criteria_by_id = {item.criterion_id: item for item in request.rubric}
         output_ids = [item.criterion_id for item in output.criteria]
         contract_matches = (

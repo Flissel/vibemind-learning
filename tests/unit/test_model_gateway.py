@@ -204,7 +204,7 @@ async def test_gateway_sends_authorized_verified_canvas_image() -> None:
         role="rubric_evaluator",
         stage="evaluation",
         correlation_id=str(uuid4()),
-        prompt_version="rubric-prompt-v1",
+        prompt_version="rubric-prompt-v2",
         output_schema_version="rubric-evaluation-v1",
         input_payload={"response": {"kind": "penecho_canvas"}},
         image_inputs=(ModelImageInput(
@@ -361,7 +361,7 @@ async def test_inline_transport_serves_text_only_rubric_evaluation() -> None:
         role="rubric_evaluator",
         stage="evaluation",
         correlation_id=str(uuid4()),
-        prompt_version="rubric-prompt-v1",
+        prompt_version="rubric-prompt-v2",
         output_schema_version="rubric-evaluation-v1",
         input_payload={"response": {"text": answer}},
     )
@@ -396,7 +396,7 @@ async def test_inline_transport_refuses_image_roles() -> None:
         role="rubric_evaluator",
         stage="evaluation",
         correlation_id=str(uuid4()),
-        prompt_version="rubric-prompt-v1",
+        prompt_version="rubric-prompt-v2",
         output_schema_version="rubric-evaluation-v1",
         input_payload={"response": {"kind": "penecho_canvas"}},
         image_inputs=(ModelImageInput(

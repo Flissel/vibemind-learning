@@ -220,3 +220,44 @@ async def test_criterion_contract_must_match_request_exactly() -> None:
     assert decision.accepted is False
     assert decision.rationale_codes == ["rubric_contract_mismatch"]
     assert mastery.values == []
+
+
+@pytest.mark.asyncio
+async def test_model_cites_short_source_keys_mapped_back_to_full_refs() -> None:
+    # Live, refs were long JSON strings with the chunk content; the model did not
+    # echo them verbatim and every correct answer landed in review
+    # ("unsupported_feedback").
+    seen = {}
+
+    class _KeyGateway(_Gateway):
+        async def generate(self, invocation, output_model):
+            seen["sources"] = invocation.input_payload["sources"]
+            return await super().generate(invocation, output_model)
+
+    keyed = _output().model_copy(
+        update={
+            "criteria": [
+                _output().criteria[0].model_copy(update={"source_refs": ["S1"]}),
+                _output().criteria[1].model_copy(update={"source_refs": ["S2"]}),
+            ]
+        }
+    )
+    mastery = _Mastery()
+    evaluator = RubricEvaluator(
+        gateway=_KeyGateway([keyed]),
+        recorder=_Recorder(),
+        review_queue=InMemoryReviewQueue(),
+        mastery=mastery,
+    )
+
+    decision = await evaluator.evaluate(_request())
+
+    assert seen["sources"] == [
+        {"key": "S1", "source": "source://authority/3"},
+        {"key": "S2", "source": "source://readback/2"},
+    ]
+    assert decision.accepted is True and len(mastery.values) == 1
+    assert [c.source_refs for c in decision.criterion_results] == [
+        ["source://authority/3"],
+        ["source://readback/2"],
+    ]
