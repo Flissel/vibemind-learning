@@ -193,6 +193,8 @@ class LearningDispatcher:
         try:
             outcome = gateway.execute(request)
         except Exception:
+            # The caller gets a generic error; the cause must still be findable.
+            logger.exception("learning_backend_call_failed", extra={"tool": str(request.tool)})
             result = _error_result(
                 request,
                 state="unavailable",

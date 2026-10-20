@@ -64,7 +64,8 @@ class DraftDeliveryReceipt(_StrictModel):
 class LearnHouseCourseReadback(_StrictModel):
     course_id: str
     revision: int = Field(ge=1)
-    review_status: Literal["draft", "approved", "rejected"]
+    # "pending": a course without any factory draft yet (LearnHouse default).
+    review_status: Literal["pending", "draft", "approved", "rejected"]
     published: bool
 
     @field_validator("course_id")

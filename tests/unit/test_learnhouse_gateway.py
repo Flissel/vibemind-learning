@@ -178,3 +178,21 @@ def test_learnhouse_payload_matches_the_learnhouse_draft_schema() -> None:
         assert "options" not in activity and "correct_option_ids" not in activity
         assert activity["expected_answer"]
     assert payload["activities"][1]["expected_answer"] == "Akku entnehmen; Schutzbrille"
+
+
+def test_a_fresh_learnhouse_course_reads_as_pending() -> None:
+    # Live: a new course came back with review_status "pending" and the course
+    # check before queueing failed with 503.
+    from spaces.learning.services.course_factory.learnhouse_gateway import _parse_course
+
+    readback = _parse_course(
+        {
+            "course": {
+                "course_id": "7fc84b76-94fa-4ee6-878d-67ecb7c50fe5",
+                "revision": 2,
+                "review_status": "pending",
+                "published": False,
+            }
+        }
+    )
+    assert readback.review_status == "pending" and readback.published is False
