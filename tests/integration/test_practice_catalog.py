@@ -176,7 +176,8 @@ def test_structured_quiz_becomes_a_choice_item_scored_without_a_model(
         item = session.scalar(select(AdaptiveItem))
     assert item.item_type == item_type
     assert item.expected_answer == expected
-    assert item.scoring_config["options"] == [
+    # Shuffled per item; the content is unchanged.
+    assert sorted(item.scoring_config["options"], key=lambda o: o["id"]) == [
         {"id": o, "label": f"Option {o}"} for o in ("a", "b", "c")
     ]
 
@@ -191,4 +192,34 @@ def test_structured_quiz_becomes_a_choice_item_scored_without_a_model(
             blueprint={"max_attempts": 1},
         )
     )
-    assert turn.task is not None and [o.id for o in turn.task.options] == ["a", "b", "c"]
+    assert turn.task is not None and sorted(o.id for o in turn.task.options) == ["a", "b", "c"]
+
+
+def test_quiz_options_are_shuffled_so_the_answer_is_not_always_first(factory) -> None:
+    # Live, every one of 15 quizzes had option "a" correct.
+    from spaces.learning.services.course_factory.schemas import QuizOptionDraft
+
+    ids = _ids()
+    base = _draft(ids)
+    quizzes = [
+        base.activities[0].model_copy(
+            update={
+                "activity_id": f"quiz-{n}",
+                "type": "quiz",
+                "rubric": [],
+                "options": [QuizOptionDraft(option_id=o, text=f"Option {o}") for o in "abcd"],
+                "correct_option_ids": ["a"],
+            }
+        )
+        for n in range(12)
+    ]
+    PracticeCatalogProjector(factory).project(
+        course_id=str(uuid4()), course_revision=5, draft=base.model_copy(update={"activities": quizzes})
+    )
+    with factory() as session:
+        items = list(session.scalars(select(AdaptiveItem)))
+    firsts = {item.scoring_config["options"][0]["id"] for item in items}
+    assert len(firsts) > 1
+    for item in items:
+        assert sorted(o["id"] for o in item.scoring_config["options"]) == list("abcd")
+        assert item.expected_answer == {"choice_id": "a"}

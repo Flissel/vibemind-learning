@@ -8,6 +8,7 @@ projection is deterministic and idempotent per course revision.
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import Callable
 from uuid import NAMESPACE_URL, uuid5
 
@@ -107,6 +108,13 @@ def _choice(activity: ActivityDraft) -> tuple[str, dict[str, object]] | None:
     return "multiple_choice", {"choice_ids": list(activity.correct_option_ids)}
 
 
+def _shuffled_options(item_id: str, activity: ActivityDraft) -> list[dict[str, str]]:
+    """Fixed per item, so the correct option is not always where the model put it."""
+    options = [{"id": o.option_id, "label": o.text} for o in activity.options]
+    random.Random(item_id).shuffle(options)
+    return options
+
+
 def _item(
     item_id: str,
     course_id: str,
@@ -131,11 +139,7 @@ def _item(
             "prompt": activity.prompt,
             "source_refs": cited,
             "hints": _section_hints(cited),
-            "options": [
-                {"id": option.option_id, "label": option.text} for option in activity.options
-            ]
-            if choice
-            else [],
+            "options": _shuffled_options(item_id, activity) if choice else [],
             "presentation": {},
         },
         # Choice items are scored deterministically and carry no rubric.

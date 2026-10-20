@@ -148,7 +148,9 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
         for concept_id in activity.concept_ids:
             if concept_id not in concept_ids:
                 issues.append(QualityIssue("activity_concept_missing", concept_id))
-        if not activity.expected_answer.strip():
+        # A structured quiz carries its solution in correct_option_ids.
+        structured_quiz = activity.type == "quiz" and _quiz_options_valid(activity)
+        if not activity.expected_answer.strip() and not structured_quiz:
             issues.append(QualityIssue("expected_answer_missing", activity.activity_id))
         if activity.type != "quiz" and not activity.rubric:
             issues.append(QualityIssue("rubric_missing", activity.activity_id))

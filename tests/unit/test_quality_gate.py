@@ -290,3 +290,19 @@ def test_quiz_needs_structured_options_with_a_correct_answer(options, correct, v
 
     codes = {issue.code for issue in _deterministic_quality_issues(draft)}
     assert ("quiz_options_invalid" not in codes) is valid
+
+
+def test_structured_quiz_needs_no_expected_answer_text() -> None:
+    # Live: 15 structured quizzes left expected_answer empty (the solution is in
+    # correct_option_ids) and the gate held the draft with expected_answer_missing.
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    ids = _ids()
+    draft = _draft(ids)
+    quiz = _quiz(["a", "b", "c"], ["a"])
+    quiz.expected_answer = ""
+    draft.activities.append(quiz)
+    draft.chapters[0].activity_ids.append("quiz-1")
+
+    codes = {(issue.code, issue.subject_id) for issue in _deterministic_quality_issues(draft)}
+    assert ("expected_answer_missing", "quiz-1") not in codes
