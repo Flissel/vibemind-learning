@@ -502,6 +502,48 @@ async def test_ai_revision_request_starts_a_new_attempt_with_the_feedback(
     assert request.learnhouse_revision == 2
 
 
+def _draft_with_concept_without_activity(draft):
+    audit = draft.concepts[0].model_copy(update={"concept_id": "audit", "title": "Audit"})
+    lesson = draft.lessons[0].model_copy(
+        update={"concept_ids": [*draft.lessons[0].concept_ids, "audit"]}
+    )
+    return draft.model_copy(
+        update={"concepts": [*draft.concepts, audit], "lessons": [lesson, *draft.lessons[1:]]}
+    )
+
+
+@pytest.mark.asyncio
+async def test_structural_gate_finding_starts_a_new_attempt_with_the_finding(
+    generation_context,
+) -> None:
+    # Live: the deterministic gate held a draft for concept_missing_activity and
+    # the job sat in quality_gate forever; only an AI "revise" started a new try.
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(_draft_with_concept_without_activity(draft))
+
+    await _runner(factory, root, repository, gateway).run_job(job.id)
+
+    retried = repository.get(job.id)
+    assert retried.state is FactoryState.QUEUED and retried.attempt_number == 2
+    assert "quality_reviewer" not in gateway.calls
+    request = repository.get_current_attempt(job.id).generation_request
+    assert request is not None
+    assert any("audit" in note and "activity" in note for note in request.revision_notes)
+    # Nothing was staged in LearnHouse, so the expected revision stays.
+    assert request.learnhouse_revision == 1
+
+
+@pytest.mark.asyncio
+async def test_structural_gate_finding_on_the_last_attempt_stays_held(generation_context) -> None:
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(_draft_with_concept_without_activity(draft))
+
+    result = await _runner(factory, root, repository, gateway, max_attempts=1).run_job(job.id)
+
+    assert result.job.state is FactoryState.QUALITY_GATE
+    assert result.report.issue_codes == ["concept_missing_activity"]
+
+
 @pytest.mark.asyncio
 async def test_feedback_reaches_the_roles_of_the_next_attempt(generation_context) -> None:
     factory, root, repository, job, draft = generation_context

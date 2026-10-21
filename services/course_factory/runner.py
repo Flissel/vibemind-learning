@@ -111,6 +111,18 @@ class CourseFactoryRunner:
                 ),
             )
             if not report.approved:
+                if (
+                    _HELD_FOR_PERSON.isdisjoint(report.issue_codes)
+                    and job.attempt_number < self._max_attempts
+                ):
+                    # A structural finding (e.g. a concept without a task) is the
+                    # team's to fix; held, the job sat in quality_gate forever.
+                    return GenerationRunResult(
+                        job=self._retry_with_feedback(
+                            job, attempt, _gate_notes(report), reason_code="quality_gate_revise"
+                        ),
+                        report=report,
+                    )
                 return GenerationRunResult(job=job, report=report)
             review = self._read_quality_output(job)
             if review is None:
@@ -143,7 +155,9 @@ class CourseFactoryRunner:
                 and promoted.job.attempt_number < self._max_attempts
             ):
                 return GenerationRunResult(
-                    job=self._retry_with_feedback(promoted.job, attempt, review),
+                    job=self._retry_with_feedback(
+                        promoted.job, attempt, review.issues, reason_code="ai_review_revise"
+                    ),
                     report=promoted.report,
                 )
             return GenerationRunResult(job=promoted.job, report=promoted.report)
@@ -156,21 +170,21 @@ class CourseFactoryRunner:
             self._fail_unless_resting(job.id, "generation_runtime_failed")
             raise
 
-    def _retry_with_feedback(self, job, attempt, review) -> FactoryJobRecord:
-        """End this attempt and queue the next one with the reviewer's reasons."""
+    def _retry_with_feedback(self, job, attempt, notes, *, reason_code) -> FactoryJobRecord:
+        """End this attempt and queue the next one with the reasons as notes."""
         # This attempt already staged its draft, which advanced the LearnHouse
         # revision; the next attempt must expect the new one.
         try:
             learnhouse_revision = self._repository.get_draft_delivery(job.id).learnhouse_revision
         except LookupError:
             learnhouse_revision = attempt.generation_request.learnhouse_revision
-        self._fail(job.id, "ai_review_revise")
+        self._fail(job.id, reason_code)
         failed = self._repository.get(job.id)
         request = attempt.generation_request.model_copy(
             update={
                 "correlation_id": str(uuid4()),
                 "learnhouse_revision": learnhouse_revision,
-                "revision_notes": tuple(str(issue)[:1_000] for issue in review.issues[:20]),
+                "revision_notes": tuple(str(note)[:1_000] for note in list(notes)[:20]),
             }
         )
         return self._repository.retry(
@@ -275,6 +289,30 @@ class CourseFactoryRunner:
                 target=FactoryState.FAILED,
                 reason_code=reason_code,
             )
+
+
+# Findings a person must see and decide on; everything else goes back to the team.
+_HELD_FOR_PERSON = frozenset({"unsupported_claim", "draft_job_mismatch"})
+
+_GATE_NOTES = {
+    "concept_missing_activity": "Concept {subject} has no practice activity; add at least one activity for it.",
+    "concept_missing_lesson": "Concept {subject} is not taught in any lesson; cover it in a lesson.",
+    "lesson_concept_missing": "A lesson uses concept {subject}, which is not in the concept list.",
+    "activity_concept_missing": "An activity uses concept {subject}, which is not in the concept list.",
+    "expected_answer_missing": "Activity {subject} needs an expected answer with a citation.",
+    "rubric_missing": "Activity {subject} needs a rubric.",
+    "quiz_options_invalid": "Quiz {subject} needs valid options and correct option ids.",
+    "task_type_distribution": "Use at least two task types; no type may exceed three quarters of the tasks.",
+}
+
+
+def _gate_notes(report) -> tuple[str, ...]:
+    return tuple(
+        _GATE_NOTES.get(issue.code, "Quality check {code} failed for {subject}.").format(
+            code=issue.code, subject=issue.subject_id
+        )
+        for issue in report.issues
+    )
 
 
 def _hash_json(value: object) -> str:
