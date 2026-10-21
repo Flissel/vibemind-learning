@@ -153,8 +153,49 @@ async def test_gateway_waits_out_an_openfang_restart() -> None:
     result = await gateway.generate(_invocation(), ArchitectOutput)
 
     assert result.evidence_ref.endswith("completion-3")
-    waited = sum(call.args[0] for call in sleeper.await_args_list)
-    assert waited >= 60
+    assert sleeper.await_count >= 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_waits_until_openfang_is_healthy_again() -> None:
+    # Live: a restarted daemon needed up to ~5 min to boot (busy disk); fixed
+    # 30 s + 60 s waits ran out and the course job failed with ConnectError.
+    seen: list[str] = []
+    health_checks = 0
+    sleeper = AsyncMock()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal health_checks
+        seen.append(request.url.path)
+        if request.url.path == "/api/health":
+            health_checks += 1
+            if health_checks < 15:
+                raise httpx.ConnectError("booting", request=request)
+            return httpx.Response(200, json={"status": "ok"})
+        if seen.count("/v1/chat/completions") == 1:
+            raise httpx.ConnectError("connection refused", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "completion-2",
+                "choices": [{"message": {"content": json.dumps(_architect_payload())}}],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://openfang.test"
+    )
+    gateway = OpenFangModelGateway(
+        "http://openfang.test", "k" * 32, client=client, max_attempts=3, sleeper=sleeper
+    )
+
+    result = await gateway.generate(_invocation(), ArchitectOutput)
+
+    assert result.evidence_ref.endswith("completion-2")
+    assert health_checks == 15
+    # Two model calls only: waiting for health does not spend a retry.
+    assert seen.count("/v1/chat/completions") == 2
     await client.aclose()
 
 
@@ -181,7 +222,8 @@ async def test_gateway_fails_closed_on_timeout_without_leaking_secret() -> None:
         await gateway.generate(_invocation(), ArchitectOutput)
 
     assert secret not in str(caught.value)
-    assert sleeper.await_count == 1
+    # Health is unreachable here too, so the gateway waits the whole window once.
+    assert sleeper.await_count >= 1
     await client.aclose()
 
 
