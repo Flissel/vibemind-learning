@@ -121,6 +121,44 @@ async def test_gateway_retries_only_bounded_transient_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_waits_out_an_openfang_restart() -> None:
+    # Live: the OpenFang watchdog killed a blocked daemon mid-call; the dropped
+    # connection (RemoteProtocolError) failed the whole course job, and the new
+    # daemon needs about a minute before it accepts connections again.
+    calls = 0
+    sleeper = AsyncMock()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("Server disconnected", request=request)
+        if calls == 2:
+            raise httpx.ConnectError("connection refused", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "completion-3",
+                "choices": [{"message": {"content": json.dumps(_architect_payload())}}],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://openfang.test"
+    )
+    gateway = OpenFangModelGateway(
+        "http://openfang.test", "k" * 32, client=client, max_attempts=3, sleeper=sleeper
+    )
+
+    result = await gateway.generate(_invocation(), ArchitectOutput)
+
+    assert result.evidence_ref.endswith("completion-3")
+    waited = sum(call.args[0] for call in sleeper.await_args_list)
+    assert waited >= 60
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_gateway_fails_closed_on_timeout_without_leaking_secret() -> None:
     secret = "s" * 32
     sleeper = AsyncMock()
