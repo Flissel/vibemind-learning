@@ -177,7 +177,26 @@ def test_chapter_prompt_keeps_concept_ids_and_demands_a_task_per_concept() -> No
     prompt = ROLE_PROMPTS["chapter_verifier"]
     assert "exactly the strings of the input concepts" in prompt
     assert "at least one activity in this chapter" in prompt
-    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v2"
+    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v3"
+
+
+def test_task_prompts_carry_the_ai_review_lessons() -> None:
+    # Live (22.10.): the AI reviewer sent back three attempts for an expected answer
+    # demanding a fact the scenario did not need, authoring notes inside rubrics,
+    # a capstone chapter with a single task, and free-text concept ids.
+    from spaces.learning.services.course_factory.model_gateway import (
+        ROLE_CONTRACTS,
+        ROLE_PROMPTS,
+    )
+
+    for role in ("assessment_designer", "chapter_verifier"):
+        prompt = ROLE_PROMPTS[role]
+        assert "only what the task's own scenario requires" in prompt
+        assert "no authoring notes" in prompt
+        assert "summary or capstone chapter" in prompt
+    assert "short lowercase slugs" in ROLE_PROMPTS["concept_mapper"]
+    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v7"
+    assert ROLE_CONTRACTS["concept_mapper"][1] == "concept-map-prompt-v2"
 
 
 def test_course_title_comes_from_the_generation_request() -> None:
