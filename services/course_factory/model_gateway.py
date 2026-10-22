@@ -31,7 +31,7 @@ ROLE_CONTRACTS = {
     ),
     "chapter_verifier": (
         "verifying",
-        "chapter-verification-prompt-v1",
+        "chapter-verification-prompt-v2",
         "chapter-verification-v1",
     ),
     "quality_reviewer": (
@@ -56,7 +56,7 @@ ROLE_PROMPTS = {
     "lesson_author": "Draft rigorous lessons from the supplied structure and source references, using only facts stated in the supplied sources; add no outside knowledge, examples, or reasons the sources do not give. If the input contains reviewer_feedback, address every point of it.",
     "assessment_designer": "Design authentic activities that assess the mapped concepts, using only facts stated in the supplied sources; never invent facts or expected answers. A task prompt never contains the answer; the solution goes only into expected_answer. Create at least one activity for every concept and at most 12 activities in total. For a quiz give 2 to 6 options (option_id, text) and correct_option_ids; the prompt holds only the question. If the input contains reviewer_feedback, address every point of it.",
     "source_verifier": "Return a complete course draft whose claims and expected answers cite exact supplied source locators; list every unsupported claim. Put introductions, overviews, and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation. An activity prompt never contains the answer; the solution goes only into expected_answer. Keep quiz options and correct_option_ids from the assessment unchanged. Make sure every activity cites at least one supplied source in citation_ids; drop an activity no source supports. If the input contains reviewer_feedback, address every point of it.",
-    "chapter_verifier": "Return the verified draft of exactly one chapter (chapter_index and chapter_title in the input): the chapter with its lesson_ids and activity_ids, the concepts it covers, its lessons with claims that cite exact supplied source locators, its activities with citation_ids, expected_answer and rubric, and the citations used; list every unsupported claim. Put introductions, overviews and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation. Make sure every activity cites at least one supplied source; drop an activity no source supports. An activity prompt never contains the answer; the solution goes only into expected_answer. Keep quiz options and correct_option_ids unchanged. If the input contains reviewer_feedback, address every point of it.",
+    "chapter_verifier": "Return the verified draft of exactly one chapter (chapter_index and chapter_title in the input): the chapter with its lesson_ids and activity_ids, the concepts it covers, its lessons with claims that cite exact supplied source locators, its activities with citation_ids, expected_answer and rubric, and the citations used; list every unsupported claim. Use exactly the strings of the input concepts as concept_id and add no other concepts. Every concept a lesson of this chapter teaches needs at least one activity in this chapter; add a source-grounded activity where one is missing. Put introductions, overviews and transitions in the lesson body; list as claims only factual statements from the sources, each with at least one citation. Make sure every activity cites at least one supplied source; drop an activity no source supports. An activity prompt never contains the answer; the solution goes only into expected_answer. Keep quiz options and correct_option_ids unchanged. If the input contains reviewer_feedback, address every point of it.",
     "quality_reviewer": "Review coverage, coherence, difficulty, and task quality; never publish the course.",
     "rubric_evaluator": "Evaluate the response against every rubric criterion using only the supplied sources; cite them in source_refs by their key (for example \"S1\").",
     "learning_tutor": "Coach the learner using only the supplied course sources. Ask guiding questions and never reveal a hidden expected answer. Cite sources in source_refs by their key (for example \"S1\").",
@@ -227,6 +227,7 @@ class OpenFangModelGateway:
                 },
             ]
         body = self._build_body(invocation, user_content, output_model, inline=inline)
+        schema_retried = False
         for attempt in range(self._max_attempts):
             try:
                 async with self._client.stream(
@@ -257,7 +258,14 @@ class OpenFangModelGateway:
                 continue
             if status_code < 200 or status_code >= 300:
                 raise GatewayRejected("OpenFang model request was rejected")
-            return _validated_result(content, invocation, output_model, inline=inline)
+            try:
+                return _validated_result(content, invocation, output_model, inline=inline)
+            except GatewaySchemaError:
+                # One stray reply (e.g. a sentence after the JSON) must not cost
+                # a whole course job; a second invalid reply still fails closed.
+                if schema_retried or attempt + 1 == self._max_attempts:
+                    raise
+                schema_retried = True
         raise GatewayUnavailable("OpenFang model gateway is unavailable")
 
     async def _await_healthy(self) -> None:

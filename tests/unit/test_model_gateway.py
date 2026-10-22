@@ -228,7 +228,38 @@ async def test_gateway_fails_closed_on_timeout_without_leaking_secret() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gateway_rejects_schema_invalid_output_without_retry() -> None:
+async def test_gateway_retries_a_stray_reply_once() -> None:
+    # Live: one chapter verifier added a sentence after its JSON object; the
+    # strict parser rightly refused it, and that single reply failed a 50-minute
+    # course job. A schema-invalid reply is now asked for once more.
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        content = json.dumps(_architect_payload())
+        if calls == 1:
+            content += "\nIch habe alle Kapitel geprueft."
+        return httpx.Response(
+            200, json={"id": f"completion-{calls}", "choices": [{"message": {"content": content}}]}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://openfang.test"
+    )
+    gateway = OpenFangModelGateway(
+        "http://openfang.test", "k" * 32, client=client, prompt_transport="inline"
+    )
+
+    result = await gateway.generate(_invocation(), ArchitectOutput)
+
+    assert result.evidence_ref.endswith("completion-2")
+    assert calls == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_schema_invalid_output_after_one_retry() -> None:
     calls = 0
 
     async def handler(_: httpx.Request) -> httpx.Response:
@@ -254,7 +285,7 @@ async def test_gateway_rejects_schema_invalid_output_without_retry() -> None:
     with pytest.raises(GatewaySchemaError):
         await gateway.generate(_invocation(), ArchitectOutput)
 
-    assert calls == 1
+    assert calls == 2
     await client.aclose()
 
 
