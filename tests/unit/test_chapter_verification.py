@@ -166,6 +166,20 @@ def test_merge_refuses_a_fragment_that_references_foreign_ids() -> None:
         )
 
 
+def test_chapter_prompt_keeps_concept_ids_and_demands_a_task_per_concept() -> None:
+    # Live: every chapter verifier invented its own concept ids (con-..., concept-...,
+    # <course>-ch04-c01) and left taught concepts without a task in its chapter.
+    from spaces.learning.services.course_factory.model_gateway import (
+        ROLE_CONTRACTS,
+        ROLE_PROMPTS,
+    )
+
+    prompt = ROLE_PROMPTS["chapter_verifier"]
+    assert "exactly the strings of the input concepts" in prompt
+    assert "at least one activity in this chapter" in prompt
+    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v2"
+
+
 def test_course_title_comes_from_the_generation_request() -> None:
     assert course_title("Course: Akku sicher\nLevel: beginner", fallback="x") == "Akku sicher"
     assert course_title("ohne Titel", fallback="Erstes Kapitel") == "Erstes Kapitel"
