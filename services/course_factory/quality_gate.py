@@ -18,6 +18,7 @@ from spaces.learning.services.course_factory.verification import (
 
 
 _AI_PASS_THRESHOLD = 0.75
+_MAX_ACTIVITIES_PER_LESSON = 6
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,10 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
     activity_ids = {activity.activity_id for activity in draft.activities}
 
     for chapter in draft.chapters:
+        # A retry once collapsed a whole course into one chapter with one lesson
+        # and twelve tasks; both reviews passed it.
+        if len(chapter.activity_ids) > _MAX_ACTIVITIES_PER_LESSON * max(1, len(chapter.lesson_ids)):
+            issues.append(QualityIssue("chapter_lesson_thin", chapter.chapter_id))
         for lesson_id in chapter.lesson_ids:
             if lesson_id not in lesson_ids:
                 issues.append(QualityIssue("chapter_lesson_missing", lesson_id))

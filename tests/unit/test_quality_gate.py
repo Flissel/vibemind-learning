@@ -165,6 +165,26 @@ def test_task_distribution_rubric_and_solvability_are_required(session_factory) 
     assert "expected_answer_missing" in result.report.issue_codes
 
 
+@pytest.mark.parametrize(("activities", "held"), [(6, False), (7, True)])
+def test_a_chapter_may_not_pile_many_tasks_on_few_lessons(activities, held) -> None:
+    # Live (22.10.): a retry collapsed ten chapters into one "summary" chapter with a
+    # single lesson and twelve tasks; both reviews passed it.
+    from spaces.learning.services.course_factory.quality_gate import (
+        _deterministic_quality_issues,
+    )
+
+    draft = _draft(_ids())
+    for index in range(activities - len(draft.activities)):
+        clone = draft.activities[0].model_copy(deep=True)
+        clone.activity_id = f"extra-{index}"
+        draft.activities.append(clone)
+        draft.chapters[0].activity_ids.append(clone.activity_id)
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+
+    assert ("chapter_lesson_thin" in codes) is held
+
+
 @pytest.mark.parametrize(
     "review",
     [_review(score=0.6), _review(decision="revise")],

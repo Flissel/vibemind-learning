@@ -184,7 +184,10 @@ class CourseFactoryRunner:
             update={
                 "correlation_id": str(uuid4()),
                 "learnhouse_revision": learnhouse_revision,
-                "revision_notes": tuple(str(note)[:1_000] for note in list(notes)[:20]),
+                "revision_notes": (
+                    *(str(note)[:1_000] for note in list(notes)[:19]),
+                    _KEEP_STRUCTURE,
+                ),
             }
         )
         return self._repository.retry(
@@ -303,7 +306,15 @@ _GATE_NOTES = {
     "rubric_missing": "Activity {subject} needs a rubric.",
     "quiz_options_invalid": "Quiz {subject} needs valid options and correct option ids.",
     "task_type_distribution": "Use at least two task types; no type may exceed three quarters of the tasks.",
+    "chapter_lesson_thin": "Chapter {subject} piles too many tasks on too few lessons; keep separate chapters, each with its own lesson.",
 }
+
+# Live: answering "chapters have only one task" by merging the whole course into
+# one summary chapter. Every retry keeps the structure explicitly.
+_KEEP_STRUCTURE = (
+    "Keep the chapter structure of the previous attempt; add or improve activities "
+    "inside the chapters instead of merging chapters."
+)
 
 
 def _gate_notes(report) -> tuple[str, ...]:

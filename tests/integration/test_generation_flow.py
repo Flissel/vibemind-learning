@@ -496,7 +496,10 @@ async def test_ai_revision_request_starts_a_new_attempt_with_the_feedback(
     assert retried.state is FactoryState.QUEUED and retried.attempt_number == 2
     request = repository.get_current_attempt(job.id).generation_request
     assert request is not None
-    assert request.revision_notes == ("Make the tasks apply the rules.",)
+    assert request.revision_notes[0] == "Make the tasks apply the rules."
+    # Live a retry merged the whole course into one chapter; every retry now
+    # asks to keep the chapter structure.
+    assert "Keep the chapter structure" in request.revision_notes[-1]
     # Attempt 1 already staged a draft in LearnHouse (revision 1 -> 2); the next
     # attempt must expect that revision (live: 409 revision_conflict).
     assert request.learnhouse_revision == 2
