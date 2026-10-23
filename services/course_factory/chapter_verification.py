@@ -9,6 +9,7 @@ are merged here into one course draft without a model.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,28 +36,63 @@ def _norm(value: object) -> str:
     return " ".join(str(value).split()).casefold()
 
 
+def _chapter_number(text: str) -> str | None:
+    match = re.match(r"(?:kapitel|chapter)[\s_-]*(\d+)", text)
+    return match.group(1) if match else None
+
+
+def _match_chapter(name: object, slices: list[ChapterSlice]) -> ChapterSlice | None:
+    """The architect's chapter a role means by `name`.
+
+    Live the architect wrote "Kapitel 1: Titel. Grundlage: ... Inhalte: ..." while the
+    other roles named only "Kapitel 1: Titel"; an exact match put every lesson into
+    the last chapter.
+    """
+    wanted = _norm(name)
+    if not wanted:
+        return None
+    for piece in slices:
+        if _norm(piece.title) == wanted:
+            return piece
+    prefixed = [
+        piece
+        for piece in slices
+        if _norm(piece.title).startswith(wanted) or wanted.startswith(_norm(piece.title))
+    ]
+    if len(prefixed) == 1:
+        return prefixed[0]
+    number = _chapter_number(wanted)
+    if number is not None:
+        numbered = [p for p in slices if _chapter_number(_norm(p.title)) == number]
+        if len(numbered) == 1:
+            return numbered[0]
+    return None
+
+
 def split_by_chapter(role_outputs: dict[str, Any]) -> list[ChapterSlice]:
     """Assign lessons and activities of the team to the architect's chapters."""
     titles = [str(t) for t in role_outputs["architect"]["chapters"]]
-    coverage = {
-        _norm(k): [str(c) for c in v]
-        for k, v in role_outputs["concept_mapper"].get("chapter_coverage", {}).items()
-    }
-    slices = [
-        ChapterSlice(index=i, title=t, concepts=coverage.get(_norm(t), []))
-        for i, t in enumerate(titles, start=1)
-    ]
-    by_title = {_norm(s.title): s for s in slices}
-    for lesson in role_outputs["lesson_author"]["lessons"]:
-        target = by_title.get(_norm(lesson.get("chapter", ""))) or slices[-1]
+    slices = [ChapterSlice(index=i, title=t, concepts=[]) for i, t in enumerate(titles, start=1)]
+    for key, concepts in role_outputs["concept_mapper"].get("chapter_coverage", {}).items():
+        piece = _match_chapter(key, slices)
+        if piece is not None:
+            piece.concepts.extend(str(c) for c in concepts)
+    for position, lesson in enumerate(role_outputs["lesson_author"]["lessons"]):
+        # Unmatched: the chapter at the lesson's position, not always the last one.
+        target = _match_chapter(lesson.get("chapter", ""), slices) or slices[
+            min(position, len(slices) - 1)
+        ]
         target.lessons.append(lesson)
     with_lessons = [s for s in slices if s.lessons] or slices
     for activity in role_outputs["assessment_designer"]["activities"]:
-        concept = _norm(activity.get("concept", ""))
-        target = next(
-            (s for s in with_lessons if concept in {_norm(c) for c in s.concepts}),
-            None,
-        )
+        # A task may name several concepts ("a / b / c"); it belongs to the chapter
+        # teaching most of them (a capstone task to the summary chapter).
+        wanted = {_norm(part) for part in str(activity.get("concept", "")).split("/")} - {""}
+        scored = [
+            (len(wanted & {_norm(c) for c in s.concepts}), -s.index, s) for s in with_lessons
+        ]
+        best = max(scored, key=lambda item: item[:2], default=None)
+        target = best[2] if best is not None and best[0] > 0 else None
         if target is None:
             # Unmapped concept: the chapter with the fewest tasks so far.
             target = min(with_lessons, key=lambda s: (len(s.activities), s.index))

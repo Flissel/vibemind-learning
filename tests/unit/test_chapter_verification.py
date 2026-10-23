@@ -77,6 +77,69 @@ def test_split_gives_each_chapter_its_lessons_and_activities() -> None:
     assert sorted(prompts) == sorted(["Rest?", "Wie laedst du?", "Was pruefst du?"])
 
 
+def test_split_matches_short_lesson_chapters_to_long_architect_titles() -> None:
+    # Live (22./23.10.): the architect wrote "Kapitel 1: Titel. Grundlage: ... Inhalte:
+    # ..." while lessons named only "Kapitel 1: Titel". Nothing matched exactly, every
+    # lesson fell into the last chapter, and the merged course had one chapter.
+    outputs = _role_outputs()
+    outputs["architect"]["chapters"] = [
+        "Kapitel 1: Vor der Arbeit – Sichtprüfung. Grundlage: 'Vor der Arbeit'. Inhalte: Risse.",
+        "Kapitel 2: Akkus laden und lagern. Inhalte: Ladegeraet, Lagerung.",
+    ]
+    outputs["concept_mapper"]["chapter_coverage"] = {
+        "Kapitel 1: Vor der Arbeit – Sichtprüfung": ["sichtpruefung"],
+        "Kapitel 2: Akkus laden und lagern": ["laden"],
+    }
+    outputs["lesson_author"]["lessons"] = [
+        {"chapter": "Kapitel 1: Vor der Arbeit – Sichtprüfung", "title": "Pruefen", "body": "."},
+        {"chapter": "Kapitel 2: Akkus laden und lagern", "title": "Laden", "body": "."},
+    ]
+
+    slices = split_by_chapter(outputs)
+
+    assert [[lesson["title"] for lesson in s.lessons] for s in slices] == [["Pruefen"], ["Laden"]]
+    assert [s.concepts for s in slices] == [["sichtpruefung"], ["laden"]]
+    assert [a["prompt"] for a in slices[0].activities][:1] == ["Was pruefst du?"]
+
+
+def test_split_reads_slug_coverage_keys_and_multi_concept_tasks() -> None:
+    # Live: coverage keys "kapitel-1", tasks naming "a / b / c"; a capstone task
+    # spanning several chapters belongs to the summary chapter that teaches them all.
+    outputs = _role_outputs()
+    outputs["architect"]["chapters"] = ["Kapitel 1: Pruefen", "Kapitel 2: Laden", "Kapitel 3: Abschluss"]
+    outputs["concept_mapper"]["chapter_coverage"] = {
+        "kapitel-1": ["sichtpruefung"],
+        "kapitel-2": ["laden"],
+        "kapitel-3": ["sichtpruefung", "laden"],
+    }
+    outputs["lesson_author"]["lessons"] = [
+        {"chapter": f"Kapitel {n}", "title": t, "body": "."}
+        for n, t in ((1, "Pruefen"), (2, "Laden"), (3, "Abschluss"))
+    ]
+    outputs["assessment_designer"]["activities"] = [
+        {"concept": "sichtpruefung", "type": "open", "prompt": "A"},
+        {"concept": "laden", "type": "open", "prompt": "B"},
+        {"concept": "sichtpruefung / laden", "type": "case", "prompt": "C"},
+    ]
+
+    slices = split_by_chapter(outputs)
+
+    assert [s.concepts for s in slices] == [["sichtpruefung"], ["laden"], ["sichtpruefung", "laden"]]
+    assert [[a["prompt"] for a in s.activities] for s in slices] == [["A"], ["B"], ["C"]]
+
+
+def test_split_falls_back_to_lesson_order_when_names_differ() -> None:
+    outputs = _role_outputs()
+    outputs["lesson_author"]["lessons"] = [
+        {"chapter": "Erstes Kapitel", "title": "Pruefen", "body": "."},
+        {"chapter": "Zweites Kapitel", "title": "Laden", "body": "."},
+    ]
+
+    slices = split_by_chapter(outputs)
+
+    assert [[lesson["title"] for lesson in s.lessons] for s in slices] == [["Pruefen"], ["Laden"]]
+
+
 def _fragment(chapter_id: str, concept: str, claim_ok: bool = True) -> ChapterVerificationOutput:
     citation_id = str(uuid4())
     return ChapterVerificationOutput.model_validate(
