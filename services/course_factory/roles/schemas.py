@@ -92,4 +92,6 @@ class QualityReviewOutput(_StrictOutput):
     schema_version: Literal["quality-review-v1"]
     decision: Literal["pass", "revise"]
     issues: list[str] = Field(max_length=1_000)
+    # Only findings that make the course wrong; everything else is shown, not held.
+    blocking_issues: list[str] = Field(default_factory=list, max_length=200)
     score: float = Field(ge=0, le=1)

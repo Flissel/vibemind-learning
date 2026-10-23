@@ -12,6 +12,7 @@ from spaces.learning.services.course_factory.catalog import SourceCatalogLoader
 from spaces.learning.services.course_factory.quality_gate import (
     QualityGate,
     QualityReport,
+    blocking_review_issues,
 )
 from spaces.learning.services.course_factory.publisher import CourseDraftPublisher
 from spaces.learning.services.course_factory.repository import (
@@ -156,7 +157,10 @@ class CourseFactoryRunner:
             ):
                 return GenerationRunResult(
                     job=self._retry_with_feedback(
-                        promoted.job, attempt, review.issues, reason_code="ai_review_revise"
+                        promoted.job,
+                        attempt,
+                        blocking_review_issues(review),
+                        reason_code="ai_review_revise",
                     ),
                     report=promoted.report,
                 )

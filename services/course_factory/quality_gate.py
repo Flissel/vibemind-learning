@@ -17,8 +17,22 @@ from spaces.learning.services.course_factory.verification import (
 )
 
 
-_AI_PASS_THRESHOLD = 0.75
 _MAX_ACTIVITIES_PER_LESSON = 6
+
+
+def blocking_review_issues(review: QualityReviewOutput) -> list[str]:
+    """The AI findings that hold a draft.
+
+    Live (21.-23.10.) the reviewer sent back every attempt of four runs, often for
+    style or coverage remarks. Only factual errors, unsupported statements, wrong
+    expected answers and unsolvable tasks block now; the score is informational.
+    A review in the older format (no blocking_issues) holds when it says revise.
+    """
+    if review.blocking_issues:
+        return list(review.blocking_issues)
+    if review.decision == "revise" and "blocking_issues" not in review.model_fields_set:
+        return list(review.issues) or ["revise"]
+    return []
 
 
 @dataclass(frozen=True)
@@ -66,7 +80,7 @@ class QualityGate:
             sources=sources,
         )
         issues = list(report.issues)
-        if ai_review.decision != "pass" or ai_review.score < _AI_PASS_THRESHOLD:
+        if blocking_review_issues(ai_review):
             issues.append(QualityIssue("ai_review_not_approved", draft.job_id))
 
         report = QualityReport(tuple(_deduplicate_issues(issues)))

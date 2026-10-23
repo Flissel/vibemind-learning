@@ -185,11 +185,48 @@ def test_a_chapter_may_not_pile_many_tasks_on_few_lessons(activities, held) -> N
     assert ("chapter_lesson_thin" in codes) is held
 
 
+def _blocking_review() -> QualityReviewOutput:
+    return QualityReviewOutput(
+        schema_version="quality-review-v1",
+        decision="revise",
+        issues=["Kapiteltitel zu lang", "Antwort widerspricht der Quelle"],
+        blocking_issues=["Antwort widerspricht der Quelle"],
+        score=0.8,
+    )
+
+
+def test_minor_ai_findings_do_not_hold_a_course(session_factory) -> None:
+    # Live (21.-23.10.): the AI reviewer sent back every attempt of four runs, often
+    # for style or coverage remarks; only blocking findings hold a draft now.
+    ids = _ids()
+    repository = CourseFactoryRepository(session_factory)
+    job = _quality_job(repository, str(uuid4()))
+    draft = _draft(ids)
+    draft.job_id = job.id
+    review = QualityReviewOutput(
+        schema_version="quality-review-v1",
+        decision="pass",
+        issues=["Kapiteltitel zu lang", "Erste Aufgabe ist leicht"],
+        score=0.6,
+    )
+
+    result = QualityGate(repository).evaluate_and_promote(
+        job.id,
+        expected_revision=job.revision,
+        draft=draft,
+        sources=_catalog(ids),
+        ai_review=review,
+    )
+
+    assert result.job.state is FactoryState.REVIEW_READY
+
+
 @pytest.mark.parametrize(
     "review",
-    [_review(score=0.6), _review(decision="revise")],
+    # A review in the old format (decision only) still holds when it says revise.
+    [_blocking_review(), _review(decision="revise")],
 )
-def test_low_confidence_or_revise_ai_review_cannot_promote(
+def test_blocking_or_legacy_revise_ai_review_cannot_promote(
     session_factory, review: QualityReviewOutput
 ) -> None:
     ids = _ids()
