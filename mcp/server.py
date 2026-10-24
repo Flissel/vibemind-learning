@@ -18,6 +18,7 @@ from spaces.learning.bridge.dispatcher import (
 )
 from spaces.learning.bridge.ui_bridge import UiBridge
 from spaces.learning.bridge.learnhouse_client import LearnHouseClient
+from spaces.learning.bridge.local_canvas import LocalCanvasBackend, LocalCanvasLauncher
 from spaces.learning.bridge.penecho_client import PenEchoClient
 from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
 from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
@@ -192,7 +193,25 @@ def build_default_dispatcher(
             penecho_url = os.environ.get("LEARNING_PENECHO_URL", "").strip()
             penecho_origin = os.environ.get("LEARNING_PENECHO_ORIGIN", "").strip()
             penecho_token = os.environ.get("PENECHO_LEARNING_TOKEN", "")
-            if artifact_root and penecho_url and penecho_origin and penecho_token:
+            if artifact_root and os.environ.get("LEARNING_CANVAS_MODE", "").strip() == "local":
+                # The PenEcho learning bridge is lost; Learning serves the canvas
+                # itself (drawing page in the claw sidecar) behind the same contract.
+                backend = LocalCanvasBackend(
+                    root=Path(artifact_root) / "canvas-sessions",
+                    origin=os.environ.get(
+                        "LEARNING_CANVAS_ORIGIN", "http://127.0.0.1:8139"
+                    ).strip(),
+                )
+                gateways.update(build_canvas_gateways(CanvasGateway(
+                    penecho=backend,
+                    artifacts=CanvasArtifactStore(artifact_root=Path(artifact_root)),
+                    evaluations=evaluation_client,
+                    tutor=evaluation_client,
+                    launcher=LocalCanvasLauncher(
+                        session_factory=session_factory, backend=backend
+                    ),
+                )))
+            elif artifact_root and penecho_url and penecho_origin and penecho_token:
                 penecho = PenEchoClient(
                     base_url=penecho_url,
                     learning_origin=penecho_origin,

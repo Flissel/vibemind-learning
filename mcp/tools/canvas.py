@@ -71,6 +71,12 @@ class CanvasTutor(Protocol):
     async def ask(self, **kwargs): ...
 
 
+class CanvasLauncher(Protocol):
+    def ensure(
+        self, *, session_id: UUID, activity_id: UUID, session_ref: str, actor_id: str
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class CanvasSubmissionOutcome:
     result: CanvasRubricResultV1
@@ -290,11 +296,15 @@ class CanvasGateway:
         artifacts: CanvasArtifactImporter,
         evaluations: CanvasEvaluationBoundary,
         tutor: CanvasTutor,
+        launcher: CanvasLauncher | None = None,
     ) -> None:
         self._penecho = penecho
         self._artifacts = artifacts
         self._evaluations = evaluations
         self._tutor = tutor
+        # Learning's own canvas creates the launch on open; PenEcho's bridge
+        # expected its host UI (LearnHouse) to do that.
+        self._launcher = launcher
 
     def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         try:
@@ -361,8 +371,15 @@ class CanvasGateway:
         )
 
     def _open(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
-        session = self._current(request)
         activity_id = UUID(_required_text(request, "activity_id"))
+        if self._launcher is not None:
+            self._launcher.ensure(
+                session_id=self._session_id(request),
+                activity_id=activity_id,
+                session_ref=self._session_ref(request),
+                actor_id=request.event.actor.actor_id,
+            )
+        session = self._current(request)
         if session.launch is None or session.launch.activity_id != activity_id:
             raise ValueError("canvas activity identity does not match")
         return self._outcome(
