@@ -154,7 +154,8 @@ knopf.onclick = async () => {
     const d = await antwort.json(); const box = document.getElementById('ergebnis');
     if (!d.ok) { status.textContent = 'Nicht abgegeben: ' + (d.fehler || 'unbekannter Fehler'); knopf.disabled = false; return; }
     status.textContent = 'Abgegeben.';
-    const h = document.createElement('h2'); h.textContent = 'Ergebnis: ' + Math.round((d.daten.punkte || 0) * 100) + ' %'; box.appendChild(h);
+    const h = document.createElement('h2'); h.textContent = (d.daten.angenommen === false ? 'Vorlaeufiges Ergebnis: ' : 'Ergebnis: ') + Math.round((d.daten.punkte || 0) * 100) + ' %'; box.appendChild(h);
+    if (d.daten.hinweis_bewertung) { const n = document.createElement('p'); n.className = 'hinweistext'; n.textContent = d.daten.hinweis_bewertung; box.appendChild(n); }
     for (const k of d.daten.kriterien || []) { const p = document.createElement('p');
       p.textContent = (k.kriterium || '') + ' (' + Math.round((k.punkte || 0) * 100) + ' %): ' + (k.rueckmeldung || ''); box.appendChild(p); }
   } catch (err) { status.textContent = 'Abgabe fehlgeschlagen: ' + err; knopf.disabled = false; }
@@ -276,6 +277,12 @@ def _abgeben(geheimnis: str, png_base64: str, striche: object) -> dict[str, Any]
         "daten": {
             "punkte": bewertung.get("score"),
             "angenommen": bewertung.get("accepted"),
+            "sicherheit": bewertung.get("confidence"),
+            # An unsure or unsupported AI decision goes to human review; say so.
+            "hinweis_bewertung": None
+            if bewertung.get("accepted")
+            else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prueft "
+            "sie noch; bis dahin wird sie deinem Lernstand nicht angerechnet.",
             "kriterien": [
                 {"kriterium": c.get("criterion_id"), "punkte": c.get("score"),
                  "rueckmeldung": c.get("feedback")}

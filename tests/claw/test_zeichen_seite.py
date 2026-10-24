@@ -179,3 +179,31 @@ def test_hint_button_explains_when_hints_are_off(store, monkeypatch) -> None:
 
 def test_page_offers_a_hint_button(store) -> None:
     assert 'id="hinweis"' in _call("GET", f"/zeichnen/{_offen(store)}").text
+
+
+def test_unsure_evaluation_is_marked_for_human_review(store, mcp, monkeypatch) -> None:
+    # Live (24.10.): a drawing got 90 % at confidence 0.55; the page showed only
+    # "Ergebnis: 90 %" although the decision went to human review.
+    original = werkzeuge._mcp
+
+    def unsure(event_type, tool, **kwargs):
+        out = original(event_type, tool, **kwargs)
+        if tool == "learning_canvas_submit":
+            out["daten"]["ergebnis"]["evaluation"] = {
+                "score": 0.9, "accepted": False, "confidence": 0.55, "criteria": []}
+        return out
+
+    monkeypatch.setattr(werkzeuge, "_mcp", unsure)
+    headers = {"content-type": "application/json", "Origin": ORIGIN}
+    body = json.dumps({"png": PNG, "striche": STRICHE})
+
+    daten = _call("POST", f"/zeichnen/{_offen(store)}", headers=headers, body=body).json()["daten"]
+
+    assert daten["angenommen"] is False and daten["sicherheit"] == 0.55
+    assert "Mensch" in daten["hinweis_bewertung"]
+
+
+def test_page_script_shows_the_review_note() -> None:
+    from spaces.learning.claw import zeichen_seite
+
+    assert "hinweis_bewertung" in zeichen_seite._SKRIPT
