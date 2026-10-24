@@ -247,6 +247,10 @@ services:
       LEARNING_PENECHO_URL: http://127.0.0.1:3888
       LEARNING_PENECHO_ORIGIN: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
       PENECHO_LEARNING_TOKEN: ${PENECHO_LEARNING_TOKEN:?set PENECHO_LEARNING_TOKEN}
+      # The PenEcho learning bridge is lost; drawing tasks run on Learning's own canvas
+      # (drawing page in the claw sidecar). "penecho" uses the bridge again once it exists.
+      LEARNING_CANVAS_MODE: ${LEARNING_CANVAS_MODE:-local}
+      LEARNING_CANVAS_ORIGIN: http://127.0.0.1:${LEARNING_CLAW_MCP_PORT:-8139}
       LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
       LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
     ports:

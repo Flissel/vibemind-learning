@@ -80,12 +80,6 @@ CALLS = [
     (lambda: werkzeuge.hinweis(SESSION, TASK), "learning_hint_request"),
     (lambda: werkzeuge.tutor_fragen(COURSE, SESSION, "Warum?"), "learning_tutor_ask"),
     (lambda: werkzeuge.fortschritt(SESSION), "learning_progress_show"),
-    (lambda: werkzeuge.zeichenaufgabe_oeffnen(SESSION, ACTIVITY, REF), "learning_canvas_open"),
-    (
-        lambda: werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 3, REF, ["o1"]),
-        "learning_canvas_hint",
-    ),
-    (lambda: werkzeuge.bewertung_zeigen(EVALUATION, SESSION, REF), "learning_canvas_review"),
 ]
 
 
@@ -152,18 +146,46 @@ def test_read_events_have_no_idempotency_key(fake_mcp: FakeMcp) -> None:
     assert fake_mcp.last_event["session_id"] == SESSION
 
 
-def test_canvas_payloads(fake_mcp: FakeMcp) -> None:
-    werkzeuge.zeichenaufgabe_oeffnen(SESSION, ACTIVITY, REF)
-    assert fake_mcp.last_event["payload"] == {"activity_id": ACTIVITY, "session_ref": REF}
-    werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 3, REF, ["o1", "o2"])
+def test_canvas_open_keeps_the_secret_from_the_model(
+    fake_mcp: FakeMcp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spaces.learning.claw.zeichnung import ZeichnungStore
+
+    monkeypatch.setattr(werkzeuge, "_zeichnungen", ZeichnungStore())
+    opened: list[str] = []
+    monkeypatch.setattr(werkzeuge, "_browser_oeffnen", lambda url: opened.append(url) or True)
+
+    out = werkzeuge.zeichenaufgabe_oeffnen(SESSION, ACTIVITY)
+
+    assert out["ok"] is True
+    open_call = fake_mcp.requests[0]["params"]
+    assert open_call["name"] == "learning_canvas_open"
+    ref = open_call["arguments"]["payload"]["session_ref"]
+    assert ref.startswith("z-") and open_call["arguments"]["payload"]["activity_id"] == ACTIVITY
+    secret = opened[0].rsplit("/", 1)[-1]
+    assert opened[0].startswith("http://127.0.0.1:8139/zeichnen/")
+    assert secret not in json.dumps(out) and ref not in json.dumps(out)
+
+    werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 3, ["o1", "o2"])
     e = fake_mcp.last_event
     assert e["expected_revision"] == 3 and e["session_id"] == SESSION
     assert e["payload"]["selection"] == {"object_ids": ["o1", "o2"]}
-    assert e["payload"]["session_ref"] == REF
-    werkzeuge.bewertung_zeigen(EVALUATION, SESSION, REF)
+    assert e["payload"]["session_ref"] == ref
+    werkzeuge.bewertung_zeigen(EVALUATION, SESSION)
     e = fake_mcp.last_event
-    assert e["payload"] == {"evaluation_id": EVALUATION, "session_ref": REF}
+    assert e["payload"] == {"evaluation_id": EVALUATION, "session_ref": ref}
     assert e["idempotency_key"]  # canvas_review is a write event
+
+
+def test_canvas_hint_before_opening_is_refused(
+    fake_mcp: FakeMcp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spaces.learning.claw.zeichnung import ZeichnungStore
+
+    monkeypatch.setattr(werkzeuge, "_zeichnungen", ZeichnungStore())
+    assert werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 1, ["o1"])["ok"] is False
+    assert werkzeuge.bewertung_zeigen(EVALUATION, SESSION)["ok"] is False
+    assert fake_mcp.requests == []
 
 
 def test_tutor_and_hint_payloads(fake_mcp: FakeMcp) -> None:
@@ -241,7 +263,10 @@ def test_model_backed_tools_wait_longer_than_reads(fake_mcp: FakeMcp) -> None:
     # client timeout reported "Learning ist nicht erreichbar" while the call ran.
     werkzeuge.antwort_geben(SESSION, 1, {"text": "x"})
     werkzeuge.tutor_fragen(COURSE, SESSION, "Warum?")
-    werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 1, REF, ["o1"])
+    from spaces.learning.claw.zeichnung import Zeichnung
+
+    werkzeuge._zeichnungen.merken(Zeichnung(SESSION, ACTIVITY, REF, "Zeichne"))
+    werkzeuge.zeichenhinweis(SESSION, ACTIVITY, 1, ["o1"])
     werkzeuge.naechste_aufgabe(SESSION)
 
     timeouts = [request["_timeout"] for request in fake_mcp.requests]

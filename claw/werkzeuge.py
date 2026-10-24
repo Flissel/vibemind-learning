@@ -36,6 +36,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from .freigabe import FreigabeAbgelehnt, FreigabeStore
+from .zeichnung import Zeichnung, ZeichnungStore
 from .learning_client import (
     LearningClient,
     LearningRejected,
@@ -53,6 +54,7 @@ _REVIEW_READY = "review_ready"
 
 # Module-level so tests can swap in a store with a fake clock.
 _freigaben = FreigabeStore()
+_zeichnungen = ZeichnungStore()
 
 
 class Idempotenzfenster:
@@ -436,6 +438,7 @@ def _mcp(
     session_id: str | None = None,
     expected_revision: int | None = None,
     payload: dict[str, Any] | None = None,
+    confirmation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def act(client: LearningClient) -> dict[str, Any]:
         event: dict[str, Any] = {
@@ -451,6 +454,8 @@ def _mcp(
             event["session_id"] = _uuid(session_id)
         if expected_revision is not None:
             event["expected_revision"] = expected_revision
+        if confirmation is not None:
+            event["confirmation"] = dict(confirmation)
         if write:
             keyed = {k: v for k, v in event.items() if k not in ("invocation_id", "correlation_id")}
             event["idempotency_key"] = (
@@ -548,29 +553,73 @@ def fortschritt(session_id: str) -> dict[str, Any]:
     return _mcp("learning.progress.show", "learning_progress_show", session_id=session_id)
 
 
-def zeichenaufgabe_oeffnen(session_id: str, activity_id: str, session_ref: str) -> dict[str, Any]:
-    """Open the drawing canvas (PenEcho) for a canvas task of the session. `activity_id` comes
-    from the task; `session_ref` from the session. The person draws; the agent never draws or
-    submits.
+def _canvas_ref(session_id: str) -> str:
+    ref = _zeichnungen.session_ref(_uuid(session_id))
+    if ref is None:
+        raise ValueError("Zuerst die Zeichenaufgabe oeffnen")
+    return ref
+
+
+def zeichen_link(geheimnis: str) -> str:
+    """Link to the local drawing page; only a person in a browser on this machine uses it."""
+    host = os.environ.get("LEARNING_CLAW_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = os.environ.get("LEARNING_CLAW_MCP_PORT", "8139").strip() or "8139"
+    return f"http://{host}:{port}/zeichnen/{geheimnis}"
+
+
+def zeichenaufgabe_oeffnen(session_id: str, activity_id: str) -> dict[str, Any]:
+    """Open the drawing canvas for the session's current canvas task (`activity_id` is the
+    task id). It opens a drawing page in the browser on this machine (`zeichenflaeche` says
+    whether that worked); the person draws there and submits with a button. The agent never
+    draws or submits; follow the result with `naechste_aufgabe` or `fortschritt`.
     """
-    return _mcp(
+    try:
+        session_id, activity_id = _uuid(session_id), _uuid(activity_id)
+    except ValueError as error:
+        return {"ok": False, "fehler": f"Ungueltige Eingabe: {error}"[:_MESSAGE_LIMIT]}
+    session_ref = f"z-{secrets.token_hex(12)}"
+    geoeffnet = _mcp(
         "learning.canvas.open",
         "learning_canvas_open",
         session_id=session_id,
         payload={"activity_id": activity_id, "session_ref": session_ref},
     )
+    if not geoeffnet.get("ok"):
+        return geoeffnet
+    aufgabe = ""
+    stand = fortschritt(session_id)
+    if stand.get("ok"):
+        task = (stand["daten"].get("ergebnis", {}).get("session") or {}).get("task") or {}
+        aufgabe = str(task.get("prompt") or "")
+    geheimnis = _zeichnungen.merken(
+        Zeichnung(session_id=session_id, activity_id=activity_id, session_ref=session_ref,
+                  aufgabe=aufgabe)
+    )
+    offen = _browser_oeffnen(zeichen_link(geheimnis))
+    return {
+        "ok": True,
+        "daten": {
+            "aufgabe": aufgabe,
+            "zeichenflaeche": "Zeichenflaeche im Browser dieses Rechners geoeffnet"
+            if offen
+            else "Zeichenflaeche konnte nicht geoeffnet werden",
+        },
+    }
 
 
 def zeichenhinweis(
     session_id: str,
     activity_id: str,
     canvas_revision: int,
-    session_ref: str,
     objekt_ids: list[str],
 ) -> dict[str, Any]:
     """A hint about the person's drawing. `canvas_revision` is the current canvas revision;
-    `objekt_ids` are the drawing objects the hint is about.
+    `objekt_ids` are the drawing objects (strokes) the hint is about.
     """
+    try:
+        session_ref = _canvas_ref(session_id)
+    except ValueError as error:
+        return {"ok": False, "fehler": str(error)}
     return _mcp(
         "learning.canvas.hint",
         "learning_canvas_hint",
@@ -585,9 +634,12 @@ def zeichenhinweis(
     )
 
 
-def bewertung_zeigen(evaluation_id: str, session_id: str, session_ref: str) -> dict[str, Any]:
-    """Show the evaluation of a submitted drawing (`evaluation_id` from the task result).
-    """
+def bewertung_zeigen(evaluation_id: str, session_id: str) -> dict[str, Any]:
+    """Show the evaluation of a submitted drawing (`evaluation_id` from the result)."""
+    try:
+        session_ref = _canvas_ref(session_id)
+    except ValueError as error:
+        return {"ok": False, "fehler": str(error)}
     return _mcp(
         "learning.canvas.review",
         "learning_canvas_review",

@@ -22,6 +22,8 @@ if str(PKG_ROOT) not in sys.path:
 from spaces.learning.claw import werkzeuge  # noqa: E402
 from spaces.learning.claw.freigabe_seite import PREFIX as FREIGABE_PREFIX  # noqa: E402
 from spaces.learning.claw.freigabe_seite import FreigabeSeite  # noqa: E402
+from spaces.learning.claw.zeichen_seite import PREFIX as ZEICHEN_PREFIX  # noqa: E402
+from spaces.learning.claw.zeichen_seite import ZeichenSeite  # noqa: E402
 
 ENV_FILE = Path(__file__).resolve().parents[1] / "deployment" / ".env"
 
@@ -173,15 +175,20 @@ class BearerAuth:
 
 
 class FreigabeWeiche:
-    """`/freigabe/...` an die lokale Freigabe-Seite, alles andere hinter BearerAuth."""
+    """`/freigabe/...` und `/zeichnen/...` an die lokalen Seiten, alles andere hinter BearerAuth."""
 
-    def __init__(self, mcp_app: Any, seite: Any) -> None:
+    def __init__(self, mcp_app: Any, seite: Any, zeichnen: Any = None) -> None:
         self._mcp_app = mcp_app
         self._seite = seite
+        self._zeichnen = zeichnen
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope.get("path", "").startswith(FREIGABE_PREFIX):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if path.startswith(FREIGABE_PREFIX):
             await self._seite(scope, receive, send)
+            return
+        if self._zeichnen is not None and path.startswith(ZEICHEN_PREFIX):
+            await self._zeichnen(scope, receive, send)
             return
         await self._mcp_app(scope, receive, send)
 
@@ -191,7 +198,7 @@ def build_app(server: Any, token: str, port: int = DEFAULT_PORT) -> Any:
     factory = getattr(server, "streamable_http_app", None)
     if factory is None:
         raise SystemExit("MCP-Paket bietet keine ASGI-App; ohne Token-Pruefung wird nicht gestartet")
-    return FreigabeWeiche(BearerAuth(factory(), token), FreigabeSeite(port))
+    return FreigabeWeiche(BearerAuth(factory(), token), FreigabeSeite(port), ZeichenSeite(port))
 
 
 def main() -> None:
