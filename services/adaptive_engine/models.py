@@ -221,7 +221,9 @@ class LearningResponse(Base):
 class LearningEvaluation(Base):
     __tablename__ = "learning_adaptive_evaluations"
     __table_args__ = (
-        UniqueConstraint("response_id"),
+        # One evaluation per response and evaluator type: a human ("manual") review
+        # stands next to the AI evaluation it decides on, which stays as evidence.
+        UniqueConstraint("response_id", "evaluator_type"),
         CheckConstraint("score >= 0 AND score <= 1"),
         CheckConstraint("confidence >= 0 AND confidence <= 1"),
         CheckConstraint("evaluator_type IN ('deterministic','rubric','manual')"),
@@ -363,3 +365,30 @@ class LearningReviewItem(Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LearningReviewDecision(Base):
+    """A person's decision on a pending review; append-only like the evaluations."""
+
+    __tablename__ = "learning_adaptive_review_decisions"
+    __table_args__ = (
+        UniqueConstraint("review_item_id"),
+        CheckConstraint("decision IN ('confirm','override')"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("learning_adaptive_review_items.id"), nullable=False
+    )
+    ai_evaluation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("learning_adaptive_evaluations.id"), nullable=False
+    )
+    human_evaluation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("learning_adaptive_evaluations.id"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    reviewer_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(2_000))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )

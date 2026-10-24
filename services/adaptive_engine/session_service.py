@@ -31,6 +31,7 @@ from spaces.learning.services.adaptive_engine.models import (
     MasteryEvidence,
     Misconception,
     ReviewSchedule,
+    LearningReviewDecision,
     LearningReviewItem,
 )
 from spaces.learning.services.adaptive_engine.review_schedule import (
@@ -310,6 +311,109 @@ class AdaptiveSessionService:
             if not isinstance(hints, list) or not hints or not isinstance(hints[0], str):
                 raise LookupError("no approved hint is available")
             return hints[0]
+
+    def pending_reviews(self, limit: int = 50) -> list[dict[str, object]]:
+        """AI evaluations held for a person (low confidence, ungrounded feedback)."""
+        with self._session_factory() as db:
+            rows = db.execute(
+                select(LearningReviewItem, LearningEvaluation, LearningResponse, AdaptiveItem,
+                       LearningSession)
+                .join(LearningEvaluation, LearningEvaluation.id == LearningReviewItem.evaluation_id)
+                .join(LearningResponse, LearningResponse.id == LearningEvaluation.response_id)
+                .join(LearningAttempt, LearningAttempt.id == LearningResponse.attempt_id)
+                .join(AdaptiveItem, AdaptiveItem.id == LearningAttempt.item_id)
+                .join(LearningSession, LearningSession.id == LearningAttempt.session_id)
+                .where(LearningReviewItem.status == "pending")
+                .order_by(LearningReviewItem.created_at)
+                .limit(max(1, min(limit, 200)))
+            ).all()
+            return [_review_entry(*row) for row in rows]
+
+    def resolve_review(
+        self,
+        review_id: str,
+        *,
+        reviewer_id: str,
+        decision: str,
+        score: float | None = None,
+        note: str | None = None,
+    ) -> dict[str, object]:
+        """A person confirms or overrides a held AI evaluation.
+
+        The AI evaluation stays as evidence; a "manual" evaluation with the person's
+        score is added, mastery is credited from it and the review is resolved.
+        """
+        if decision not in {"confirm", "override"}:
+            raise ValueError("review decision must be confirm or override")
+        if decision == "override" and (
+            isinstance(score, bool) or not isinstance(score, int | float) or not 0 <= score <= 1
+        ):
+            raise ValueError("an override needs a score between 0 and 1")
+        if not reviewer_id or len(reviewer_id) > 128:
+            raise ValueError("reviewer is invalid")
+        if note is not None and len(note) > 2_000:
+            raise ValueError("review note is too long")
+        now = self._aware_now()
+        with self._session_factory() as db, db.begin():
+            review = db.get(LearningReviewItem, str(UUID(review_id)), with_for_update=True)
+            if review is None:
+                raise LookupError("review is unknown")
+            if review.status != "pending" or review.evaluation_id is None:
+                raise PersistenceConflict("review is already decided")
+            ai = db.get(LearningEvaluation, review.evaluation_id)
+            response = db.get(LearningResponse, ai.response_id)
+            attempt = db.get(LearningAttempt, response.attempt_id)
+            session_row = db.get(LearningSession, attempt.session_id)
+            final = float(ai.score if decision == "confirm" else score)
+            human = LearningEvaluation(
+                id=str(uuid4()),
+                response_id=ai.response_id,
+                evaluator_type="manual",
+                score=final,
+                confidence=1.0,
+                accepted=True,
+                rationale_codes=[
+                    "human_review_confirmed" if decision == "confirm" else "human_review_override",
+                    "answer_correct" if final >= 0.999
+                    else "answer_partial" if final >= 0.65
+                    else "answer_incorrect",
+                ],
+                evaluator_versions={"reviewer": reviewer_id, "decides": ai.id},
+                source_refs=list(ai.source_refs),
+                created_at=now,
+            )
+            db.add(human)
+            db.flush()
+            applied = self._apply_mastery_and_review(
+                db,
+                actor_id=session_row.actor_id,
+                attempt=attempt,
+                evaluation=human,
+                successful=final >= 0.65,
+                now=now,
+            )
+            review.status = "resolved"
+            review.resolved_at = now
+            db.add(
+                LearningReviewDecision(
+                    id=str(uuid4()),
+                    review_item_id=review.id,
+                    ai_evaluation_id=ai.id,
+                    human_evaluation_id=human.id,
+                    decision=decision,
+                    reviewer_id=reviewer_id,
+                    note=note,
+                    created_at=now,
+                )
+            )
+            db.flush()
+            return {
+                "review_id": review.id,
+                "decision": decision,
+                "score": final,
+                "mastery_applied": applied,
+                "human_evaluation_id": human.id,
+            }
 
     def progress(self, session_id: str, *, actor_id: str) -> SessionProgress:
         with self._session_factory() as db:
@@ -807,13 +911,23 @@ class AdaptiveSessionService:
 
     def _summary(self, db: Session, row: LearningSession) -> SessionSummary:
         values = db.execute(
-            select(LearningAttempt.ordinal, LearningAttempt.item_id, LearningEvaluation.score)
+            select(LearningAttempt.ordinal, LearningAttempt.item_id, LearningEvaluation.score,
+                   LearningEvaluation.evaluator_type)
             .join(LearningResponse, LearningResponse.attempt_id == LearningAttempt.id)
             .join(LearningEvaluation, LearningEvaluation.response_id == LearningResponse.id)
             .where(LearningAttempt.session_id == row.id)
             .order_by(LearningAttempt.ordinal)
         ).all()
-        results = tuple(ExamResult(ordinal=a, item_id=b, score=c) for a, b, c in values)
+        # A person's review ("manual") replaces the AI evaluation it decided on.
+        effective: dict[int, tuple[str, float, bool]] = {}
+        for ordinal, item_id, value, evaluator in values:
+            manual = evaluator == "manual"
+            if ordinal not in effective or (manual and not effective[ordinal][2]):
+                effective[ordinal] = (item_id, value, manual)
+        results = tuple(
+            ExamResult(ordinal=ordinal, item_id=item_id, score=value)
+            for ordinal, (item_id, value, _) in sorted(effective.items())
+        )
         score = sum(item.score for item in results) / len(results) if results else 0
         return SessionSummary(
             attempted=len(results),
@@ -1063,3 +1177,26 @@ class AdaptiveSessionService:
     @staticmethod
     def _aware(value: datetime) -> datetime:
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _review_entry(review, evaluation, response, item, session_row) -> dict[str, object]:
+    answer = response.answer if isinstance(response.answer, dict) else {}
+    snapshot = answer.get("rendered_snapshot") if answer.get("kind") == "penecho_canvas" else None
+    expected = item.expected_answer if isinstance(item.expected_answer, dict) else {}
+    text = answer.get("text")
+    return {
+        "review_id": review.id,
+        "reason": review.reason_code,
+        "created_at": review.created_at.isoformat(),
+        "course_id": session_row.course_id,
+        "session_id": session_row.id,
+        "actor_id": session_row.actor_id,
+        "item_type": item.item_type,
+        "task_prompt": item.scoring_config.get("prompt"),
+        "expected_answer": expected.get("text"),
+        "rubric": list(item.rubric or []),
+        "answer_text": text if isinstance(text, str) else None,
+        "drawing_locator": snapshot.get("locator") if isinstance(snapshot, dict) else None,
+        "ai_score": evaluation.score,
+        "ai_confidence": evaluation.confidence,
+    }

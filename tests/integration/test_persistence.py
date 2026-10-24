@@ -195,6 +195,7 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_adaptive_review_schedules",
         "learning_adaptive_misconceptions",
         "learning_adaptive_review_items",
+        "learning_adaptive_review_decisions",
         "learning_migration_batches",
         "learning_migration_records",
     }
