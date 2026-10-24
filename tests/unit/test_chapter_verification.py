@@ -240,7 +240,7 @@ def test_chapter_prompt_keeps_concept_ids_and_demands_a_task_per_concept() -> No
     prompt = ROLE_PROMPTS["chapter_verifier"]
     assert "exactly the strings of the input concepts" in prompt
     assert "at least one activity in this chapter" in prompt
-    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v3"
+    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v4"
 
 
 def test_task_prompts_carry_the_ai_review_lessons() -> None:
@@ -258,10 +258,20 @@ def test_task_prompts_carry_the_ai_review_lessons() -> None:
         assert "no authoring notes" in prompt
         assert "summary or capstone chapter" in prompt
     assert "short lowercase slugs" in ROLE_PROMPTS["concept_mapper"]
-    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v7"
+    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v8"
     assert ROLE_CONTRACTS["concept_mapper"][1] == "concept-map-prompt-v2"
 
 
 def test_course_title_comes_from_the_generation_request() -> None:
     assert course_title("Course: Akku sicher\nLevel: beginner", fallback="x") == "Akku sicher"
     assert course_title("ohne Titel", fallback="Erstes Kapitel") == "Erstes Kapitel"
+
+
+def test_task_prompts_create_and_keep_drawing_tasks() -> None:
+    # Canvas tasks are graded from the drawn image; the factory must create them when an
+    # objective asks for a drawing, and the chapter verifier must not turn them into text.
+    from spaces.learning.services.course_factory.model_gateway import ROLE_PROMPTS
+
+    assert "penecho_canvas" in ROLE_PROMPTS["assessment_designer"]
+    assert "draw" in ROLE_PROMPTS["assessment_designer"]
+    assert "Keep penecho_canvas activities" in ROLE_PROMPTS["chapter_verifier"]
