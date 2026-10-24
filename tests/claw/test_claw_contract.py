@@ -36,6 +36,7 @@ SPEC_TOOLS = {
     "zeichenaufgabe_oeffnen",
     "zeichenhinweis",
     "bewertung_zeigen",
+    "pruefungen_anzeigen",
 }
 
 

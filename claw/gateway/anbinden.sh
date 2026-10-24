@@ -18,7 +18,7 @@ CLAW="$(cd "$HIER/.." && pwd)"
 cd "$HIER"
 
 ERWARTET="antwort_geben bewertung_zeigen entwurf_ablehnen fortschritt hinweis kurs_erzeugen \
-kurs_lesen kurs_status material_importieren material_status naechste_aufgabe sitzung_starten \
+kurs_lesen kurs_status material_importieren material_status naechste_aufgabe pruefungen_anzeigen sitzung_starten \
 tutor_fragen veroeffentlichung_anzeigen zeichenaufgabe_oeffnen zeichenhinweis"
 
 if [ "$(docker inspect -f '{{.State.Status}}' learning-claw 2>/dev/null || echo fehlt)" != "running" ]; then

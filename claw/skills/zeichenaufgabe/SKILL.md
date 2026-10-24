@@ -21,6 +21,8 @@ Die Werkzeuge liefern `zustand`, `ergebnis` und `beleg`.
    `fortschritt(session_id)`; nennt die Person eine Bewertung, `bewertung_zeigen(evaluation_id,
    session_id)`. Erkläre die Bewertung mit den Gründen aus dem Ergebnis. Steht dort, dass die Bewertung
    zurückgestellt ist oder ein Mensch prüft, sag genau das („wird von einem Menschen geprüft“) und gib
-   keine eigene Note.
+   keine eigene Note. Will die Person selbst prüfen, `pruefungen_anzeigen()`: Die Prüfseite öffnet sich
+   im Browser (`pruefseite`); dort bestätigt sie die KI-Bewertung oder setzt eigene Punkte. Erst danach
+   zählt die Aufgabe für den Lernstand.
 5. Ist die Zeichenfläche oder die Bewertung nicht verfügbar, gib den `fehler` wieder und biete an, mit
    der nächsten Aufgabe weiterzumachen.

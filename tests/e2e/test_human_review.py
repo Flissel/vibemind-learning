@@ -95,3 +95,56 @@ def test_an_override_needs_a_score_between_0_and_1(held) -> None:
             service.resolve_review(review_id, reviewer_id="felix", decision="override", score=bad)
     with pytest.raises(ValueError):
         service.resolve_review(review_id, reviewer_id="felix", decision="maybe")
+
+
+@pytest.fixture()
+def api(held, tmp_path: Path, monkeypatch):
+    from spaces.learning.deployment import runtime_api
+    from spaces.learning.deployment.review_routes import ReviewRuntime, get_review_runtime
+    from spaces.learning.tests.integration.course_factory_api_support import (
+        SERVICE_KEY, SERVICE_KEY_ENV,
+    )
+    from fastapi.testclient import TestClient
+
+    service, factory, session_id = held
+    monkeypatch.setenv(SERVICE_KEY_ENV, SERVICE_KEY)
+    (tmp_path / "artifacts").mkdir()
+    runtime = ReviewRuntime(service=service, artifact_root=tmp_path / "artifacts")
+    runtime_api.app.dependency_overrides[get_review_runtime] = lambda: runtime
+    yield TestClient(runtime_api.app, raise_server_exceptions=False), factory, tmp_path / "artifacts"
+    runtime_api.app.dependency_overrides.clear()
+
+
+def test_the_api_lists_and_decides_reviews_for_reviewers_only(api) -> None:
+    from spaces.learning.tests.integration.course_factory_api_support import headers
+
+    client, _, _ = api
+    assert client.get("/api/v1/reviews", headers=headers("learning.author")).status_code == 403
+    listed = client.get("/api/v1/reviews", headers=headers("learning.reviewer")).json()["reviews"]
+    review_id = listed[0]["review_id"]
+    detail = client.get(f"/api/v1/reviews/{review_id}", headers=headers("learning.reviewer")).json()
+    assert detail["answer_text"] and detail["drawing_png_base64"] is None
+
+    url = f"/api/v1/reviews/{review_id}/decision"
+    bad = client.post(url, json={"decision": "override", "score": 2}, headers=headers("learning.reviewer"))
+    assert bad.status_code == 400
+    decided = client.post(url, json={"decision": "override", "score": 0.3, "note": "knapp"},
+                          headers=headers("learning.reviewer"))
+    assert decided.status_code == 200 and decided.json()["score"] == 0.3
+    again = client.post(url, json={"decision": "confirm"}, headers=headers("learning.reviewer"))
+    assert again.status_code == 409
+    assert client.get(f"/api/v1/reviews/{review_id}", headers=headers("learning.reviewer")).status_code == 404
+
+
+def test_the_drawing_is_read_only_from_inside_the_artifact_root(api, tmp_path: Path) -> None:
+    from spaces.learning.deployment.review_routes import ReviewRuntime, _drawing
+
+    root = tmp_path / "artifacts"
+    (root / "canvas" / "s").mkdir(parents=True)
+    (root / "canvas" / "s" / "a.png").write_bytes(b"\x89PNG-drawing")
+    (tmp_path / "outside.png").write_bytes(b"secret")
+    runtime = ReviewRuntime(service=None, artifact_root=root)
+
+    assert _drawing(runtime, "artifact://learning/canvas/s/a.png") == b"\x89PNG-drawing"
+    assert _drawing(runtime, "artifact://learning/../outside.png") is None
+    assert _drawing(runtime, "file:///etc/passwd") is None

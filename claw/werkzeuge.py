@@ -36,6 +36,8 @@ from uuid import UUID, uuid4
 import httpx
 
 from .freigabe import FreigabeAbgelehnt, FreigabeStore
+from .pruefung_seite import PREFIX as PRUEFUNG_PREFIX
+from .pruefung_seite import PruefungStore
 from .zeichnung import Zeichnung, ZeichnungStore
 from .learning_client import (
     LearningClient,
@@ -55,6 +57,7 @@ _REVIEW_READY = "review_ready"
 # Module-level so tests can swap in a store with a fake clock.
 _freigaben = FreigabeStore()
 _zeichnungen = ZeichnungStore()
+_pruefungen = PruefungStore()
 
 
 class Idempotenzfenster:
@@ -412,6 +415,92 @@ def freigeben(geheimnis: str) -> dict[str, Any]:
             ),
         )
         return _job(data)
+
+    return _run(act)
+
+
+# --- Human review of held AI evaluations ------------------------------------
+
+_MAX_PRUEFUNGEN = 20
+
+
+def pruefungen_anzeigen() -> dict[str, Any]:
+    """List AI evaluations held for a person (e.g. the AI was unsure) and open the review
+    page in the browser on this machine (`pruefseite` says whether that worked). The person
+    confirms the AI score or sets their own points there; there is no tool that decides a
+    review, and the learner's mastery only counts after that decision.
+    """
+
+    def act(client: LearningClient) -> dict[str, Any]:
+        offen = client.get("/reviews", roles=ROLE_REVIEWER)["reviews"][:_MAX_PRUEFUNGEN]
+        eintraege = []
+        for review in offen:
+            detail = client.get(f"/reviews/{_uuid(review['review_id'])}", roles=ROLE_REVIEWER)
+            eintraege.append({
+                "review_id": detail["review_id"],
+                "grund": detail.get("reason"),
+                "aufgabe": detail.get("task_prompt"),
+                "antwort": detail.get("answer_text"),
+                "erwartet": detail.get("expected_answer"),
+                "kriterien": detail.get("rubric") or [],
+                "ki_punkte": detail.get("ai_score"),
+                "ki_sicherheit": detail.get("ai_confidence"),
+                "zeichnung_png_base64": detail.get("drawing_png_base64"),
+            })
+        ueberblick = [
+            {k: e[k] for k in ("review_id", "grund", "aufgabe", "ki_punkte", "ki_sicherheit")}
+            | {"zeichnung": bool(e["zeichnung_png_base64"])}
+            for e in eintraege
+        ]
+        if not eintraege:
+            return {"offen": 0, "pruefungen": [], "pruefseite": "Keine offenen Pruefungen"}
+        anzeige = _pruefungen.merken(eintraege)
+        # Like the approval page: the secret goes only to the local browser, never to the model.
+        geoeffnet = _browser_oeffnen(pruefung_link(anzeige.geheimnis))
+        return {
+            "offen": len(eintraege),
+            "pruefungen": ueberblick,
+            "pruefseite": (
+                "Pruefseite im Browser dieses Rechners geoeffnet"
+                if geoeffnet
+                else "Pruefseite konnte nicht geoeffnet werden - bitte erneut anzeigen"
+            ),
+        }
+
+    return _run(act)
+
+
+def pruefung_link(geheimnis: str) -> str:
+    return freigabe_link(geheimnis).replace("/freigabe/", PRUEFUNG_PREFIX, 1)
+
+
+def pruefung_entscheiden(
+    geheimnis: str, review_id: str, entscheidung: str, punkte: str, notiz: str
+) -> dict[str, Any]:
+    """Record the person's decision from the review page (not a model tool)."""
+
+    def act(client: LearningClient) -> dict[str, Any]:
+        if entscheidung not in {"confirm", "override"}:
+            raise ValueError("unbekannte Entscheidung")
+        body: dict[str, Any] = {"decision": entscheidung}
+        if entscheidung == "override":
+            prozent = float(punkte)
+            if not 0 <= prozent <= 100:
+                raise ValueError("Punkte muessen zwischen 0 und 100 liegen")
+            body["score"] = prozent / 100
+        if notiz.strip():
+            body["note"] = notiz.strip()[:2_000]
+        try:
+            _pruefungen.einloesen(geheimnis, _uuid(review_id))
+        except FreigabeAbgelehnt as error:
+            raise LearningRejected("pruefung_abgelehnt", error.grund, 0) from error
+        data = client.post(f"/reviews/{_uuid(review_id)}/decision", body, roles=ROLE_REVIEWER)
+        return {
+            "review_id": data["review_id"],
+            "entscheidung": data["decision"],
+            "punkte": data["score"],
+            "lernstand_angerechnet": bool(data.get("mastery_applied")),
+        }
 
     return _run(act)
 

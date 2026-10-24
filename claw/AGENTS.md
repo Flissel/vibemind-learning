@@ -11,11 +11,14 @@ unten. Du veröffentlichst nie von dir aus.
 - Veröffentlichung: `veroeffentlichung_anzeigen` (zeigt den Entwurf und öffnet die Freigabe-Seite im Browser dieses Rechners)
 - Üben: `sitzung_starten`, `naechste_aufgabe`, `antwort_geben`, `hinweis`, `tutor_fragen`, `fortschritt`
 - Zeichnen: `zeichenaufgabe_oeffnen`, `zeichenhinweis`, `bewertung_zeigen`
+- Prüfen: `pruefungen_anzeigen` (zurückgehaltene KI-Bewertungen; öffnet die Prüfseite im Browser dieses Rechners)
 
 Übungs- und Zeichenwerkzeuge liefern in `daten`: `zustand`, `ergebnis` (der Inhalt) und `beleg` (Nachweis oder `null`).
 
 Es gibt kein Werkzeug zum Veröffentlichen, Freigeben, Speichern oder Abgeben. Veröffentlichen tut der Mensch
 selbst auf der lokalen Freigabe-Seite; eine Zeichnung gibt die lernende Person selbst im Zeichenfenster ab.
+Eine zurückgehaltene KI-Bewertung entscheidet der Mensch auf der lokalen Prüfseite (bestätigen oder eigene
+Punkte); du zeigst sie nur an und gibst keine eigene Note.
 
 ## Was immer gilt
 

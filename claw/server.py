@@ -22,6 +22,8 @@ if str(PKG_ROOT) not in sys.path:
 from spaces.learning.claw import werkzeuge  # noqa: E402
 from spaces.learning.claw.freigabe_seite import PREFIX as FREIGABE_PREFIX  # noqa: E402
 from spaces.learning.claw.freigabe_seite import FreigabeSeite  # noqa: E402
+from spaces.learning.claw.pruefung_seite import PREFIX as PRUEFUNG_PREFIX  # noqa: E402
+from spaces.learning.claw.pruefung_seite import PruefungSeite  # noqa: E402
 from spaces.learning.claw.zeichen_seite import PREFIX as ZEICHEN_PREFIX  # noqa: E402
 from spaces.learning.claw.zeichen_seite import ZeichenSeite  # noqa: E402
 
@@ -77,6 +79,9 @@ WERKZEUGE = (
     werkzeuge.zeichenaufgabe_oeffnen,
     werkzeuge.zeichenhinweis,
     werkzeuge.bewertung_zeigen,
+    # Zurueckgehaltene KI-Bewertungen: anzeigen; entscheiden nur die Person auf der
+    # lokalen Pruefseite (pruefung_seite.py).
+    werkzeuge.pruefungen_anzeigen,
 )
 
 SESSION_HEADER = "mcp-session-id"
@@ -175,12 +180,14 @@ class BearerAuth:
 
 
 class FreigabeWeiche:
-    """`/freigabe/...` und `/zeichnen/...` an die lokalen Seiten, alles andere hinter BearerAuth."""
+    """`/freigabe/...`, `/zeichnen/...` und `/pruefung/...` an die lokalen Seiten, alles
+    andere hinter BearerAuth."""
 
-    def __init__(self, mcp_app: Any, seite: Any, zeichnen: Any = None) -> None:
+    def __init__(self, mcp_app: Any, seite: Any, zeichnen: Any = None, pruefung: Any = None) -> None:
         self._mcp_app = mcp_app
         self._seite = seite
         self._zeichnen = zeichnen
+        self._pruefung = pruefung
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         path = scope.get("path", "") if scope["type"] == "http" else ""
@@ -190,6 +197,9 @@ class FreigabeWeiche:
         if self._zeichnen is not None and path.startswith(ZEICHEN_PREFIX):
             await self._zeichnen(scope, receive, send)
             return
+        if self._pruefung is not None and path.startswith(PRUEFUNG_PREFIX):
+            await self._pruefung(scope, receive, send)
+            return
         await self._mcp_app(scope, receive, send)
 
 
@@ -198,7 +208,9 @@ def build_app(server: Any, token: str, port: int = DEFAULT_PORT) -> Any:
     factory = getattr(server, "streamable_http_app", None)
     if factory is None:
         raise SystemExit("MCP-Paket bietet keine ASGI-App; ohne Token-Pruefung wird nicht gestartet")
-    return FreigabeWeiche(BearerAuth(factory(), token), FreigabeSeite(port), ZeichenSeite(port))
+    return FreigabeWeiche(
+        BearerAuth(factory(), token), FreigabeSeite(port), ZeichenSeite(port), PruefungSeite(port)
+    )
 
 
 def main() -> None:
