@@ -66,7 +66,8 @@ def _services() -> _EvaluationServices:
     return _EvaluationServices(
         canvas=CanvasAdaptiveSubmissionService(
             session_factory=factory,
-            gateway=gateway,
+            # A fresh gateway per drawing: each submission runs its own event loop.
+            gateway=build_openfang_model_gateway,
         ),
         tutor=TutorService(
             sessions=AdaptiveSessionService(

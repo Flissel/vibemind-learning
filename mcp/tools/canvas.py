@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -123,9 +123,21 @@ class _SessionCanvasRubric:
 
 
 class CanvasAdaptiveSubmissionService:
-    def __init__(self, *, session_factory: SessionFactory, gateway: ModelGateway) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: SessionFactory,
+        gateway: ModelGateway | Callable[[], ModelGateway],
+    ) -> None:
         self._session_factory = session_factory
         self._gateway = gateway
+
+    def _model_gateway(self) -> ModelGateway:
+        # Each submission runs its own event loop (asyncio.run); a gateway built once
+        # with a pooled async client fails from the second call. Accept a factory.
+        if callable(self._gateway) and not hasattr(self._gateway, "generate"):
+            return self._gateway()
+        return self._gateway
 
     def submit(
         self,
@@ -139,7 +151,7 @@ class CanvasAdaptiveSubmissionService:
         source_refs,
     ) -> CanvasSubmissionOutcome:
         boundary = _SessionCanvasRubric(
-            gateway=self._gateway, actor_id=actor_id, submission_id=submission_id,
+            gateway=self._model_gateway(), actor_id=actor_id, submission_id=submission_id,
             submission=submission, snapshot_png=snapshot_png, source_refs=source_refs,
         )
         service = AdaptiveSessionService(

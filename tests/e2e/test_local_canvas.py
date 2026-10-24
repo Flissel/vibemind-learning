@@ -163,6 +163,26 @@ def test_open_creates_the_launch_and_a_drawing_is_evaluated(world) -> None:
         assert db.scalar(select(func.count()).select_from(LearningEvaluation)) == 1
 
 
+def test_submission_service_builds_a_fresh_gateway_per_drawing() -> None:
+    # asyncio.run per submission closes its loop; a gateway built once with a pooled
+    # async client failed from the second call ("Event loop is closed", seen live in
+    # the worker and the rubric evaluator). A factory gives each drawing its own.
+    built: list[_Gateway] = []
+
+    def factory() -> _Gateway:
+        built.append(_Gateway())
+        return built[-1]
+
+    service = CanvasAdaptiveSubmissionService(session_factory=lambda: None, gateway=factory)
+
+    assert service._model_gateway() is built[0]
+    assert service._model_gateway() is built[1]
+    fixed = _Gateway()
+    assert CanvasAdaptiveSubmissionService(
+        session_factory=lambda: None, gateway=fixed
+    )._model_gateway() is fixed
+
+
 def test_another_person_cannot_open_the_canvas(world) -> None:
     dispatcher, started, course_id, canvas_item, *_ = world
     outcome = dispatcher.dispatch(ToolRequestV1(tool=LearningToolName.CANVAS_OPEN, event=_event(
