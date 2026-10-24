@@ -148,3 +148,34 @@ def test_strokes_become_bounded_path_objects() -> None:
     assert [o["object_id"] for o in objekte] == ["strich-1", "strich-3"]
     with pytest.raises(ZeichnungAbgelehnt):
         objekte_aus_strichen([{"punkte": [["a", 1]]}])
+
+
+def test_hint_button_returns_the_section_hint_without_using_the_secret(store, monkeypatch) -> None:
+    calls = []
+
+    def fake_hinweis(session_id, task_id):
+        calls.append((session_id, task_id))
+        return {"ok": True, "daten": {"ergebnis": {"hint": "Lies den Abschnitt „Waehrend der Arbeit“."}}}
+
+    monkeypatch.setattr(werkzeuge, "hinweis", fake_hinweis)
+    secret = _offen(store)
+    headers = {"Origin": ORIGIN}
+
+    answer = _call("POST", f"/zeichnen/{secret}/hinweis", headers=headers, body=b"{}")
+
+    assert answer.status_code == 200
+    assert answer.json() == {"ok": True, "hinweis": "Lies den Abschnitt „Waehrend der Arbeit“."}
+    assert calls == [(SESSION, ACTIVITY)]
+    assert store.holen(secret)  # a hint does not use up the drawing task
+    assert _call("POST", f"/zeichnen/{secret}/hinweis", body=b"{}").status_code == 403
+
+
+def test_hint_button_explains_when_hints_are_off(store, monkeypatch) -> None:
+    monkeypatch.setattr(werkzeuge, "hinweis",
+                        lambda s, t: {"ok": False, "fehler": "exam sessions do not expose hints"})
+    answer = _call("POST", f"/zeichnen/{_offen(store)}/hinweis", headers={"Origin": ORIGIN}, body=b"{}")
+    assert answer.status_code == 409 and answer.json()["ok"] is False
+
+
+def test_page_offers_a_hint_button(store) -> None:
+    assert 'id="hinweis"' in _call("GET", f"/zeichnen/{_offen(store)}").text

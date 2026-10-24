@@ -24,6 +24,7 @@ PREFIX = "/zeichnen/"
 _SECRET = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 _LOOPBACK_CLIENTS = {"127.0.0.1", "::1"}
 _MAX_BODY = 25_000_000
+_HINT_SUFFIX = "/hinweis"
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -57,8 +58,19 @@ class ZeichenSeite:
             await _seite(send, 403, "Nicht erlaubt", "<p>Diese Seite ist nur lokal erreichbar.</p>")
             return
         geheimnis = scope["path"][len(PREFIX):]
+        hinweis = geheimnis.endswith(_HINT_SUFFIX)
+        if hinweis:
+            geheimnis = geheimnis.removesuffix(_HINT_SUFFIX)
         if not _SECRET.match(geheimnis):
             await _seite(send, 404, "Nicht gefunden", "<p>Diese Zeichenaufgabe gibt es nicht.</p>")
+            return
+        if hinweis:
+            if scope["method"] != "POST" or headers.get(b"origin") not in self._origins:
+                await _json(send, 403, {"ok": False, "fehler": "Hinweis nur von dieser Seite aus."})
+                return
+            await _koerper(receive)
+            ergebnis = await asyncio.to_thread(_hinweis, geheimnis)
+            await _json(send, 200 if ergebnis.get("ok") else 409, ergebnis)
             return
         if scope["method"] == "GET":
             try:
@@ -102,7 +114,9 @@ def _flaeche(aufgabe: str) -> str:
         '<label>Staerke <input id="staerke" type="range" min="2" max="24" value="5"></label>'
         '<button type="button" id="radierer">Radierer</button>'
         '<button type="button" id="zurueck">Rueckgaengig</button>'
-        '<button type="button" id="leeren">Leeren</button></div>'
+        '<button type="button" id="leeren">Leeren</button>'
+        '<button type="button" id="hinweis">Hinweis</button></div>'
+        '<p id="hinweistext" class="hinweistext"></p>'
         '<canvas id="flaeche" width="1000" height="620"></canvas>'
         '<p><button type="button" id="abgeben" class="abgeben">Abgeben</button> '
         '<span id="status"></span></p><div id="ergebnis"></div>'
@@ -145,6 +159,15 @@ knopf.onclick = async () => {
       p.textContent = (k.kriterium || '') + ' (' + Math.round((k.punkte || 0) * 100) + ' %): ' + (k.rueckmeldung || ''); box.appendChild(p); }
   } catch (err) { status.textContent = 'Abgabe fehlgeschlagen: ' + err; knopf.disabled = false; }
 };
+const hinweisKnopf = document.getElementById('hinweis'), hinweisText = document.getElementById('hinweistext');
+hinweisKnopf.onclick = async () => {
+  hinweisKnopf.disabled = true; hinweisText.textContent = 'Hinweis wird geholt ...';
+  try {
+    const d = await (await fetch(location.pathname + '/hinweis', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{}'})).json();
+    hinweisText.textContent = d.ok ? 'Hinweis: ' + d.hinweis : 'Kein Hinweis: ' + (d.fehler || 'nicht verfuegbar');
+  } catch (err) { hinweisText.textContent = 'Kein Hinweis: ' + err; }
+  hinweisKnopf.disabled = false;
+};
 weiss();
 """
 
@@ -175,7 +198,8 @@ async def _seite(send: Send, status: int, titel: str, inhalt: str, *, skript: bo
         ".aufgabe{font-size:1.15rem}.leiste{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.5rem 0}"
         ".farbe{width:2rem;height:2rem;border:2px solid #888;border-radius:50%;cursor:pointer}"
         "canvas{border:1px solid #999;width:100%;height:auto;touch-action:none;background:#fff}"
-        ".abgeben{font-size:1.1rem;padding:.5rem 1.5rem}</style>"
+        ".abgeben{font-size:1.1rem;padding:.5rem 1.5rem}.hinweistext{background:#f4f4ee;padding:.4rem .6rem}"
+        ".hinweistext:empty{display:none}</style>"
         f"<body><h1>{html.escape(titel)}</h1>{inhalt}{script}</body></html>"
     ).encode("utf-8")
     await send({"type": "http.response.start", "status": status,
@@ -260,3 +284,21 @@ def _abgeben(geheimnis: str, png_base64: str, striche: object) -> dict[str, Any]
             "evaluation_id": eingereicht["daten"]["ergebnis"].get("evaluation_id"),
         },
     }
+
+
+def _hinweis(geheimnis: str) -> dict[str, Any]:
+    """The task's section hint (no model call, never the answer); training only."""
+    try:
+        zeichnung = werkzeuge._zeichnungen.holen(geheimnis)
+    except ZeichnungAbgelehnt as error:
+        return {"ok": False, "fehler": error.grund}
+    antwort = werkzeuge.hinweis(zeichnung.session_id, zeichnung.activity_id)
+    if not antwort.get("ok"):
+        fehler = str(antwort.get("fehler") or "")
+        if "exam" in fehler:
+            fehler = "Im Pruefungsmodus gibt es keine Hinweise."
+        return {"ok": False, "fehler": fehler or "Kein Hinweis verfuegbar."}
+    text = (antwort.get("daten") or {}).get("ergebnis", {}).get("hint")
+    if not isinstance(text, str) or not text:
+        return {"ok": False, "fehler": "Kein Hinweis verfuegbar."}
+    return {"ok": True, "hinweis": text}

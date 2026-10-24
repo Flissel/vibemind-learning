@@ -163,6 +163,36 @@ def test_open_creates_the_launch_and_a_drawing_is_evaluated(world) -> None:
         assert db.scalar(select(func.count()).select_from(LearningEvaluation)) == 1
 
 
+def test_canvas_hint_accepts_the_tutors_practice_source_refs(world) -> None:
+    # The tutor cites the practice item's JSON refs; the launch carries source://
+    # locators. Comparing the strings refused every hint as "not source grounded".
+    dispatcher, started, course_id, canvas_item, model, factory, backend = world
+    sid = UUID(started.session_id)
+    common = {"session_ref": "zeichnen-1"}
+
+    def call(tool, **kw):
+        return dispatcher.dispatch(ToolRequestV1(tool=tool, event=_event(
+            kw.pop("event_type"), session_id=sid, course_id=course_id, **kw)))
+
+    opened = call(LearningToolName.CANVAS_OPEN, event_type=LearningEventType.CANVAS_OPEN,
+                  payload={**common, "activity_id": str(canvas_item)})
+    document = CanvasDocumentV1.model_validate(opened.result["canvas"]["document"])
+    drawn = document.model_copy(update={"objects": (CanvasObjectV1(
+        object_id="strich-1", object_type="path", x=1, y=1, width=5, height=5, rotation=0,
+    ),)})
+    call(LearningToolName.CANVAS_SAVE, event_type=LearningEventType.CANVAS_SAVE,
+         expected_revision=0, key="save-h",
+         payload={**common, "document": drawn.model_dump(mode="json"),
+                  "snapshot_png_base64": base64.b64encode(PNG).decode()})
+
+    hinted = call(LearningToolName.CANVAS_HINT, event_type=LearningEventType.CANVAS_HINT,
+                  expected_revision=1,
+                  payload={**common, "selection": {"object_ids": ["strich-1"]}})
+
+    assert hinted.state == "completed", hinted
+    assert hinted.result["hint"]["answer"] == "Schau auf die Befestigung."
+
+
 def test_submission_service_builds_a_fresh_gateway_per_drawing() -> None:
     # asyncio.run per submission closes its loop; a gateway built once with a pooled
     # async client failed from the second call ("Event loop is closed", seen live in

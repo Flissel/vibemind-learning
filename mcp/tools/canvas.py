@@ -445,7 +445,10 @@ class CanvasGateway:
             raise ValueError("canvas tutor response is invalid")
         allowed = {item.locator for item in launch.source_refs}
         source_refs = value.get("source_refs")
-        if not isinstance(source_refs, (list, tuple)) or not set(source_refs) <= allowed:
+        # The tutor cites the practice item's canonical JSON refs; compare as locators.
+        if not isinstance(source_refs, (list, tuple)) or not all(
+            isinstance(ref, str) for ref in source_refs
+        ) or not {canvas_locator(ref) for ref in source_refs} <= allowed:
             raise ValueError("canvas tutor response is not source grounded")
         return self._outcome(session, operation="hint", extra={"hint": value})
 
