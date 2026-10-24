@@ -22,7 +22,9 @@ _LOOPBACK_CLIENTS = {"127.0.0.1", "::1"}
 _HEADERS = [
     (b"content-type", b"text/html; charset=utf-8"),
     (b"cache-control", b"no-store"),
-    (b"referrer-policy", b"no-referrer"),
+    # Not "no-referrer": with it Chrome sends "Origin: null" on the form post and the
+    # real click was refused (24.10.). "same-origin" still keeps the link from others.
+    (b"referrer-policy", b"same-origin"),
     (b"x-content-type-options", b"nosniff"),
     (
         b"content-security-policy",

@@ -80,6 +80,10 @@ def test_page_shows_the_outline_and_a_button(store) -> None:
     assert '<form method="post">' in page.text
     assert "default-src 'none'" in page.headers["content-security-policy"]
     assert page.headers["cache-control"] == "no-store"
+    # Live (24.10.): with "no-referrer" Chrome sent "Origin: null" on the button's
+    # form post and the real click was refused. "same-origin" still keeps the
+    # secret link from other sites and lets the browser send this page's Origin.
+    assert page.headers["referrer-policy"] == "same-origin"
 
 
 def test_titles_are_escaped(store) -> None:
