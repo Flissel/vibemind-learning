@@ -99,6 +99,13 @@ def _inhalt(inhalt: dict[str, Any]) -> str:
         teile.append("</ol>")
     else:
         teile.append("<p>Kapitel und Lektionen sind unbekannt.</p>")
+    hinweise = inhalt.get("ki_hinweise") or []
+    if hinweise:
+        teile.append(
+            "<h3>Hinweise der KI-Pruefung (halten den Kurs nicht auf)</h3><ul>"
+            + "".join(f"<li>{html.escape(str(h))}</li>" for h in hinweise)
+            + "</ul>"
+        )
     unbelegt = inhalt.get("unbelegte_aussagen") or []
     teile.append(
         f"<p>Unbelegte Aussagen: {len(unbelegt)}</p>"

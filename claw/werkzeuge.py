@@ -250,6 +250,9 @@ def kurs_status(job_id: str) -> dict[str, Any]:
             out["pruefung_haelt_an"] = list(data["quality_issue_codes"])
         if data.get("ai_review_issues"):
             out["ki_pruefung"] = list(data["ai_review_issues"])
+        if data.get("ai_review_notes"):
+            # Remarks of an AI review that let the draft through; they do not hold it.
+            out["ki_hinweise"] = list(data["ai_review_notes"])
         return out
 
     return _run(act)
@@ -302,6 +305,7 @@ def _anzeigen(client: LearningClient, job_id: str) -> dict[str, Any]:
         "kapitel": kapitel,
         "lektionen": sum(len(k["lektionen"]) for k in kapitel) if kapitel is not None else None,
         "unbelegte_aussagen": list(job.get("unsupported_claim_ids") or []),
+        "ki_hinweise": list(job.get("ai_review_notes") or []),
         "revision": revision,
         "kurs_revision": kurs_revision,
     }

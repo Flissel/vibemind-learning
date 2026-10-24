@@ -259,6 +259,10 @@ class CourseFactoryApplication:
                         result["ai_review_issues"] = review_issues
                     if codes is not None:
                         result["quality_issue_codes"] = codes
+            if job.state is not FactoryState.QUALITY_GATE:
+                notes = self._ai_review_notes(job)
+                if notes:
+                    result["ai_review_notes"] = notes
         return ApplicationOutcomeV1(
             state="completed",
             aggregate=_aggregate(job.id, job.revision),
@@ -295,9 +299,28 @@ class CourseFactoryApplication:
         except LookupError:
             return None
         review = payload.get("quality_reviewer")
-        if not isinstance(review, dict) or review.get("decision") == "pass":
+        if not isinstance(review, dict):
+            return None
+        blocking = review.get("blocking_issues")
+        if isinstance(blocking, list) and blocking:
+            return [str(issue)[:1_000] for issue in blocking[:20]]
+        if review.get("decision") == "pass":
             return None
         issues = review.get("issues")
+        if not isinstance(issues, list):
+            return []
+        return [str(issue)[:1_000] for issue in issues[:20]]
+
+    def _ai_review_notes(self, job: FactoryJobRecord) -> list[str]:
+        """The AI reviewer's remarks on a draft it let through; shown, never holding."""
+        try:
+            payload = self._artifact_store.read_stage_output(
+                job.id, attempt_number=job.attempt_number, stage=FactoryState.QUALITY_GATE
+            )
+        except LookupError:
+            return []
+        review = payload.get("quality_reviewer")
+        issues = review.get("issues") if isinstance(review, dict) else None
         if not isinstance(issues, list):
             return []
         return [str(issue)[:1_000] for issue in issues[:20]]

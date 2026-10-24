@@ -182,6 +182,8 @@ class FactoryJobResponseV1(ContractModel):
     quality_issue_codes: tuple[SafeToken, ...] | None = None
     # The AI reviewer's reasons when it asked for a revision.
     ai_review_issues: tuple[Annotated[str, Field(max_length=1_000)], ...] | None = None
+    # The AI reviewer's remarks on a draft it let through (shown, never holding).
+    ai_review_notes: tuple[Annotated[str, Field(max_length=1_000)], ...] | None = None
     evidence: EvidenceRefV1 | None = None
 
 

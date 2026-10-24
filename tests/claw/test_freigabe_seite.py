@@ -128,3 +128,14 @@ def test_mcp_path_still_requires_the_bearer_token(store) -> None:
     assert _call("POST", "/mcp").status_code == 401
     ok = _call("POST", "/mcp", headers={"Authorization": "Bearer " + "t" * 40})
     assert ok.status_code == 200 and ok.text == "mcp"
+
+
+def test_page_lists_the_non_blocking_ai_notes_escaped(store) -> None:
+    secret = store.merken(
+        "job-2", 8, 3,
+        {"job_id": "job-2", "titel": "Akku", "kapitel": [], "unbelegte_aussagen": [],
+         "ki_hinweise": ["Kapiteltitel <lang>"], "revision": 8, "kurs_revision": 3},
+    ).geheimnis
+    page = _call("GET", f"/freigabe/{secret}")
+    assert "Hinweise der KI-Pruefung" in page.text
+    assert "Kapiteltitel &lt;lang&gt;" in page.text

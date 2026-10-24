@@ -140,11 +140,13 @@ def generation_context(tmp_path: Path):
 
 class _GenerationGateway:
     def __init__(
-        self, draft, *, unsupported: tuple[str, ...] = (), review_decision: str = "pass"
+        self, draft, *, unsupported: tuple[str, ...] = (), review_decision: str = "pass",
+        review_notes: tuple[str, ...] = (),
     ) -> None:
         self.draft = draft
         self.unsupported = unsupported
         self.review_decision = review_decision
+        self.review_notes = review_notes
         self.calls: list[str] = []
         self.payloads: list[object] = []
 
@@ -195,7 +197,9 @@ class _GenerationGateway:
             "quality_reviewer": QualityReviewOutput(
                 schema_version="quality-review-v1",
                 decision=self.review_decision,
-                issues=[] if self.review_decision == "pass" else ["Make the tasks apply the rules."],
+                issues=list(self.review_notes)
+                if self.review_decision == "pass"
+                else ["Make the tasks apply the rules."],
                 score=0.9,
             ),
         }
@@ -560,3 +564,34 @@ async def test_feedback_reaches_the_roles_of_the_next_attempt(generation_context
     await _runner(factory, root, repository, seen).run_job(claimed.id)
 
     assert any("Make the tasks apply the rules." in json.dumps(p) for p in seen.payloads)
+
+
+@pytest.mark.asyncio
+async def test_status_shows_the_non_blocking_ai_notes_of_a_ready_draft(generation_context) -> None:
+    # Since the AI review holds only for blocking findings, its other remarks must
+    # still reach the person who approves the course.
+    factory, root, repository, job, draft = generation_context
+    gateway = _GenerationGateway(draft, review_notes=("Kapiteltitel sind lang.",))
+    await _runner(factory, root, repository, gateway).run_job(job.id)
+
+    status = CourseFactoryGateway(
+        session_factory=factory,
+        repository=repository,
+        publisher=object(),
+        artifact_store=CourseFactoryArtifactStore(factory, artifact_root=root),
+    ).execute(
+        ToolRequestV1(
+            tool=LearningToolName.GENERATION_STATUS,
+            event=EventEnvelopeV1(
+                event_type=LearningEventType.GENERATION_STATUS,
+                invocation_id=uuid4(),
+                correlation_id=uuid4(),
+                actor=ActorV1(actor_id="local-owner", actor_type="local_user"),
+                course_id=job.course_id,
+                payload={"job_id": job.id},
+            ),
+        )
+    )
+    assert status.result["state"] == "review_ready"
+    assert status.result["ai_review_notes"] == ["Kapiteltitel sind lang."]
+    assert "ai_review_issues" not in status.result
