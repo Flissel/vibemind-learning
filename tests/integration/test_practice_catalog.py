@@ -223,3 +223,48 @@ def test_quiz_options_are_shuffled_so_the_answer_is_not_always_first(factory) ->
     for item in items:
         assert sorted(o["id"] for o in item.scoring_config["options"]) == list("abcd")
         assert item.expected_answer == {"choice_id": "a"}
+
+
+def test_a_task_solved_correctly_is_not_asked_again_while_others_remain(factory) -> None:
+    # Live (24.10.): a training session asked the same open task twice although the
+    # first answer was fully correct.
+    from spaces.learning.services.adaptive_engine.session_service import AnswerCommand
+    from spaces.learning.services.course_factory.schemas import QuizOptionDraft
+
+    ids = _ids()
+    draft = _draft(ids)
+    quizzes = [
+        draft.activities[0].model_copy(
+            update={
+                "activity_id": f"quiz-{n}",
+                "type": "quiz",
+                "rubric": [],
+                "options": [QuizOptionDraft(option_id=o, text=f"Option {o}") for o in ("a", "b")],
+                "correct_option_ids": ["a"],
+            }
+        )
+        for n in (1, 2)
+    ]
+    course_id = str(uuid4())
+    PracticeCatalogProjector(factory).project(
+        course_id=course_id, course_revision=5, draft=draft.model_copy(update={"activities": quizzes})
+    )
+    service = AdaptiveSessionService(factory)
+    turn = service.start(
+        SessionStartCommand(course_id=course_id, course_revision=5, actor_id="local-owner",
+                            mode="training", blueprint={"max_attempts": 4})
+    )
+    solved = turn.task.id
+
+    def answer(turn, choice):
+        return service.answer(AnswerCommand(
+            session_id=turn.session_id, actor_id="local-owner",
+            expected_session_revision=turn.session_revision, answer={"choice_id": choice},
+        ))
+
+    turn = answer(turn, "a")  # correct
+    assert turn.task.id != solved
+    turn = answer(turn, "b")  # wrong: the unsolved task may come again, the solved one not
+    assert turn.task.id != solved
+    turn = answer(turn, "a")  # now both are solved: repeating is the only option left
+    assert turn.task is not None

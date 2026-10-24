@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Callable, Literal, Protocol
 from uuid import UUID, uuid4
@@ -741,13 +741,34 @@ class AdaptiveSessionService:
             )
             for item in items
         )
-        result = select_next_item(candidates, context)
+        # A task solved fully correctly in this session is not asked again while other
+        # tasks remain (live 24.10.: the same correct open task came twice).
+        solved = self._solved_item_ids(db, row.id)
+        open_candidates = tuple(c for c in candidates if c.item_id not in solved) or candidates
+        result = select_next_item(open_candidates, context)
+        if result.selected is None and context.alternate_representation_concepts:
+            # Only one representation exists for the concept (e.g. all single choice):
+            # the alternate-representation rule must not end the session.
+            result = select_next_item(
+                open_candidates, replace(context, alternate_representation_concepts=frozenset())
+            )
         if result.selected is None:
             raise LookupError("no eligible adaptive item is available")
         selected = item_by_id[result.selected.item_id]
         reason = asdict(result.selected)
         reason["reason_codes"] = list(result.selected.reason_codes)
         return selected, reason
+
+    @staticmethod
+    def _solved_item_ids(db: Session, session_id: str) -> set[str]:
+        return set(
+            db.scalars(
+                select(LearningAttempt.item_id)
+                .join(LearningResponse, LearningResponse.attempt_id == LearningAttempt.id)
+                .join(LearningEvaluation, LearningEvaluation.response_id == LearningResponse.id)
+                .where(LearningAttempt.session_id == session_id, LearningEvaluation.score >= 0.999)
+            ).all()
+        )
 
     def _turn(
         self,
