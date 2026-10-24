@@ -435,10 +435,16 @@ class CanvasGateway:
             or not all(isinstance(value, str) and 0 < len(value) <= 128 for value in object_ids)
         ):
             raise ValueError("canvas hint selection is invalid")
+        # The tutor sees the saved drawing itself, not only the selected stroke ids.
+        drawing = self._penecho.export_session(session.id, self._session_ref(request))
         answer = asyncio.run(self._tutor.ask(
             session_id=str(session.id), actor_id=launch.actor_id,
-            question="Guide the learner on selected canvas objects: " + ", ".join(object_ids),
+            question=(
+                "Guide the learner on their drawing (attached image); they ask about the "
+                "selected objects: " + ", ".join(object_ids)
+            ),
             correlation_id=str(request.event.correlation_id),
+            drawing_png_base64=drawing.snapshot_png_base64,
         ))
         value = answer.model_dump(mode="json") if hasattr(answer, "model_dump") else answer
         if not isinstance(value, dict):

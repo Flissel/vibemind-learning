@@ -46,6 +46,8 @@ class CanvasHintRequest(_StrictModel):
     actor_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
     question: Annotated[str, Field(min_length=1, max_length=10_000)]
     correlation_id: UUID
+    # The learner's current drawing (canvas hint); the tutor sees it as an image.
+    drawing_png_base64: Annotated[str, Field(min_length=12, max_length=27_000_000)] | None = None
 
 
 @dataclass(frozen=True)
@@ -124,9 +126,16 @@ async def hint_canvas(
     key: Annotated[str, Header(alias=KEY_HEADER, max_length=512)] = "",
 ) -> dict[str, object]:
     _require_key(key)
+    drawing = None
+    if payload.drawing_png_base64 is not None:
+        try:
+            drawing = base64.b64decode(payload.drawing_png_base64, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid drawing") from error
     answer = await _services().tutor.ask(
         session_id=str(payload.session_id), actor_id=payload.actor_id,
         question=payload.question, correlation_id=str(payload.correlation_id),
+        drawing_png=drawing,
     )
     return {"tutor": answer.model_dump(mode="json")}
 

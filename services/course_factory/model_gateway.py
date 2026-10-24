@@ -66,6 +66,7 @@ _MAX_REQUEST_BYTES = 500_000
 _MAX_RESPONSE_BYTES = 1_000_000
 _MAX_IMAGE_BYTES = 5_000_000
 _PROMPT_TRANSPORTS = ("system", "inline")
+_IMAGE_ROLES = frozenset({"rubric_evaluator", "learning_tutor"})
 # 30 s, then 60 s for 429/5xx answers.
 _RETRY_BASE_SECONDS = 30
 # A dropped connection usually means the watchdog restarted OpenFang; live the
@@ -143,7 +144,10 @@ class ModelInvocation:
             raise GatewayInputError("model input must be JSON serializable") from error
         if len(encoded) > _MAX_REQUEST_BYTES:
             raise GatewayInputError("model input exceeds the bounded request size")
-        if self.image_inputs and (self.role != "rubric_evaluator" or len(self.image_inputs) != 1):
+        # One image, only for roles that judge or coach the learner's own drawing.
+        if self.image_inputs and (
+            self.role not in _IMAGE_ROLES or len(self.image_inputs) != 1
+        ):
             raise GatewayInputError("model image input is not authorized for this role")
 
 

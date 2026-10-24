@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +19,7 @@ from spaces.learning.services.adaptive_engine.session_service import AdaptiveSes
 from spaces.learning.services.course_factory.model_gateway import (
     GatewayUnavailable,
     ModelGateway,
+    ModelImageInput,
     ModelInvocation,
 )
 
@@ -54,6 +56,7 @@ class TutorService:
         actor_id: str,
         question: str,
         correlation_id: str,
+        drawing_png: bytes | None = None,
     ) -> TutorAnswer:
         if not question.strip() or len(question) > 10_000:
             raise ValueError("tutor question is invalid")
@@ -65,6 +68,27 @@ class TutorService:
         # Canonical refs are long JSON with the chunk text; the model cites short
         # keys instead, mapped back before the grounding check.
         keys = {f"S{index}": ref for index, ref in enumerate(turn.task.source_refs, start=1)}
+        payload: dict[str, object] = {
+            "question": question.strip(),
+            "task": {
+                "prompt": turn.task.prompt,
+                "type": turn.task.type,
+                "difficulty": turn.task.difficulty,
+            },
+            "sources": [{"key": key, "source": ref} for key, ref in keys.items()],
+            "policy": "guide_without_revealing_expected_answer",
+        }
+        images: tuple[ModelImageInput, ...] = ()
+        if drawing_png is not None:
+            # A canvas hint is about what the learner drew; the tutor must see it.
+            images = (
+                ModelImageInput(
+                    media_type="image/png",
+                    content=drawing_png,
+                    sha256=hashlib.sha256(drawing_png).hexdigest(),
+                ),
+            )
+            payload["drawing"] = "The attached image is the learner's current drawing for this task."
         result = await self._gateway.generate(
             ModelInvocation(
                 role="learning_tutor",
@@ -72,16 +96,8 @@ class TutorService:
                 correlation_id=correlation_id,
                 prompt_version="learning-tutor-prompt-v2",
                 output_schema_version="learning-tutor-v1",
-                input_payload={
-                    "question": question.strip(),
-                    "task": {
-                        "prompt": turn.task.prompt,
-                        "type": turn.task.type,
-                        "difficulty": turn.task.difficulty,
-                    },
-                    "sources": [{"key": key, "source": ref} for key, ref in keys.items()],
-                    "policy": "guide_without_revealing_expected_answer",
-                },
+                input_payload=payload,
+                image_inputs=images,
             ),
             TutorModelOutput,
         )

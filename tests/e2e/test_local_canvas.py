@@ -62,7 +62,11 @@ class _Gateway:
 
 
 class _Tutor:
+    def __init__(self) -> None:
+        self.calls = []
+
     async def ask(self, **kwargs):
+        self.calls.append(kwargs)
         return {"answer": "Schau auf die Befestigung.", "source_refs": [REF], "next_step": "."}
 
 
@@ -110,15 +114,17 @@ def world(tmp_path: Path):
     backend = LocalCanvasBackend(root=tmp_path / "canvas-sessions", origin=ORIGIN)
     (tmp_path / "artifacts").mkdir()
     model = _Gateway()
+    tutor = _Tutor()
     gateway = CanvasGateway(
         penecho=backend,
         artifacts=CanvasArtifactStore(artifact_root=tmp_path / "artifacts"),
         evaluations=CanvasAdaptiveSubmissionService(session_factory=factory, gateway=model),
-        tutor=_Tutor(),
+        tutor=tutor,
         launcher=LocalCanvasLauncher(session_factory=factory, backend=backend),
     )
     dispatcher = LearningDispatcher(gateways=build_canvas_gateways(gateway),
                                     receipts=InMemoryReceiptStore())
+    backend.tutor = tutor  # test hook: the canvas hint test reads what the tutor got
     yield dispatcher, started, course_id, canvas_item, model, factory, backend
     engine.dispose()
 
@@ -191,6 +197,8 @@ def test_canvas_hint_accepts_the_tutors_practice_source_refs(world) -> None:
 
     assert hinted.state == "completed", hinted
     assert hinted.result["hint"]["answer"] == "Schau auf die Befestigung."
+    # The tutor gets the saved drawing, not only the selected stroke ids.
+    assert base64.b64decode(backend.tutor.calls[0]["drawing_png_base64"]) == PNG
 
 
 def test_submission_service_builds_a_fresh_gateway_per_drawing() -> None:

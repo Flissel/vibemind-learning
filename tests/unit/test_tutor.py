@@ -154,3 +154,27 @@ def test_tutor_gateway_says_when_no_task_is_open() -> None:
 
     assert outcome.state == "rejected"
     assert outcome.error is not None and outcome.error.code == "no_open_task"
+
+
+@pytest.mark.asyncio
+async def test_tutor_sees_the_learners_drawing_when_given() -> None:
+    # Live (24.10.): the canvas hint asked the tutor about "strich-1, strich-2"
+    # without the drawing; the hint could not refer to what was drawn.
+    png = b"\x89PNG\r\n\x1a\nzeichnung"
+    gateway = GatewayStub()
+    await TutorService(sessions=SessionStub(), gateway=gateway).ask(
+        session_id=str(uuid4()),
+        actor_id="student-1",
+        question="Was fehlt in meiner Skizze?",
+        correlation_id=str(uuid4()),
+        drawing_png=png,
+    )
+    assert gateway.invocation.image_inputs[0].content == png
+    assert "drawing" in gateway.invocation.input_payload
+
+    plain = GatewayStub()
+    await TutorService(sessions=SessionStub(), gateway=plain).ask(
+        session_id=str(uuid4()), actor_id="student-1", question="Wie?",
+        correlation_id=str(uuid4()),
+    )
+    assert plain.invocation.image_inputs == ()
