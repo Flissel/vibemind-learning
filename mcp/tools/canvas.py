@@ -28,7 +28,7 @@ from spaces.learning.services.adaptive_engine.session_service import (
 from spaces.learning.services.course_factory.model_gateway import ModelGateway
 from spaces.learning.services.course_factory.repository import SessionFactory
 from spaces.learning.services.evaluation.penecho import (
-    CanvasEvaluationRequest, SessionPenEchoEvaluator,
+    CanvasEvaluationRequest, SessionPenEchoEvaluator, canvas_locator,
 )
 from spaces.learning.services.evaluation.schemas import RubricDecision, RubricEvaluationRequest
 from sqlalchemy import select
@@ -92,7 +92,9 @@ class _SessionCanvasRubric:
 
     def evaluate(self, request: RubricEvaluationRequest) -> RubricDecision:
         declared = {item.locator for item in self._source_refs}
-        if set(request.source_refs) != declared:
+        # Practice items cite canonical JSON refs; the launch carries their locators.
+        mapped = {canvas_locator(ref): ref for ref in request.source_refs}
+        if set(mapped) != declared:
             raise ValueError("canvas session sources do not match PenEcho launch sources")
         canvas_request = CanvasEvaluationRequest(
             evaluation_id=request.evaluation_id,
@@ -103,6 +105,7 @@ class _SessionCanvasRubric:
             expected_answer=request.expected_answer,
             rubric=tuple(request.rubric),
             source_refs=self._source_refs,
+            source_texts={locator: ref for locator, ref in mapped.items() if locator != ref},
             model_version=request.model_version,
             prompt_version=request.prompt_version,
             source_version=request.source_version,

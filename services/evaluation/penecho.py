@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, replace
 from uuid import UUID
 
@@ -35,6 +36,26 @@ from spaces.learning.services.evaluation.schemas import (
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+def canvas_locator(ref: str) -> str:
+    """The canvas contract's source:// locator for a practice item's source ref."""
+    if ref.startswith("source://"):
+        return ref
+    value = json.loads(ref)
+    return f"source://{value['source_id']}/{value['source_revision']}/{value['chunk_id']}"
+
+
+def canvas_source_reference(ref: str) -> SourceReferenceV1:
+    """A canvas launch source for a practice item's canonical JSON source ref."""
+    value = json.loads(ref)
+    heading = (value.get("locator") or {}).get("heading")
+    return SourceReferenceV1(
+        source_id=str(value["source_id"]),
+        revision=int(value["source_revision"]),
+        locator=canvas_locator(ref),
+        title=str(heading)[:500] if heading else "Quelle",
+    )
+
+
 class CanvasEvaluationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -46,6 +67,9 @@ class CanvasEvaluationRequest(BaseModel):
     expected_answer: str = Field(min_length=1, max_length=50_000)
     rubric: tuple[RubricCriterion, ...] = Field(min_length=1, max_length=100)
     source_refs: tuple[SourceReferenceV1, ...] = Field(min_length=1, max_length=256)
+    # locator -> the canonical source ref (with chunk text) a practice item cites.
+    # The model sees the text; the session keeps its refs, the result its locators.
+    source_texts: dict[str, str] = Field(default_factory=dict)
     model_version: str = Field(min_length=1, max_length=200)
     prompt_version: str = Field(min_length=1, max_length=200)
     source_version: str = Field(min_length=1, max_length=200)
@@ -97,7 +121,9 @@ class PenEchoEvaluator:
             content=snapshot_png,
             sha256=request.submission.rendered_snapshot.sha256,
         )
-        source_locators = [item.locator for item in request.source_refs]
+        source_locators = [
+            request.source_texts.get(item.locator, item.locator) for item in request.source_refs
+        ]
         rubric_request = RubricEvaluationRequest(
             evaluation_id=request.evaluation_id,
             response_id=request.response_id,
@@ -146,7 +172,10 @@ class PenEchoEvaluator:
         request: CanvasEvaluationRequest, decision: RubricDecision
     ) -> CanvasRubricResultV1:
         rubric = {item.criterion_id: item for item in request.rubric}
-        sources = {item.locator: item for item in request.source_refs}
+        sources = {
+            request.source_texts.get(item.locator, item.locator): item
+            for item in request.source_refs
+        }
         criteria = tuple(
             CanvasRubricCriterionV1(
                 criterion_id=item.criterion_id,

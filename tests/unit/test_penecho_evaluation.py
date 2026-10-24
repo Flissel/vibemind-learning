@@ -207,6 +207,61 @@ async def test_canvas_evaluation_uses_structured_and_rendered_evidence() -> None
 
 
 @pytest.mark.asyncio
+async def test_canvas_evaluation_shows_the_model_the_source_text() -> None:
+    # Practice items cite canonical JSON refs carrying the chunk text; the canvas
+    # contract speaks source:// locators. The model must see the text, the
+    # session keeps its JSON refs, the canvas result its locators.
+    texts = {
+        "source://authority/3": '{"content":"OpenFang autorisiert die Ausfuehrung."}',
+        "source://readback/2": '{"content":"Erst die Rueckmeldung belegt den Erfolg."}',
+    }
+    output = _output().model_copy(
+        update={
+            "criteria": [
+                c.model_copy(update={"source_refs": [key]})
+                for c, key in zip(_output().criteria, ("S1", "S2"))
+            ]
+        }
+    )
+    gateway = _Gateway(output)
+    recorder = _Recorder()
+    evaluator = PenEchoEvaluator(
+        gateway=gateway,
+        recorder=recorder,
+        review_queue=InMemoryReviewQueue(),
+        mastery=_Mastery(),
+    )
+    request = _request().model_copy(update={"source_texts": texts})
+
+    result = await evaluator.evaluate(request, snapshot_png=PNG)
+
+    sources = gateway.invocations[0].input_payload["sources"]
+    assert [item["source"] for item in sources] == list(texts.values())
+    assert [c.source_refs[0].locator for c in result.criteria] == list(texts)
+    assert recorder.values[0].criterion_results[0].source_refs == [texts["source://authority/3"]]
+
+
+def test_practice_source_refs_map_to_canvas_references() -> None:
+    from spaces.learning.services.evaluation.penecho import (
+        canvas_locator,
+        canvas_source_reference,
+    )
+
+    source = str(uuid4())
+    chunk = str(uuid4())
+    ref = (
+        '{"chunk_id":"' + chunk + '","content":"Text","locator":{"heading":"Vor der Arbeit"},'
+        '"source_id":"' + source + '","source_revision":2}'
+    )
+
+    reference = canvas_source_reference(ref)
+
+    assert reference.locator == f"source://{source}/2/{chunk}" == canvas_locator(ref)
+    assert reference.title == "Vor der Arbeit" and reference.revision == 2
+    assert canvas_locator("source://authority/3") == "source://authority/3"
+
+
+@pytest.mark.asyncio
 async def test_low_confidence_canvas_is_reviewed_without_mastery() -> None:
     review = InMemoryReviewQueue()
     mastery = _Mastery()
