@@ -671,6 +671,9 @@ class AdaptiveSessionService:
                 raise PersistenceConflict("exam blueprint item is unavailable")
             return item, {"mode": "exam_blueprint", "ordinal": ordinal}
 
+        types = row.blueprint.get("item_types")
+        if types:
+            items = tuple(item for item in items if item.item_type in types)
         concepts_by_item = self._concepts_by_item(db, row.course_id, row.course_revision)
         concept_ids = sorted({value for values in concepts_by_item.values() for value in values})
         mastery_rows = db.scalars(
@@ -861,7 +864,17 @@ class AdaptiveSessionService:
             maximum = command.blueprint.get("max_attempts", 20)
             if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 500:
                 raise ValueError("training max_attempts must be between 1 and 500")
-            return {"max_attempts": maximum}
+            types = command.blueprint.get("item_types")
+            if types is None:
+                return {"max_attempts": maximum}
+            # Optional: practise only some task types (e.g. only drawing tasks).
+            if not isinstance(types, list) or not types or any(
+                not isinstance(value, str) for value in types
+            ):
+                raise ValueError("training item_types are invalid")
+            if not any(item.item_type in types for item in items):
+                raise LookupError("the course has no task of the requested types")
+            return {"max_attempts": maximum, "item_types": list(types)}
         count = command.blueprint.get("item_count")
         types = command.blueprint.get("item_types", [])
         bands = command.blueprint.get("difficulty_bands", [])

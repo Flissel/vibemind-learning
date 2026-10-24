@@ -268,3 +268,40 @@ def test_a_task_solved_correctly_is_not_asked_again_while_others_remain(factory)
     assert turn.task.id != solved
     turn = answer(turn, "a")  # now both are solved: repeating is the only option left
     assert turn.task is not None
+
+
+def test_training_can_be_limited_to_task_types(factory) -> None:
+    # "Ich will die Zeichenaufgabe ueben": training picked any task type, so a
+    # drawing task could come after a dozen others. item_types limits the pool.
+    from spaces.learning.services.course_factory.schemas import QuizOptionDraft
+
+    ids = _ids()
+    draft = _draft(ids)
+    quiz = draft.activities[0].model_copy(
+        update={
+            "activity_id": "quiz-1",
+            "type": "quiz",
+            "rubric": [],
+            "options": [QuizOptionDraft(option_id=o, text=f"Option {o}") for o in ("a", "b")],
+            "correct_option_ids": ["a"],
+        }
+    )
+    course_id = str(uuid4())
+    PracticeCatalogProjector(factory).project(
+        course_id=course_id, course_revision=5,
+        draft=draft.model_copy(update={"activities": [*draft.activities, quiz]}),
+    )
+    service = AdaptiveSessionService(factory, rubric_evaluator=_NoEvaluator())
+
+    turn = service.start(
+        SessionStartCommand(course_id=course_id, course_revision=5, actor_id="local-owner",
+                            mode="training", blueprint={"max_attempts": 2, "item_types": ["case"]})
+    )
+
+    assert turn.task is not None and turn.task.representation == "case"
+    with pytest.raises(LookupError):
+        service.start(
+            SessionStartCommand(course_id=course_id, course_revision=5, actor_id="local-owner",
+                                mode="training",
+                                blueprint={"max_attempts": 2, "item_types": ["penecho_canvas"]})
+        )

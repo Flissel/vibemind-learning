@@ -484,7 +484,8 @@ def sitzung_starten(
     blueprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Start a practice session for a published course. `modus` is "training" (feedback and
-    hints; `blueprint` may set {"max_attempts": 1-500}) or "exam" (no hints; `blueprint` must
+    hints; `blueprint` may set {"max_attempts": 1-500} and "item_types", e.g. ["penecho_canvas"]
+    for drawing tasks only) or "exam" (no hints; `blueprint` must
     be {"item_count": 1-200}, optionally "item_types"). `kurs_revision` is the current revision
     from `kurs_lesen`. Returns the session with its `session_id` and `revision`.
     """
