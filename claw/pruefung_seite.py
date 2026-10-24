@@ -38,7 +38,7 @@ _HEADERS = [
 ]
 _GRUENDE = {
     "low_confidence": "Die KI war sich unsicher",
-    "feedback_not_grounded": "Die Begruendung der KI stuetzt sich nicht auf die Quelle",
+    "unsupported_feedback": "Die Begruendung der KI ist nicht durch die Unterlage belegt",
     "evaluator_schema_invalid": "Die KI-Antwort war unvollstaendig",
 }
 
