@@ -281,3 +281,32 @@ def test_session_evaluator_builds_a_fresh_gateway_per_call() -> None:
 
     assert len(built) == 2
     assert [gateway.calls for gateway in built] == [1, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("points", "outcome"),
+    [((2, 1), "answer_correct"), ((2, 0), "answer_partial"), ((0, 0), "answer_incorrect")],
+)
+async def test_accepted_rubric_decision_names_the_outcome(points, outcome) -> None:
+    # Live (24.10.): a drawing scored 0 carried only "rubric_accepted", which reads
+    # like a pass. The first code still says the decision is trustworthy.
+    output = _output().model_copy(
+        update={
+            "criteria": [
+                c.model_copy(update={"awarded_points": p})
+                for c, p in zip(_output().criteria, points)
+            ]
+        }
+    )
+    recorder = _Recorder()
+    evaluator = RubricEvaluator(
+        gateway=_Gateway([output]),
+        recorder=recorder,
+        review_queue=InMemoryReviewQueue(),
+        mastery=_Mastery(),
+    )
+
+    decision = await evaluator.evaluate(_request())
+
+    assert decision.rationale_codes == ["rubric_accepted", outcome]

@@ -137,13 +137,22 @@ class RubricEvaluator:
         else:
             rationale = "rubric_accepted"
         accepted = rationale == "rubric_accepted"
+        rationale_codes = [rationale]
+        if accepted:
+            # "rubric_accepted" says the decision is trustworthy, not that the answer
+            # is right; name the outcome too (same bands as the session feedback).
+            rationale_codes.append(
+                "answer_correct" if score >= 0.999
+                else "answer_partial" if score >= 0.65
+                else "answer_incorrect"
+            )
         decision = RubricDecision(
             evaluation_id=request.evaluation_id,
             response_id=request.response_id,
             score=score,
             confidence=output.confidence,
             accepted=accepted,
-            rationale_codes=[rationale],
+            rationale_codes=rationale_codes,
             criterion_results=output.criteria,
             misconception_tags=output.misconception_tags,
             evaluator_versions={
