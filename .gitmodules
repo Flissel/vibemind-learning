@@ -1,7 +1,7 @@
 [submodule "learnhouse"]
 	path = learnhouse
 	url = https://github.com/Flissel/learnhouse.git
-	branch = dev
+	branch = vibemind/learning
 [submodule "penecho"]
 	path = penecho
 	url = https://github.com/Flissel/penecho.git
