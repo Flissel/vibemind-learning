@@ -60,6 +60,16 @@ def test_grounded_proposals_are_added_with_slide_refs() -> None:
     assert report == ["#1: added calculation after s1", "#2: added drawn_explanation after s1"]
 
 
+def test_svg_style_strokes_and_missing_titles_are_accepted() -> None:
+    # Live (25.10.): the model wrote strokes as {"d": ...} and left out titles.
+    proposal = {k: v for k, v in DRAWING.items() if k != "title"}
+    proposal["steps"] = [{"narration": "Erst laden.", "strokes": [{"d": "M40 120 h150 v90 h-150 z"}]}]
+    enriched, report = asyncio.run(enrich(_Gateway([proposal]), sequence(), correlation_id=CORRELATION))
+    assert report == ["#1: added drawn_explanation after s1"]
+    assert enriched.checkpoints[0].title == "An der Tafel erklärt"
+    assert enriched.checkpoints[0].steps[0].strokes[0].path == "M40 120 h150 v90 h-150 z"
+
+
 def test_invented_numbers_off_board_drawings_and_bad_shapes_are_rejected() -> None:
     proposals = [INVENTED_CALC, OFF_BOARD, {"kind": "estimate", "after_section": "s9"}, {"kind": "choice", "after_section": "s1"}]
     enriched, report = asyncio.run(enrich(_Gateway(proposals), sequence(), correlation_id=CORRELATION))

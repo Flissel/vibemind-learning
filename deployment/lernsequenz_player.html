@@ -335,6 +335,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
           step.labels.forEach((l) => {
             const t = svgEl('text', { x: l.x, y: l.y, 'text-anchor': 'middle', fill: COLORS[l.color] || COLORS.ink, 'font-size': '26', class: 'drawn hand' });
             t.textContent = l.text; svg.insertBefore(t, own);
+            // Shrink a label until it fits between its neighbours on the same row and the board edges.
+            const others = cp.steps.flatMap((s) => s.labels).filter((o) => o !== l && Math.abs(o.y - l.y) < 30);
+            let room = Math.min(2 * l.x, 2 * (cp.width - l.x)) - 8;
+            // Boxes on a row are drawn with gaps between them: keep within ~78 % of the spacing.
+            others.forEach((o) => { room = Math.min(room, Math.abs(o.x - l.x) * 0.78); });
+            let size = 26;
+            while (size > 13 && t.getComputedTextLength() > room) { size -= 1; t.setAttribute('font-size', String(size)); }
           });
           i += 1;
           timer = setTimeout(next, 900);

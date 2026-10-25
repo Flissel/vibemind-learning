@@ -28,6 +28,7 @@ _UNIT_CONSTANTS = {0.0, 1.0, 12.0, 24.0, 60.0, 100.0, 1000.0}
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 _CHECKPOINT = TypeAdapter(Checkpoint)
 _MAX_NEW = 6
+_DEFAULT_TITLES = {"drawn_explanation": "An der Tafel erklärt", "calculation": "Nachrechnen", "estimate": "Schätzen"}
 
 
 class SequenceDesignOutput(BaseModel):
@@ -46,6 +47,23 @@ def _numbers(text: str) -> set[float]:
         except ValueError:
             continue
     return found
+
+
+def _normalized(proposal: dict[str, Any]) -> dict[str, Any]:
+    """Models write SVG strokes as {"d": ...}; the contract calls it "path"."""
+    if proposal.get("kind") != "drawn_explanation" or not isinstance(proposal.get("steps"), list):
+        return proposal
+    steps = []
+    for step in proposal["steps"]:
+        if isinstance(step, dict) and isinstance(step.get("strokes"), list):
+            strokes = [
+                {"path": s.get("path", s.get("d")), **({"color": s["color"]} if "color" in s else {})}
+                if isinstance(s, dict) else {"path": s}
+                for s in step["strokes"]
+            ]
+            step = {**step, "strokes": strokes}
+        steps.append(step)
+    return {**proposal, "steps": steps}
 
 
 def _slide_text(slide: Slide) -> str:
@@ -104,7 +122,8 @@ async def enrich(
             report.append(f"#{index}: unknown slide")
             continue
         candidate = {
-            **proposal,
+            "title": _DEFAULT_TITLES.get(str(proposal.get("kind")), "Haltepunkt"),
+            **_normalized(proposal),
             "checkpoint_id": f"ki-{index}-{proposal.get('kind', 'x')}",
             "refs": list(slide.refs),
             "at_s": None,
@@ -112,7 +131,9 @@ async def enrich(
         try:
             checkpoint = _CHECKPOINT.validate_python(candidate)
         except ValidationError as error:
-            report.append(f"#{index}: invalid ({error.error_count()} errors)")
+            first = error.errors()[0]
+            where = ".".join(str(part) for part in first["loc"])
+            report.append(f"#{index}: invalid ({error.error_count()} errors; {where}: {first['msg'][:120]})")
             continue
         reason = _grounded(checkpoint, _slide_text(slide))
         if reason or checkpoint.checkpoint_id in existing:
