@@ -22,6 +22,7 @@ from spaces.learning.deployment.course_factory_routes import (
     router as course_factory_router,
 )
 from spaces.learning.deployment.health import HealthService
+from spaces.learning.deployment.lernsequenz_routes import router as lernsequenz_router
 from spaces.learning.deployment.review_routes import router as review_router
 from spaces.learning.deployment.vibemind_auth import ApiError
 from spaces.learning.mcp.server import handle_message
@@ -157,6 +158,7 @@ def _require_retrieval_key(supplied_key: str) -> None:
 app = FastAPI(title="VibeMind Learning Runtime", version="1.1.0")
 app.include_router(course_factory_router)
 app.include_router(review_router)
+app.include_router(lernsequenz_router)
 
 
 def _correlation(request: Request) -> UUID | None:
