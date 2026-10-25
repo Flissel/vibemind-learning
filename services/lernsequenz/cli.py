@@ -10,8 +10,10 @@ environment). The link is for the LearnHouse embed block; it carries the sequenc
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+from uuid import uuid4
 from pathlib import Path
 
 from sqlalchemy import select
@@ -65,10 +67,21 @@ def main(argv: list[str] | None = None) -> int:
     video.add_argument("--von", required=True, help="presentation sequence id")
     video.add_argument("--medien", required=True, help="file name under lernsequenzen/medien")
     video.add_argument("--zeiten", required=True, type=Path, help="zeiten.json from video_bau")
+    enrich_cmd = sub.add_parser("anreichern", help="model proposes drawn explanations, calculations, estimates")
+    enrich_cmd.add_argument("--sequenz", required=True)
     args = parser.parse_args(argv)
 
     store = SequenceStore(Path(os.environ["LEARNING_ARTIFACT_ROOT"]))
-    if args.command == "praesentation":
+    if args.command == "anreichern":
+        # Runs in learning-worker, where OpenFang is configured.
+        from spaces.learning.services.course_factory.model_gateway import build_openfang_model_gateway
+        from spaces.learning.services.lernsequenz.anreichern import enrich
+
+        sequence, report = asyncio.run(
+            enrich(build_openfang_model_gateway(), store.load(args.sequenz), correlation_id=str(uuid4()))
+        )
+        print("\n".join(report))
+    elif args.command == "praesentation":
         sequence = build_presentation(published_draft(args.course), course_id=args.course, chapter_id=args.chapter)
     elif args.command == "video":
         times = json.loads(args.zeiten.read_text(encoding="utf-8"))
@@ -77,7 +90,10 @@ def main(argv: list[str] | None = None) -> int:
         sequence = LernsequenzV1.model_validate_json(args.path.read_text(encoding="utf-8"))
     store.save(sequence)
     print(f"{sequence.sequence_id}: {len(sequence.sections)} Abschnitte, {len(sequence.checkpoints)} Haltepunkte")
-    print(_link(sequence.sequence_id))
+    try:
+        print(_link(sequence.sequence_id))
+    except RuntimeError:
+        print("(Link: im learning-api-Container erzeugen, dort liegt der Dienstschluessel)")
     return 0
 
 
