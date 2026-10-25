@@ -19,6 +19,7 @@ REQUIRED_SERVICES = {
     "learnhouse-api",
     "learnhouse-web",
     "learnhouse-collab",
+    "learnhouse-web-loopback",
     "learning-api",
     "learning-worker",
     "learning-mcp",

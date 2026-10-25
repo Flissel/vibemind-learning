@@ -148,6 +148,26 @@ services:
       retries: 12
       start_period: 30s
 
+  # The web server's auth proxy (app/api/auth/[...path]/route.ts) and session check
+  # (lib/auth/server.ts) call NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL server-side; inside the
+  # container 127.0.0.1 is the container itself, so every login failed with "Unable to
+  # connect" (25.10.). This forwarder in the web container's network answers there.
+  learnhouse-web-loopback:
+    image: alpine/socat:1.8.0.3
+    restart: *restart
+    network_mode: "service:learnhouse-web"
+    command:
+      - "TCP-LISTEN:${LEARNHOUSE_API_PORT:-1338},bind=127.0.0.1,fork,reuseaddr"
+      - "TCP:learnhouse-api:9000"
+    depends_on:
+      learnhouse-web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${LEARNHOUSE_API_PORT:-1338}"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
   learning-api:
     build:
       context: ..
