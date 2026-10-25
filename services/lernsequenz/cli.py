@@ -69,9 +69,21 @@ def main(argv: list[str] | None = None) -> int:
     video.add_argument("--zeiten", required=True, type=Path, help="zeiten.json from video_bau")
     enrich_cmd = sub.add_parser("anreichern", help="model proposes drawn explanations, calculations, estimates")
     enrich_cmd.add_argument("--sequenz", required=True)
+    embed_cmd = sub.add_parser("einbetten", help="what publishing does: presentation (+video) into the first lesson")
+    embed_cmd.add_argument("--course", required=True)
     args = parser.parse_args(argv)
 
     store = SequenceStore(Path(os.environ["LEARNING_ARTIFACT_ROOT"]))
+    if args.command == "einbetten":
+        from spaces.learning.services.course_factory.learnhouse_gateway import build_learnhouse_http_gateway
+        from spaces.learning.services.lernsequenz.einbettung import build_sequence_embedder
+
+        embedder = build_sequence_embedder(build_learnhouse_http_gateway())
+        if embedder is None:
+            raise SystemExit("artifact root or service key missing")
+        result = asyncio.run(embedder.embed(course_id=args.course, draft=published_draft(args.course), correlation_id=str(uuid4())))
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if args.command == "anreichern":
         # Runs in learning-worker, where OpenFang is configured.
         from spaces.learning.services.course_factory.model_gateway import build_openfang_model_gateway
