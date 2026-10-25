@@ -23,6 +23,7 @@ from spaces.learning.services.course_factory.repository import (
 )
 from spaces.learning.services.course_factory.schemas import CourseDraft, learnhouse_payload
 from spaces.learning.services.course_factory.state_machine import FactoryState
+from spaces.learning.services.lernsequenz.einbettung import SequenceEmbedder
 
 
 logger = logging.getLogger(__name__)
@@ -106,11 +107,13 @@ class CourseDraftPublisher:
         artifact_store: CourseFactoryArtifactStore,
         learnhouse: LearnHouseFactoryGateway,
         practice_catalog: PracticeCatalogProjector | None = None,
+        sequence_embedder: SequenceEmbedder | None = None,
     ) -> None:
         self._repository = repository
         self._artifact_store = artifact_store
         self._learnhouse = learnhouse
         self._practice_catalog = practice_catalog
+        self._sequence_embedder = sequence_embedder
 
     async def stage_review_draft(
         self,
@@ -232,6 +235,17 @@ class CourseDraftPublisher:
                     "learning_practice_catalog_projection_failed",
                     extra={"job_id": job.id, "course_revision": readback.revision},
                 )
+        if self._sequence_embedder is not None:
+            # Presentation (and an existing explainer video) into the first lesson; like the
+            # catalog it never hides the publication and can be repeated.
+            try:
+                await self._sequence_embedder.embed(
+                    course_id=job.course_id,
+                    draft=self._load_verified_draft(job),
+                    correlation_id=correlation_id,
+                )
+            except Exception:
+                logger.exception("learning_sequence_embed_failed", extra={"job_id": job.id})
         return published_job
 
     def _load_verified_draft(self, job: FactoryJobRecord) -> CourseDraft:

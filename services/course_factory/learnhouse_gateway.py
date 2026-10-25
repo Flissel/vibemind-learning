@@ -111,6 +111,17 @@ class LearnHouseHttpGateway:
         )
         return _parse_course(value)
 
+    async def embed_sequences(
+        self, *, course_id: str, lesson_id: str, embeds: list[dict[str, object]], correlation_id: str
+    ) -> dict[str, object]:
+        """Put Learning's sequence players (presentation, video) into a factory lesson."""
+        return await self._request_json(
+            "PUT",
+            f"courses/{course_id}/lernsequenz-einbettungen",
+            correlation_id=correlation_id,
+            payload={"lesson_id": lesson_id, "embeds": embeds},
+        )
+
     async def _course_mutation(
         self,
         *,

@@ -46,6 +46,7 @@ from spaces.learning.services.course_factory.application import (
     CourseFactoryApplication,
 )
 from spaces.learning.services.course_factory.practice_catalog import PracticeCatalogProjector
+from spaces.learning.services.lernsequenz.einbettung import build_sequence_embedder
 from spaces.learning.services.course_factory.publisher import CourseDraftPublisher
 from spaces.learning.services.course_factory.repository import (
     CourseFactoryRepository,
@@ -123,6 +124,7 @@ def build_course_factory_gateways(
             artifact_store=store,
             learnhouse=factory_learnhouse,
             practice_catalog=PracticeCatalogProjector(session_factory),
+            sequence_embedder=build_sequence_embedder(factory_learnhouse),
         ),
         artifact_store=store,
         course_state=course_state,

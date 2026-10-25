@@ -8,7 +8,6 @@ learner; mapping the LearnHouse person comes with the player integration (stage 
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import os
 import re
@@ -27,6 +26,7 @@ from spaces.learning.contracts.lernsequenz import DrawnExplanation, public_view
 from spaces.learning.deployment.vibemind_auth import ApiError
 from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.store import SequenceStore
+from spaces.learning.services.lernsequenz.token import sequence_token
 from spaces.learning.services.lernsequenz.tutor import tutor_context
 
 # Below the worker's gateway limits (wrapper 540 s < gateway 600 s).
@@ -37,14 +37,6 @@ ANCESTORS_ENV = "LEARNING_EMBED_ANCESTORS"
 
 router = APIRouter()
 Token = Annotated[str, Query(alias="k", min_length=16, max_length=128)]
-
-
-def sequence_token(sequence_id: str, service_key: str | None = None) -> str:
-    key = service_key if service_key is not None else os.environ.get("LEARNING_VIBEMIND_SERVICE_KEY", "")
-    if len(key) < 32:
-        raise RuntimeError("Learning service key is not configured")
-    derived = hashlib.sha256(b"lernsequenz:" + key.encode()).digest()
-    return hmac.new(derived, sequence_id.encode(), hashlib.sha256).hexdigest()[:40]
 
 
 @lru_cache(maxsize=1)

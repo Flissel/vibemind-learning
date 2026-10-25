@@ -19,7 +19,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from spaces.learning.contracts.lernsequenz import LernsequenzV1
-from spaces.learning.deployment.lernsequenz_routes import sequence_token
+from spaces.learning.services.lernsequenz.token import sequence_token
 from spaces.learning.services.course_factory.artifact_store import CourseFactoryArtifactStore
 from spaces.learning.services.course_factory.models import CourseFactoryJob
 from spaces.learning.services.course_factory.schemas import CourseDraft
