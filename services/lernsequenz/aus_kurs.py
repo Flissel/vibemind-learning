@@ -15,6 +15,7 @@ from spaces.learning.contracts.lernsequenz import (
     Option,
     Slide,
     SourceNote,
+    VideoSegment,
 )
 from spaces.learning.services.course_factory.schemas import ActivityDraft, CourseDraft, LessonDraft
 
@@ -103,6 +104,47 @@ def _source_title(locator: dict[str, str | int]) -> str:
     if "page" in locator:
         return f"Seite {locator['page']}"
     return "Kursmaterial"
+
+
+def as_video(presentation: LernsequenzV1, *, media_name: str, slide_times: dict[str, dict[str, float]]) -> LernsequenzV1:
+    """The presentation's explainer video: one video section, checkpoints at the slide ends.
+
+    ``slide_times`` comes from ``video_bau`` (start/end in seconds per slide section).
+    """
+    if presentation.kind != "presentation":
+        raise ValueError("only a presentation can become a video")
+    missing = {s.section_id for s in presentation.sections} - set(slide_times)
+    if missing:
+        raise ValueError("slide times are missing for some slides")
+    refs = tuple(dict.fromkeys(r for s in presentation.sections for r in s.refs))[:20]
+    transcript = " ".join(
+        s.narration for s in presentation.sections if isinstance(s, Slide)
+    )
+    video = VideoSegment(
+        section_id="video",
+        title=presentation.title,
+        url=f"/lernsequenz-medien/{media_name}",
+        end_s=max(t["end"] for t in slide_times.values()),
+        transcript=_cut(transcript, 2_000),
+        refs=refs,
+    )
+    checkpoints = tuple(
+        checkpoint.model_copy(update={
+            "after_section": "video",
+            "at_s": max(0.0, slide_times[checkpoint.after_section]["end"] - 0.4),
+        })
+        for checkpoint in presentation.checkpoints
+    )
+    return LernsequenzV1(
+        # Always its own id: the video must never overwrite its presentation.
+        sequence_id=_token("video-" + presentation.sequence_id.removeprefix("praes-"), 120),
+        course_id=presentation.course_id,
+        title=presentation.title,
+        kind="video",
+        sections=(video,),
+        checkpoints=checkpoints,
+        sources=presentation.sources,
+    )
 
 
 def build_presentation(draft: CourseDraft, *, course_id: str, chapter_id: str | None = None) -> LernsequenzV1:

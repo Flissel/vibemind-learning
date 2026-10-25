@@ -73,6 +73,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <div class="side">
     <div class="panel"><h3>Sprechertext</h3><div id="narration"></div></div>
     <div class="panel"><h3>Belegt durch</h3><div id="sources" class="small"></div></div>
+    <div class="panel" id="tutorPanel"><h3>Tutor zu dieser Folie</h3></div>
   </div>
 </div>
 <script nonce="__NONCE__">
@@ -96,7 +97,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     return node;
   };
   const COLORS = { ink: '#16191D', accent: '#0E6B5C', warn: '#B45309', blue: '#1D4ED8' };
-  let seq = null, index = 0, done = new Set(), video = null, sourceTitles = {};
+  let seq = null, index = 0, done = new Set(), opening = new Set(), video = null, sourceTitles = {};
 
   async function post(checkpoint_id, answer) {
     const res = await fetch(`${base}/antwort?k=${encodeURIComponent(token)}`, {
@@ -111,6 +112,32 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     const titles = [...new Set((refs || []).map((r) => sourceTitles[r]).filter(Boolean))];
     return titles.length ? 'Quelle: ' + titles.join(' · ') : '';
   };
+
+  // Tutor: the server builds the context (slide or checkpoint, never a solution).
+  function tutorBox(context) {
+    const input = el('input', { type: 'text', placeholder: 'Frage an den Tutor …', 'aria-label': 'Frage an den Tutor', maxlength: '500',
+      style: 'flex:1;min-width:0;min-height:44px;border-radius:10px;border:1px solid #CDD1CB;padding:0 12px' });
+    const out = el('div', { class: 'small', style: 'line-height:1.5' });
+    const ask = el('button', { class: 'btn', type: 'button', onclick: async () => {
+      const question = input.value.trim();
+      if (!question) return;
+      ask.disabled = true; out.textContent = 'Der Tutor denkt nach …';
+      try {
+        const res = await fetch(`${base}/tutor?k=${encodeURIComponent(token)}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, ...context() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || 'Der Tutor ist gerade nicht erreichbar.');
+        out.replaceChildren(el('div', { style: 'font-size:15px;color:var(--ink)' }, data.answer),
+          el('div', { style: 'margin-top:6px' }, el('strong', {}, 'Nächster Schritt: '), data.next_step),
+          data.cited && data.cited.length ? el('div', { class: 'refs', style: 'margin-top:4px' }, 'Gestützt auf: „' + data.cited[0] + '…“') : null);
+      } catch (err) { out.textContent = err.message; }
+      ask.disabled = false;
+    } }, 'Fragen');
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask.click(); });
+    return el('div', { style: 'display:flex;flex-direction:column;gap:8px' }, el('div', { class: 'row' }, input, ask), out);
+  }
 
   function speak(text) {
     if (!('speechSynthesis' in window)) return;
@@ -132,11 +159,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     $('sources').textContent = refsText(section.refs) || 'Kursmaterial';
     video = null;
     if (section.kind === 'video') {
-      video = el('video', { controls: true, preload: 'metadata', src: section.url + (section.start_s ? `#t=${section.start_s}` : '') });
+      // WebM first (Chromium without H.264), the MP4 for Safari/iPad; a missing source is skipped.
+      const at = section.start_s ? `#t=${section.start_s}` : '';
+      video = el('video', { controls: true, preload: 'metadata', playsinline: true });
+      if (/\.mp4$/.test(section.url)) video.append(el('source', { src: section.url.replace(/\.mp4$/, '.webm') + at, type: 'video/webm' }));
+      video.append(el('source', { src: section.url + at, type: /\.webm$/.test(section.url) ? 'video/webm' : 'video/mp4' }));
       const timed = seq.checkpoints.filter((c) => c.after_section === section.section_id && c.at_s !== null && c.at_s !== undefined);
       video.addEventListener('timeupdate', () => {
-        const due = timed.find((c) => !done.has(c.checkpoint_id) && video.currentTime >= c.at_s);
-        if (due) { video.pause(); openCheckpoints([due]); }
+        // timeupdate fires again before the pause lands; open each checkpoint only once.
+        const due = timed.find((c) => !done.has(c.checkpoint_id) && !opening.has(c.checkpoint_id) && video.currentTime >= c.at_s);
+        if (due) { opening.add(due.checkpoint_id); video.pause(); openCheckpoints([due]); }
       });
       $('stage').replaceChildren(video);
     } else {
@@ -160,10 +192,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   }
 
   function frame(cp, body, footerKids) {
+    const tutor = tutorBox(() => ({ checkpoint_id: cp.checkpoint_id }));
+    tutor.classList.add('hidden');
     const overlay = el('div', { class: 'overlay', role: 'dialog', 'aria-label': cp.title },
       el('div', { class: 'frame' },
-        el('header', {}, el('span', {}, ({ explanation: 'ERKLÄRUNG', choice: 'HALTEPUNKT · FRAGE', calculation: 'RECHENAUFGABE', estimate: 'SCHÄTZEN', drawn_explanation: 'AN DER TAFEL ERKLÄRT' })[cp.kind] || 'HALTEPUNKT'), el('span', {}, cp.title)),
-        el('div', { class: 'body' }, body),
+        el('header', {}, el('span', {}, ({ explanation: 'ERKLÄRUNG', choice: 'HALTEPUNKT · FRAGE', calculation: 'RECHENAUFGABE', estimate: 'SCHÄTZEN', drawn_explanation: 'AN DER TAFEL ERKLÄRT' })[cp.kind] || 'HALTEPUNKT'),
+          el('button', { class: 'btn link', type: 'button', style: 'min-height:32px;font-size:13px', onclick: () => tutor.classList.toggle('hidden') }, 'Tutor fragen')),
+        el('div', { class: 'body' }, body, tutor),
         el('footer', {}, footerKids)));
     // Over the whole viewport: inside the stage the frame was clipped (buttons cut off).
     document.body.append(overlay);
@@ -356,6 +391,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     document.title = data.title;
     $('kind').textContent = data.kind === 'video' ? 'Interaktives Video' : 'Interaktive Präsentation';
     if (!('speechSynthesis' in window)) $('speak').classList.add('hidden');
+    $('tutorPanel').append(tutorBox(() => ({ section_id: seq.sections[index].section_id })));
     render();
   }).catch(() => { $('title').textContent = 'Diese Lernsequenz ist nicht verfügbar.'; });
 })();

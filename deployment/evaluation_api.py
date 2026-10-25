@@ -21,6 +21,7 @@ from spaces.learning.services.course_factory.model_gateway import build_openfang
 from spaces.learning.services.db.session import create_learning_engine
 from spaces.learning.services.evaluation.schemas import RubricDecision, RubricEvaluationRequest
 from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
+from spaces.learning.services.lernsequenz.tutor import ask_tutor
 
 
 KEY_HEADER = "X-VibeMind-Learning-Evaluation-Key"
@@ -48,6 +49,13 @@ class CanvasHintRequest(_StrictModel):
     correlation_id: UUID
     # The learner's current drawing (canvas hint); the tutor sees it as an image.
     drawing_png_base64: Annotated[str, Field(min_length=12, max_length=27_000_000)] | None = None
+
+
+class SequenceTutorRequest(_StrictModel):
+    question: Annotated[str, Field(min_length=1, max_length=2_000)]
+    task: dict[str, object]
+    sources: Annotated[tuple[dict[str, str], ...], Field(min_length=1, max_length=12)]
+    correlation_id: UUID
 
 
 @dataclass(frozen=True)
@@ -138,6 +146,26 @@ async def hint_canvas(
         drawing_png=drawing,
     )
     return {"tutor": answer.model_dump(mode="json")}
+
+
+@app.post("/internal/sequence/tutor")
+async def sequence_tutor(
+    payload: SequenceTutorRequest,
+    key: Annotated[str, Header(alias=KEY_HEADER, max_length=512)] = "",
+) -> dict[str, object]:
+    """Tutor for the sequence player; context and sources are built by learning-api."""
+    _require_key(key)
+    try:
+        answer = await ask_tutor(
+            build_openfang_model_gateway(),
+            question=payload.question,
+            task=payload.task,
+            sources=[dict(source) for source in payload.sources],
+            correlation_id=str(payload.correlation_id),
+        )
+    except ValueError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    return {"tutor": answer}
 
 
 @app.post("/internal/rubric/evaluate")

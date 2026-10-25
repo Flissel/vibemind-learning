@@ -17,6 +17,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
+from uuid import uuid4
+
+import httpx
 from fastapi import APIRouter, Body, Query, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
@@ -24,7 +27,10 @@ from spaces.learning.contracts.lernsequenz import DrawnExplanation, public_view
 from spaces.learning.deployment.vibemind_auth import ApiError
 from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.store import SequenceStore
+from spaces.learning.services.lernsequenz.tutor import tutor_context
 
+# Below the worker's gateway limits (wrapper 540 s < gateway 600 s).
+_TUTOR_TIMEOUT_S = 630.0
 _PLAYER = Path(__file__).with_name("lernsequenz_player.html")
 _MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(mp4|webm|mp3|png|jpg|webp)$")
 ANCESTORS_ENV = "LEARNING_EMBED_ANCESTORS"
@@ -114,6 +120,50 @@ def answer(
     except ValueError as error:
         raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", str(error)) from error
     return JSONResponse(result, headers=_headers())
+
+
+@router.post("/lernsequenz/{sequence_id}/tutor")
+async def tutor(
+    sequence_id: str,
+    k: Token,
+    payload: Annotated[dict[str, Any], Body()],
+) -> JSONResponse:
+    """Ask the tutor about the current slide or checkpoint; the model runs in learning-worker."""
+    sequence = _checked(sequence_id, k)
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip() or len(question) > 2_000:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "question is required")
+    section_id, checkpoint_id = payload.get("section_id"), payload.get("checkpoint_id")
+    try:
+        task, sources = tutor_context(
+            sequence,
+            section_id=section_id if isinstance(section_id, str) else None,
+            checkpoint_id=checkpoint_id if isinstance(checkpoint_id, str) else None,
+        )
+    except LookupError as error:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", str(error)) from error
+    url = os.environ.get("LEARNING_EVALUATION_SERVICE_URL", "").rstrip("/")
+    key = os.environ.get("LEARNING_EVALUATION_SERVICE_KEY", "")
+    if not url or len(key) < 32:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Tutor is not configured", retryable=True)
+    try:
+        async with httpx.AsyncClient(timeout=_TUTOR_TIMEOUT_S) as client:
+            response = await client.post(
+                f"{url}/internal/sequence/tutor",
+                headers={"X-VibeMind-Learning-Evaluation-Key": key},
+                json={"question": question, "task": task, "sources": sources, "correlation_id": str(uuid4())},
+            )
+    except httpx.HTTPError as error:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Tutor is unavailable", retryable=True) from error
+    if response.status_code != 200:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Tutor gave no grounded answer", retryable=True)
+    answer = response.json()["tutor"]
+    texts = {source["key"]: source["source"] for source in sources}
+    return JSONResponse({
+        "answer": answer["answer"],
+        "next_step": answer["next_step"],
+        "cited": [texts[k_][:160] for k_ in answer["source_keys"] if k_ in texts],
+    }, headers=_headers())
 
 
 @router.get("/lernsequenz-medien/{name}")

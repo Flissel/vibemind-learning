@@ -8,7 +8,7 @@ import pytest
 
 from spaces.learning.contracts.lernsequenz import public_view
 from spaces.learning.services.course_factory.schemas import CourseDraft
-from spaces.learning.services.lernsequenz.aus_kurs import build_presentation
+from spaces.learning.services.lernsequenz.aus_kurs import as_video, build_presentation
 
 COURSE = "b189a3ec-a82a-4ae2-8cab-e71ab0d75055"
 CIT = "11111111-1111-4111-8111-111111111101"
@@ -62,6 +62,23 @@ def test_lessons_become_slides_and_quizzes_checkpoints() -> None:
     assert checkpoint.after_section == sequence.sections[-1].section_id
     assert checkpoint.correct == ("y",) and checkpoint.rationale == "Vor jedem Einsatz."
     assert sequence.sources[0].title == "Vor der Arbeit"
+
+
+def test_the_presentation_becomes_a_video_with_checkpoints_at_slide_ends() -> None:
+    presentation = build_presentation(draft(), course_id=COURSE)
+    times = {s.section_id: {"start": i * 10.0, "end": i * 10.0 + 9.5} for i, s in enumerate(presentation.sections)}
+
+    video = as_video(presentation, media_name="akku.mp4", slide_times=times)
+
+    assert video.kind == "video" and video.sequence_id == "video-" + presentation.sequence_id.removeprefix("praes-")
+    renamed = presentation.model_copy(update={"sequence_id": "beispiel"})
+    assert as_video(renamed, media_name="a.mp4", slide_times=times).sequence_id == "video-beispiel"
+    section = video.sections[0]
+    assert section.url == "/lernsequenz-medien/akku.mp4" and section.end_s == 19.5
+    assert video.checkpoints[0].after_section == "video" and video.checkpoints[0].at_s == 19.1
+    assert video.checkpoints[0].correct == ("y",)  # solutions stay on the server side
+    with pytest.raises(ValueError):
+        as_video(presentation, media_name="akku.mp4", slide_times={})
 
 
 def test_the_built_presentation_hides_answers_and_rejects_unknown_chapters() -> None:

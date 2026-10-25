@@ -10,6 +10,7 @@ environment). The link is for the LearnHouse embed block; it carries the sequenc
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from spaces.learning.services.course_factory.models import CourseFactoryJob
 from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.services.db.session import build_session_factory, create_learning_engine
-from spaces.learning.services.lernsequenz.aus_kurs import build_presentation
+from spaces.learning.services.lernsequenz.aus_kurs import as_video, build_presentation
 from spaces.learning.services.lernsequenz.store import SequenceStore
 
 PUBLIC_BASE_ENV = "LEARNING_PUBLIC_API_URL"
@@ -60,11 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--chapter")
     load = sub.add_parser("laden")
     load.add_argument("path", type=Path)
+    video = sub.add_parser("video")
+    video.add_argument("--von", required=True, help="presentation sequence id")
+    video.add_argument("--medien", required=True, help="file name under lernsequenzen/medien")
+    video.add_argument("--zeiten", required=True, type=Path, help="zeiten.json from video_bau")
     args = parser.parse_args(argv)
 
     store = SequenceStore(Path(os.environ["LEARNING_ARTIFACT_ROOT"]))
     if args.command == "praesentation":
         sequence = build_presentation(published_draft(args.course), course_id=args.course, chapter_id=args.chapter)
+    elif args.command == "video":
+        times = json.loads(args.zeiten.read_text(encoding="utf-8"))
+        sequence = as_video(store.load(args.von), media_name=args.medien, slide_times=times["slides"])
     else:
         sequence = LernsequenzV1.model_validate_json(args.path.read_text(encoding="utf-8"))
     store.save(sequence)
