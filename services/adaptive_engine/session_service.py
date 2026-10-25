@@ -312,6 +312,73 @@ class AdaptiveSessionService:
                 raise LookupError("no approved hint is available")
             return hints[0]
 
+    def record_sequence_answer(
+        self, *, actor_id: str, course_id: str, activity_id: str, selected: list[str]
+    ) -> dict[str, object] | None:
+        """A choice answered in the sequence player counts for the learner's mastery.
+
+        The checkpoint comes from the same factory activity as the practice item; the
+        engine scores it itself (deterministic) inside one "lernsequenz" session per
+        learner and course revision. None when the course has no such choice item.
+        """
+        if not selected or len(selected) > 12:
+            raise ValueError("choose at least one option")
+        now = self._aware_now()
+        with self._session_factory() as db, db.begin():
+            item = db.scalars(
+                select(AdaptiveItem)
+                .where(
+                    AdaptiveItem.course_id == course_id,
+                    AdaptiveItem.activity_id == activity_id,
+                    AdaptiveItem.item_type.in_(("single_choice", "multiple_choice")),
+                )
+                .order_by(AdaptiveItem.course_revision.desc())
+            ).first()
+            if item is None:
+                return None
+            row = db.scalars(
+                select(LearningSession)
+                .where(
+                    LearningSession.actor_id == actor_id,
+                    LearningSession.course_id == item.course_id,
+                    LearningSession.course_revision == item.course_revision,
+                    LearningSession.mode == "training",
+                )
+                .order_by(LearningSession.created_at.desc())
+                .with_for_update()
+            ).all()
+            row = next((r for r in row if (r.blueprint or {}).get("source") == "lernsequenz"), None)
+            if row is None:
+                row = LearningSession(
+                    id=str(uuid4()), course_id=item.course_id, course_revision=item.course_revision,
+                    actor_id=actor_id, mode="training", state="active", revision=1,
+                    blueprint={"source": "lernsequenz", "max_attempts": 10_000},
+                    created_at=now, updated_at=now,
+                )
+                db.add(row)
+                db.flush()
+            ordinal = (db.scalar(
+                select(func.max(LearningAttempt.ordinal)).where(LearningAttempt.session_id == row.id)
+            ) or 0) + 1
+            attempt = LearningAttempt(
+                id=str(uuid4()), session_id=row.id, item_id=item.id, course_id=row.course_id,
+                course_revision=row.course_revision, ordinal=ordinal,
+                selection_reason={"source": "lernsequenz"}, selected_at=now,
+            )
+            db.add(attempt)
+            row.revision += 1
+            row.updated_at = now
+            db.flush()
+            answer: dict[str, object] = (
+                {"choice_id": selected[0]} if item.item_type == "single_choice" else {"choice_ids": list(selected)}
+            )
+            evaluation, audit = self._evaluate_deterministic(db, row, attempt, item, answer, now)
+            return {
+                "score": evaluation.score,
+                "mastery_applied": audit.mastery_applied,
+                "evaluation_id": evaluation.id,
+            }
+
     def pending_reviews(self, limit: int = 50) -> list[dict[str, object]]:
         """AI evaluations held for a person (low confidence, ungrounded feedback)."""
         with self._session_factory() as db:

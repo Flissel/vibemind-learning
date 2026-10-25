@@ -94,6 +94,7 @@ def _choice(activity: ActivityDraft, after: str) -> Choice | None:
         correct=tuple(_token(o, 50) for o in activity.correct_option_ids),
         rationale=_cut(rationale, 2_000),
         refs=tuple(activity.citation_ids[:20]),
+        activity_id=activity.activity_id,
     )
 
 

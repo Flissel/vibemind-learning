@@ -9,6 +9,7 @@ learner; mapping the LearnHouse person comes with the player integration (stage 
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -22,7 +23,7 @@ import httpx
 from fastapi import APIRouter, Body, Query, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from spaces.learning.contracts.lernsequenz import DrawnExplanation, public_view
+from spaces.learning.contracts.lernsequenz import Choice, DrawnExplanation, public_view
 from spaces.learning.deployment.vibemind_auth import ApiError
 from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.store import SequenceStore
@@ -34,6 +35,8 @@ _TUTOR_TIMEOUT_S = 630.0
 _PLAYER = Path(__file__).with_name("lernsequenz_player.html")
 _MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(mp4|webm|mp3|png|jpg|webp)$")
 ANCESTORS_ENV = "LEARNING_EMBED_ANCESTORS"
+ACTOR_ENV = "LEARNING_SEQUENCE_ACTOR"
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 Token = Annotated[str, Query(alias="k", min_length=16, max_length=128)]
@@ -107,11 +110,44 @@ def answer(
             result: dict[str, Any] = {"kind": "drawn_explanation", "saved": True, "sketch_id": sketch_id}
         else:
             result = grade(sequence, checkpoint_id, reply)
+            if isinstance(checkpoint, Choice) and checkpoint.activity_id:
+                result["mastery"] = _count_for_mastery(sequence.course_id, checkpoint.activity_id, reply)
     except LookupError as error:
         raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", "Checkpoint not found") from error
     except ValueError as error:
         raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", str(error)) from error
     return JSONResponse(result, headers=_headers())
+
+
+@lru_cache(maxsize=1)
+def _sessions():
+    from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
+    from spaces.learning.services.db.session import build_session_factory, create_learning_engine
+
+    url = os.environ.get("LEARNING_DATABASE_URL", "").strip()
+    return AdaptiveSessionService(build_session_factory(create_learning_engine(url))) if url else None
+
+
+def _count_for_mastery(course_id: str, activity_id: str, reply: dict[str, Any]) -> dict[str, Any]:
+    """Book the answer for the local learner (same identity as the claw practice, v1).
+
+    Mapping the LearnHouse person comes with stage 0b; a booking failure never hides
+    the answer's feedback.
+    """
+    service = _sessions()
+    if service is None:
+        return {"counted": False}
+    try:
+        booked = service.record_sequence_answer(
+            actor_id=os.environ.get(ACTOR_ENV, "learning-claw"),
+            course_id=course_id,
+            activity_id=activity_id,
+            selected=[s for s in reply.get("selected", []) if isinstance(s, str)],
+        )
+    except Exception:
+        logger.exception("lernsequenz_mastery_booking_failed")
+        return {"counted": False}
+    return {"counted": booked is not None, "mastery_applied": bool(booked and booked["mastery_applied"])}
 
 
 @router.post("/lernsequenz/{sequence_id}/tutor")

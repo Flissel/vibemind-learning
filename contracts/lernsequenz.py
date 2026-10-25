@@ -125,6 +125,9 @@ class Choice(_Checkpoint):
     options: Annotated[tuple[Option, ...], Field(min_length=2, max_length=6)]
     correct: Annotated[tuple[SafeToken, ...], Field(min_length=1, max_length=6)]
     rationale: Text
+    # The factory activity this question comes from: its practice item gets the answer
+    # (learner mastery), scored by the engine itself.
+    activity_id: Annotated[str, Field(min_length=1, max_length=200)] | None = None
 
     @model_validator(mode="after")
     def correct_are_options(self) -> "Choice":

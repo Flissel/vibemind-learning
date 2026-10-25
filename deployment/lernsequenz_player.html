@@ -242,7 +242,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
           if (r.correct_options.includes(id)) b.classList.add('right'); else if (selected.has(id)) b.classList.add('wrong');
         });
         fb.className = 'fb ' + (r.correct ? 'ok' : 'no');
-        fb.replaceChildren(el('strong', {}, r.correct ? 'Genau. ' : 'Noch nicht. '), r.rationale, el('div', { class: 'refs' }, refsText(r.refs)));
+        fb.replaceChildren(el('strong', {}, r.correct ? 'Genau. ' : 'Noch nicht. '), r.rationale, el('div', { class: 'refs' }, refsText(r.refs)),
+          r.mastery && r.mastery.counted ? el('div', { class: 'refs' }, 'Zählt für Ihren Lernstand.') : null);
         check.textContent = 'Weiter';
       } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
     } }, 'Prüfen');
