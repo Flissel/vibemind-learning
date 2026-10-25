@@ -20,7 +20,7 @@ EXPECTED = {
         "upstream": "https://github.com/learnhouse/learnhouse.git",
         # vibemind/learning: the Learning extension rescued from the running image (25.10.);
         # the old pin 1363478 existed in no branch of the fork.
-        "commit": "1c1be97b5e305aa29275fd9d4588fab8bd5108c4",
+        "commit": "29ab9e6fa176430ec25a8d5af5094165aae47dc7",
         "license": "AGPL-3.0-only",
     },
     "penecho": {
