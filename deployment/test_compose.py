@@ -175,7 +175,7 @@ def test_learning_bootstrap_uses_internal_api_service_address() -> None:
         "http://learnhouse-api:9000/api/v1/"
     )
     assert environment["NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL"] == (
-        "http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_API_PORT:-1338}"
+        "${LEARNHOUSE_PUBLIC_API_URL:-http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_API_PORT:-1338}}"
     )
     assert "NEXT_PUBLIC_LEARNHOUSE_INTERNAL_API_URL" not in environment
 
@@ -393,7 +393,7 @@ def test_canvas_runtime_keeps_penecho_on_the_mcp_loopback_boundary() -> None:
     assert "ports" not in penecho
     assert "${LEARNING_BIND_HOST:-127.0.0.1}:${PENECHO_PORT:-3888}:3888" in mcp["ports"]
     assert mcp["environment"]["LEARNING_PENECHO_URL"] == "http://127.0.0.1:3888"
-    assert mcp["environment"]["LEARNING_PENECHO_ORIGIN"].startswith("http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:")
+    assert mcp["environment"]["LEARNING_PENECHO_ORIGIN"].startswith("${LEARNHOUSE_PUBLIC_URL:-http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:")
     assert "${PENECHO_LEARNING_TOKEN:?" in mcp["environment"]["PENECHO_LEARNING_TOKEN"]
     assert mcp["volumes"] == ["learning-artifacts:/var/lib/vibemind-learning/artifacts"]
     assert penecho["environment"]["PENECHO_LEARNING_ORIGIN"] == mcp["environment"]["LEARNING_PENECHO_ORIGIN"]

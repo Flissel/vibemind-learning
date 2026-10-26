@@ -26,6 +26,23 @@ services:
     pull_policy: never
   learning-mcp:
     pull_policy: never
+  # Public domain (profile "domain"): a Cloudflare tunnel, no router port. The tunnel's
+  # ingress lives at Cloudflare: academy.* -> learnhouse-web:3000, academy-api.* ->
+  # learnhouse-api:9000, academy-live.* -> learnhouse-collab:4000 and academy-lernen.* ->
+  # learning-api:8090 for the player paths only (/lernsequenz, /zeichnen); the rest of
+  # learning-api stays internal.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3
+    profiles: ["domain"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      # Checked by cloudflared itself: compose interpolates it even with the profile off.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - learnhouse-web
+      - learnhouse-api
+      - learning-api
   learning-embedding:
     image: vibemind-embedding-service:latest
     pull_policy: never
