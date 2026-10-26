@@ -53,6 +53,13 @@ def _normalized(proposal: dict[str, Any]) -> dict[str, Any]:
     """Models write SVG strokes as {"d": ...}; the contract calls it "path"."""
     if proposal.get("kind") != "drawn_explanation" or not isinstance(proposal.get("steps"), list):
         return proposal
+    proposal = dict(proposal)
+    # Some models nest the board size: {"board": {"width": .., "height": ..}}.
+    board = proposal.pop("board", None)
+    if isinstance(board, dict):
+        for side in ("width", "height"):
+            if side not in proposal and isinstance(board.get(side), (int, float)):
+                proposal[side] = board[side]
     steps = []
     for step in proposal["steps"]:
         if isinstance(step, dict) and isinstance(step.get("strokes"), list):

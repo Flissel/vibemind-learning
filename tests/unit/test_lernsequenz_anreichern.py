@@ -70,6 +70,15 @@ def test_svg_style_strokes_and_missing_titles_are_accepted() -> None:
     assert enriched.checkpoints[0].steps[0].strokes[0].path == "M40 120 h150 v90 h-150 z"
 
 
+def test_a_nested_board_size_is_accepted() -> None:
+    # Live (26.10.): three of four drawings came back with {"board": {"width", "height"}}.
+    proposal = {k: v for k, v in DRAWING.items() if k not in ("width", "height")}
+    proposal["board"] = {"width": 640, "height": 360}
+    enriched, report = asyncio.run(enrich(_Gateway([proposal]), sequence(), correlation_id=CORRELATION))
+    assert report == ["#1: added drawn_explanation after s1"]
+    assert (enriched.checkpoints[0].width, enriched.checkpoints[0].height) == (640, 360)
+
+
 def test_invented_numbers_off_board_drawings_and_bad_shapes_are_rejected() -> None:
     proposals = [INVENTED_CALC, OFF_BOARD, {"kind": "estimate", "after_section": "s9"}, {"kind": "choice", "after_section": "s1"}]
     enriched, report = asyncio.run(enrich(_Gateway(proposals), sequence(), correlation_id=CORRELATION))
