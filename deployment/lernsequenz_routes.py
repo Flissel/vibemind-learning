@@ -35,6 +35,7 @@ from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.store import SequenceStore
 from spaces.learning.services.lernsequenz.token import sequence_token
 from spaces.learning.services.lernsequenz.tutor import tutor_context
+from spaces.learning.services.lernsequenz.zahlen import format_number, read_number, why_not_a_number
 
 # Below the worker's gateway limits (wrapper 540 s < gateway 600 s).
 _TUTOR_TIMEOUT_S = 630.0
@@ -96,6 +97,25 @@ def player(sequence_id: str, k: Token) -> HTMLResponse:
 def data(sequence_id: str, k: Token) -> JSONResponse:
     sequence = _checked(sequence_id, k)
     return JSONResponse(public_view(sequence), headers=_headers())
+
+
+@router.post("/lernsequenz/{sequence_id}/lesen")
+def reading(sequence_id: str, k: Token, payload: Annotated[dict[str, Any], Body()]) -> JSONResponse:
+    """How a typed number is read, so the person sees the reading before it is graded."""
+    _checked(sequence_id, k)
+    text = payload.get("text")
+    if not isinstance(text, str) or len(text) > 60:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "text is required")
+    read = read_number(text)
+    if read is None:
+        return JSONResponse({"value": None, "display": None, "ambiguous": False, "alternative": None,
+                             "percent": False, "reason": why_not_a_number(text)}, headers=_headers())
+    alternative = (
+        {"value": read.alternative, "display": format_number(read.alternative)}
+        if read.alternative is not None else None
+    )
+    return JSONResponse({"value": read.value, "display": read.display, "ambiguous": read.ambiguous,
+                         "alternative": alternative, "percent": read.percent, "reason": None}, headers=_headers())
 
 
 @router.post("/lernsequenz/{sequence_id}/antwort")

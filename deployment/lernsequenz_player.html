@@ -115,6 +115,42 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
     if (!res.ok) throw new Error(data.message || 'Antwort wurde nicht angenommen');
     return data;
   }
+  async function postTo(path, body) {
+    const res = await fetch(`${base}/${path}?k=${encodeURIComponent(token)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'Anfrage wurde nicht angenommen');
+    return data;
+  }
+  const UNREADABLE = { spanne: 'Bitte eine Zahl, keine Spanne.', datum: 'Das sieht wie ein Datum aus.', leer: '', unlesbar: 'Das kann ich nicht als Zahl lesen.' };
+  // Shows how a typed number is read before it is graded; 45.000 vs 45,000 asks instead of guessing.
+  function readingBox(input, unit) {
+    const box = el('div', { class: 'small reading', 'aria-live': 'polite' });
+    let timer = null, last = '';
+    const choose = (value) => { input.value = String(value); refresh(); input.focus(); };
+    async function refresh() {
+      const text = input.value.trim();
+      if (text === last) return;
+      last = text;
+      if (!text) { box.replaceChildren(); return; }
+      try {
+        const r = await postTo('lesen', { text });
+        if (r.reason) { box.textContent = UNREADABLE[r.reason] || ''; return; }
+        if (r.ambiguous) {
+          box.replaceChildren('Meinen Sie ',
+            el('button', { class: 'btn link', type: 'button', style: 'min-height:32px', onclick: () => choose(r.value) }, `${r.display} ${unit || ''}`.trim()),
+            ' oder ',
+            el('button', { class: 'btn link', type: 'button', style: 'min-height:32px', onclick: () => choose(r.alternative.value) }, `${r.alternative.display} ${unit || ''}`.trim()),
+            '?');
+          return;
+        }
+        box.textContent = `= ${r.display} ${r.percent ? '%' : (unit || '')}`.trim();
+      } catch (_) { box.replaceChildren(); }
+    }
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
+    return box;
+  }
   const refsText = (refs) => {
     const titles = [...new Set((refs || []).map((r) => sourceTitles[r]).filter(Boolean))];
     return titles.length ? 'Quelle: ' + titles.join(' · ') : '';
@@ -326,7 +362,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
         el('div', { class: 'row' }, input, el('strong', {}, s.unit || ''),
           el('button', { class: 'btn primary', type: 'button', onclick: () => check() }, 'Prüfen'),
           el('button', { class: 'btn link', type: 'button', onclick: () => hint.classList.toggle('hidden') }, 'Hinweis')),
-        hint, note);
+        readingBox(input, s.unit), hint, note);
       boxes[s.step_id] = box;
       return box;
     });
@@ -341,6 +377,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
           notes[s.step_id].className = 'small';
           notes[s.step_id].textContent = !s.readable ? 'Bitte eine Zahl eingeben.' : s.correct
             ? (s.follow_up ? 'Richtig weitergerechnet – der Fehler stammt aus dem Schritt davor und zählt nur dort.' : 'Richtig.')
+            : s.separator_hint ? 'Der Wert stimmt, nur das Tausender-Trennzeichen war anders gemeint. Schreiben Sie die Zahl ohne Trennzeichen, z. B. 45000.'
             : 'Noch nicht. Prüfen Sie Formel und Einheit.';
         }
       } catch (err) { alertBox.textContent = err.message; alertBox.className = 'fb no'; }

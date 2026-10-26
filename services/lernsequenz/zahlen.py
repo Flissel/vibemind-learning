@@ -39,7 +39,7 @@ def read_number(text: object) -> NumberReading | None:
     if isinstance(text, bool):
         return None
     if isinstance(text, (int, float)):
-        return NumberReading(float(text), _display(float(text)), False, None, False)
+        return NumberReading(float(text), format_number(float(text)), False, None, False)
     if not isinstance(text, str):
         return None
     cleaned = _PREFIX.sub("", text.strip())
@@ -62,7 +62,7 @@ def read_number(text: object) -> NumberReading | None:
     value, ambiguous, alternative = reading
     value *= factor
     alternative = alternative * factor if alternative is not None else None
-    return NumberReading(value, _display(value), ambiguous, alternative, percent)
+    return NumberReading(value, format_number(value), ambiguous, alternative, percent)
 
 
 def _read_core(core: str) -> tuple[float, bool, float | None] | None:
@@ -99,7 +99,7 @@ def why_not_a_number(text: str) -> str:
     return "unlesbar"
 
 
-def _display(value: float) -> str:
+def format_number(value: float) -> str:
     """German formatting: thousands with a dot, up to two decimals with a comma."""
     whole, fraction = f"{value:,.2f}".split(".")
     whole = whole.replace(",", ".")

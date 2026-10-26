@@ -54,6 +54,14 @@ def test_data_has_no_solutions_and_answers_are_graded(client) -> None:
     assert client.post(url, json={"checkpoint_id": "nope", "answer": {}}).status_code == 404
 
 
+def test_reading_endpoint_explains_how_a_number_is_read(client) -> None:
+    r = client.post(f"/lernsequenz/seq-roi/lesen?k={_token()}", json={"text": "45,000"})
+    assert r.status_code == 200 and r.json()["ambiguous"] is True
+    assert r.json()["display"] == "45" and r.json()["alternative"]["display"] == "45.000"
+    assert client.post(f"/lernsequenz/seq-roi/lesen?k={_token()}", json={"text": "40-50"}).json()["reason"] == "spanne"
+    assert client.post("/lernsequenz/seq-roi/lesen?k=" + "0" * 40, json={"text": "1"}).status_code == 404
+
+
 def test_drawings_are_saved_for_a_person(client, tmp_path: Path) -> None:
     url = f"/lernsequenz/seq-roi/antwort?k={_token()}"
     saved = client.post(url, json={"checkpoint_id": "tafel", "answer": {"strokes": [[[1, 2], [5, 6]]]}})
