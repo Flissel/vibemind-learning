@@ -66,6 +66,16 @@ def evaluate_formula(formula: str, previous: dict[str, float]) -> float:
     return value(tree)
 
 
+class Condition(ContractModel):
+    """Shown only when the person's profile answer for ``key`` is ``option`` ("Dein Weg")."""
+
+    key: SafeToken
+    option: SafeToken
+
+
+Conditions = Annotated[tuple[Condition, ...], Field(max_length=4)]
+
+
 # --- Sections -----------------------------------------------------------------
 
 class Slide(ContractModel):
@@ -76,6 +86,7 @@ class Slide(ContractModel):
     points: Annotated[tuple[ShortText, ...], Field(max_length=8)] = ()
     narration: Text
     refs: Refs = ()
+    only_for: Conditions = ()
 
 
 class VideoSegment(ContractModel):
@@ -87,6 +98,7 @@ class VideoSegment(ContractModel):
     end_s: Annotated[float, Field(gt=0)] | None = None
     transcript: Text | None = None
     refs: Refs = ()
+    only_for: Conditions = ()
 
     @field_validator("url")
     @classmethod
@@ -107,6 +119,7 @@ class _Checkpoint(ContractModel):
     at_s: Annotated[float, Field(ge=0)] | None = None
     title: ShortText
     refs: Refs = ()
+    only_for: Conditions = ()
 
 
 class Explanation(_Checkpoint):
@@ -263,8 +276,187 @@ class CommandCheck(_Checkpoint):
         return self
 
 
+# --- Hands-on checkpoints -------------------------------------------------------
+# The person works along on their own computer; everything here is graded by rules.
+
+_MEDIA_PATH = r"^/lernsequenz-medien/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(png|jpg|webp)$"
+_PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z0-9][A-Za-z0-9._:-]*)\s*\}\}")
+
+
+def _unique(values: list[str], what: str) -> None:
+    if len(set(values)) != len(values):
+        raise ValueError(f"{what} must be unique")
+
+
+class OrderItem(ContractModel):
+    item_id: SafeToken
+    text: ShortText
+
+
+class Ordering(_Checkpoint):
+    """Put the steps in the right order. Answer: ``{"order": [item_id, ...]}``."""
+
+    kind: Literal["ordering"] = "ordering"
+    task: Text
+    items: Annotated[tuple[OrderItem, ...], Field(min_length=3, max_length=8)]
+    correct: Annotated[tuple[SafeToken, ...], Field(min_length=3, max_length=8)]
+
+    @model_validator(mode="after")
+    def correct_is_a_permutation(self) -> "Ordering":
+        ids = [item.item_id for item in self.items]
+        _unique(ids, "ordering item ids")
+        if sorted(self.correct) != sorted(ids):
+            raise ValueError("ordering correct must be a permutation of the item ids")
+        return self
+
+
+class Blank(ContractModel):
+    blank_id: SafeToken
+    accepted: Annotated[
+        tuple[Annotated[str, Field(min_length=1, max_length=200)], ...], Field(min_length=1, max_length=6)
+    ]
+
+
+class Cloze(_Checkpoint):
+    """A command with blanks (``irm https://claude.ai/{{datei}} | iex``). Answer: ``{"values": {blank_id: text}}``."""
+
+    kind: Literal["cloze"] = "cloze"
+    task: Text
+    template: Annotated[str, Field(min_length=1, max_length=500)]
+    blanks: Annotated[tuple[Blank, ...], Field(min_length=1, max_length=6)]
+    shell: Shell | None = None
+
+    @model_validator(mode="after")
+    def placeholders_have_blanks(self) -> "Cloze":
+        ids = [blank.blank_id for blank in self.blanks]
+        _unique(ids, "cloze blank ids")
+        if set(_PLACEHOLDER.findall(self.template)) != set(ids):
+            raise ValueError("cloze placeholders and blanks must match")
+        return self
+
+
+class MatchItem(ContractModel):
+    item_id: SafeToken
+    text: ShortText
+
+
+class Matching(_Checkpoint):
+    """Match left to right. Answer: ``{"pairs": {left_id: right_id}}``."""
+
+    kind: Literal["matching"] = "matching"
+    task: Text
+    left: Annotated[tuple[MatchItem, ...], Field(min_length=3, max_length=8)]
+    right: Annotated[tuple[MatchItem, ...], Field(min_length=3, max_length=8)]
+    pairs: dict[SafeToken, SafeToken]
+
+    @model_validator(mode="after")
+    def pairs_reference_items(self) -> "Matching":
+        left = [item.item_id for item in self.left]
+        right = [item.item_id for item in self.right]
+        _unique(left, "matching left ids")
+        _unique(right, "matching right ids")
+        if set(self.pairs) != set(left) or not set(self.pairs.values()) <= set(right):
+            raise ValueError("matching pairs must map every left item to a right item")
+        return self
+
+
+class Rect(ContractModel):
+    x: Annotated[float, Field(ge=0)]
+    y: Annotated[float, Field(ge=0)]
+    w: Annotated[float, Field(gt=0)]
+    h: Annotated[float, Field(gt=0)]
+
+
+class Hotspot(_Checkpoint):
+    """Mark the spot on an image with the frame. Answer: ``{"rect": {x, y, w, h}}`` in image pixels."""
+
+    kind: Literal["hotspot"] = "hotspot"
+    task: Text
+    image: Annotated[str, Field(pattern=_MEDIA_PATH)]
+    width: Annotated[int, Field(ge=100, le=4_000)]
+    height: Annotated[int, Field(ge=100, le=4_000)]
+    target: Rect
+
+    @model_validator(mode="after")
+    def target_inside_image(self) -> "Hotspot":
+        if self.target.x + self.target.w > self.width or self.target.y + self.target.h > self.height:
+            raise ValueError("hotspot target must lie inside the image")
+        return self
+
+
+class SimCommand(ContractModel):
+    pattern: Annotated[str, Field(min_length=1, max_length=200)]
+    output: Text
+    reaches_goal: bool = False
+
+    @field_validator("pattern")
+    @classmethod
+    def compiles(cls, value: str) -> str:
+        re.compile(value)
+        return value
+
+
+class TerminalSim(_Checkpoint):
+    """A simulated terminal with the documented outputs. Answer: ``{"command": text}``."""
+
+    kind: Literal["terminal_sim"] = "terminal_sim"
+    task: Text
+    shell: Shell
+    prompt: ShortText
+    commands: Annotated[tuple[SimCommand, ...], Field(min_length=1, max_length=20)]
+    unknown_output: Text
+
+
+class Step(_Checkpoint):
+    """Do this on your own computer. Answer: ``{"state": "done"}`` or
+    ``{"state": "differs", "shell": ..., "output": ...}`` (graded by ``check`` when present)."""
+
+    kind: Literal["step"] = "step"
+    instruction: Text
+    commands: Annotated[tuple[ShellCommand, ...], Field(max_length=3)] = ()
+    expected_text: Text | None = None
+    expected_image: Annotated[str, Field(pattern=_MEDIA_PATH)] | None = None
+    check: CommandCheck | None = None
+
+    @model_validator(mode="after")
+    def one_command_per_shell(self) -> "Step":
+        _unique([command.shell for command in self.commands], "step command shells")
+        return self
+
+
+class ProfileOption(ContractModel):
+    option_id: SafeToken
+    text: ShortText
+
+
+class ProfileQuestion(ContractModel):
+    key: SafeToken
+    question: ShortText
+    options: Annotated[tuple[ProfileOption, ...], Field(min_length=2, max_length=6)]
+
+    @model_validator(mode="after")
+    def options_unique(self) -> "ProfileQuestion":
+        _unique([option.option_id for option in self.options], "profile option ids")
+        return self
+
+
+class Profile(_Checkpoint):
+    """"Dein Weg": the answers filter sections and checkpoints by ``only_for``. Answer: ``{"choices": {key: option_id}}``."""
+
+    kind: Literal["profile"] = "profile"
+    questions: Annotated[tuple[ProfileQuestion, ...], Field(min_length=1, max_length=4)]
+
+    @model_validator(mode="after")
+    def keys_unique(self) -> "Profile":
+        _unique([question.key for question in self.questions], "profile keys")
+        return self
+
+
 Checkpoint = Annotated[
-    Union[Explanation, Choice, Calculation, Estimate, DrawnExplanation, CommandCheck],
+    Union[
+        Explanation, Choice, Calculation, Estimate, DrawnExplanation, CommandCheck,
+        Ordering, Cloze, Matching, Hotspot, TerminalSim, Step, Profile,
+    ],
     Field(discriminator="kind"),
 ]
 
@@ -308,6 +500,12 @@ _SECRET_FIELDS = {
     "estimate": {"value", "rationale", "good_from", "good_to"},
     # The recognition rules and their fixes come back with the graded output.
     "command_check": {"success", "problems"},
+    "ordering": {"correct"},
+    "cloze": {"blanks"},
+    "matching": {"pairs"},
+    "hotspot": {"target"},
+    "terminal_sim": {"commands", "unknown_output"},
+    "step": {"check"},
 }
 
 
@@ -323,6 +521,10 @@ def public_view(sequence: LernsequenzV1) -> dict[str, object]:
             if checkpoint["kind"] == "choice":
                 # Only whether several options are right (checkboxes vs. radio buttons).
                 checkpoint["multiple"] = len(checkpoint["correct"]) > 1
+            elif checkpoint["kind"] == "cloze":
+                checkpoint["blank_ids"] = [blank["blank_id"] for blank in checkpoint["blanks"]]
+            elif checkpoint["kind"] == "step":
+                checkpoint["has_check"] = checkpoint.get("check") is not None
             for name in hidden:
                 checkpoint.pop(name, None)
     return data
