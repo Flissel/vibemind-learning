@@ -221,8 +221,51 @@ class DrawnExplanation(_Checkpoint):
     draw_task: Text | None = None
 
 
+Shell = Literal["powershell", "cmd", "unix"]
+
+
+class ShellCommand(ContractModel):
+    shell: Shell
+    command: Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class OutputRule(ContractModel):
+    """A recognisable terminal output (regex, case-insensitive) and what it means."""
+
+    pattern: Annotated[str, Field(min_length=1, max_length=300)]
+    message: Text
+    shells: Annotated[tuple[Shell, ...], Field(max_length=3)] = ()
+    fix: Annotated[tuple[ShellCommand, ...], Field(max_length=6)] = ()
+
+    @field_validator("pattern")
+    @classmethod
+    def compiles(cls, value: str) -> str:
+        re.compile(value)
+        return value
+
+
+class CommandCheck(_Checkpoint):
+    """Run a command in your own terminal and paste what it printed: the output is
+    recognised by fixed rules (no model), a known error gets its fix for that shell."""
+
+    kind: Literal["command_check"] = "command_check"
+    task: Text
+    commands: Annotated[tuple[ShellCommand, ...], Field(min_length=1, max_length=3)]
+    success: OutputRule
+    problems: Annotated[tuple[OutputRule, ...], Field(max_length=12)] = ()
+    unknown_hint: Text
+
+    @model_validator(mode="after")
+    def one_command_per_shell(self) -> "CommandCheck":
+        shells = [command.shell for command in self.commands]
+        if len(set(shells)) != len(shells):
+            raise ValueError("one command per shell")
+        return self
+
+
 Checkpoint = Annotated[
-    Union[Explanation, Choice, Calculation, Estimate, DrawnExplanation], Field(discriminator="kind")
+    Union[Explanation, Choice, Calculation, Estimate, DrawnExplanation, CommandCheck],
+    Field(discriminator="kind"),
 ]
 
 
@@ -263,6 +306,8 @@ class LernsequenzV1(ContractModel):
 _SECRET_FIELDS = {
     "choice": {"correct", "rationale"},
     "estimate": {"value", "rationale", "good_from", "good_to"},
+    # The recognition rules and their fixes come back with the graded output.
+    "command_check": {"success", "problems"},
 }
 
 

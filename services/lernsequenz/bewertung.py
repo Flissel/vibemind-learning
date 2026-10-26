@@ -8,9 +8,11 @@ from typing import Any
 from spaces.learning.contracts.lernsequenz import (
     Calculation,
     Choice,
+    CommandCheck,
     DrawnExplanation,
     Estimate,
     LernsequenzV1,
+    OutputRule,
     evaluate_formula,
 )
 
@@ -56,7 +58,36 @@ def grade(sequence: LernsequenzV1, checkpoint_id: str, answer: dict[str, Any]) -
         return _estimate(checkpoint, answer)
     if isinstance(checkpoint, DrawnExplanation):
         raise ValueError("drawings are saved, not graded here")
+    if isinstance(checkpoint, CommandCheck):
+        return _command(checkpoint, answer)
     return {"kind": checkpoint.kind, "seen": True}
+
+
+_MAX_OUTPUT = 20_000
+
+
+def _matches(rule: OutputRule, output: str, shell: str) -> bool:
+    return (not rule.shells or shell in rule.shells) and re.search(rule.pattern, output, re.IGNORECASE) is not None
+
+
+def _command(checkpoint: CommandCheck, answer: dict[str, Any]) -> dict[str, Any]:
+    """Known errors first (an error text can contain a version number), then success."""
+    output, shell = answer.get("output"), answer.get("shell")
+    if not isinstance(output, str) or not output.strip():
+        raise ValueError("paste what the command printed")
+    if shell not in {command.shell for command in checkpoint.commands}:
+        raise ValueError("unknown shell")
+    output = output[:_MAX_OUTPUT]
+    for rule in checkpoint.problems:
+        if _matches(rule, output, shell):
+            fix = [command.model_dump() for command in rule.fix if command.shell == shell]
+            return {"kind": "command_check", "recognized": True, "ok": False, "score": 0.0,
+                    "message": rule.message, "fix": fix, "refs": list(checkpoint.refs)}
+    if _matches(checkpoint.success, output, shell):
+        return {"kind": "command_check", "recognized": True, "ok": True, "score": 1.0,
+                "message": checkpoint.success.message, "fix": [], "refs": list(checkpoint.refs)}
+    return {"kind": "command_check", "recognized": False, "ok": False, "score": 0.0,
+            "message": checkpoint.unknown_hint, "fix": [], "refs": list(checkpoint.refs)}
 
 
 def _choice(checkpoint: Choice, answer: dict[str, Any]) -> dict[str, Any]:

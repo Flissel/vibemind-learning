@@ -12,6 +12,7 @@ from typing import Any
 from spaces.learning.contracts.lernsequenz import (
     Calculation,
     Choice,
+    CommandCheck,
     DrawnExplanation,
     Estimate,
     Explanation,
@@ -43,6 +44,9 @@ def tutor_context(
         elif isinstance(checkpoint, DrawnExplanation):
             task = {"prompt": checkpoint.draw_task or checkpoint.title, "type": "drawn_explanation"}
             texts += [step.narration for step in checkpoint.steps]
+        elif isinstance(checkpoint, CommandCheck):
+            task = {"prompt": checkpoint.task, "type": "command_check",
+                    "commands": [f"{c.shell}: {c.command}" for c in checkpoint.commands]}
         else:
             assert isinstance(checkpoint, Explanation)
             task = {"prompt": checkpoint.title, "type": "explanation"}

@@ -71,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     enrich_cmd.add_argument("--sequenz", required=True)
     embed_cmd = sub.add_parser("einbetten", help="what publishing does: presentation (+video) into the first lesson")
     embed_cmd.add_argument("--course", required=True)
+    check_cmd = sub.add_parser("befehlspruefung", help="terminal check 'is Claude Code installed?' after a section")
+    check_cmd.add_argument("--sequenz", required=True)
+    check_cmd.add_argument("--nach", required=True, help="section id the check follows")
     args = parser.parse_args(argv)
 
     store = SequenceStore(Path(os.environ["LEARNING_ARTIFACT_ROOT"]))
@@ -93,6 +96,18 @@ def main(argv: list[str] | None = None) -> int:
             enrich(build_openfang_model_gateway(), store.load(args.sequenz), correlation_id=str(uuid4()))
         )
         print("\n".join(report))
+    elif args.command == "befehlspruefung":
+        from spaces.learning.services.lernsequenz.befehlspruefungen import claude_installiert
+
+        sequence = store.load(args.sequenz)
+        section = next((s for s in sequence.sections if s.section_id == args.nach), None)
+        if section is None:
+            raise SystemExit("unknown section: " + ", ".join(s.section_id for s in sequence.sections))
+        check = claude_installiert("claude-installiert", args.nach, refs=section.refs)
+        kept = tuple(c for c in sequence.checkpoints if c.checkpoint_id != check.checkpoint_id)
+        sequence = LernsequenzV1.model_validate(
+            {**sequence.model_dump(mode="json"), "checkpoints": [c.model_dump(mode="json") for c in (*kept, check)]}
+        )
     elif args.command == "praesentation":
         sequence = build_presentation(published_draft(args.course), course_id=args.course, chapter_id=args.chapter)
     elif args.command == "video":

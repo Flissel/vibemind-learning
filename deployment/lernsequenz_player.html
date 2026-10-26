@@ -55,6 +55,13 @@ video{display:block;width:100%;max-height:560px;background:#10201C}
 .hand{font-family:"Segoe Print","Comic Sans MS",cursive}
 input[type=range]{width:100%;accent-color:var(--accent)}
 .hidden{display:none !important}
+.cmd{font-family:Consolas,"Cascadia Mono",Menlo,monospace;font-size:14px;background:#16191D;color:#E8F2EF;padding:12px 14px;border-radius:10px;white-space:pre-wrap;word-break:break-all;user-select:all;margin:0}
+.cmdrow{display:flex;gap:8px;align-items:flex-start}
+.cmdrow .cmd{flex:1;min-width:0}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{min-height:40px;padding:0 14px;border-radius:999px;border:2px solid var(--line);background:#fff;cursor:pointer;font-weight:600;font-size:14px}
+.tab.sel{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CDD1CB;padding:10px 12px;font:13px/1.45 Consolas,Menlo,monospace;resize:vertical}
 @media (max-width:600px){.slide{padding:24px 20px}.slide h2{font-size:24px}.statement{font-size:19px}}
 </style>
 </head>
@@ -196,7 +203,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     tutor.classList.add('hidden');
     const overlay = el('div', { class: 'overlay', role: 'dialog', 'aria-label': cp.title },
       el('div', { class: 'frame' },
-        el('header', {}, el('span', {}, ({ explanation: 'ERKLÄRUNG', choice: 'HALTEPUNKT · FRAGE', calculation: 'RECHENAUFGABE', estimate: 'SCHÄTZEN', drawn_explanation: 'AN DER TAFEL ERKLÄRT' })[cp.kind] || 'HALTEPUNKT'),
+        el('header', {}, el('span', {}, ({ explanation: 'ERKLÄRUNG', choice: 'HALTEPUNKT · FRAGE', calculation: 'RECHENAUFGABE', estimate: 'SCHÄTZEN', drawn_explanation: 'AN DER TAFEL ERKLÄRT', command_check: 'IM TERMINAL PRÜFEN' })[cp.kind] || 'HALTEPUNKT'),
           el('button', { class: 'btn link', type: 'button', style: 'min-height:32px;font-size:13px', onclick: () => tutor.classList.toggle('hidden') }, 'Tutor fragen')),
         el('div', { class: 'body' }, body, tutor),
         el('footer', {}, footerKids)));
@@ -216,7 +223,62 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     else if (cp.kind === 'calculation') calcFrame(cp, finish);
     else if (cp.kind === 'estimate') estimateFrame(cp, finish);
     else if (cp.kind === 'drawn_explanation') drawFrame(cp, finish);
+    else if (cp.kind === 'command_check') commandFrame(cp, finish);
     else finish({ remove() {} });
+  }
+
+  const SHELL_NAMES = { powershell: 'Windows PowerShell', cmd: 'Windows CMD', unix: 'macOS / Linux' };
+  const SHELL_HINTS = { powershell: 'Eingabezeile beginnt mit „PS C:\\…“', cmd: 'Eingabezeile beginnt mit „C:\\…“ (ohne PS)', unix: 'Programm „Terminal“' };
+
+  // Embedded pages may lack the clipboard permission: fall back to a selected text copy.
+  async function copyText(text, button) {
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+      const area = el('textarea', { style: 'position:fixed;top:-1000px;opacity:0' });
+      area.value = text; document.body.append(area); area.select();
+      try { ok = document.execCommand('copy'); } catch (__) { ok = false; }
+      area.remove();
+    }
+    const label = button.textContent;
+    button.textContent = ok ? 'Kopiert ✓' : 'Bitte markieren und kopieren';
+    setTimeout(() => { button.textContent = label; }, 1800);
+  }
+  const commandLine = (text) => {
+    const copy = el('button', { class: 'btn', type: 'button', onclick: () => copyText(text, copy) }, 'Kopieren');
+    return el('div', { class: 'cmdrow' }, el('pre', { class: 'cmd' }, text), copy);
+  };
+
+  function commandFrame(cp, finish) {
+    const shells = cp.commands.map((c) => c.shell);
+    let shell = shells[0];
+    try { const kept = localStorage.getItem('lernsequenz-shell'); if (shells.includes(kept)) shell = kept; } catch (_) {}
+    const tabs = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Ihre Shell' });
+    const hint = el('div', { class: 'small' });
+    const cmdBox = el('div');
+    const output = el('textarea', { class: 'out', 'aria-label': 'Ausgabe des Befehls', placeholder: 'Hier einfügen, was das Terminal ausgegeben hat …' });
+    const fb = el('div', { class: 'hidden' });
+    function show() {
+      tabs.replaceChildren(...shells.map((s) => el('button', { class: 'tab' + (s === shell ? ' sel' : ''), type: 'button', role: 'tab', 'aria-selected': String(s === shell),
+        onclick: () => { shell = s; try { localStorage.setItem('lernsequenz-shell', s); } catch (_) {} fb.className = 'hidden'; show(); } }, SHELL_NAMES[s] || s)));
+      hint.textContent = SHELL_HINTS[shell] || '';
+      cmdBox.replaceChildren(commandLine(cp.commands.find((c) => c.shell === shell).command));
+    }
+    const check = el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      if (!output.value.trim()) { output.focus(); return; }
+      try {
+        const r = await post(cp.checkpoint_id, { shell, output: output.value });
+        fb.className = 'fb ' + (r.ok ? 'ok' : 'no');
+        fb.replaceChildren(el('strong', {}, r.ok ? 'Geschafft. ' : r.recognized ? 'Erkannt: ' : 'Noch nicht erkannt. '), r.message,
+          r.fix && r.fix.length ? el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px' },
+            el('div', { class: 'small' }, `So beheben Sie es in ${SHELL_NAMES[shell]}:`), ...r.fix.map((f) => commandLine(f.command))) : null,
+          el('div', { class: 'refs' }, refsText(r.refs)));
+      } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Ausgabe prüfen');
+    show();
+    const o = frame(cp, [el('p', { class: 'q' }, cp.task), el('div', { class: 'small' }, 'Ihre Shell:'), tabs, hint, cmdBox,
+      el('div', { class: 'small' }, 'Führen Sie den Befehl in Ihrem Terminal aus und fügen Sie die Ausgabe hier ein:'), output, fb],
+      [el('button', { class: 'btn link', type: 'button', onclick: () => finish(o) }, 'Überspringen'),
+       el('div', { class: 'row' }, check, el('button', { class: 'btn', type: 'button', onclick: () => finish(o) }, 'Weiter'))]);
   }
 
   function choiceFrame(cp, finish) {
