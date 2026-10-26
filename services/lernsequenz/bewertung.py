@@ -8,11 +8,18 @@ from typing import Any
 from spaces.learning.contracts.lernsequenz import (
     Calculation,
     Choice,
+    Cloze,
     CommandCheck,
     DrawnExplanation,
     Estimate,
+    Hotspot,
     LernsequenzV1,
+    Matching,
+    Ordering,
     OutputRule,
+    Profile,
+    Step,
+    TerminalSim,
     evaluate_formula,
 )
 from spaces.learning.services.lernsequenz.befehlsausgabe import inspect_output
@@ -45,7 +52,114 @@ def grade(sequence: LernsequenzV1, checkpoint_id: str, answer: dict[str, Any]) -
         raise ValueError("drawings are saved, not graded here")
     if isinstance(checkpoint, CommandCheck):
         return _command(checkpoint, answer)
+    hands_on = {
+        Ordering: _ordering, Cloze: _cloze, Matching: _matching, Hotspot: _hotspot,
+        TerminalSim: _terminal_sim, Step: _step, Profile: _profile,
+    }
+    for kind, scorer in hands_on.items():
+        if isinstance(checkpoint, kind):
+            return scorer(checkpoint, answer)
     return {"kind": checkpoint.kind, "seen": True}
+
+
+# --- hands-on checkpoints -------------------------------------------------------
+
+# Copied commands arrive with dashes and quotes a word processor swapped in.
+_ASCII = str.maketrans({"–": "--", "—": "--", "‘": "'", "’": "'", "‚": "'", "“": '"', "”": '"', "„": '"'})
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.translate(_ASCII).split()).casefold()
+
+
+def _ordering(checkpoint: Ordering, answer: dict[str, Any]) -> dict[str, Any]:
+    order = answer.get("order")
+    ids = [item.item_id for item in checkpoint.items]
+    if not isinstance(order, list) or not all(isinstance(i, str) for i in order) or sorted(order) != sorted(ids):
+        raise ValueError("order must contain each item exactly once")
+    hits = sum(given == expected for given, expected in zip(order, checkpoint.correct))
+    return {"kind": "ordering", "correct": hits == len(ids), "score": hits / len(ids),
+            "correct_order": list(checkpoint.correct), "refs": list(checkpoint.refs)}
+
+
+def _cloze(checkpoint: Cloze, answer: dict[str, Any]) -> dict[str, Any]:
+    values = answer.get("values")
+    if not isinstance(values, dict) or set(values) != {blank.blank_id for blank in checkpoint.blanks}:
+        raise ValueError("a value per blank is required")
+    blanks = []
+    for blank in checkpoint.blanks:
+        given = values[blank.blank_id]
+        accepted = {_plain(text) for text in blank.accepted}
+        blanks.append({"blank_id": blank.blank_id, "correct": isinstance(given, str) and _plain(given) in accepted})
+    return {"kind": "cloze", "blanks": blanks, "score": sum(b["correct"] for b in blanks) / len(blanks),
+            "refs": list(checkpoint.refs)}
+
+
+def _matching(checkpoint: Matching, answer: dict[str, Any]) -> dict[str, Any]:
+    pairs = answer.get("pairs")
+    right = {item.item_id for item in checkpoint.right}
+    if (not isinstance(pairs, dict) or set(pairs) != set(checkpoint.pairs)
+            or not all(isinstance(v, str) and v in right for v in pairs.values())):
+        raise ValueError("a partner per left item is required")
+    hits = sum(pairs[left] == expected for left, expected in checkpoint.pairs.items())
+    return {"kind": "matching", "correct": hits == len(checkpoint.pairs), "score": hits / len(checkpoint.pairs),
+            "pairs": dict(checkpoint.pairs), "refs": list(checkpoint.refs)}
+
+
+def _hotspot(checkpoint: Hotspot, answer: dict[str, Any]) -> dict[str, Any]:
+    rect = answer.get("rect")
+    try:
+        x, y, w, h = (float(rect[key]) for key in ("x", "y", "w", "h"))
+    except (TypeError, KeyError, ValueError) as error:
+        raise ValueError("rect with x, y, w and h is required") from error
+    if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > checkpoint.width or y + h > checkpoint.height:
+        raise ValueError("rect must lie inside the image")
+    target = checkpoint.target
+    centre_x, centre_y = x + w / 2, y + h / 2
+    inside = target.x <= centre_x <= target.x + target.w and target.y <= centre_y <= target.y + target.h
+    # A frame around the whole screenshot is not an answer: at most four times the target.
+    tight = w * h <= 4 * target.w * target.h
+    hit = inside and tight
+    return {"kind": "hotspot", "hit": hit, "score": 1.0 if hit else 0.0, "target": target.model_dump(mode="json"),
+            "refs": list(checkpoint.refs)}
+
+
+def _terminal_sim(checkpoint: TerminalSim, answer: dict[str, Any]) -> dict[str, Any]:
+    command = answer.get("command")
+    if not isinstance(command, str) or not command.strip() or len(command) > 500:
+        raise ValueError("command is required")
+    typed = " ".join(command.translate(_ASCII).split())
+    for sim in checkpoint.commands:
+        if re.search(sim.pattern, typed):
+            return {"kind": "terminal_sim", "output": sim.output, "reached": sim.reaches_goal,
+                    "score": 1.0 if sim.reaches_goal else 0.0, "refs": list(checkpoint.refs)}
+    return {"kind": "terminal_sim", "output": checkpoint.unknown_output, "reached": False, "score": 0.0,
+            "refs": list(checkpoint.refs)}
+
+
+def _step(checkpoint: Step, answer: dict[str, Any]) -> dict[str, Any]:
+    state = answer.get("state")
+    if state == "done":
+        return {"kind": "step", "done": True, "score": 1.0, "refs": list(checkpoint.refs)}
+    if state != "differs":
+        raise ValueError("state must be done or differs")
+    if checkpoint.check is not None:
+        if "output" not in answer:
+            raise ValueError("paste what the command printed")
+        return _command(checkpoint.check, {"output": answer.get("output"), "shell": answer.get("shell")})
+    return {"kind": "step", "done": False, "score": 0.0, "refs": list(checkpoint.refs),
+            "message": "Sieht es bei Ihnen anders aus, fragen Sie den Tutor zu diesem Schritt – er kennt den "
+                       "erwarteten Stand und die häufigen Ursachen."}
+
+
+def _profile(checkpoint: Profile, answer: dict[str, Any]) -> dict[str, Any]:
+    choices = answer.get("choices")
+    allowed = {question.key: {option.option_id for option in question.options} for question in checkpoint.questions}
+    if not isinstance(choices, dict) or not set(choices) <= set(allowed):
+        raise ValueError("choices must answer the profile questions")
+    if any(option not in allowed[key] for key, option in choices.items()):
+        raise ValueError("unknown profile option")
+    return {"kind": "profile", "saved": True, "choices": dict(choices), "refs": list(checkpoint.refs)}
 
 
 _MAX_OUTPUT = 20_000

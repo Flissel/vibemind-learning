@@ -62,6 +62,33 @@ def test_reading_endpoint_explains_how_a_number_is_read(client) -> None:
     assert client.post("/lernsequenz/seq-roi/lesen?k=" + "0" * 40, json={"text": "1"}).status_code == 404
 
 
+def test_mitmach_answers_are_graded_over_http(client, tmp_path: Path) -> None:
+    from spaces.learning.tests.unit.test_lernsequenz_mitmach import mitmach_data
+
+    data = mitmach_data()
+    data["sequence_id"] = "seq-mitmach"
+    SequenceStore(tmp_path).save(LernsequenzV1.model_validate(data))
+    token = lernsequenz_routes.sequence_token("seq-mitmach", KEY)
+    url = f"/lernsequenz/seq-mitmach/antwort?k={token}"
+    answers = {
+        "pr": {"choices": {"shell": "cmd"}},
+        "ord": {"order": ["konto", "laden", "anmelden"]},
+        "cl": {"values": {"datei": "install.ps1"}},
+        "mt": {"pairs": {"l1": "r1", "l2": "r2", "l3": "r3"}},
+        "hs": {"rect": {"x": 290, "y": 30, "w": 100, "h": 50}},
+        "ts": {"command": "claude --version"},
+        "st": {"state": "done"},
+    }
+    for checkpoint_id, answer in answers.items():
+        response = client.post(url, json={"checkpoint_id": checkpoint_id, "answer": answer})
+        assert response.status_code == 200, (checkpoint_id, response.text)
+        assert checkpoint_id == "pr" or response.json()["score"] == 1.0
+    duplicate = client.post(url, json={"checkpoint_id": "ord", "answer": {"order": ["konto", "konto", "laden"]}})
+    assert duplicate.status_code == 400
+    view = client.get(f"/lernsequenz/seq-mitmach/daten?k={token}").json()
+    assert all("correct" not in c for c in view["checkpoints"] if c["kind"] == "ordering")
+
+
 def test_drawings_are_saved_for_a_person(client, tmp_path: Path) -> None:
     url = f"/lernsequenz/seq-roi/antwort?k={_token()}"
     saved = client.post(url, json={"checkpoint_id": "tafel", "answer": {"strokes": [[[1, 2], [5, 6]]]}})

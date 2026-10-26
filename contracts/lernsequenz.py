@@ -9,6 +9,7 @@ ever receives ``public_view`` (no solutions), answers are graded on the server.
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 from typing import Annotated, Literal, Union
 
@@ -509,11 +510,18 @@ _SECRET_FIELDS = {
 }
 
 
+def _fixed_shuffle(items: list[dict], salt: str) -> list[dict]:
+    """The same scrambled order on every load, so the authored order never shows and a reload
+    does not hand the learner a second arrangement to compare against."""
+    return sorted(items, key=lambda item: hashlib.sha1(f"{salt}:{item['item_id']}".encode()).hexdigest())
+
+
 def public_view(sequence: LernsequenzV1) -> dict[str, object]:
     """What the browser may see: everything except solutions and their explanations."""
     data = sequence.model_dump(mode="json")
     for checkpoint in data["checkpoints"]:
         hidden = _SECRET_FIELDS.get(checkpoint["kind"], set())
+        salt = f"{data['sequence_id']}:{checkpoint['checkpoint_id']}"
         if checkpoint["kind"] == "calculation":
             for step in checkpoint["steps"]:
                 step.pop("expected", None)
@@ -523,6 +531,10 @@ def public_view(sequence: LernsequenzV1) -> dict[str, object]:
                 checkpoint["multiple"] = len(checkpoint["correct"]) > 1
             elif checkpoint["kind"] == "cloze":
                 checkpoint["blank_ids"] = [blank["blank_id"] for blank in checkpoint["blanks"]]
+            elif checkpoint["kind"] == "ordering":
+                checkpoint["items"] = _fixed_shuffle(checkpoint["items"], salt)
+            elif checkpoint["kind"] == "matching":
+                checkpoint["right"] = _fixed_shuffle(checkpoint["right"], salt)
             elif checkpoint["kind"] == "step":
                 checkpoint["has_check"] = checkpoint.get("check") is not None
             for name in hidden:

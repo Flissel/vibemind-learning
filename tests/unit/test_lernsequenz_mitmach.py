@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from spaces.learning.contracts.lernsequenz import LernsequenzV1, public_view
 from spaces.learning.services.lernsequenz.befehlspruefungen import claude_installiert
+from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.tests.unit.test_lernsequenz import sequence_data
 
 MITMACH_KINDS = {"ordering", "cloze", "matching", "hotspot", "terminal_sim", "step", "profile"}
@@ -97,7 +98,102 @@ def test_public_view_hides_every_secret() -> None:
     assert "check" not in view["st"] and view["st"]["has_check"] is True
 
 
+def test_public_view_shuffles_ordering_items_and_matching_partners() -> None:
+    # The authored item order is the solution; the browser must get a fixed shuffle instead.
+    data = mitmach_data()
+    data["checkpoints"][1]["items"] = [{"item_id": f"s{i}", "text": f"Schritt {i}"} for i in range(1, 9)]
+    data["checkpoints"][1]["correct"] = [f"s{i}" for i in range(1, 9)]
+    first = public_view(LernsequenzV1.model_validate(data))
+    second = public_view(LernsequenzV1.model_validate(data))
+    shown = [item["item_id"] for item in first["checkpoints"][1]["items"]]
+    assert shown != [f"s{i}" for i in range(1, 9)] and sorted(shown) == [f"s{i}" for i in range(1, 9)]
+    assert shown == [item["item_id"] for item in second["checkpoints"][1]["items"]]
+    partners = [item["item_id"] for item in first["checkpoints"][3]["right"]]
+    assert sorted(partners) == ["r1", "r2", "r3"]
+
+
 def test_only_for_is_public() -> None:
     view = public_view(mitmach_sequence())
     assert view["sections"][1]["only_for"] == [{"key": "shell", "option": "powershell"}]
     assert view["checkpoints"][0]["only_for"] == []
+
+
+# --- grading -------------------------------------------------------------------
+
+def _g(checkpoint_id: str, answer: dict, data: dict | None = None) -> dict:
+    return grade(LernsequenzV1.model_validate(data or mitmach_data()), checkpoint_id, answer)
+
+
+def test_ordering_is_scored_by_position() -> None:
+    right = _g("ord", {"order": ["konto", "laden", "anmelden"]})
+    assert right["correct"] is True and right["score"] == 1.0
+    assert right["correct_order"] == ["konto", "laden", "anmelden"] and right["refs"] == ["c1"]
+    swapped = _g("ord", {"order": ["laden", "konto", "anmelden"]})
+    assert swapped["correct"] is False and swapped["score"] == pytest.approx(1 / 3)
+
+
+def test_ordering_with_duplicate_or_missing_ids_is_rejected() -> None:
+    for bad in ({"order": ["konto", "konto", "laden"]}, {"order": ["konto", "laden"]},
+                {"order": ["konto", "laden", "x"]}, {}):
+        with pytest.raises(ValueError):
+            _g("ord", bad)
+
+
+def test_cloze_accepts_typographic_dashes_as_straight_ones() -> None:
+    ok = _g("cl", {"values": {"datei": " Install.PS1 "}})
+    assert ok["blanks"] == [{"blank_id": "datei", "correct": True}] and ok["score"] == 1.0
+    assert _g("cl", {"values": {"datei": "install.cmd"}})["score"] == 0.0
+    data = mitmach_data()
+    data["checkpoints"][2].update({"template": "claude {{flag}}", "blanks": [{"blank_id": "flag", "accepted": ["--version"]}]})
+    assert _g("cl", {"values": {"flag": "—version"}}, data)["score"] == 1.0
+    with pytest.raises(ValueError):
+        _g("cl", {"values": {"nope": "x"}})
+
+
+def test_matching_scores_the_fraction_of_right_pairs() -> None:
+    assert _g("mt", {"pairs": {"l1": "r1", "l2": "r2", "l3": "r3"}})["correct"] is True
+    partial = _g("mt", {"pairs": {"l1": "r1", "l2": "r3", "l3": "r2"}})
+    assert partial["score"] == pytest.approx(1 / 3) and partial["pairs"] == {"l1": "r1", "l2": "r2", "l3": "r3"}
+    with pytest.raises(ValueError):
+        _g("mt", {"pairs": {"l1": "r1"}})
+
+
+def test_hotspot_hits_when_the_centre_is_inside_and_the_frame_is_tight() -> None:
+    hit = _g("hs", {"rect": {"x": 290, "y": 30, "w": 100, "h": 50}})
+    assert hit["hit"] is True and hit["score"] == 1.0 and hit["target"] == {"x": 300.0, "y": 40.0, "w": 80.0, "h": 30.0}
+    assert _g("hs", {"rect": {"x": 10, "y": 10, "w": 50, "h": 50}})["hit"] is False
+
+
+def test_hotspot_whole_image_is_wrong() -> None:
+    assert _g("hs", {"rect": {"x": 0, "y": 0, "w": 1200, "h": 800}})["hit"] is False
+
+
+def test_terminal_sim_answers_known_commands_and_knows_the_goal() -> None:
+    done = _g("ts", {"command": "claude  --version"})
+    assert done["reached"] is True and done["output"] == "2.1.211 (Claude Code)" and done["score"] == 1.0
+    other = _g("ts", {"command": "claude doctor"})
+    assert other["reached"] is False and other["output"] == "Install health: ok"
+    assert _g("ts", {"command": "dir"})["output"].startswith("Der Befehl ist nicht bekannt")
+    with pytest.raises(ValueError):
+        _g("ts", {"command": ""})
+
+
+def test_step_done_counts_and_differs_runs_the_check() -> None:
+    assert _g("st", {"state": "done"}) == {"kind": "step", "done": True, "score": 1.0, "refs": []}
+    differs = _g("st", {"state": "differs", "shell": "powershell", "output": "2.1.211 (Claude Code)"})
+    assert differs["kind"] == "command_check" and differs["ok"] is True
+    with pytest.raises(ValueError):
+        _g("st", {"state": "differs"})
+
+
+def test_step_differs_without_check_asks_for_the_tutor() -> None:
+    data = mitmach_data()
+    data["checkpoints"][6]["check"] = None
+    result = _g("st", {"state": "differs"}, data)
+    assert result["done"] is False and result["score"] == 0.0 and "Tutor" in result["message"]
+
+
+def test_profile_choices_are_validated_and_echoed() -> None:
+    assert _g("pr", {"choices": {"shell": "cmd"}}) == {"kind": "profile", "saved": True, "choices": {"shell": "cmd"}, "refs": []}
+    with pytest.raises(ValueError):
+        _g("pr", {"choices": {"shell": "fish"}})
