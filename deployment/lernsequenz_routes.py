@@ -20,11 +20,17 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Body, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from spaces.learning.contracts.lernsequenz import Choice, DrawnExplanation, public_view
-from spaces.learning.deployment.vibemind_auth import ApiError
+from spaces.learning.deployment.vibemind_auth import (
+    ROLE_AUTHOR,
+    ApiError,
+    VibeMindRequestContext,
+    vibemind_context,
+)
+from spaces.learning.services.lernsequenz.aus_kurs import as_video
 from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.store import SequenceStore
 from spaces.learning.services.lernsequenz.token import sequence_token
@@ -192,6 +198,89 @@ async def tutor(
         "next_step": answer["next_step"],
         "cited": [texts[k_][:160] for k_ in answer["source_keys"] if k_ in texts],
     }, headers=_headers())
+
+
+_MAX_UPLOAD_BYTES = 1_500_000_000
+Context = Annotated[VibeMindRequestContext, Depends(vibemind_context)]
+
+
+def _media_root() -> Path:
+    root = os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip()
+    if not root:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Artifact root is not configured")
+    return Path(root) / "lernsequenzen" / "medien"
+
+
+@router.put("/api/v1/lernsequenz-medien/{name}")
+async def upload_media(name: str, request: Request, context: Context) -> JSONResponse:
+    """Slide images for Laura and the finished videos; names only, written atomically."""
+    context.require(ROLE_AUTHOR)
+    if not _MEDIA_NAME.fullmatch(name):
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "Media name is not allowed")
+    folder = _media_root()
+    folder.mkdir(parents=True, exist_ok=True)
+    partial = folder / f".{name}.{uuid4().hex}.part"
+    size = 0
+    try:
+        with partial.open("wb") as stream:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > _MAX_UPLOAD_BYTES:
+                    raise ApiError(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "too_large", "Media file is too large")
+                stream.write(chunk)
+        if size == 0:
+            raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "Media file is empty")
+        os.replace(partial, folder / name)
+    finally:
+        partial.unlink(missing_ok=True)
+    return JSONResponse({"name": name, "bytes": size, "url": f"/lernsequenz-medien/{name}"})
+
+
+@router.post("/api/v1/lernsequenzen/{sequence_id}/video")
+def register_video(sequence_id: str, context: Context, payload: Annotated[dict[str, Any], Body()]) -> JSONResponse:
+    """The presentation's explainer video from uploaded media and per-slide times."""
+    context.require(ROLE_AUTHOR)
+    media_name, times = payload.get("media_name"), payload.get("slide_times")
+    if not isinstance(media_name, str) or not _MEDIA_NAME.fullmatch(media_name) or not isinstance(times, dict):
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "media_name and slide_times are required")
+    if not (_media_root() / media_name).is_file():
+        raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", "Upload the video first")
+    try:
+        video = as_video(_store().load(sequence_id), media_name=media_name, slide_times=times)
+    except LookupError as error:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", "Sequence not found") from error
+    except (ValueError, KeyError, TypeError) as error:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", str(error)) from error
+    _store().save(video)
+    return JSONResponse({"sequence_id": video.sequence_id, "checkpoints": len(video.checkpoints),
+                         "link": _public_link(video.sequence_id)})
+
+
+@router.post("/api/v1/lernsequenzen/einbetten")
+async def embed_course(context: Context, payload: Annotated[dict[str, Any], Body()]) -> JSONResponse:
+    """What publishing does: presentation (and video) into the course's first lesson."""
+    context.require(ROLE_AUTHOR)
+    course_id = payload.get("course_id")
+    if not isinstance(course_id, str) or not course_id:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "course_id is required")
+    from spaces.learning.services.course_factory.learnhouse_gateway import build_learnhouse_http_gateway
+    from spaces.learning.services.lernsequenz.cli import published_draft
+    from spaces.learning.services.lernsequenz.einbettung import build_sequence_embedder
+
+    embedder = build_sequence_embedder(build_learnhouse_http_gateway())
+    if embedder is None:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Embedding is not configured")
+    try:
+        draft = published_draft(course_id)
+    except LookupError as error:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", "No published course") from error
+    result = await embedder.embed(course_id=course_id, draft=draft, correlation_id=str(context.correlation_id))
+    return JSONResponse(result)
+
+
+def _public_link(sequence_id: str) -> str:
+    base = os.environ.get("LEARNING_PUBLIC_API_URL", "http://127.0.0.1:8090").rstrip("/")
+    return f"{base}/lernsequenz/{sequence_id}?k={sequence_token(sequence_id)}"
 
 
 @router.get("/lernsequenz-medien/{name}")

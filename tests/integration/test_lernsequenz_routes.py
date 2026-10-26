@@ -68,3 +68,23 @@ def test_media_only_by_plain_name(client, tmp_path: Path) -> None:
     assert client.get("/lernsequenz-medien/intro.mp4").status_code == 200
     assert client.get("/lernsequenz-medien/..%2Fsecret.mp4").status_code == 404
     assert client.get("/lernsequenz-medien/intro.exe").status_code == 404
+
+
+def _author() -> dict[str, str]:
+    from uuid import uuid4
+
+    return {"Authorization": f"Bearer {KEY}", "X-VibeMind-Actor-ID": "laura-video", "X-VibeMind-Space-ID": "learning",
+            "X-VibeMind-Roles": "learning.author", "X-VibeMind-Correlation-ID": str(uuid4())}
+
+
+def test_media_upload_and_video_registration_need_the_author(client, tmp_path: Path) -> None:
+    assert client.put("/api/v1/lernsequenz-medien/x.mp4", content=b"video").status_code == 401
+    assert client.put("/api/v1/lernsequenz-medien/../x.mp4", content=b"v", headers=_author()).status_code in (400, 404)
+    uploaded = client.put("/api/v1/lernsequenz-medien/laura-roi.mp4", content=b"video-bytes", headers=_author())
+    assert uploaded.status_code == 200 and uploaded.json()["bytes"] == 11
+    assert client.get("/lernsequenz-medien/laura-roi.mp4").content == b"video-bytes"
+    assert not list((tmp_path / "lernsequenzen" / "medien").glob(".*.part"))
+
+    missing = client.post("/api/v1/lernsequenzen/seq-roi/video", headers=_author(),
+                          json={"media_name": "fehlt.mp4", "slide_times": {}})
+    assert missing.status_code == 404

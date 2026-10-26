@@ -101,10 +101,10 @@ def _ffmpeg(*args: str) -> None:
     subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args], check=True)
 
 
-def build(player_link: str, out: Path) -> dict:
+def render_slides(data: dict, out: Path) -> list[dict]:
+    """Each slide of the public view as ``folie-NN.png`` (1920×1080); returns the slides."""
     from playwright.sync_api import sync_playwright
 
-    data = _get_json(data_url(player_link))
     slides = [s for s in data["sections"] if s["kind"] == "slide"]
     if not slides:
         raise ValueError("the sequence has no slides")
@@ -119,6 +119,12 @@ def build(player_link: str, out: Path) -> dict:
                                         source=f"Quelle: {source}" if source else ""))
             page.screenshot(path=str(out / f"folie-{index:02d}.png"))
         browser.close()
+    return slides
+
+
+def build(player_link: str, out: Path) -> dict:
+    data = _get_json(data_url(player_link))
+    slides = render_slides(data, out)
 
     times: dict[str, dict[str, float]] = {}
     segments: list[Path] = []
