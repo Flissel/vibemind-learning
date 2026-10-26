@@ -60,18 +60,62 @@ def _sections(lesson: LessonDraft) -> list[tuple[str, list[str], list[str]]]:
     return [part for part in parts if part[1] or part[2]]
 
 
+# Short sections (no list, little prose) share a slide: one point each. Generated lessons
+# have many one-sentence sections; one slide each made a 2-hour course 51 slides long.
+_SHORT_PROSE = 320
+_POINTS_PER_SLIDE = 5
+
+
+def _first_sentence(text: str) -> str:
+    return re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0] if text else ""
+
+
+def _groups(sections: list[tuple[str, list[str], list[str]]]) -> list[list[tuple[str, list[str], list[str]]]]:
+    groups: list[list[tuple[str, list[str], list[str]]]] = []
+    current: list[tuple[str, list[str], list[str]]] = []
+    for section in sections:
+        _title, points, prose = section
+        if points or len(" ".join(prose)) > _SHORT_PROSE:
+            if current:
+                groups.append(current)
+                current = []
+            groups.append([section])
+            continue
+        current.append(section)
+        if len(current) == _POINTS_PER_SLIDE:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups
+
+
 def _slides(lesson: LessonDraft) -> list[Slide]:
     refs = tuple(dict.fromkeys(ref for claim in lesson.claims for ref in claim.citation_ids))[:20]
     slides = []
-    for index, (title, points, prose) in enumerate(_sections(lesson), start=1):
-        text = " ".join(prose)
-        first_sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0] if text else ""
+    for index, group in enumerate(_groups(_sections(lesson)), start=1):
+        section_id = _token(f"{lesson.lesson_id}-{index}", 120)
+        if len(group) == 1:
+            title, points, prose = group[0]
+            text = " ".join(prose)
+            first_sentence = _first_sentence(text)
+            slides.append(Slide(
+                section_id=section_id,
+                title=_cut(title, 300),
+                statement=_cut(first_sentence, 300) if first_sentence and not points else None,
+                points=tuple(_cut(point, 300) for point in points[:8]),
+                narration=_cut(text or " · ".join(points), 2_000),
+                refs=refs,
+            ))
+            continue
         slides.append(Slide(
-            section_id=_token(f"{lesson.lesson_id}-{index}", 120),
-            title=_cut(title, 300),
-            statement=_cut(first_sentence, 300) if first_sentence and not points else None,
-            points=tuple(_cut(point, 300) for point in points[:8]),
-            narration=_cut(text or " · ".join(points), 2_000),
+            section_id=section_id,
+            title=_cut(lesson.title, 300),
+            points=tuple(
+                _cut(f"{title}: {_first_sentence(' '.join(prose))}" if prose else title, 300)
+                for title, _points, prose in group
+            ),
+            narration=_cut(" ".join(" ".join(prose) for _title, _points, prose in group), 2_000),
             refs=refs,
         ))
     return slides

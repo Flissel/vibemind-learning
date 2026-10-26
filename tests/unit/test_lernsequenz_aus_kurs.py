@@ -64,6 +64,22 @@ def test_lessons_become_slides_and_quizzes_checkpoints() -> None:
     assert sequence.sources[0].title == "Vor der Arbeit"
 
 
+def test_short_sections_share_a_slide_and_keep_their_text() -> None:
+    # Live (26.10.): a setup course with one-sentence sections became 51 slides.
+    data = draft().model_dump(mode="json")
+    short = "".join(f"## Teil {i}\n\nSatz {i} ist kurz. Noch ein Satz {i}.\n\n" for i in range(1, 8))
+    data["lessons"][0]["body"] = "# Gerät prüfen\n\n" + short + "## Liste\n\n- eins\n- zwei\n"
+    sequence = build_presentation(CourseDraft.model_validate(data), course_id=COURSE)
+
+    titles = [s.title for s in sequence.sections]
+    assert titles == ["Gerät prüfen", "Gerät prüfen", "Liste"]
+    assert sequence.sections[0].points[0] == "Teil 1: Satz 1 ist kurz."
+    assert len(sequence.sections[0].points) == 5 and len(sequence.sections[1].points) == 2
+    narration = " ".join(s.narration for s in sequence.sections[:2])
+    assert all(f"Noch ein Satz {i}." in narration for i in range(1, 8))
+    assert sequence.sections[2].points == ("eins", "zwei")
+
+
 def test_the_presentation_becomes_a_video_with_checkpoints_at_slide_ends() -> None:
     presentation = build_presentation(draft(), course_id=COURSE)
     times = {s.section_id: {"start": i * 10.0, "end": i * 10.0 + 9.5} for i, s in enumerate(presentation.sections)}
