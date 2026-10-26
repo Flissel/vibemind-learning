@@ -37,7 +37,7 @@ services:
     image: qdrant/qdrant:v1.13.2
     restart: *restart
     ports:
-      - "127.0.0.1:${QDRANT_HTTP_PORT:-16333}:6333"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${QDRANT_HTTP_PORT:-16333}:6333"
     volumes:
       - qdrant-data:/qdrant/storage
     healthcheck:
@@ -74,13 +74,13 @@ services:
       LEARNHOUSE_SQL_CONNECTION_STRING: postgresql+asyncpg://${LEARNING_POSTGRES_USER:-learning}:${LEARNING_POSTGRES_PASSWORD:?set LEARNING_POSTGRES_PASSWORD}@postgres:5432/${LEARNING_POSTGRES_DB:-vibemind_learning}
       LEARNHOUSE_REDIS_CONNECTION_STRING: redis://redis:6379/0
       LEARNHOUSE_CONTENT_DELIVERY_TYPE: filesystem
-      LEARNHOUSE_ALLOWED_ORIGINS: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
-      LEARNHOUSE_FRONTEND_DOMAIN: 127.0.0.1
-      LEARNHOUSE_DOMAIN: 127.0.0.1
+      LEARNHOUSE_ALLOWED_ORIGINS: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_WEB_PORT:-13000}
+      LEARNHOUSE_FRONTEND_DOMAIN: ${LEARNING_PUBLIC_HOST:-127.0.0.1}
+      LEARNHOUSE_DOMAIN: ${LEARNING_PUBLIC_HOST:-127.0.0.1}
       LEARNHOUSE_PORT: "9000"
       COLLAB_INTERNAL_KEY: ${LEARNHOUSE_COLLAB_INTERNAL_KEY:?set LEARNHOUSE_COLLAB_INTERNAL_KEY}
     ports:
-      - "127.0.0.1:${LEARNHOUSE_API_PORT:-1338}:9000"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${LEARNHOUSE_API_PORT:-1338}:9000"
     volumes:
       - learnhouse-content:/app/content
     depends_on:
@@ -107,7 +107,7 @@ services:
       LEARNHOUSE_REDIS_URL: redis://redis:6379/0
       LEARNHOUSE_API_URL: http://learnhouse-api:9000
     ports:
-      - "127.0.0.1:${LEARNHOUSE_COLLAB_PORT:-4000}:4000"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${LEARNHOUSE_COLLAB_PORT:-4000}:4000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,13 +131,14 @@ services:
       HOSTNAME: 0.0.0.0
       PORT: "3000"
       LEARNHOUSE_INTERNAL_API_URL: http://learnhouse-api:9000/api/v1/
-      NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL: http://127.0.0.1:${LEARNHOUSE_API_PORT:-1338}
-      NEXT_PUBLIC_LEARNHOUSE_COLLAB_URL: ws://127.0.0.1:${LEARNHOUSE_COLLAB_PORT:-4000}
+      NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_API_PORT:-1338}
+      NEXT_PUBLIC_LEARNHOUSE_DOMAIN: ${LEARNING_PUBLIC_HOST:-127.0.0.1}
+      NEXT_PUBLIC_LEARNHOUSE_COLLAB_URL: ws://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_COLLAB_PORT:-4000}
       NEXT_PUBLIC_LEARNHOUSE_OSS: "true"
       LEARNHOUSE_LOCAL_LEARNING_MODE: ${LEARNHOUSE_LOCAL_LEARNING_MODE:-false}
       LEARNHOUSE_LOCAL_BOOTSTRAP_KEY: ${LEARNHOUSE_LOCAL_BOOTSTRAP_KEY:?set LEARNHOUSE_LOCAL_BOOTSTRAP_KEY}
     ports:
-      - "127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}:3000"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${LEARNHOUSE_WEB_PORT:-13000}:3000"
     depends_on:
       learnhouse-api:
         condition: service_healthy
@@ -185,6 +186,9 @@ services:
       LEARNING_RETRIEVAL_SERVICE_KEY: ${LEARNING_RETRIEVAL_SERVICE_KEY:?set LEARNING_RETRIEVAL_SERVICE_KEY}
       LEARNING_ARTIFACT_ROOT: /var/lib/vibemind-learning/artifacts
       LEARNING_SERVICE_ROLE: api
+      # Sequence player: links point to the public address, and only this LearnHouse embeds it.
+      LEARNING_PUBLIC_API_URL: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNING_API_PORT:-8090}
+      LEARNING_EMBED_ANCESTORS: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_WEB_PORT:-13000}
       # Sequence player tutor: the model runs in learning-worker (OpenFang lives there).
       LEARNING_EVALUATION_SERVICE_URL: http://learning-worker:8092
       LEARNING_EVALUATION_SERVICE_KEY: ${LEARNING_EVALUATION_SERVICE_KEY:?set LEARNING_EVALUATION_SERVICE_KEY}
@@ -194,7 +198,7 @@ services:
       LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
       LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
     ports:
-      - "127.0.0.1:${LEARNING_API_PORT:-8090}:8090"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${LEARNING_API_PORT:-8090}:8090"
     volumes:
       - learning-artifacts:/var/lib/vibemind-learning/artifacts
       - learning-imports:/var/lib/vibemind-learning/imports:ro
@@ -270,17 +274,19 @@ services:
       LEARNING_EVALUATION_SERVICE_URL: http://learning-worker:8092
       LEARNING_EVALUATION_SERVICE_KEY: ${LEARNING_EVALUATION_SERVICE_KEY:?set LEARNING_EVALUATION_SERVICE_KEY}
       LEARNING_PENECHO_URL: http://127.0.0.1:3888
-      LEARNING_PENECHO_ORIGIN: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
+      LEARNING_PENECHO_ORIGIN: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_WEB_PORT:-13000}
       PENECHO_LEARNING_TOKEN: ${PENECHO_LEARNING_TOKEN:?set PENECHO_LEARNING_TOKEN}
       # The PenEcho learning bridge is lost; drawing tasks run on Learning's own canvas
       # (drawing page in the claw sidecar). "penecho" uses the bridge again once it exists.
       LEARNING_CANVAS_MODE: ${LEARNING_CANVAS_MODE:-local}
       LEARNING_CANVAS_ORIGIN: http://127.0.0.1:${LEARNING_CLAW_MCP_PORT:-8139}
+      # Publishing embeds the sequence players with links to the public address.
+      LEARNING_PUBLIC_API_URL: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNING_API_PORT:-8090}
       LEARNHOUSE_LEARNING_SERVICE_URL: http://learnhouse-api:9000/api/v1/learning
       LEARNHOUSE_LEARNING_SERVICE_KEY: ${LEARNHOUSE_LEARNING_SERVICE_KEY:?set LEARNHOUSE_LEARNING_SERVICE_KEY}
     ports:
-      - "127.0.0.1:${LEARNING_MCP_PORT:-8091}:8091"
-      - "127.0.0.1:${PENECHO_PORT:-3888}:3888"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${LEARNING_MCP_PORT:-8091}:8091"
+      - "${LEARNING_BIND_HOST:-127.0.0.1}:${PENECHO_PORT:-3888}:3888"
     volumes:
       - learning-artifacts:/var/lib/vibemind-learning/artifacts
     depends_on:
@@ -310,7 +316,7 @@ services:
       PENECHO_STATE_DIR: /var/lib/penecho
       PENECHO_DEBUG_ARTIFACTS: "false"
       PENECHO_REQUEST_TRACE: "false"
-      PENECHO_LEARNING_ORIGIN: http://127.0.0.1:${LEARNHOUSE_WEB_PORT:-13000}
+      PENECHO_LEARNING_ORIGIN: http://${LEARNING_PUBLIC_HOST:-127.0.0.1}:${LEARNHOUSE_WEB_PORT:-13000}
       PENECHO_LEARNING_TOKEN: ${PENECHO_LEARNING_TOKEN:?set PENECHO_LEARNING_TOKEN}
     volumes:
       - penecho-state:/var/lib/penecho
