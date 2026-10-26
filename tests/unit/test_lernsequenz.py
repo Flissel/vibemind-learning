@@ -82,7 +82,9 @@ def test_calculation_counts_follow_up_errors_once(sequence) -> None:
     assert [s["follow_up"] for s in follow["steps"]] == [False, True, True]
 
     single = grade(sequence, "roi", {"values": {"h": "1288,0"}})
-    assert single["steps"] == [{"step_id": "h", "readable": True, "correct": True, "follow_up": False}]
+    assert single["steps"] == [
+        {"step_id": "h", "readable": True, "correct": True, "follow_up": False, "separator_hint": False}
+    ]
 
 
 def test_estimate_reveals_band_after_answer(sequence) -> None:

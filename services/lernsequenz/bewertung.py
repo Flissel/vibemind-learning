@@ -15,37 +15,21 @@ from spaces.learning.contracts.lernsequenz import (
     OutputRule,
     evaluate_formula,
 )
-
-_THOUSANDS = re.compile(r"^-?\d{1,3}(\.\d{3})+$")
-
+from spaces.learning.services.lernsequenz.zahlen import read_number
 
 def parse_number(text: object) -> float | None:
-    """Read 57.960 / 57,960.5 / 1288,5 / '222 %' the way people type them."""
-    if isinstance(text, bool):
-        return None
-    if isinstance(text, (int, float)):
-        return float(text)
-    if not isinstance(text, str):
-        return None
-    cleaned = re.sub(r"[\s€%]|h$|EUR", "", text.strip(), flags=re.IGNORECASE)
-    if not cleaned:
-        return None
-    if "," in cleaned and "." in cleaned:
-        decimal = "," if cleaned.rfind(",") > cleaned.rfind(".") else "."
-        thousands = "." if decimal == "," else ","
-        cleaned = cleaned.replace(thousands, "").replace(decimal, ".")
-    elif "," in cleaned:
-        cleaned = cleaned.replace(",", ".")
-    elif _THOUSANDS.fullmatch(cleaned):
-        cleaned = cleaned.replace(".", "")
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
+    """Read 57.960 / 57,960.5 / 1288,5 / '222 %' the way people type them (German first)."""
+    reading = read_number(text)
+    return reading.value if reading else None
 
 
 def _within(value: float, expected: float, tolerance_percent: float) -> bool:
     return abs(value - expected) <= max(abs(expected) * tolerance_percent / 100, 1e-9)
+
+
+def _off_by_a_thousand(value: float, expected: float, tolerance_percent: float) -> bool:
+    """45,000 read as 45 for an expected 45.000: the separator was meant the other way."""
+    return _within(value * 1000, expected, tolerance_percent) or _within(value / 1000, expected, tolerance_percent)
 
 
 def grade(sequence: LernsequenzV1, checkpoint_id: str, answer: dict[str, Any]) -> dict[str, Any]:
@@ -123,18 +107,24 @@ def _calculation(checkpoint: Calculation, answer: dict[str, Any]) -> dict[str, A
         # earlier results (or the true ones where the learner gave none).
         basis = {key: learner.get(key, truth[key]) for key in truth if key != name}
         expected_own = evaluate_formula(step.expected, basis)
-        given = parse_number(values.get(step.step_id))
+        tolerance = checkpoint.tolerance_percent
+        reading = read_number(values.get(step.step_id))
+        given = reading.value if reading is not None else None
+        if reading is not None and reading.percent and abs(expected_own) < 1 and not _within(given, expected_own, tolerance):
+            # "20 %" for an expected share of 0.2.
+            given = given / 100
         if given is not None:
             learner[name] = given
         if step.step_id not in values:
             continue
-        ok = given is not None and _within(given, expected_own, checkpoint.tolerance_percent)
-        follow_up = ok and not _within(expected_own, expected_true, checkpoint.tolerance_percent)
+        ok = given is not None and _within(given, expected_own, tolerance)
+        follow_up = ok and not _within(expected_own, expected_true, tolerance)
         results.append({
             "step_id": step.step_id,
             "readable": given is not None,
             "correct": ok,
             "follow_up": follow_up,
+            "separator_hint": not ok and given is not None and _off_by_a_thousand(given, expected_own, tolerance),
         })
     if not results:
         raise ValueError("no step answered")
@@ -147,10 +137,12 @@ def _estimate(checkpoint: Estimate, answer: dict[str, Any]) -> dict[str, Any]:
     if value is None or not checkpoint.minimum <= value <= checkpoint.maximum:
         raise ValueError("estimate must be a number inside the range")
     inside = checkpoint.good_from <= value <= checkpoint.good_to
+    in_band = lambda v: checkpoint.good_from <= v <= checkpoint.good_to  # noqa: E731
     return {
         "kind": "estimate",
         "inside_band": inside,
         "score": 1.0 if inside else 0.0,
+        "separator_hint": not inside and (in_band(value * 1000) or in_band(value / 1000)),
         "value": checkpoint.value,
         "good_from": checkpoint.good_from,
         "good_to": checkpoint.good_to,

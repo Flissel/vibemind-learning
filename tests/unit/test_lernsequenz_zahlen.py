@@ -4,7 +4,47 @@ from __future__ import annotations
 
 import pytest
 
+from spaces.learning.contracts.lernsequenz import LernsequenzV1
+from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.zahlen import read_number, why_not_a_number
+from spaces.learning.tests.unit.test_lernsequenz import sequence_data
+
+
+def seq() -> LernsequenzV1:
+    data = sequence_data()
+    data["checkpoints"].append({
+        "kind": "estimate", "checkpoint_id": "schaetz", "after_section": "f2", "title": "Jahresnutzen",
+        "question": "Wie viel Euro im Jahr?", "minimum": 0, "maximum": 10000, "step": 100, "unit": "€",
+        "good_from": 3000, "good_to": 5000, "value": 4000, "rationale": "Rund 4.000 €.",
+    })
+    return LernsequenzV1.model_validate(data)
+
+
+def seq_with_share() -> LernsequenzV1:
+    data = sequence_data()
+    data["checkpoints"][1]["steps"].append(
+        {"step_id": "anteil", "title": "Anteil", "unit": "", "hint": "20 von 100", "expected": "0.2"}
+    )
+    return LernsequenzV1.model_validate(data)
+
+
+def test_factor_1000_off_gets_a_separator_hint_not_a_wrong():
+    result = grade(seq(), "roi", {"values": {"h": "1000", "eur": "45,000"}})
+    step = result["steps"][1]
+    assert step["correct"] is False and step["separator_hint"] is True
+    plain_wrong = grade(seq(), "roi", {"values": {"h": "1000", "eur": "12"}})["steps"][1]
+    assert plain_wrong["separator_hint"] is False
+
+
+def test_percent_input_counts_as_share_when_expected_is_a_share():
+    result = grade(seq_with_share(), "roi", {"values": {"anteil": "20 %"}})
+    assert result["steps"][0]["correct"] is True
+
+
+def test_estimate_gets_a_separator_hint():
+    result = grade(seq(), "schaetz", {"value": "4,000"})
+    assert result["inside_band"] is False and result["separator_hint"] is True
+    assert grade(seq(), "schaetz", {"value": "4.000"})["inside_band"] is True
 
 
 @pytest.mark.parametrize("text,value,ambiguous,alternative", [
