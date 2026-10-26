@@ -268,10 +268,10 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
       try {
         const r = await post(cp.checkpoint_id, { shell, output: output.value });
         fb.className = 'fb ' + (r.ok ? 'ok' : 'no');
-        fb.replaceChildren(el('strong', {}, r.ok ? 'Geschafft. ' : r.recognized ? 'Erkannt: ' : 'Noch nicht erkannt. '), r.message,
+        fb.replaceChildren(...[el('strong', {}, r.ok ? 'Geschafft. ' : r.recognized ? 'Erkannt: ' : 'Noch nicht erkannt. '), r.message,
           r.fix && r.fix.length ? el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px' },
             el('div', { class: 'small' }, `So beheben Sie es in ${SHELL_NAMES[shell]}:`), ...r.fix.map((f) => commandLine(f.command))) : null,
-          el('div', { class: 'refs' }, refsText(r.refs)));
+          el('div', { class: 'refs' }, refsText(r.refs))].filter(Boolean));
       } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
     } }, 'Ausgabe prüfen');
     show();
@@ -304,8 +304,9 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
           if (r.correct_options.includes(id)) b.classList.add('right'); else if (selected.has(id)) b.classList.add('wrong');
         });
         fb.className = 'fb ' + (r.correct ? 'ok' : 'no');
-        fb.replaceChildren(el('strong', {}, r.correct ? 'Genau. ' : 'Noch nicht. '), r.rationale, el('div', { class: 'refs' }, refsText(r.refs)),
-          r.mastery && r.mastery.counted ? el('div', { class: 'refs' }, 'Zählt für Ihren Lernstand.') : null);
+        // replaceChildren writes null as the text "null": leave empty parts out.
+        fb.replaceChildren(...[el('strong', {}, r.correct ? 'Genau. ' : 'Noch nicht. '), r.rationale, el('div', { class: 'refs' }, refsText(r.refs)),
+          r.mastery && r.mastery.counted ? el('div', { class: 'refs' }, 'Zählt für Ihren Lernstand.') : null].filter(Boolean));
         check.textContent = 'Weiter';
       } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
     } }, 'Prüfen');
