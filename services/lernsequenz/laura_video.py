@@ -25,6 +25,7 @@ import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
@@ -69,13 +70,31 @@ def slide_times(beat_slides: list[int], beats: list[dict], section_ids: list[str
     return times
 
 
+def reachable(signed_url: str) -> str:
+    """Laura signs storage links for its own Docker bridge (172.17.0.1); from this host the
+    same storage port answers on Laura's address (or LAURA_STORAGE_URL_HOST)."""
+    parts = urlsplit(signed_url)
+    host = os.environ.get("LAURA_STORAGE_URL_HOST") or urlsplit(os.environ["LAURA_API_URL"]).hostname
+    if not host or not (parts.hostname or "").startswith(("172.", "127.", "localhost")):
+        return signed_url
+    return urlunsplit(parts._replace(netloc=f"{host}:{parts.port}" if parts.port else host))
+
+
 class Laura:
     def __init__(self) -> None:
         self._http = httpx.Client(base_url=os.environ["LAURA_API_URL"].rstrip("/"), timeout=60,
                                   headers={"X-Laura-Token": os.environ.get("LAURA_TOKEN", "")})
 
     def call(self, method: str, path: str, **kw) -> dict:
-        response = self._http.request(method, path, **kw)
+        # Polls run for many minutes; a dropped keep-alive connection is no failure.
+        for attempt in range(6 if method == "GET" else 1):
+            try:
+                response = self._http.request(method, path, **kw)
+                break
+            except httpx.TransportError:
+                if method != "GET" or attempt == 5:
+                    raise
+                time.sleep(5 * (attempt + 1))
         if response.status_code >= 400:
             raise RuntimeError(f"Laura {method} {path}: {response.status_code} {response.text[:300]}")
         return response.json()
@@ -110,9 +129,15 @@ class Laura:
             if export["status"] == "error":
                 raise RuntimeError(f"Laura export {export_id}: {export.get('error')}")
             if export["status"] == "ready":
-                link = self._http.get(f"/exports/{export_id}/download-url")
+                try:
+                    link = self._http.get(f"/exports/{export_id}/download-url")
+                except httpx.TransportError:
+                    time.sleep(5)
+                    continue
                 if link.status_code == 200:
-                    with httpx.stream("GET", link.json()["url"], timeout=600) as stream, target.open("wb") as out:
+                    with httpx.stream("GET", reachable(link.json()["url"]), timeout=600) as stream, \
+                            target.open("wb") as out:
+                        stream.raise_for_status()
                         for chunk in stream.iter_bytes():
                             out.write(chunk)
                     return
@@ -145,11 +170,55 @@ class Learning:
         return response.json()
 
 
+def _beats(slides: list[dict], stills: list[str]) -> tuple[list[dict], list[int]]:
+    beats, beat_slides = [], []
+    for index, slide in enumerate(slides):
+        for text in pieces(slide["narration"]):
+            beats.append({"text": text, "asset_id": stills[index], "src_in_frame": 0, "pad_frames": 12})
+            beat_slides.append(index)
+    return beats, beat_slides
+
+
+def _stem(data: dict) -> str:
+    return "laura-" + re.sub(r"[^A-Za-z0-9-]", "", data["sequence_id"])[-40:]
+
+
+def finish(data: dict, slides: list[dict], out: Path, *, placed: dict, export_id: str,
+           course_id: str | None = None) -> dict:
+    """From Laura's placed beats and render: MP4, WebM, upload, register, embed."""
+    learning, laura = Learning(), Laura()
+    stem = _stem(data)
+    _beats_list, beat_slides = _beats(slides, ["-"] * len(slides))
+    if len(placed.get("beats", [])) != len(beat_slides):
+        raise RuntimeError("Laura placed a different number of beats")
+    mp4 = out / "video.mp4"
+    laura.download(export_id, mp4)
+    _ffmpeg("-i", str(mp4), "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "38", "-row-mt", "1",
+            "-deadline", "good", "-c:a", "libopus", "-b:a", "64k", str(out / "video.webm"))
+    learning.upload(mp4, f"{stem}.mp4")
+    learning.upload(out / "video.webm", f"{stem}.webm")
+    times = slide_times(beat_slides, placed["beats"], [s["section_id"] for s in slides])
+    (out / "zeiten.json").write_text(json.dumps({"sequence_id": data["sequence_id"], "slides": times}, indent=2),
+                                     encoding="utf-8")
+    registered = learning.post(f"/api/v1/lernsequenzen/{data['sequence_id']}/video",
+                               {"media_name": f"{stem}.mp4", "slide_times": times})
+    if course_id:
+        registered["einbettung"] = learning.post("/api/v1/lernsequenzen/einbetten", {"course_id": course_id})
+    return {**registered, "beats": len(beat_slides)}
+
+
+def resume(player_link: str, out: Path, *, job_id: str, export_id: str, course_id: str | None = None) -> dict:
+    """Continue after Laura placed the beats (job) and started the render (export)."""
+    data = _get_json(data_url(player_link))
+    slides = [s for s in data["sections"] if s["kind"] == "slide"]
+    return finish(data, slides, out, placed=Laura().job(job_id), export_id=export_id, course_id=course_id)
+
+
 def build(player_link: str, out: Path, *, course_id: str | None = None) -> dict:
     data = _get_json(data_url(player_link))
     slides = render_slides(data, out)
     learning, laura = Learning(), Laura()
-    stem = "laura-" + re.sub(r"[^A-Za-z0-9-]", "", data["sequence_id"])[-40:]
+    stem = _stem(data)
 
     project = laura.call("POST", "/projects", json={"name": f"Lernvideo {data['title']}"[:120],
                                                     "sequence_rate_num": FPS, "sequence_rate_den": 1})
@@ -165,19 +234,13 @@ def build(player_link: str, out: Path, *, course_id: str | None = None) -> dict:
         })["job_id"])
         stills.append(still["asset_id"])
 
-    beats, beat_slides = [], []
-    for index, slide in enumerate(slides):
-        for text in pieces(slide["narration"]):
-            beats.append({"text": text, "asset_id": stills[index], "src_in_frame": 0, "pad_frames": 12})
-            beat_slides.append(index)
+    beats, _beat_slides = _beats(slides, stills)
     reel = laura.call("POST", f"/projects/{pid}/narrated-reel", json={
         "beats": beats, "crossfade_frames": 0, "final_fade_frames": 12, "backend": "sidecar",
         "language": "de", "voice_id": None if os.environ.get("LAURA_STIMME", "standard") == "standard"
         else os.environ["LAURA_STIMME"], "render": False, "ausgabe": "quer",
     })
     placed = laura.job(reel["job_id"], timeout_s=3600)
-    if len(placed.get("beats", [])) != len(beats):
-        raise RuntimeError("Laura placed a different number of beats")
     clipped = [w for w in placed.get("warnings", []) if "clip" in str(w).lower()]
     if clipped:
         raise RuntimeError(f"narration longer than its still: {clipped[:3]}")
@@ -185,20 +248,10 @@ def build(player_link: str, out: Path, *, course_id: str | None = None) -> dict:
         "format": "quer", "vertical": False, "captions": True, "caption_preset": "wide",
         "caption_source": "voiceover", "rahmung": "einpassen", "loudnorm": True, "kennzeichnung": "auto",
     })
-    mp4 = out / "video.mp4"
-    laura.download(render["export_id"], mp4)
-    _ffmpeg("-i", str(mp4), "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "38", "-row-mt", "1",
-            "-deadline", "good", "-c:a", "libopus", "-b:a", "64k", str(out / "video.webm"))
-    learning.upload(mp4, f"{stem}.mp4")
-    learning.upload(out / "video.webm", f"{stem}.webm")
-    times = slide_times(beat_slides, placed["beats"], [s["section_id"] for s in slides])
-    (out / "zeiten.json").write_text(json.dumps({"sequence_id": data["sequence_id"], "slides": times}, indent=2),
-                                     encoding="utf-8")
-    registered = learning.post(f"/api/v1/lernsequenzen/{data['sequence_id']}/video",
-                               {"media_name": f"{stem}.mp4", "slide_times": times})
-    if course_id:
-        registered["einbettung"] = learning.post("/api/v1/lernsequenzen/einbetten", {"course_id": course_id})
-    return {**registered, "beats": len(beats), "laura_project": pid}
+    # Printed first: with these two ids a broken run continues (--fortsetzen) without re-voicing.
+    print(json.dumps({"laura_job": reel["job_id"], "laura_export": render["export_id"]}), flush=True)
+    result = finish(data, slides, out, placed=placed, export_id=render["export_id"], course_id=course_id)
+    return {**result, "laura_project": pid}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -206,8 +259,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("player_link")
     parser.add_argument("out", type=Path)
     parser.add_argument("--course")
+    parser.add_argument("--fortsetzen", nargs=2, metavar=("JOB", "EXPORT"),
+                        help="Laura job id of the placed beats and export id of the render")
     args = parser.parse_args(argv)
-    print(json.dumps(build(args.player_link, args.out, course_id=args.course), ensure_ascii=False, indent=2))
+    args.out.mkdir(parents=True, exist_ok=True)
+    if args.fortsetzen:
+        result = resume(args.player_link, args.out, job_id=args.fortsetzen[0], export_id=args.fortsetzen[1],
+                        course_id=args.course)
+    else:
+        result = build(args.player_link, args.out, course_id=args.course)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
