@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from spaces.learning.contracts.lernsequenz import LernsequenzV1, public_view
@@ -47,6 +49,26 @@ def test_the_wrong_shell_tab_still_says_what_to_do_and_unknown_output_asks_for_m
     assert wrong["recognized"] is True and wrong["fix"] == [] and "Shell" in wrong["message"]
     unknown = _grade("irgendwas anderes", "unix")
     assert unknown["recognized"] is False and "claude doctor" in unknown["message"]
+
+
+def test_typographic_dash_is_recognised_with_the_right_command() -> None:
+    r = _grade("The term '—version' is not recognized", "powershell")
+    assert r["recognized"] is True and r["ok"] is False
+    assert r["fix"] == [{"shell": "powershell", "command": "claude --version"}]
+    assert "Gedankenstrich" in r["message"]
+    quotes = _grade("Unexpected token “version”", "unix")
+    assert "Anführungszeichen" in quotes["message"]
+
+
+def test_pasting_the_command_itself_is_told_apart_from_its_output() -> None:
+    assert "nicht seine Ausgabe" in _grade("claude --version", "cmd")["message"]
+    assert "nicht seine Ausgabe" in _grade("  claude --version  \n", "unix")["message"]
+
+
+def test_secrets_in_output_raise_a_warning_and_are_not_echoed() -> None:
+    r = _grade("2.1.211 (Claude Code)\nANTHROPIC_API_KEY=sk-ant-abcdefghijklmnopqrstuvwxyz0123", "unix")
+    assert r["ok"] is True and "Schlüssel" in r["warning"] and "sk-ant" not in json.dumps(r, ensure_ascii=False)
+    assert "warning" not in _grade("2.1.211 (Claude Code)", "unix")
 
 
 def test_rules_stay_on_the_server_and_bad_answers_are_refused() -> None:

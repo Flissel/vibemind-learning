@@ -15,6 +15,7 @@ from spaces.learning.contracts.lernsequenz import (
     OutputRule,
     evaluate_formula,
 )
+from spaces.learning.services.lernsequenz.befehlsausgabe import inspect_output
 from spaces.learning.services.lernsequenz.zahlen import read_number
 
 def parse_number(text: object) -> float | None:
@@ -62,16 +63,34 @@ def _command(checkpoint: CommandCheck, answer: dict[str, Any]) -> dict[str, Any]
     if shell not in {command.shell for command in checkpoint.commands}:
         raise ValueError("unknown shell")
     output = output[:_MAX_OUTPUT]
+    # The output itself never leaves this function (not echoed, not logged): it can hold keys.
+    findings = inspect_output(output, [command.command for command in checkpoint.commands])
+    base: dict[str, Any] = {"kind": "command_check", "refs": list(checkpoint.refs)}
+    if findings.looks_like_secret:
+        base["warning"] = "Die Ausgabe enthält etwas, das wie ein Schlüssel aussieht. Sie wird nicht gespeichert."
+    if findings.is_the_command:
+        return {**base, "recognized": True, "ok": False, "score": 0.0, "fix": [],
+                "message": "Das ist der Befehl selbst, nicht seine Ausgabe. Führen Sie ihn aus und fügen Sie "
+                           "ein, was das Terminal darunter ausgibt."}
+    if findings.typographic:
+        what = " und ".join(_TYPOGRAPHIC[name] for name in findings.typographic)
+        return {**base, "recognized": True, "ok": False, "score": 0.0,
+                "fix": [command.model_dump() for command in checkpoint.commands if command.shell == shell],
+                "message": f"Der Befehl enthält {what}. Das passiert beim Kopieren aus Word, PDF oder Chat. "
+                           "Kopieren Sie den Befehl mit dem Knopf hier oder tippen Sie ihn ab:"}
     for rule in checkpoint.problems:
         if _matches(rule, output, shell):
             fix = [command.model_dump() for command in rule.fix if command.shell == shell]
-            return {"kind": "command_check", "recognized": True, "ok": False, "score": 0.0,
-                    "message": rule.message, "fix": fix, "refs": list(checkpoint.refs)}
+            return {**base, "recognized": True, "ok": False, "score": 0.0, "message": rule.message, "fix": fix}
     if _matches(checkpoint.success, output, shell):
-        return {"kind": "command_check", "recognized": True, "ok": True, "score": 1.0,
-                "message": checkpoint.success.message, "fix": [], "refs": list(checkpoint.refs)}
-    return {"kind": "command_check", "recognized": False, "ok": False, "score": 0.0,
-            "message": checkpoint.unknown_hint, "fix": [], "refs": list(checkpoint.refs)}
+        return {**base, "recognized": True, "ok": True, "score": 1.0, "message": checkpoint.success.message, "fix": []}
+    return {**base, "recognized": False, "ok": False, "score": 0.0, "message": checkpoint.unknown_hint, "fix": []}
+
+
+_TYPOGRAPHIC = {
+    "gedankenstrich": "einen Gedankenstrich (–) statt zwei Bindestrichen (--)",
+    "anfuehrungszeichen": "typografische Anführungszeichen statt gerader (\")",
+}
 
 
 def _choice(checkpoint: Choice, answer: dict[str, Any]) -> dict[str, Any]:

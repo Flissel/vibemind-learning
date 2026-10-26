@@ -305,6 +305,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
         const r = await post(cp.checkpoint_id, { shell, output: output.value });
         fb.className = 'fb ' + (r.ok ? 'ok' : 'no');
         fb.replaceChildren(...[el('strong', {}, r.ok ? 'Geschafft. ' : r.recognized ? 'Erkannt: ' : 'Noch nicht erkannt. '), r.message,
+          r.warning ? el('div', { class: 'small', style: 'margin-top:6px;color:var(--warn)' }, r.warning) : null,
           r.fix && r.fix.length ? el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px' },
             el('div', { class: 'small' }, `So beheben Sie es in ${SHELL_NAMES[shell]}:`), ...r.fix.map((f) => commandLine(f.command))) : null,
           el('div', { class: 'refs' }, refsText(r.refs))].filter(Boolean));
