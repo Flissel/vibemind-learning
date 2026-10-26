@@ -19,6 +19,7 @@ from spaces.learning.bridge.dispatcher import (
 from spaces.learning.bridge.ui_bridge import UiBridge
 from spaces.learning.bridge.learnhouse_client import LearnHouseClient
 from spaces.learning.bridge.local_canvas import LocalCanvasBackend, LocalCanvasLauncher
+from spaces.learning.services.zeichnen.link import drawing_url
 from spaces.learning.bridge.penecho_client import PenEchoClient
 from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
 from spaces.learning.contracts.mcp_models import EventEnvelopeV1, ToolRequestV1
@@ -212,6 +213,10 @@ def build_default_dispatcher(
                     launcher=LocalCanvasLauncher(
                         session_factory=session_factory, backend=backend
                     ),
+                    # learning-api serves the drawing page for the LearnHouse player.
+                    page_link=drawing_url
+                    if os.environ.get("LEARNING_PUBLIC_API_URL", "").strip()
+                    else None,
                 )))
             elif artifact_root and penecho_url and penecho_origin and penecho_token:
                 penecho = PenEchoClient(

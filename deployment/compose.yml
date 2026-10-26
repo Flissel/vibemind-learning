@@ -192,6 +192,8 @@ services:
       # Sequence player tutor: the model runs in learning-worker (OpenFang lives there).
       LEARNING_EVALUATION_SERVICE_URL: http://learning-worker:8092
       LEARNING_EVALUATION_SERVICE_KEY: ${LEARNING_EVALUATION_SERVICE_KEY:?set LEARNING_EVALUATION_SERVICE_KEY}
+      # Drawing page (/zeichnen/<token>) acts as the person of the link through learning-mcp.
+      LEARNING_MCP_URL: http://learning-mcp:8091/mcp
       # VibeMind Course Factory HTTP adapter (/api/v1); loopback-only caller key.
       LEARNING_VIBEMIND_SERVICE_KEY: ${LEARNING_VIBEMIND_SERVICE_KEY:?set LEARNING_VIBEMIND_SERVICE_KEY}
       LEARNING_IMPORT_ROOT: /var/lib/vibemind-learning/imports

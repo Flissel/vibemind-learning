@@ -31,6 +31,7 @@ from spaces.learning.services.evaluation.penecho import (
     CanvasEvaluationRequest, SessionPenEchoEvaluator, canvas_locator,
 )
 from spaces.learning.services.evaluation.schemas import RubricDecision, RubricEvaluationRequest
+from spaces.learning.services.zeichnen.link import DrawingGrant
 from sqlalchemy import select
 
 
@@ -309,6 +310,7 @@ class CanvasGateway:
         evaluations: CanvasEvaluationBoundary,
         tutor: CanvasTutor,
         launcher: CanvasLauncher | None = None,
+        page_link: Callable[[DrawingGrant], str] | None = None,
     ) -> None:
         self._penecho = penecho
         self._artifacts = artifacts
@@ -317,6 +319,8 @@ class CanvasGateway:
         # Learning's own canvas creates the launch on open; PenEcho's bridge
         # expected its host UI (LearnHouse) to do that.
         self._launcher = launcher
+        # Signed link to learning-api's drawing page, for players in a browser.
+        self._page_link = page_link
 
     def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         try:
@@ -394,9 +398,16 @@ class CanvasGateway:
         session = self._current(request)
         if session.launch is None or session.launch.activity_id != activity_id:
             raise ValueError("canvas activity identity does not match")
+        extra = None
+        if self._page_link is not None:
+            extra = {"page_url": self._page_link(DrawingGrant(
+                session_id=str(self._session_id(request)), activity_id=str(activity_id),
+                session_ref=self._session_ref(request), actor_id=request.event.actor.actor_id,
+            ))}
         return self._outcome(
             session,
             operation="open",
+            extra=extra,
             ui_intent=OpenCanvasIntentV1(
                 aggregate_id=str(session.id), aggregate_revision=session.revision,
                 activity_id=activity_id, canvas_revision=session.revision,
