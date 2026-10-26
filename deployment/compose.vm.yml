@@ -1,0 +1,42 @@
+# Learning stack on the offload VM (vibemind-offload-1), reachable in the tailnet only.
+#
+#   docker compose -p vibemind-learning-claw --env-file learning.env \
+#     -f deployment/compose.yml -f deployment/compose.vm.yml up -d --no-build <services>
+#
+# No sources on the VM: images are built elsewhere and loaded (docker save/load).
+# learning.env sets LEARNING_PUBLIC_HOST and LEARNING_BIND_HOST to the VM's tailnet
+# address and LEARNING_OPENFANG_URL to the PC's tailnet forward (tailscale serve 14200).
+# No model runs here: embeddings go to Ollama on the PC over the tailnet.
+services:
+  learnhouse-api:
+    build: !reset null
+    image: ${LEARNHOUSE_API_IMAGE:-vibemind-learnhouse-api:learning-29ab9e6f}
+    pull_policy: never
+  learnhouse-collab:
+    build: !reset null
+    image: vibemind-learning-learnhouse-collab:latest
+    pull_policy: never
+  learnhouse-web:
+    build: !reset null
+    image: ${LEARNHOUSE_WEB_IMAGE:-vibemind-learnhouse-web:learning-0b}
+    pull_policy: never
+  learning-api:
+    pull_policy: never
+  learning-worker:
+    pull_policy: never
+  learning-mcp:
+    pull_policy: never
+  learning-embedding:
+    image: vibemind-embedding-service:latest
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      EMBEDDING_ROLE: brain_kg
+    volumes:
+      - ./embedding-llm_config.yml:/app/llm_config.yml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=50)"]
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 20s
