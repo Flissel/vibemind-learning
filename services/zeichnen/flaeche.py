@@ -68,6 +68,7 @@ knopf.onclick = async () => {
     if (d.daten.hinweis_bewertung) { const n = document.createElement('p'); n.className = 'hinweistext'; n.textContent = d.daten.hinweis_bewertung; box.appendChild(n); }
     for (const k of d.daten.kriterien || []) { const p = document.createElement('p');
       p.textContent = (k.kriterium || '') + ' (' + Math.round((k.punkte || 0) * 100) + ' %): ' + (k.rueckmeldung || ''); box.appendChild(p); }
+    box.scrollIntoView({behavior: 'smooth', block: 'start'});
     if (window.parent !== window) window.parent.postMessage({type: '__SUBMITTED__'}, '*');
   } catch (err) { status.textContent = 'Abgabe fehlgeschlagen: ' + err; knopf.disabled = false; }
 };

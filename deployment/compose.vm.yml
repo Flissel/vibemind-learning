@@ -10,7 +10,7 @@
 services:
   learnhouse-api:
     build: !reset null
-    image: ${LEARNHOUSE_API_IMAGE:-vibemind-learnhouse-api:learning-29ab9e6f}
+    image: ${LEARNHOUSE_API_IMAGE:-vibemind-learnhouse-api:learning-7d517a4f}
     pull_policy: never
   learnhouse-collab:
     build: !reset null
@@ -18,7 +18,7 @@ services:
     pull_policy: never
   learnhouse-web:
     build: !reset null
-    image: ${LEARNHOUSE_WEB_IMAGE:-vibemind-learnhouse-web:learning-0b}
+    image: ${LEARNHOUSE_WEB_IMAGE:-vibemind-learnhouse-web:learning-0c}
     pull_policy: never
   learning-api:
     pull_policy: never
