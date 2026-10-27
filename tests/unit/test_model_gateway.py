@@ -710,7 +710,6 @@ def test_generating_roles_address_reviewer_feedback(role: str) -> None:
 @pytest.mark.parametrize(("role", "version"), [
     ("lesson_author", "lesson-prompt-v4"),
     ("source_verifier", "source-verification-prompt-v8"),
-    ("chapter_verifier", "chapter-verification-prompt-v5"),
 ])
 def test_lesson_roles_teach_in_the_body_and_never_announce(role: str, version: str) -> None:
     from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS

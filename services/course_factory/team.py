@@ -9,6 +9,7 @@ from autogen_agentchat.teams import RoundRobinGroupChat
 
 from spaces.learning.services.course_factory.chapter_verification import (
     course_title,
+    keep_author_bodies,
     merge_chapters,
     split_by_chapter,
 )
@@ -259,7 +260,7 @@ class CourseAgentTeam:
         ]
         fragments: list[ChapterVerificationOutput] = []
         evidence_refs: list[str] = []
-        for stage_input in stage_inputs:
+        for piece, stage_input in zip(slices, stage_inputs):
             result = await self._gateway.generate(
                 ModelInvocation(
                     role="chapter_verifier",
@@ -271,7 +272,7 @@ class CourseAgentTeam:
                 ),
                 ChapterVerificationOutput,
             )
-            fragments.append(result.output)
+            fragments.append(keep_author_bodies(result.output, piece))
             evidence_refs.append(result.evidence_ref)
         architect = role_outputs["architect"]
         merged = merge_chapters(

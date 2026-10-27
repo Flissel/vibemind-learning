@@ -662,3 +662,27 @@ async def test_too_many_chapters_is_retried_without_the_keep_structure_note(gene
     assert repository.get(job.id).attempt_number == 2
     assert any("chapters" in note and "merge" in note for note in request.revision_notes)
     assert not any("Keep the chapter structure" in note for note in request.revision_notes)
+
+
+class _KeepingLearnHouse(_LearnHouse):
+    def __init__(self) -> None:
+        super().__init__()
+        self.drafts: list = []
+
+    async def stage_draft(self, **kwargs):
+        self.drafts.append(kwargs["draft"])
+        return await super().stage_draft(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_the_staged_draft_carries_the_authors_lesson_text(generation_context) -> None:
+    # 27.10.: the chapter verifier no longer rewrites lesson bodies (time limit); the
+    # author's text must reach LearnHouse even when the verifier sends its own.
+    factory, root, repository, job, draft = generation_context
+    rewritten = draft.model_copy(update={"lessons": [
+        draft.lessons[0].model_copy(update={"body": "Umgeschrieben von der Pruefung."})]})
+    learnhouse = _KeepingLearnHouse()
+
+    await _runner(factory, root, repository, _GenerationGateway(rewritten), learnhouse=learnhouse).run_job(job.id)
+
+    assert learnhouse.drafts[0].lessons[0].body == "Provider execution stays behind OpenFang."

@@ -109,6 +109,29 @@ def course_title(target_outcome: str, *, fallback: str) -> str:
     return fallback[:500]
 
 
+_UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def _title_key(value: object) -> str:
+    return "".join(ch for ch in str(value).casefold().translate(_UMLAUTS) if ch.isalnum())
+
+
+def keep_author_bodies(fragment: ChapterVerificationOutput, piece: ChapterSlice) -> ChapterVerificationOutput:
+    """Each verified lesson gets the author's text back: matched by title, else by position.
+    Only without any author text does the verifier's own body (if any) stay."""
+    authored = [lesson for lesson in piece.lessons if str(lesson.get("body", "")).strip()]
+    by_title = {_title_key(lesson.get("title", "")): str(lesson["body"]) for lesson in authored}
+    lessons = []
+    for position, lesson in enumerate(fragment.lessons):
+        body = by_title.get(_title_key(lesson.title))
+        if body is None and position < len(authored):
+            body = str(authored[position]["body"])
+        if body is None:
+            body = lesson.body.strip() or (str(authored[0]["body"]) if authored else lesson.title)
+        lessons.append(lesson.model_copy(update={"body": body}))
+    return fragment.model_copy(update={"lessons": lessons})
+
+
 def merge_chapters(
     fragments: list[ChapterVerificationOutput],
     *,
@@ -219,7 +242,7 @@ def fragment_from_draft(
         chapter=chapter,
         concepts=[c for c in draft.concepts if c.concept_id in concept_ids] or draft.concepts,
         citations=draft.citations,
-        lessons=lessons,
+        lessons=[lesson.model_dump() for lesson in lessons],
         activities=activities,
         unsupported_claim_ids=[c for c in unsupported if c in claim_ids],
     )

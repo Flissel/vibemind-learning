@@ -240,7 +240,7 @@ def test_chapter_prompt_keeps_concept_ids_and_demands_a_task_per_concept() -> No
     prompt = ROLE_PROMPTS["chapter_verifier"]
     assert "exactly the strings of the input concepts" in prompt
     assert "at least one activity in this chapter" in prompt
-    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v5"
+    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v6"
 
 
 def test_task_prompts_carry_the_ai_review_lessons() -> None:
@@ -275,3 +275,58 @@ def test_task_prompts_create_and_keep_drawing_tasks() -> None:
     assert "penecho_canvas" in ROLE_PROMPTS["assessment_designer"]
     assert "draw" in ROLE_PROMPTS["assessment_designer"]
     assert "Keep penecho_canvas activities" in ROLE_PROMPTS["chapter_verifier"]
+
+
+# 27.10.: with lesson texts that really teach, the chapter verifier rewrote every body and its
+# answers grew past the subscription's 540 s limit (terminal course, jobs 62dab745/8c92f4a6).
+# The verifier now leaves the body empty; the author's text is kept as written.
+
+def _slice_with(*lessons: tuple[str, str]):
+    from spaces.learning.services.course_factory.chapter_verification import ChapterSlice
+
+    return ChapterSlice(index=1, title="Kapitel ch", concepts=["c"],
+                        lessons=[{"chapter": "Kapitel ch", "title": t, "body": b} for t, b in lessons])
+
+
+def _without_body(fragment: ChapterVerificationOutput, title: str = "Lektion") -> ChapterVerificationOutput:
+    lesson = fragment.lessons[0].model_copy(update={"body": "", "title": title})
+    return fragment.model_copy(update={"lessons": [lesson]})
+
+
+def test_a_verified_lesson_may_come_without_a_body() -> None:
+    data = _fragment("ch", "c").model_dump(mode="json")
+    del data["lessons"][0]["body"]
+
+    assert ChapterVerificationOutput.model_validate(data).lessons[0].body == ""
+
+
+def test_the_authors_body_is_kept_matched_by_title() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import keep_author_bodies
+
+    piece = _slice_with(("Andere", "Falsch."), ("Die Installation pruefen", "Oeffnen Sie ein neues Terminal:\n\n```bash\nclaude --version\n```"))
+
+    kept = keep_author_bodies(_without_body(_fragment("ch", "c"), "Die Installation prüfen"), piece)
+
+    assert kept.lessons[0].body.endswith("```bash\nclaude --version\n```")
+
+
+def test_the_authors_body_wins_over_a_rewritten_one_and_falls_back_to_position() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import keep_author_bodies
+
+    fragment = _fragment("ch", "c")  # body "Text." written by the verifier, title "Lektion"
+    piece = _slice_with(("Ganz anderer Titel", "Der Text der Autorin."))
+
+    assert keep_author_bodies(fragment, piece).lessons[0].body == "Der Text der Autorin."
+
+
+def test_without_any_author_text_the_verifier_body_stays() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import keep_author_bodies
+
+    assert keep_author_bodies(_fragment("ch", "c"), _slice_with()).lessons[0].body == "Text."
+
+
+def test_the_chapter_verifier_is_told_to_leave_lesson_bodies_empty() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    assert "body as an empty string" in ROLE_PROMPTS["chapter_verifier"]
+    assert ROLE_CONTRACTS["chapter_verifier"][1] >= "chapter-verification-prompt-v6"

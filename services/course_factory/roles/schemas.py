@@ -76,6 +76,12 @@ class SourceVerificationOutput(_StrictOutput):
     unsupported_claim_ids: list[str] = Field(max_length=5_000)
 
 
+class VerifiedLessonDraft(CourseLessonDraft):
+    # The chapter verifier leaves the body empty; the author's text is filled in afterwards
+    # (rewriting every body pushed its answers past the subscription's time limit).
+    body: str = Field(default="", max_length=100_000)
+
+
 class ChapterVerificationOutput(_StrictOutput):
     """One chapter of the verified draft; chapters are merged without a model."""
 
@@ -83,7 +89,7 @@ class ChapterVerificationOutput(_StrictOutput):
     chapter: ChapterDraft
     concepts: list[ConceptDraft] = Field(min_length=1, max_length=500)
     citations: list[Citation] = Field(max_length=5_000)
-    lessons: list[CourseLessonDraft] = Field(min_length=1, max_length=500)
+    lessons: list[VerifiedLessonDraft] = Field(min_length=1, max_length=500)
     activities: list[CourseActivityDraft] = Field(min_length=1, max_length=1_000)
     unsupported_claim_ids: list[str] = Field(max_length=5_000)
 
