@@ -7,6 +7,7 @@ the lesson literally says is used, so nothing can be made up.
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import secrets
@@ -16,6 +17,8 @@ from spaces.learning.contracts.lernsequenz import (
     Checkpoint,
     Cloze,
     Condition,
+    ImageBlank,
+    ImageCloze,
     MatchItem,
     Matching,
     OrderItem,
@@ -26,6 +29,8 @@ from spaces.learning.contracts.lernsequenz import (
     Shell,
 )
 from spaces.learning.services.course_factory.schemas import LessonDraft
+from spaces.learning.services.lernsequenz.bilder import render_terminal
+from spaces.learning.services.lernsequenz.medien import save_media
 from spaces.learning.services.lernsequenz.text import cut, plain, token
 
 # A command line only counts when it starts like one of the commands the courses teach.
@@ -181,6 +186,44 @@ def _cloze(line: str, fence: str, checkpoint_id: str, after: str, refs: tuple[st
     )
 
 
+def _media_available() -> bool:
+    """Image tasks need the media folder the player loads from; without it, text tasks only."""
+    return bool(os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip())
+
+
+def _image_cloze(cloze: Cloze) -> ImageCloze:
+    """The same blank as ``cloze``, drawn into the shell's window as an empty box."""
+    blank = cloze.blanks[0]
+    window = render_terminal(cloze.shell, cloze.template, blanks={blank.blank_id: blank.accepted[0]})
+    return ImageCloze(
+        checkpoint_id=cloze.checkpoint_id, after_section=cloze.after_section, title="Im Fenster ergänzen",
+        task=f"Ergänzen Sie, was im Fenster von {SHELL_LABEL[cloze.shell]} fehlt.",
+        image=save_media(window.png), width=window.width, height=window.height,
+        blanks=(ImageBlank(blank_id=blank.blank_id, accepted=blank.accepted, rect=window.rects[blank.blank_id],
+                           more=window.more.get(blank.blank_id, ())),),
+        shell=cloze.shell, refs=cloze.refs,
+    )
+
+
+def _window_matching(lines: dict[str, str], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
+    """One window per shell (its prompt and this lesson's command, no title bar) to the shell's name."""
+    shells = list(lines)
+    random.Random(seed).shuffle(shells)
+    left_ids, right_ids = _random_ids("f", len(shells)), _random_ids("s", len(shells))
+    left = []
+    for number, (item_id, shell) in enumerate(zip(left_ids, shells), start=1):
+        window = render_terminal(shell, lines[shell], title=False)
+        left.append(MatchItem(item_id=item_id, text=f"Fenster {number}", image=save_media(window.png),
+                              width=window.width, height=window.height))
+    right = [MatchItem(item_id=right_ids[i], text=SHELL_LABEL[shell]) for i, shell in enumerate(shells)]
+    random.Random(seed + ":rechts").shuffle(right)
+    return Matching(
+        checkpoint_id=checkpoint_id, after_section=after, title="Welches Fenster ist welche Shell?",
+        task="Ordnen Sie jedem Fenster die Shell zu. Achten Sie auf die Eingabezeile.",
+        left=tuple(left), right=tuple(right), pairs=dict(zip(left_ids, right_ids)), refs=refs,
+    )
+
+
 def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
     left = tuple(MatchItem(item_id=f"b{i}", text=cut(term, 300)) for i, (term, _text) in enumerate(pairs, start=1))
     right_ids = _random_ids("e", len(pairs))
@@ -232,6 +275,9 @@ def structured_checkpoints(lesson: LessonDraft, *, after: str, refs: tuple[str, 
     out: list[Checkpoint] = []
     counts = {"ord": 0, "cl": 0, "mt": 0}
     per_shell: dict[str, int] = {}
+    pictured: set[str] = set()
+    first_lines: dict[str, str] = {}
+    images = _media_available()
 
     def next_id(prefix: str) -> str:
         counts[prefix] += 1
@@ -242,11 +288,21 @@ def structured_checkpoints(lesson: LessonDraft, *, after: str, refs: tuple[str, 
             out.append(_ordering(block[1], next_id("ord"), after, refs))
         elif block[0] == "command":
             cloze = _cloze(block[1], block[2], token(f"cl-{lesson.lesson_id}-{counts['cl'] + 1}", 120), after, refs)
+            if cloze is not None and "{{" not in block[1]:
+                first_lines.setdefault(cloze.shell, block[1])
             # At most MAX_CLOZE per shell: with "Dein Weg" each person sees only their shell's.
             if cloze is not None and per_shell.get(cloze.shell, 0) < MAX_CLOZE:
                 counts["cl"] += 1
                 per_shell[cloze.shell] = per_shell.get(cloze.shell, 0) + 1
-                out.append(cloze)
+                # The first blank of each shell is drawn into that shell's window.
+                if images and cloze.shell not in pictured:
+                    pictured.add(cloze.shell)
+                    out.append(_image_cloze(cloze))
+                else:
+                    out.append(cloze)
         else:
             out.append(_matching(block[1], lesson.lesson_id, next_id("mt"), after, refs))
+    # Three shells or more in one lesson: which window is which shell?
+    if images and len(first_lines) >= 3:
+        out.append(_window_matching(first_lines, lesson.lesson_id, next_id("mt"), after, refs))
     return out

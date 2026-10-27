@@ -21,6 +21,7 @@ from spaces.learning.contracts.lernsequenz import (
     Estimate,
     Explanation,
     Hotspot,
+    ImageCloze,
     LernsequenzV1,
     Matching,
     Ordering,
@@ -81,6 +82,8 @@ def tutor_context(
             task = {"prompt": checkpoint.task, "type": "ordering", "items": [item.text for item in checkpoint.items]}
         elif isinstance(checkpoint, Cloze):
             task = {"prompt": checkpoint.task, "type": "cloze", "template": checkpoint.template, "shell": checkpoint.shell}
+        elif isinstance(checkpoint, ImageCloze):
+            task = {"prompt": checkpoint.task, "type": "image_cloze", "shell": checkpoint.shell}
         elif isinstance(checkpoint, Matching):
             task = {"prompt": checkpoint.task, "type": "matching",
                     "left": [item.text for item in checkpoint.left], "right": [item.text for item in checkpoint.right]}

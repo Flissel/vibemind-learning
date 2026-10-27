@@ -122,3 +122,16 @@ def test_tutor_context_knows_every_hands_on_kind_without_solutions() -> None:
             assert "r1" not in str(task.get("pairs", ""))
     with pytest.raises(LookupError):
         tutor_context(seq, checkpoint_id="nope")
+
+
+def test_tutor_context_for_image_cloze_has_no_solution() -> None:
+    from spaces.learning.contracts.lernsequenz import LernsequenzV1
+    from spaces.learning.tests.unit.test_lernsequenz import sequence_data
+    from spaces.learning.tests.unit.test_lernsequenz_mitmach import _image_cloze
+
+    data = sequence_data()
+    data["checkpoints"] = [_image_cloze()]
+    task, _sources = tutor_context(LernsequenzV1.model_validate(data), checkpoint_id="ic")
+
+    assert task["type"] == "image_cloze" and task["shell"] == "powershell"
+    assert "install.ps1" not in str(task)

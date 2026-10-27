@@ -385,6 +385,8 @@ class ImageBlank(ContractModel):
         tuple[Annotated[str, Field(min_length=1, max_length=200)], ...], Field(min_length=1, max_length=6)
     ]
     rect: Rect
+    # The same blank again further along the line: shown, mirrored from the first box.
+    more: Annotated[tuple[Rect, ...], Field(max_length=6)] = ()
 
 
 class ImageCloze(_Checkpoint):
@@ -402,9 +404,9 @@ class ImageCloze(_Checkpoint):
     def boxes_inside_the_image(self) -> "ImageCloze":
         _unique([blank.blank_id for blank in self.blanks], "image cloze blank ids")
         for blank in self.blanks:
-            r = blank.rect
-            if r.x + r.w > self.width or r.y + r.h > self.height:
-                raise ValueError("image cloze boxes must lie inside the image")
+            for r in (blank.rect, *blank.more):
+                if r.x + r.w > self.width or r.y + r.h > self.height:
+                    raise ValueError("image cloze boxes must lie inside the image")
         return self
 
 
@@ -573,7 +575,8 @@ def public_view(sequence: LernsequenzV1) -> dict[str, object]:
                 checkpoint["blank_ids"] = [blank["blank_id"] for blank in checkpoint["blanks"]]
             elif checkpoint["kind"] == "image_cloze":
                 # Where the boxes are, never what goes in them.
-                checkpoint["blanks"] = [{"blank_id": b["blank_id"], "rect": b["rect"]} for b in checkpoint["blanks"]]
+                checkpoint["blanks"] = [{"blank_id": b["blank_id"], "rect": b["rect"], **({"more": b["more"]} if b["more"] else {})}
+                                        for b in checkpoint["blanks"]]
             elif checkpoint["kind"] == "ordering":
                 checkpoint["items"] = _fixed_shuffle(checkpoint["items"], salt)
             elif checkpoint["kind"] == "matching":

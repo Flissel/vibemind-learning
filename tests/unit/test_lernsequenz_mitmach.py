@@ -235,3 +235,27 @@ def test_match_items_may_carry_an_image_with_its_size() -> None:
     del matching["left"][0]["width"]
     with pytest.raises(ValidationError):
         LernsequenzV1.model_validate(data)
+
+
+def test_image_cloze_is_graded_like_a_cloze() -> None:
+    data = sequence_data()
+    data["checkpoints"] = [_image_cloze()]
+    sequence = LernsequenzV1.model_validate(data)
+
+    right = grade(sequence, "ic", {"values": {"wert": " Install.PS1 "}})
+    wrong = grade(sequence, "ic", {"values": {"wert": "install.sh"}})
+
+    assert right["kind"] == "image_cloze" and right["score"] == 1.0
+    assert wrong["score"] == 0.0 and wrong["blanks"] == [{"blank_id": "wert", "correct": False}]
+
+
+def test_image_cloze_boxes_may_repeat_and_stay_inside() -> None:
+    data = sequence_data()
+    blank = _image_cloze()
+    blank["blanks"][0]["more"] = [{"x": 600, "y": 54, "w": 100, "h": 22}]
+    data["checkpoints"] = [blank]
+    view = public_view(LernsequenzV1.model_validate(data))["checkpoints"][0]
+    assert view["blanks"][0]["more"] == [{"x": 600.0, "y": 54.0, "w": 100.0, "h": 22.0}]
+    blank["blanks"][0]["more"] = [{"x": 700, "y": 54, "w": 100, "h": 22}]
+    with pytest.raises(ValidationError):
+        LernsequenzV1.model_validate(data)

@@ -13,6 +13,7 @@ from spaces.learning.contracts.lernsequenz import (
     DrawnExplanation,
     Estimate,
     Hotspot,
+    ImageCloze,
     LernsequenzV1,
     Matching,
     Ordering,
@@ -53,7 +54,7 @@ def grade(sequence: LernsequenzV1, checkpoint_id: str, answer: dict[str, Any]) -
     if isinstance(checkpoint, CommandCheck):
         return _command(checkpoint, answer)
     hands_on = {
-        Ordering: _ordering, Cloze: _cloze, Matching: _matching, Hotspot: _hotspot,
+        Ordering: _ordering, Cloze: _cloze, ImageCloze: _image_cloze, Matching: _matching, Hotspot: _hotspot,
         TerminalSim: _terminal_sim, Step: _step, Profile: _profile,
     }
     for kind, scorer in hands_on.items():
@@ -93,6 +94,11 @@ def _cloze(checkpoint: Cloze, answer: dict[str, Any]) -> dict[str, Any]:
         blanks.append({"blank_id": blank.blank_id, "correct": isinstance(given, str) and _plain(given) in accepted})
     return {"kind": "cloze", "blanks": blanks, "score": sum(b["correct"] for b in blanks) / len(blanks),
             "refs": list(checkpoint.refs)}
+
+
+def _image_cloze(checkpoint: ImageCloze, answer: dict[str, Any]) -> dict[str, Any]:
+    # The boxes take the same answers as a text blank.
+    return {**_cloze(checkpoint, answer), "kind": "image_cloze"}  # type: ignore[arg-type]
 
 
 def _matching(checkpoint: Matching, answer: dict[str, Any]) -> dict[str, Any]:

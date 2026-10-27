@@ -8,7 +8,7 @@ blank is known to the pixel. A blank is drawn as an empty box; its answer is nev
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -54,6 +54,8 @@ class RenderedWindow:
     height: int
     rects: dict[str, Rect]
     char_width: float
+    # Further boxes of a blank that occurs more than once (they show what is typed in the first).
+    more: dict[str, tuple[Rect, ...]] = field(default_factory=dict)
 
 
 @lru_cache(maxsize=1)
@@ -64,8 +66,8 @@ def _font() -> ImageFont.FreeTypeFont:
 def _units(command: str, blanks: dict[str, str]) -> list[tuple[str, str]]:
     """("text", one character) and ("blank", blank_id) in reading order."""
     found = _PLACEHOLDER.findall(command)
-    if set(found) != set(blanks) or len(found) != len(set(found)):
-        raise ValueError("placeholders and blanks must match one to one")
+    if set(found) != set(blanks):
+        raise ValueError("placeholders and blanks must match")
     units: list[tuple[str, str]] = []
     position = 0
     for match in _PLACEHOLDER.finditer(command):
@@ -76,9 +78,12 @@ def _units(command: str, blanks: dict[str, str]) -> list[tuple[str, str]]:
     return units
 
 
-def render_terminal(shell: Shell, command: str, *, blanks: dict[str, str] | None = None) -> RenderedWindow:
+def render_terminal(
+    shell: Shell, command: str, *, blanks: dict[str, str] | None = None, title: bool = True
+) -> RenderedWindow:
     """The window of ``shell`` with its prompt and ``command``; ``{{id}}`` placeholders become
-    empty boxes as wide as their answer in ``blanks`` (the answer itself is never drawn)."""
+    empty boxes as wide as their answer in ``blanks`` (the answer itself is never drawn).
+    ``title=False`` leaves the title bar empty (it would name the shell in a matching task)."""
     style = _STYLES[shell]
     blanks = blanks or {}
     font = _font()
@@ -102,8 +107,10 @@ def render_terminal(shell: Shell, command: str, *, blanks: dict[str, str] | None
     image = Image.new("RGB", (WIDTH, height), style.background)
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 0, WIDTH - 1, TITLE - 1), fill=_TITLE_BG)
-    draw.text((PAD, (TITLE - FONT_SIZE) // 2), style.title, font=font, fill=_TITLE_FG)
+    if title:
+        draw.text((PAD, (TITLE - FONT_SIZE) // 2), style.title, font=font, fill=_TITLE_FG)
     rects: dict[str, Rect] = {}
+    more: dict[str, list[Rect]] = {}
     for kind, value, line, col, cells in placed:
         x = PAD + col * char
         y = TITLE + PAD + line * LINE
@@ -112,8 +119,13 @@ def render_terminal(shell: Shell, command: str, *, blanks: dict[str, str] | None
             continue
         box = (x, y + 2, x + cells * char, y + LINE - 2)
         draw.rectangle(box, fill=BOX_FILL, outline=BOX_BORDER)
-        rects[value] = Rect(x=round(box[0], 2), y=box[1], w=round(box[2] - box[0], 2), h=box[3] - box[1])
+        rect = Rect(x=round(box[0], 2), y=box[1], w=round(box[2] - box[0], 2), h=box[3] - box[1])
+        if value in rects:
+            more.setdefault(value, []).append(rect)
+        else:
+            rects[value] = rect
 
     buffer = BytesIO()
     image.save(buffer, format="PNG", optimize=False)
-    return RenderedWindow(png=buffer.getvalue(), width=WIDTH, height=height, rects=rects, char_width=char)
+    return RenderedWindow(png=buffer.getvalue(), width=WIDTH, height=height, rects=rects, char_width=char,
+                          more={key: tuple(value) for key, value in more.items()})

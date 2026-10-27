@@ -203,3 +203,78 @@ def test_item_ids_do_not_reveal_the_solution() -> None:
     other = structured_checkpoints(lesson(), after="l1-4", refs=(CIT,))
     assert [i.item_id for i in ordering.items] != [i.item_id for i in other[0].items]
     assert len({i.item_id for i in ordering.items}) == len(ordering.items)
+
+
+# --- Bildaufgaben (Plan 2026-10-27-learning-bildaufgaben, Task 3) ----------------------
+
+import pytest  # noqa: E402
+
+THREE_SHELLS = """# Installieren
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+```cmd
+curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+"""
+
+
+@pytest.fixture()
+def media(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
+    return tmp_path / "lernsequenzen" / "medien"
+
+
+def test_the_first_command_of_each_shell_becomes_an_image_cloze(media) -> None:
+    checkpoints = structured_checkpoints(lesson(), after="l1-4", refs=(CIT,))
+
+    images = [c for c in checkpoints if c.kind == "image_cloze"]
+    assert {c.shell for c in images} == {"powershell", "unix"}
+    ps = next(c for c in images if c.shell == "powershell")
+    assert ps.blanks[0].accepted == ("install.ps1",) and ps.title == "Im Fenster ergänzen"
+    assert (media / ps.image.rsplit("/", 1)[-1]).is_file()
+    assert "Ergänzen Sie" in ps.task and ps.refs == (CIT,)
+
+
+def test_image_cloze_and_text_cloze_never_share_a_line(media) -> None:
+    body = BODY.replace("`irm https://claude.ai/install.ps1 | iex`",
+                        "```powershell\nirm https://claude.ai/install.ps1 | iex\nTest-Path \"$env:USERPROFILE\.local\bin\claude.exe\"\n```")
+    checkpoints = structured_checkpoints(lesson(body), after="l1-4", refs=(CIT,))
+
+    image = next(c for c in checkpoints if c.kind == "image_cloze" and c.shell == "powershell")
+    text = [c for c in checkpoints if c.kind == "cloze" and c.shell == "powershell"]
+    assert image.blanks[0].accepted == ("install.ps1",)
+    assert text and all("install.ps1" not in b.accepted for c in text for b in c.blanks)
+
+
+def test_three_shells_give_one_window_matching_without_titles(media) -> None:
+    checkpoints = structured_checkpoints(lesson(THREE_SHELLS), after="l1-1", refs=(CIT,))
+
+    [windows] = [c for c in checkpoints if c.kind == "matching" and c.title == "Welches Fenster ist welche Shell?"]
+    assert all(item.image and item.width == 760 for item in windows.left)
+    assert {item.text for item in windows.right} == {"Windows PowerShell", "Windows CMD", "macOS / Linux"}
+    by_id = {item.item_id: item.text for item in windows.right}
+    labels = [by_id[windows.pairs[item.item_id]] for item in windows.left]
+    assert sorted(labels) == sorted(["Windows PowerShell", "Windows CMD", "macOS / Linux"])
+    assert not any(item.item_id.startswith(("b1", "s1")) for item in windows.left)
+
+
+def test_two_shells_give_no_window_matching(media) -> None:
+    body = THREE_SHELLS.split("```bash")[0]
+    checkpoints = structured_checkpoints(lesson(body), after="l1-1", refs=(CIT,))
+
+    assert not any(c.kind == "matching" and c.title == "Welches Fenster ist welche Shell?" for c in checkpoints)
+
+
+def test_without_a_media_folder_there_are_no_image_tasks(monkeypatch) -> None:
+    monkeypatch.delenv("LEARNING_ARTIFACT_ROOT", raising=False)
+
+    kinds = [c.kind for c in structured_checkpoints(lesson(THREE_SHELLS), after="l1-1", refs=(CIT,))]
+
+    assert "image_cloze" not in kinds and kinds.count("cloze") == 3

@@ -66,3 +66,10 @@ def test_each_shell_has_its_background(shell, background) -> None:
 def test_an_unknown_placeholder_is_refused() -> None:
     with pytest.raises(ValueError):
         render_terminal("cmd", "claude {{wert}}", blanks={})
+
+
+def test_a_repeated_placeholder_draws_every_box_and_lists_the_others() -> None:
+    window = render_terminal("cmd", "curl -fsSL https://claude.ai/{{wert}} -o {{wert}} && {{wert}}", blanks={"wert": "install.cmd"})
+    assert len(window.more["wert"]) == 2
+    first = window.rects["wert"]
+    assert all(r.w == first.w and (r.y, r.x) > (first.y, first.x) for r in window.more["wert"])
