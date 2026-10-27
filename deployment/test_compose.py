@@ -424,3 +424,12 @@ def test_learning_api_has_vibemind_course_factory_secrets_and_import_volume() ->
         r"(?m)^LEARNING_VIBEMIND_SERVICE_KEY=<[^>]+>$",
         ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
     )
+
+
+def test_learnhouse_mail_settings_are_optional_and_never_carry_a_value() -> None:
+    # 27.10.: password reset sent nothing (no mail settings reached LearnHouse). They come
+    # from the env file only; the compose file holds no address, host or password.
+    env = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]["learnhouse-api"]["environment"]
+    for name in ("EMAIL_PROVIDER", "SYSTEM_EMAIL_ADDRESS", "SYSTEM_EMAIL_SENDER_NAME", "SMTP_HOST",
+                 "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_USE_TLS"):
+        assert env[f"LEARNHOUSE_{name}"] == f"${{LEARNHOUSE_{name}:-}}"
