@@ -111,6 +111,10 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
 <script nonce="__NONCE__">
 (() => {
   const token = new URLSearchParams(location.search).get('k') || '';
+  // The signed-in person, signed by LearnHouse into the embed link; sent with every call.
+  const person = new URLSearchParams(location.search).get('p') || '';
+  const query = (path) => `${base}/${path}?k=${encodeURIComponent(token)}` + (person ? `&p=${encodeURIComponent(person)}` : '');
+  const failure = (data, fallback) => new Error(data.code === 'person_expired' || data.code === 'person_invalid' ? 'Ihre Anmeldung ist abgelaufen – bitte die Seite neu laden.' : data.message || fallback);
   const base = location.pathname.replace(/\/$/, '');
   const $ = (id) => document.getElementById(id);
   const el = (tag, attrs = {}, ...kids) => {
@@ -151,20 +155,20 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   };
 
   async function post(checkpoint_id, answer) {
-    const res = await fetch(`${base}/antwort?k=${encodeURIComponent(token)}`, {
+    const res = await fetch(query('antwort'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ checkpoint_id, answer }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.message || 'Antwort wurde nicht angenommen');
+    if (!res.ok) throw failure(data, 'Antwort wurde nicht angenommen');
     return data;
   }
   async function postTo(path, body) {
-    const res = await fetch(`${base}/${path}?k=${encodeURIComponent(token)}`, {
+    const res = await fetch(query(path), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.message || 'Anfrage wurde nicht angenommen');
+    if (!res.ok) throw failure(data, 'Anfrage wurde nicht angenommen');
     return data;
   }
   const UNREADABLE = { spanne: 'Bitte eine Zahl, keine Spanne.', datum: 'Das sieht wie ein Datum aus.', leer: '', unlesbar: 'Das kann ich nicht als Zahl lesen.' };
@@ -210,7 +214,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
       if (!question) return;
       ask.disabled = true; out.textContent = 'Der Tutor denkt nach …';
       try {
-        const res = await fetch(`${base}/tutor?k=${encodeURIComponent(token)}`, {
+        const res = await fetch(query('tutor'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question, ...context() }),
         });
@@ -810,7 +814,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
     if (e.key === 'ArrowLeft') $('prev').click();
   });
 
-  fetch(`${base}/daten?k=${encodeURIComponent(token)}`).then((r) => { if (!r.ok) throw new Error(); return r.json(); }).then((data) => {
+  fetch(query('daten')).then((r) => { if (!r.ok) throw new Error(); return r.json(); }).then((data) => {
     seq = data;
     sourceTitles = Object.fromEntries((data.sources || []).map((s) => [s.ref, s.title]));
     $('title').textContent = data.title;

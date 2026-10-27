@@ -24,6 +24,7 @@ def player_server(tmp_path: Path, monkeypatch):
     """learning-api with a temporary artifact root; yields base url, store and token maker."""
     uvicorn = pytest.importorskip("uvicorn")
     monkeypatch.setenv("LEARNING_VIBEMIND_SERVICE_KEY", PLAYER_KEY)
+    monkeypatch.setenv("LEARNHOUSE_LEARNING_SERVICE_KEY", PLAYER_KEY)   # signs the person token
     monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
     from spaces.learning.deployment import lernsequenz_routes, runtime_api
     from spaces.learning.services.lernsequenz.store import SequenceStore

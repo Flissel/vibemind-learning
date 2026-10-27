@@ -148,3 +148,16 @@ def test_cloze_matching_hotspot_terminal_and_step_grade(player_server, browser_p
     page.get_by_role("button", name="Sieht bei mir so aus").click()
     page.wait_for_function("document.querySelector('#stage h2') && document.querySelector('#stage h2').textContent === 'Geschafft'")
     assert page.errors == []
+
+
+def test_person_token_is_forwarded_with_every_answer(player_server, browser_page, tmp_path) -> None:
+    page = browser_page
+    link = _sequence(player_server, tmp_path) + "&p=abc.def"
+    page.goto(link)
+    page.wait_for_function("document.getElementById('count').textContent.length > 0")
+    page.evaluate("localStorage.clear()")
+    with page.expect_request(lambda r: "/antwort" in r.url) as answer:
+        _answer_profile(page, "Windows PowerShell")
+    assert "p=abc.def" in answer.value.url
+    page.wait_for_selector(".overlay .fb.no")
+    assert "neu laden" in page.locator(".overlay .fb.no").inner_text()

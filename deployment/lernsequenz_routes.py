@@ -47,6 +47,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 Token = Annotated[str, Query(alias="k", min_length=16, max_length=128)]
+# The signed-in person, as LearnHouse signed it into the embed link (services/lernsequenz/person.py).
+Person = Annotated[str | None, Query(alias="p", max_length=512)]
+
+
+def _actor(person: str | None) -> str:
+    """The learner answers are booked on: the person from the token, else the shared default."""
+    if not person:
+        return os.environ.get(ACTOR_ENV, "learning-claw")
+    from spaces.learning.services.lernsequenz.person import read_person_token
+
+    try:
+        return read_person_token(person)
+    except LookupError as error:
+        if str(error) == "expired":
+            raise ApiError(status.HTTP_401_UNAUTHORIZED, "person_expired", "Bitte die Seite neu laden") from error
+        raise ApiError(status.HTTP_401_UNAUTHORIZED, "person_invalid", "Person token is not valid") from error
+    except RuntimeError as error:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", str(error)) from error
 
 
 @lru_cache(maxsize=1)
@@ -123,8 +141,10 @@ def answer(
     sequence_id: str,
     k: Token,
     payload: Annotated[dict[str, Any], Body()],
+    p: Person = None,
 ) -> JSONResponse:
     sequence = _checked(sequence_id, k)
+    actor_id = _actor(p)
     checkpoint_id = payload.get("checkpoint_id")
     reply = payload.get("answer")
     if not isinstance(checkpoint_id, str) or not isinstance(reply, dict):
@@ -137,7 +157,7 @@ def answer(
         else:
             result = grade(sequence, checkpoint_id, reply)
             if isinstance(checkpoint, Choice) and checkpoint.activity_id:
-                result["mastery"] = _count_for_mastery(sequence.course_id, checkpoint.activity_id, reply)
+                result["mastery"] = _count_for_mastery(sequence.course_id, checkpoint.activity_id, reply, actor_id=actor_id)
     except LookupError as error:
         raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", "Checkpoint not found") from error
     except ValueError as error:
@@ -154,18 +174,17 @@ def _sessions():
     return AdaptiveSessionService(build_session_factory(create_learning_engine(url))) if url else None
 
 
-def _count_for_mastery(course_id: str, activity_id: str, reply: dict[str, Any]) -> dict[str, Any]:
-    """Book the answer for the local learner (same identity as the claw practice, v1).
+def _count_for_mastery(course_id: str, activity_id: str, reply: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
+    """Book the answer on the person (the shared default learner without a person token).
 
-    Mapping the LearnHouse person comes with stage 0b; a booking failure never hides
-    the answer's feedback.
+    A booking failure never hides the answer's feedback.
     """
     service = _sessions()
     if service is None:
         return {"counted": False}
     try:
         booked = service.record_sequence_answer(
-            actor_id=os.environ.get(ACTOR_ENV, "learning-claw"),
+            actor_id=actor_id,
             course_id=course_id,
             activity_id=activity_id,
             selected=[s for s in reply.get("selected", []) if isinstance(s, str)],
