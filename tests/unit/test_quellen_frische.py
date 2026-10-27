@@ -38,3 +38,47 @@ def test_fetch_failures_are_skipped_not_reported() -> None:
         raise OSError("down")
 
     assert check([_watch()], fetch) == []
+
+
+# --- fetching: only public hosts, redirects checked hop by hop, size capped -----------
+
+def test_private_loopback_and_metadata_addresses_are_never_fetched() -> None:
+    from spaces.learning.services.quellen.cli import fetch, is_public_address
+
+    for bad in ("127.0.0.1", "10.0.0.5", "192.168.0.7", "172.17.0.1", "169.254.169.254", "::1", "fd00::1", "0.0.0.0"):
+        assert is_public_address(bad) is False, bad
+    assert is_public_address("93.184.216.34") is True
+    for url in ("http://127.0.0.1:8090/health", "http://localhost/x", "ftp://docs.example/x", "http://169.254.169.254/latest"):
+        try:
+            fetch(url)
+        except ValueError:
+            continue
+        raise AssertionError(f"{url} was fetched")
+
+
+def test_redirect_hops_are_checked_and_bodies_are_capped(monkeypatch) -> None:
+    import httpx
+
+    from spaces.learning.services.quellen import cli
+
+    monkeypatch.setattr(cli, "resolve", lambda host: "93.184.216.34" if host == "docs.example" else "127.0.0.1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/hop":
+            return httpx.Response(302, headers={"Location": "http://intern.local/secret"})
+        if request.url.path == "/big":
+            return httpx.Response(200, content=b"x" * (cli._MAX_BYTES + 10))
+        return httpx.Response(200, text="<p>fein</p>")
+
+    monkeypatch.setattr(cli, "_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    assert "fein" in fetch_via(cli, "http://docs.example/ok")
+    for url in ("http://docs.example/hop", "http://docs.example/big"):
+        try:
+            fetch_via(cli, url)
+        except ValueError:
+            continue
+        raise AssertionError(f"{url} was accepted")
+
+
+def fetch_via(cli, url: str) -> str:
+    return cli.fetch(url)
