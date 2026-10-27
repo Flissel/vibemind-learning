@@ -143,6 +143,7 @@ def create_job(
             "audience": body.audience,
             "target_outcome": _target_outcome(body),
             "source_ids": [str(item) for item in body.source_ids],
+            **({"reviewer_notes": list(body.reviewer_notes)} if body.reviewer_notes else {}),
         },
     )
     return _job_response(result, context, status.HTTP_202_ACCEPTED)

@@ -192,6 +192,7 @@ class CourseFactoryApplication:
         audience = _string(request.event.payload, "audience", maximum=1_000)
         target = _string(request.event.payload, "target_outcome", maximum=2_000)
         source_ids = _source_ids(request.event.payload)
+        person_notes = _notes(request.event.payload)
         if self._course_state is not None:
             current = asyncio.run(
                 self._course_state(course_id, str(request.event.correlation_id))
@@ -209,6 +210,7 @@ class CourseFactoryApplication:
             audience=audience,
             target_outcome=target,
             learnhouse_revision=request.event.expected_revision,
+            person_notes=person_notes,
         )
         request_hash = _generation_hash(
             course_id=course_id,
@@ -462,6 +464,15 @@ def _uuid(payload: Mapping[str, object], key: str) -> str:
 
 def _optional_uuid(payload: Mapping[str, object], key: str) -> str | None:
     return _uuid(payload, key) if key in payload else None
+
+
+def _notes(payload: Mapping[str, object]) -> tuple[str, ...]:
+    value = payload.get("reviewer_notes", [])
+    if not isinstance(value, list) or len(value) > 10:
+        raise ValueError("reviewer_notes is invalid")
+    if any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in value):
+        raise ValueError("reviewer_notes is invalid")
+    return tuple(item.strip() for item in value)
 
 
 def _source_ids(payload: Mapping[str, object]) -> tuple[str, ...]:

@@ -59,6 +59,9 @@ class GenerationRequest(BaseModel):
     learnhouse_revision: int = Field(default=1, ge=0)
     # The AI reviewer's reasons from the previous attempt; the roles address them.
     revision_notes: tuple[str, ...] = Field(default=(), max_length=20)
+    # A person's review notes for a new job (e.g. after rejecting a draft); unlike the
+    # reviewer's notes they stay on every automatic retry of this job.
+    person_notes: tuple[str, ...] = Field(default=(), max_length=10)
 
     @field_validator("correlation_id")
     @classmethod

@@ -409,3 +409,123 @@ def test_an_uneven_rubric_scale_is_noted_but_does_not_hold_the_course(session_fa
 
     assert "rubric_scale_inconsistent" in result.report.issue_codes
     assert result.report.approved is True and result.job.state is FactoryState.REVIEW_READY
+
+
+# --- 27.10.: the terminal course draft (job 8851ed7f) taught nothing in ten of fifteen
+# lesson texts ("In diesem Abschnitt lernen Sie den Befehl kennen ..."); the facts sat
+# only in claims, which the lesson page never shows. It also mixed "Sie" and "du" and
+# spread a 1,074-word guide over fifteen chapters.
+
+def _german_lesson(ids, body: str, claim: str):
+    from spaces.learning.services.course_factory.schemas import Claim
+
+    draft = _draft(ids)
+    draft.lessons[0].body = body
+    draft.lessons[0].claims = [Claim(claim_id="claim-authority", text=claim, citation_ids=[ids["citation"]])]
+    return draft
+
+
+_CLAIM = ("Um Claude Code in Windows PowerShell zu installieren, fügt man den Befehl "
+          "'irm https://claude.ai/install.ps1 | iex' in PowerShell ein und führt ihn mit Enter aus.")
+
+
+def test_a_lesson_text_that_only_announces_its_content_is_held() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    draft = _german_lesson(_ids(), "In diesem Abschnitt lernen Sie den Installationsbefehl kennen. "
+                                   "Die anschließenden Übungen prüfen Ihr Wissen.", _CLAIM)
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+
+    assert "lesson_body_thin" in codes
+
+
+def test_a_lesson_text_that_teaches_its_claims_passes() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    body = ("Um Claude Code in Windows PowerShell zu installieren, fügen Sie diesen Befehl ein "
+            "und führen ihn mit Enter aus:\n\n```powershell\nirm https://claude.ai/install.ps1 | iex\n```")
+    draft = _german_lesson(_ids(), body, _CLAIM)
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+
+    assert "lesson_body_thin" not in codes and "lesson_command_missing" not in codes
+
+
+def test_a_command_named_in_the_claims_must_stand_verbatim_in_the_lesson_text() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    body = ("Um Claude Code in Windows PowerShell zu installieren, fügen Sie den Installationsbefehl "
+            "in PowerShell ein und führen ihn mit Enter aus.")
+    draft = _german_lesson(_ids(), body, _CLAIM)
+
+    issues = [i for i in _deterministic_quality_issues(draft) if i.code == "lesson_command_missing"]
+
+    assert [i.subject_id for i in issues] == ["lesson-authority"] and issues[0].blocking
+
+
+def test_a_course_that_mixes_formal_and_informal_address_is_held() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    ids = _ids()
+    draft = _german_lesson(ids, "Öffnen Sie PowerShell. " + _CLAIM, _CLAIM)
+    draft.activities[0].prompt = "Welchen Befehl gibst du ein, und woran erkennst du den Erfolg?"
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+
+    assert "address_mixed" in codes
+
+
+def test_formal_address_throughout_and_sentence_initial_sie_are_not_mixed() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    ids = _ids()
+    draft = _german_lesson(ids, "Öffnen Sie PowerShell. Sie sehen dann die Eingabezeile. " + _CLAIM, _CLAIM)
+    draft.activities[0].prompt = "Welchen Befehl geben Sie ein? Nennen Sie das Ergebnis."
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+
+    assert "address_mixed" not in codes
+
+
+@pytest.mark.parametrize(("words", "chapters", "held"), [(1074, 8, False), (1074, 15, True), (200, 3, False), (200, 4, True)])
+def test_the_chapter_count_stays_in_proportion_to_the_source(words, chapters, held) -> None:
+    from spaces.learning.services.course_factory.quality_gate import _source_proportion_issues
+    from spaces.learning.services.course_factory.schemas import ChapterDraft
+    from spaces.learning.services.course_factory.verification import ChunkEvidence, SourceSnapshot
+
+    ids = _ids()
+    draft = _draft(ids)
+    for index in range(chapters - 1):
+        draft.chapters.append(ChapterDraft(chapter_id=f"extra-{index}", title=f"Kapitel {index}",
+                                           lesson_ids=["lesson-authority"], activity_ids=["activity-authority"]))
+    text = " ".join(["Wort"] * words)
+    sources = (SourceSnapshot(source_id=ids["source"], revision=2, content_hash="a" * 64, chunks=(
+        ChunkEvidence(chunk_id=ids["chunk"], content_hash="b" * 64, locator={"page": 4}, text=text),)),)
+
+    codes = {issue.code for issue in _source_proportion_issues(draft, sources)}
+
+    assert ("too_many_chapters" in codes) is held
+
+
+def test_without_source_texts_the_chapter_count_is_not_judged() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _source_proportion_issues
+
+    ids = _ids()
+
+    assert _source_proportion_issues(_draft(ids), _catalog(ids)) == []
+
+
+def test_a_command_with_escaped_inner_quotes_in_a_claim_is_found_in_the_lesson_text() -> None:
+    # Live (27.10.): the PATH lesson had every command, but a claim wrote Test-Path \"...\"
+    # with escaped inner quotes, and the quote pattern stopped at them.
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    claim = 'Ob das Programm da ist, zeigt der Befehl „Test-Path \\"$env:USERPROFILE\.local\bin\claude.exe\\"“ in PowerShell an.'
+    body = ('Ob das Programm da ist, zeigt dieser Befehl in PowerShell an:\n\n'
+            '```powershell\nTest-Path "$env:USERPROFILE\.local\bin\claude.exe"\n```')
+    draft = _german_lesson(_ids(), body, claim)
+
+    codes = {issue.code for issue in _deterministic_quality_issues(draft)}
+
+    assert "lesson_command_missing" not in codes

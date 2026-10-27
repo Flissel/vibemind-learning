@@ -133,3 +133,14 @@ def test_api_error_is_bounded() -> None:
     assert error.correlation_id is None
     with pytest.raises(ValidationError):
         ApiErrorV1(code="not_found", message="x" * 501, retryable=False)
+
+
+def test_generation_request_carries_a_persons_review_notes() -> None:
+    # 27.10.: a rejected draft is rebuilt with the person's notes (fewer chapters, one address).
+    request = CourseGenerationRequestV1.model_validate(_generation(reviewer_notes=["Höchstens sechs Kapitel."]))
+    assert request.reviewer_notes == ("Höchstens sechs Kapitel.",)
+    assert CourseGenerationRequestV1.model_validate(_generation()).reviewer_notes == ()
+    with pytest.raises(ValidationError):
+        CourseGenerationRequestV1.model_validate(_generation(reviewer_notes=["x"] * 11))
+    with pytest.raises(ValidationError):
+        CourseGenerationRequestV1.model_validate(_generation(reviewer_notes=["x" * 501]))

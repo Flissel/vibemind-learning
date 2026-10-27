@@ -45,6 +45,8 @@ class CourseGenerationRequestV1(ContractModel):
         tuple[BoundedText, ...], Field(min_length=1, max_length=32)
     ]
     source_ids: Annotated[tuple[UUID, ...], Field(min_length=1, max_length=256)]
+    # A person's notes for this run, e.g. why the previous draft was rejected.
+    reviewer_notes: Annotated[tuple[BoundedText, ...], Field(max_length=10)] = ()
 
     @field_validator("title", "audience")
     @classmethod

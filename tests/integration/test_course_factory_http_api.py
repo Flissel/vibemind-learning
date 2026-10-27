@@ -235,3 +235,11 @@ def test_job_response_carries_the_draft_outline() -> None:
     body = json.loads(_job_response(result, context, 200).body)
 
     assert body["draft_summary"] == summary
+
+
+def test_create_job_stores_a_persons_review_notes(client, harness) -> None:
+    response = _create(client, harness, key="notes", reviewer_notes=["Höchstens sechs Kapitel."])
+
+    assert response.status_code == 202
+    stored = harness.repository.get_current_attempt(response.json()["job_id"]).generation_request
+    assert stored.person_notes == ("Höchstens sechs Kapitel.",)

@@ -359,3 +359,22 @@ def test_manual_retry_refuses_a_job_of_another_course(tmp_path: Path) -> None:
         payload={"retry_job_id": job_id},
     )
     assert env.application.execute(retry).state != "completed"
+
+
+def test_a_persons_review_notes_are_stored_with_the_new_job(env: _Env) -> None:
+    request = _generate(env, env.ready_source)
+    request.event.payload["reviewer_notes"] = ["Höchstens sechs Kapitel.", "Durchgehend Sie."]
+
+    result = env.application.execute(request)
+
+    stored = env.repository.get_current_attempt(result.result["job_id"]).generation_request
+    assert stored.person_notes == ("Höchstens sechs Kapitel.", "Durchgehend Sie.")
+
+
+def test_review_notes_that_are_not_a_short_list_of_texts_are_refused(env: _Env) -> None:
+    request = _generate(env, env.ready_source)
+    request.event.payload["reviewer_notes"] = "Höchstens sechs Kapitel."
+
+    result = env.application.execute(request)
+
+    assert result.state == "rejected" and result.error.code == "invalid_generation_request"

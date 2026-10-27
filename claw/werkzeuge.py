@@ -202,11 +202,14 @@ def kurs_erzeugen(
     lernziele: list[str],
     source_ids: list[str],
     kurs_revision: int,
+    hinweise: list[str] | None = None,
 ) -> dict[str, Any]:
     """Start the course factory for an existing course from imported material. `source_ids`
     must be complete (`material_status`); `kurs_revision` is the current revision from
-    `kurs_lesen`; `sprache` is a locale such as "de-DE". Generation runs in the background for
-    about ten minutes and never publishes. Returns `job_id`; follow it with `kurs_status`.
+    `kurs_lesen`; `sprache` is a locale such as "de-DE". `hinweise` (optional, at most 10 short
+    texts) are the person's notes for this run, e.g. why a previous draft was rejected; every
+    role of the factory addresses them. Generation runs in the background for about ten minutes
+    and never publishes. Returns `job_id`; follow it with `kurs_status`.
     """
     body = {
         "course_id": course_id,
@@ -218,6 +221,8 @@ def kurs_erzeugen(
         "learning_objectives": list(lernziele),
         "source_ids": list(source_ids),
     }
+    if hinweise:
+        body["reviewer_notes"] = list(hinweise)
 
     def act(client: LearningClient) -> dict[str, Any]:
         data = client.post(

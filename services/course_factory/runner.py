@@ -84,7 +84,7 @@ class CourseFactoryRunner:
                 audience=request.audience,
                 target_outcome=request.target_outcome,
                 source_refs=catalog.model_refs,
-                revision_notes=request.revision_notes,
+                revision_notes=(*request.person_notes, *request.revision_notes),
             )
             if job.state in {
                 FactoryState.STRUCTURING,
@@ -120,7 +120,12 @@ class CourseFactoryRunner:
                     # team's to fix; held, the job sat in quality_gate forever.
                     return GenerationRunResult(
                         job=self._retry_with_feedback(
-                            job, attempt, _gate_notes(report), reason_code="quality_gate_revise"
+                            job,
+                            attempt,
+                            _gate_notes(report),
+                            reason_code="quality_gate_revise",
+                            # Too many chapters asks for exactly the merge the note forbids.
+                            keep_structure="too_many_chapters" not in report.issue_codes,
                         ),
                         report=report,
                     )
@@ -174,7 +179,7 @@ class CourseFactoryRunner:
             self._fail_unless_resting(job.id, "generation_runtime_failed")
             raise
 
-    def _retry_with_feedback(self, job, attempt, notes, *, reason_code) -> FactoryJobRecord:
+    def _retry_with_feedback(self, job, attempt, notes, *, reason_code, keep_structure=True) -> FactoryJobRecord:
         """End this attempt and queue the next one with the reasons as notes."""
         # This attempt already staged its draft, which advanced the LearnHouse
         # revision; the next attempt must expect the new one.
@@ -190,7 +195,7 @@ class CourseFactoryRunner:
                 "learnhouse_revision": learnhouse_revision,
                 "revision_notes": (
                     *(str(note)[:1_000] for note in list(notes)[:19]),
-                    _KEEP_STRUCTURE,
+                    *((_KEEP_STRUCTURE,) if keep_structure else ()),
                 ),
             }
         )
@@ -311,6 +316,10 @@ _GATE_NOTES = {
     "quiz_options_invalid": "Quiz {subject} needs valid options and correct option ids.",
     "task_type_distribution": "Use at least two task types; no type may exceed three quarters of the tasks.",
     "chapter_lesson_thin": "Chapter {subject} piles too many tasks on too few lessons; keep separate chapters, each with its own lesson.",
+    "lesson_body_thin": "Lesson {subject} only announces its content; its body must teach every claim in full sentences.",
+    "lesson_command_missing": "Lesson {subject} names a command in its claims that its body does not show; put every command verbatim into the body as a fenced code block.",
+    "address_mixed": "Lessons and task prompts mix formal and informal address; in German address the learner with 'Sie' throughout.",
+    "too_many_chapters": "The course has too many chapters for its short source; merge chapters (for example one chapter for the same step on every operating system, troubleshooting at the end).",
 }
 
 # Live: answering "chapters have only one task" by merging the whole course into

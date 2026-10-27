@@ -417,3 +417,17 @@ def test_job_for_a_published_course_says_why(fake: Fake) -> None:
     )
     out = _create()
     assert out["ok"] is False and "schon veroeffentlicht" in out["fehler"]
+
+
+def test_kurs_erzeugen_passes_a_persons_notes_to_the_factory(fake: Fake) -> None:
+    werkzeuge.kurs_erzeugen(COURSE, "Sicherheit", "Instandhalter", "advanced", "de-DE", ["Risiken bewerten"],
+                            [SOURCE], 3, hinweise=["Höchstens sechs Kapitel."])
+
+    body = json.loads(fake.requests[-1].content)
+    assert body["reviewer_notes"] == ["Höchstens sechs Kapitel."]
+
+
+def test_kurs_erzeugen_without_notes_sends_none(fake: Fake) -> None:
+    _create()
+
+    assert "reviewer_notes" not in json.loads(fake.requests[-1].content)

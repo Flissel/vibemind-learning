@@ -142,8 +142,10 @@ class _GenerationGateway:
     def __init__(
         self, draft, *, unsupported: tuple[str, ...] = (), review_decision: str = "pass",
         review_notes: tuple[str, ...] = (),
+        chapters: tuple[str, ...] = ("Foundations",),
     ) -> None:
         self.draft = draft
+        self.chapters = list(chapters)
         self.unsupported = unsupported
         self.review_decision = review_decision
         self.review_notes = review_notes
@@ -159,7 +161,7 @@ class _GenerationGateway:
                 audience="Students",
                 prerequisites=[],
                 outcomes=["Operate an authorized workflow"],
-                chapters=["Foundations"],
+                chapters=self.chapters,
             ),
             "concept_mapper": ConceptMapOutput(
                 schema_version="concept-map-v1",
@@ -171,10 +173,11 @@ class _GenerationGateway:
                 schema_version="lesson-v1",
                 lessons=[
                     {
-                        "chapter": "Foundations",
+                        "chapter": chapter,
                         "title": "Authority",
                         "body": "Provider execution stays behind OpenFang.",
                     }
+                    for chapter in self.chapters
                 ],
             ),
             "assessment_designer": AssessmentOutput(
@@ -595,3 +598,67 @@ async def test_status_shows_the_non_blocking_ai_notes_of_a_ready_draft(generatio
     assert status.result["state"] == "review_ready"
     assert status.result["ai_review_notes"] == ["Kapiteltitel sind lang."]
     assert "ai_review_issues" not in status.result
+
+
+def _job_with_person_notes(repository, job, notes):
+    """A second job on the same course whose request carries a person's review notes."""
+    attempt = repository.get_current_attempt(job.id)
+    request = attempt.generation_request.model_copy(update={"person_notes": tuple(notes)})
+    return repository.create_job(
+        course_id=job.course_id,
+        request_hash=_hash("generation-request-with-notes"),
+        provenance=attempt.provenance,
+        generation_request=request,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_persons_notes_reach_the_roles_of_the_first_attempt(generation_context) -> None:
+    # 27.10.: the terminal course was sent back by a person ("höchstens sechs Kapitel");
+    # a new job carries those notes to every role.
+    factory, root, repository, job, draft = generation_context
+    noted = _job_with_person_notes(repository, job, ["Höchstens sechs Kapitel."])
+    gateway = _GenerationGateway(draft.model_copy(update={"job_id": noted.id}))
+
+    await _runner(factory, root, repository, gateway).run_job(noted.id)
+
+    assert any("Höchstens sechs Kapitel." in json.dumps(p, ensure_ascii=False) for p in gateway.payloads)
+
+
+@pytest.mark.asyncio
+async def test_a_persons_notes_survive_an_automatic_retry(generation_context) -> None:
+    # Before: a retry replaced the notes with the reviewer's, and the person's wish was gone.
+    factory, root, repository, job, draft = generation_context
+    noted = _job_with_person_notes(repository, job, ["Höchstens sechs Kapitel."])
+    gateway = _GenerationGateway(draft.model_copy(update={"job_id": noted.id}), review_decision="revise")
+
+    await _runner(factory, root, repository, gateway).run_job(noted.id)
+
+    request = repository.get_current_attempt(noted.id).generation_request
+    assert repository.get(noted.id).attempt_number == 2
+    assert request.person_notes == ("Höchstens sechs Kapitel.",)
+    assert request.revision_notes[0] == "Make the tasks apply the rules."
+
+
+@pytest.mark.asyncio
+async def test_too_many_chapters_is_retried_without_the_keep_structure_note(generation_context) -> None:
+    # "Keep the chapter structure" on every retry would forbid exactly the merge the finding asks for.
+    factory, root, repository, job, draft = generation_context
+    chapters, lessons, activities = list(draft.chapters), list(draft.lessons), list(draft.activities)
+    for i in range(3):
+        cid, lid, aid = f"extra-{i}", f"lesson-extra-{i}", f"activity-extra-{i}"
+        lessons.append(draft.lessons[0].model_copy(update={"lesson_id": lid, "chapter_id": cid, "title": f"Teil {i}"}))
+        activities.append(draft.activities[0].model_copy(update={"activity_id": aid, "chapter_id": cid}))
+        chapters.append(draft.chapters[0].model_copy(update={
+            "chapter_id": cid, "title": f"Kapitel {i}", "lesson_ids": [lid], "activity_ids": [aid]}))
+    gateway = _GenerationGateway(
+        draft.model_copy(update={"chapters": chapters, "lessons": lessons, "activities": activities}),
+        chapters=("Foundations", "Kapitel 0", "Kapitel 1", "Kapitel 2"),
+    )
+
+    await _runner(factory, root, repository, gateway).run_job(job.id)
+
+    request = repository.get_current_attempt(job.id).generation_request
+    assert repository.get(job.id).attempt_number == 2
+    assert any("chapters" in note and "merge" in note for note in request.revision_notes)
+    assert not any("Keep the chapter structure" in note for note in request.revision_notes)

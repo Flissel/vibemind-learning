@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -18,6 +19,20 @@ from spaces.learning.services.course_factory.verification import (
 
 
 _MAX_ACTIVITIES_PER_LESSON = 6
+# 27.10. (terminal course, job 8851ed7f): ten of fifteen lesson texts only announced
+# their content ("In diesem Abschnitt lernen Sie den Befehl kennen ..."); the facts sat
+# in claims, which the lesson page does not show. Measured on both real drafts: lessons
+# that teach cover 0.67 to 1.0 of their claims' words, announcing ones 0.09 to 0.43.
+_MIN_BODY_COVERAGE = 0.6
+_MIN_CLAIM_WORDS = 5
+_CONTENT_WORD = re.compile(r"[^\W_][\w.-]{4,}")
+_QUOTED = re.compile(r"[`'\"\u201e\u201c\u201a]([^`'\"\u201e\u201c\u201d\u201a\u2018\n]{2,200})[`'\"\u201c\u201d\u2018]")
+_FENCED = re.compile(r"```.*?```", re.S)
+_INFORMAL = re.compile(r"\b(du|dich|dir|dein|deine|deinen|deinem|deiner|deines)\b")
+_FORMAL = re.compile(r"\b(Sie|Ihnen|Ihr|Ihre|Ihren|Ihrem|Ihrer|Ihres)\b")
+# One chapter per this many source words at most (the 1,074-word terminal guide had 15).
+_WORDS_PER_CHAPTER = 150
+_MIN_CHAPTERS = 3
 
 
 def blocking_review_issues(review: QualityReviewOutput) -> list[str]:
@@ -119,6 +134,7 @@ class QualityGate:
         for claim_id in declared_unsupported_claim_ids:
             issues.append(QualityIssue("unsupported_claim", claim_id))
         issues.extend(_deterministic_quality_issues(draft))
+        issues.extend(_source_proportion_issues(draft, sources))
         return QualityReport(tuple(_deduplicate_issues(issues)))
 
 
@@ -203,7 +219,66 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
         counts = Counter(activity.type for activity in draft.activities)
         if len(counts) < 2 or max(counts.values()) / len(draft.activities) > 0.75:
             issues.append(QualityIssue("task_type_distribution", draft.job_id))
+
+    for lesson in draft.lessons:
+        issues.extend(_lesson_teaching_issues(lesson))
+    if _mixes_address([lesson.body for lesson in draft.lessons] + [activity.prompt for activity in draft.activities]):
+        issues.append(QualityIssue("address_mixed", draft.job_id))
     return issues
+
+
+def _lesson_teaching_issues(lesson) -> list[QualityIssue]:
+    """The lesson text is what the learner reads: it has to carry the claims, and every
+    command a claim names word for word."""
+    from spaces.learning.services.lernsequenz.aus_struktur import KNOWN_COMMANDS
+
+    issues: list[QualityIssue] = []
+    claims = " ".join(claim.text for claim in lesson.claims)
+    words = {word.lower() for word in _CONTENT_WORD.findall(claims)}
+    body = lesson.body.lower()
+    if len(words) >= _MIN_CLAIM_WORDS and sum(word in body for word in words) / len(words) < _MIN_BODY_COVERAGE:
+        issues.append(QualityIssue("lesson_body_thin", lesson.lesson_id))
+    known = tuple(command.strip() for command in KNOWN_COMMANDS)
+    squashed_body = " ".join(lesson.body.split())
+    for quoted in _QUOTED.findall(claims):
+        # An escaped inner quote (Test-Path \"...\") ends the match early; what stands before it counts.
+        command = " ".join(quoted.split()).rstrip("\\ ")
+        first = command.split(" ", 1)[0] if command else ""
+        is_command = first in known or any(command.startswith(k) for k in known if k[:1] in "$[")
+        if is_command and command not in squashed_body:
+            issues.append(QualityIssue("lesson_command_missing", lesson.lesson_id))
+            break
+    return issues
+
+
+def _mixes_address(texts: list[str]) -> bool:
+    """Formal "Sie" and informal "du" in the same course. Commands, code and quotes are left
+    out (CMD's `dir` is not "dir"); a sentence-initial "Sie" may mean "they" and does not count."""
+    from spaces.learning.services.lernsequenz.aus_struktur import command_lines
+
+    informal = formal = False
+    for text in texts:
+        prose = _QUOTED.sub(" ", _FENCED.sub(" ", text))
+        commands = set(command_lines(text))
+        prose = "\n".join(line for line in prose.splitlines() if line.strip() not in commands)
+        informal = informal or bool(_INFORMAL.search(prose))
+        for match in _FORMAL.finditer(prose):
+            before = prose[: match.start()].rstrip()
+            if before and before[-1] not in ".!?:\n":
+                formal = True
+                break
+    return informal and formal
+
+
+def _source_proportion_issues(draft: CourseDraft, sources: tuple[SourceSnapshot, ...]) -> list[QualityIssue]:
+    """A short guide split into many one-lesson chapters reads like a table of contents.
+    Judged only when the caller supplied chunk texts."""
+    words = sum(len(chunk.text.split()) for source in sources for chunk in source.chunks if chunk.text)
+    if not words:
+        return []
+    if len(draft.chapters) > max(_MIN_CHAPTERS, math.ceil(words / _WORDS_PER_CHAPTER)):
+        return [QualityIssue("too_many_chapters", draft.job_id)]
+    return []
 
 
 def _quiz_options_valid(activity: ActivityDraft) -> bool:

@@ -240,7 +240,7 @@ def test_chapter_prompt_keeps_concept_ids_and_demands_a_task_per_concept() -> No
     prompt = ROLE_PROMPTS["chapter_verifier"]
     assert "exactly the strings of the input concepts" in prompt
     assert "at least one activity in this chapter" in prompt
-    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v4"
+    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v5"
 
 
 def test_task_prompts_carry_the_ai_review_lessons() -> None:
@@ -258,7 +258,7 @@ def test_task_prompts_carry_the_ai_review_lessons() -> None:
         assert "no authoring notes" in prompt
         assert "summary or capstone chapter" in prompt
     assert "short lowercase slugs" in ROLE_PROMPTS["concept_mapper"]
-    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v8"
+    assert ROLE_CONTRACTS["assessment_designer"][1] == "assessment-prompt-v9"
     assert ROLE_CONTRACTS["concept_mapper"][1] == "concept-map-prompt-v2"
 
 

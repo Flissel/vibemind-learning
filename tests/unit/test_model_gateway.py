@@ -36,7 +36,7 @@ def _invocation() -> ModelInvocation:
         role="architect",
         stage="structuring",
         correlation_id=str(uuid4()),
-        prompt_version="architect-prompt-v2",
+        prompt_version="architect-prompt-v3",
         output_schema_version="architect-v1",
         input_payload={"course_id": str(uuid4()), "source_refs": ["source://one/2"]},
     )
@@ -294,7 +294,7 @@ def test_gateway_rejects_unapproved_roles_and_credential_fields() -> None:
         "role": "architect",
         "stage": "structuring",
         "correlation_id": str(uuid4()),
-        "prompt_version": "architect-prompt-v2",
+        "prompt_version": "architect-prompt-v3",
         "output_schema_version": "architect-v1",
         "input_payload": {"course_id": str(uuid4())},
     }
@@ -354,7 +354,7 @@ def test_gateway_rejects_images_for_non_evaluator_roles() -> None:
     with pytest.raises(ValueError, match="not authorized"):
         ModelInvocation(
             role="architect", stage="structuring", correlation_id=str(uuid4()),
-            prompt_version="architect-prompt-v2", output_schema_version="architect-v1",
+            prompt_version="architect-prompt-v3", output_schema_version="architect-v1",
             input_payload={"course_id": str(uuid4())},
             image_inputs=(ModelImageInput(
                 media_type="image/png", content=png,
@@ -628,7 +628,7 @@ def test_source_verifier_keeps_framing_sentences_out_of_claims() -> None:
     from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
 
     prompt = ROLE_PROMPTS["source_verifier"]
-    assert "introductions" in prompt and "lesson body" in prompt
+    assert "framing sentences are never claims" in prompt and "lesson body" in prompt
     assert "at least one citation" in prompt
     assert ROLE_CONTRACTS["source_verifier"][1] >= "source-verification-prompt-v3"
 
@@ -701,3 +701,47 @@ def test_assessment_designer_caps_the_number_of_activities() -> None:
 @pytest.mark.parametrize("role", ["architect", "lesson_author", "assessment_designer", "source_verifier"])
 def test_generating_roles_address_reviewer_feedback(role: str) -> None:
     assert "reviewer_feedback" in ROLE_PROMPTS[role]
+
+
+# 27.10. terminal course draft: lesson texts only announced their content (the rule said
+# "Put introductions, overviews, and transitions in the lesson body"), Sie and du were
+# mixed, a 1,074-word guide became fifteen chapters, and tasks asked to recite URLs.
+
+@pytest.mark.parametrize(("role", "version"), [
+    ("lesson_author", "lesson-prompt-v4"),
+    ("source_verifier", "source-verification-prompt-v8"),
+    ("chapter_verifier", "chapter-verification-prompt-v5"),
+])
+def test_lesson_roles_teach_in_the_body_and_never_announce(role: str, version: str) -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    prompt = ROLE_PROMPTS[role]
+    assert "Put introductions, overviews" not in prompt
+    assert "teaches every claim" in prompt and "fenced code block" in prompt
+    assert "never announces" in prompt
+    assert ROLE_CONTRACTS[role][1] >= version
+
+
+@pytest.mark.parametrize("role", ["lesson_author", "assessment_designer", "source_verifier", "chapter_verifier"])
+def test_roles_address_german_learners_with_sie(role: str) -> None:
+    assert "with 'Sie'" in ROLE_PROMPTS[role]
+
+
+def test_architect_keeps_the_chapter_count_in_proportion() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    prompt = ROLE_PROMPTS["architect"]
+    assert "one chapter per 150 words" in prompt and "same step" in prompt and "troubleshooting" in prompt
+    assert ROLE_CONTRACTS["architect"][1] >= "architect-prompt-v3"
+
+
+@pytest.mark.parametrize(("role", "version"), [
+    ("assessment_designer", "assessment-prompt-v9"),
+    ("chapter_verifier", "chapter-verification-prompt-v5"),
+])
+def test_task_roles_ask_for_application_not_recall(role: str, version: str) -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    prompt = ROLE_PROMPTS[role]
+    assert "recite" in prompt and "no two activities test the same fact" in prompt
+    assert ROLE_CONTRACTS[role][1] >= version
