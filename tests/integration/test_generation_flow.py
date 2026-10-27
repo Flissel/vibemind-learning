@@ -686,3 +686,25 @@ async def test_the_staged_draft_carries_the_authors_lesson_text(generation_conte
     await _runner(factory, root, repository, _GenerationGateway(rewritten), learnhouse=learnhouse).run_job(job.id)
 
     assert learnhouse.drafts[0].lessons[0].body == "Provider execution stays behind OpenFang."
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_citing_by_source_key_yields_exact_citations(generation_context) -> None:
+    # 27.10.: the verifier names "S1" instead of copying ids and hashes; the staged draft
+    # must carry the full citation from the catalog and pass the source check.
+    factory, root, repository, job, draft = generation_context
+    lesson = draft.lessons[0]
+    keyed = draft.model_copy(update={
+        "citations": [],
+        "lessons": [lesson.model_copy(update={"claims": [c.model_copy(update={"citation_ids": ["S1"]}) for c in lesson.claims]})],
+        "activities": [a.model_copy(update={"citation_ids": ["S1"]}) for a in draft.activities],
+    })
+    learnhouse = _KeepingLearnHouse()
+
+    result = await _runner(factory, root, repository, _GenerationGateway(keyed), learnhouse=learnhouse).run_job(job.id)
+
+    staged = learnhouse.drafts[0]
+    assert result.report.approved, result.report.issue_codes
+    [citation] = staged.citations
+    assert citation.chunk_id == draft.citations[0].chunk_id and citation.content_hash == draft.citations[0].content_hash
+    assert staged.lessons[0].claims[0].citation_ids == [citation.citation_id]

@@ -240,7 +240,7 @@ def test_chapter_prompt_keeps_concept_ids_and_demands_a_task_per_concept() -> No
     prompt = ROLE_PROMPTS["chapter_verifier"]
     assert "exactly the strings of the input concepts" in prompt
     assert "at least one activity in this chapter" in prompt
-    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v6"
+    assert ROLE_CONTRACTS["chapter_verifier"][1] == "chapter-verification-prompt-v7"
 
 
 def test_task_prompts_carry_the_ai_review_lessons() -> None:
@@ -330,3 +330,62 @@ def test_the_chapter_verifier_is_told_to_leave_lesson_bodies_empty() -> None:
 
     assert "body as an empty string" in ROLE_PROMPTS["chapter_verifier"]
     assert ROLE_CONTRACTS["chapter_verifier"][1] >= "chapter-verification-prompt-v6"
+
+
+# 27.10.: chapter checks still took 280-420 s and one ran past 540 s three times: every
+# citation was copied out in full (ids, 64-digit hashes, locator). The verifier now names
+# a short source key ("S1"); the code fills in the exact citation from the catalog.
+
+def _keyed(fragment: ChapterVerificationOutput, keys: list[str]) -> ChapterVerificationOutput:
+    lesson = fragment.lessons[0]
+    claim = lesson.claims[0].model_copy(update={"citation_ids": keys})
+    activity = fragment.activities[0].model_copy(update={"citation_ids": keys})
+    return fragment.model_copy(update={
+        "citations": [], "lessons": [lesson.model_copy(update={"claims": [claim]})], "activities": [activity]})
+
+
+def test_source_keys_are_numbered_in_catalog_order() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import keyed_source_refs
+
+    keyed = keyed_source_refs((REF, REF.replace(CHUNK, "x" * 36)))
+
+    assert [ref["key"] for ref in keyed] == ["S1", "S2"] and keyed[0]["chunk_id"] == CHUNK
+
+
+def test_keys_become_exact_citations() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import resolve_source_keys
+
+    job_id = str(uuid4())
+    resolved = resolve_source_keys(_keyed(_fragment("ch", "c"), ["S1"]), (REF,), job_id=job_id)
+
+    [citation] = resolved.citations
+    assert citation.chunk_id == CHUNK and citation.source_id == SOURCE and citation.content_hash == "b" * 64
+    assert citation.locator == {"heading": "Vor der Arbeit"} and citation.source_revision == 1
+    assert resolved.lessons[0].claims[0].citation_ids == [citation.citation_id]
+    assert resolved.activities[0].citation_ids == [citation.citation_id]
+    again = resolve_source_keys(_keyed(_fragment("ch", "c"), ["S1"]), (REF,), job_id=job_id)
+    assert again.citations[0].citation_id == citation.citation_id  # stable per job and chunk
+
+
+def test_full_citations_from_an_older_answer_are_kept() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import resolve_source_keys
+
+    fragment = _fragment("ch", "c")
+
+    assert resolve_source_keys(fragment, (REF,), job_id=str(uuid4())) == fragment
+
+
+def test_an_unknown_key_leaves_the_claim_without_that_citation() -> None:
+    from spaces.learning.services.course_factory.chapter_verification import resolve_source_keys
+
+    resolved = resolve_source_keys(_keyed(_fragment("ch", "c"), ["S1", "S9"]), (REF,), job_id=str(uuid4()))
+
+    assert len(resolved.lessons[0].claims[0].citation_ids) == 1 and len(resolved.citations) == 1
+
+
+def test_the_chapter_verifier_cites_by_key() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    prompt = ROLE_PROMPTS["chapter_verifier"]
+    assert "source key" in prompt and "citations as an empty list" in prompt
+    assert ROLE_CONTRACTS["chapter_verifier"][1] >= "chapter-verification-prompt-v7"

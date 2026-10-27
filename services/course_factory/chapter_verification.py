@@ -12,12 +12,14 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from spaces.learning.services.course_factory.roles.schemas import (
     ChapterVerificationOutput,
     SourceVerificationOutput,
 )
 from spaces.learning.services.course_factory.schemas import (
+    Citation,
     CourseDraft,
     SourceProvenanceRef,
 )
@@ -130,6 +132,67 @@ def keep_author_bodies(fragment: ChapterVerificationOutput, piece: ChapterSlice)
             body = lesson.body.strip() or (str(authored[0]["body"]) if authored else lesson.title)
         lessons.append(lesson.model_copy(update={"body": body}))
     return fragment.model_copy(update={"lessons": lessons})
+
+
+def keyed_source_refs(refs: tuple[str, ...]) -> list[dict[str, Any]]:
+    """The catalog's source chunks with a short key each (S1, S2, ...) in catalog order."""
+    return [{"key": f"S{number}", **json.loads(ref)} for number, ref in enumerate(refs, start=1)]
+
+
+def resolve_source_keys(
+    fragment: ChapterVerificationOutput, refs: tuple[str, ...], *, job_id: str
+) -> ChapterVerificationOutput:
+    """Citation ids that are source keys become exact citations from the catalog.
+
+    Copying ids, 64-digit hashes and locators out of the sources made each chapter check
+    take minutes; the key is all the model has to name. Ids that are already citations stay,
+    unknown keys are dropped (an uncited claim is then held by the source check)."""
+    keyed = {ref["key"]: ref for ref in keyed_source_refs(refs)}
+    known = {citation.citation_id for citation in fragment.citations}
+    made: dict[str, Citation] = {}
+
+    def resolve(ids: list[str]) -> list[str]:
+        out: list[str] = []
+        for value in ids:
+            if value in known:
+                out.append(value)
+                continue
+            ref = keyed.get(value)
+            if ref is None:
+                continue
+            if value not in made:
+                made[value] = Citation(
+                    citation_id=str(uuid5(NAMESPACE_URL, f"{job_id}:{ref['chunk_id']}")),
+                    source_id=ref["source_id"],
+                    source_revision=ref["source_revision"],
+                    chunk_id=ref["chunk_id"],
+                    content_hash=ref["chunk_content_hash"],
+                    locator=ref["locator"],
+                )
+            out.append(made[value].citation_id)
+        return list(dict.fromkeys(out))
+
+    uses_keys = any(
+        value in keyed and value not in known
+        for ids in [c.citation_ids for lesson in fragment.lessons for c in lesson.claims]
+        + [activity.citation_ids for activity in fragment.activities]
+        for value in ids
+    )
+    if not uses_keys:
+        return fragment
+    lessons = [
+        lesson.model_copy(update={"claims": [
+            claim.model_copy(update={"citation_ids": resolve(claim.citation_ids)}) for claim in lesson.claims]})
+        for lesson in fragment.lessons
+    ]
+    activities = [
+        activity.model_copy(update={"citation_ids": resolve(activity.citation_ids)})
+        for activity in fragment.activities
+    ]
+    return fragment.model_copy(update={
+        "lessons": lessons, "activities": activities,
+        "citations": [*fragment.citations, *made.values()],
+    })
 
 
 def merge_chapters(

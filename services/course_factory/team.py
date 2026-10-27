@@ -10,7 +10,9 @@ from autogen_agentchat.teams import RoundRobinGroupChat
 from spaces.learning.services.course_factory.chapter_verification import (
     course_title,
     keep_author_bodies,
+    keyed_source_refs,
     merge_chapters,
+    resolve_source_keys,
     split_by_chapter,
 )
 from spaces.learning.services.course_factory.model_gateway import (
@@ -249,7 +251,8 @@ class CourseAgentTeam:
                 "concepts": piece.concepts,
                 "lessons": piece.lessons,
                 "activities": piece.activities,
-                "source_refs": list(request.source_refs),
+                # Each source with a short key; the verifier cites by key (see resolve_source_keys).
+                "source_refs": keyed_source_refs(request.source_refs),
                 **(
                     {"reviewer_feedback": list(request.revision_notes)}
                     if request.revision_notes
@@ -272,7 +275,8 @@ class CourseAgentTeam:
                 ),
                 ChapterVerificationOutput,
             )
-            fragments.append(keep_author_bodies(result.output, piece))
+            fragments.append(resolve_source_keys(
+                keep_author_bodies(result.output, piece), request.source_refs, job_id=job.id))
             evidence_refs.append(result.evidence_ref)
         architect = role_outputs["architect"]
         merged = merge_chapters(
