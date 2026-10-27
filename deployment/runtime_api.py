@@ -23,6 +23,7 @@ from spaces.learning.deployment.course_factory_routes import (
 )
 from spaces.learning.deployment.health import HealthService
 from spaces.learning.deployment.lernsequenz_routes import router as lernsequenz_router
+from spaces.learning.deployment.notizen_routes import router as notizen_router
 from spaces.learning.deployment.review_routes import router as review_router
 from spaces.learning.deployment.zeichnen_routes import router as zeichnen_router
 from spaces.learning.deployment.vibemind_auth import ApiError
@@ -160,6 +161,7 @@ app = FastAPI(title="VibeMind Learning Runtime", version="1.1.0")
 app.include_router(course_factory_router)
 app.include_router(review_router)
 app.include_router(lernsequenz_router)
+app.include_router(notizen_router)
 app.include_router(zeichnen_router)
 
 
