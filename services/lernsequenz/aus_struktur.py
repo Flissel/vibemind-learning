@@ -36,6 +36,7 @@ MAX_CLOZE = 3
 # A bare line counts as a command when it starts like one and does not read like a sentence.
 _MAX_COMMAND_TOKENS = 16
 _SENTENCE_END = (".", ":", "!", "?", ",")
+_QUOTES = "\"'"
 SHELL_LABEL: dict[Shell, str] = {"powershell": "Windows PowerShell", "cmd": "Windows CMD", "unix": "macOS / Linux"}
 
 _NUMBERED = re.compile(r"^\s*\d+[.)]\s+(.+)$")
@@ -47,6 +48,17 @@ _FENCE_SHELLS: dict[str, Shell] = {
     "cmd": "cmd", "bat": "cmd", "batch": "cmd",
     "bash": "unix", "sh": "unix", "zsh": "unix", "shell": "unix",
 }
+
+
+def _bare(t: str) -> str:
+    """The token without the quotes that belong to the line: a wrapping pair, and a trailing
+    quote that has no partner inside the token (``'export PATH="…"'``)."""
+    for q in _QUOTES:
+        if len(t) > 1 and t[0] == q and t[-1] == q:
+            t = t[1:-1]
+    while t and t[-1] in _QUOTES and t.count(t[-1]) % 2 == 1:
+        t = t[:-1]
+    return t
 
 
 def _shell_of(line: str, fence: str = "") -> Shell:
@@ -124,15 +136,20 @@ def _cloze(line: str, fence: str, checkpoint_id: str, after: str, refs: tuple[st
     tokens = line.split()
     candidates = [t for t in tokens if "/" in t or "." in t]
     chosen = max(candidates, key=len) if candidates else tokens[-1]
-    # A URL keeps its address; only the file name at its end is the blank.
-    blank = chosen.rsplit("/", 1)[-1] if "://" in chosen else chosen
+    # A URL keeps its address; only the file name at its end is the blank. Quotes around
+    # the value belong to the line, not to the answer.
+    blank = _bare(chosen.rsplit("/", 1)[-1] if "://" in chosen else chosen)
     if not blank or len(blank) > 200:
         return None
-    # Everywhere it occurs, or the rest of the line would give the answer away.
-    template = " ".join(
-        "{{wert}}" if t == blank else t[: -len(blank)] + "{{wert}}" if "://" in t and t.endswith("/" + blank) else t
-        for t in tokens
-    )
+
+    def blanked(t: str) -> str:
+        # Everywhere it occurs, or the rest of the line would give the answer away.
+        core = _bare(t)
+        if core == blank or ("://" in core and core.endswith("/" + blank)):
+            return t.replace(blank, "{{wert}}", 1) if core == blank else t[: t.rfind(blank)] + "{{wert}}" + t[t.rfind(blank) + len(blank):]
+        return t
+
+    template = " ".join(blanked(t) for t in tokens)
     if len(template) > 500:
         return None
     shell = _shell_of(line, fence)
@@ -192,6 +209,7 @@ def structured_checkpoints(lesson: LessonDraft, *, after: str, refs: tuple[str, 
     """The lesson's lists and command lines as checkpoints after section ``after``."""
     out: list[Checkpoint] = []
     counts = {"ord": 0, "cl": 0, "mt": 0}
+    per_shell: dict[str, int] = {}
 
     def next_id(prefix: str) -> str:
         counts[prefix] += 1
@@ -201,11 +219,11 @@ def structured_checkpoints(lesson: LessonDraft, *, after: str, refs: tuple[str, 
         if block[0] == "ordering":
             out.append(_ordering(block[1], next_id("ord"), after, refs))
         elif block[0] == "command":
-            if counts["cl"] >= MAX_CLOZE:
-                continue
             cloze = _cloze(block[1], block[2], token(f"cl-{lesson.lesson_id}-{counts['cl'] + 1}", 120), after, refs)
-            if cloze is not None:
+            # At most MAX_CLOZE per shell: with "Dein Weg" each person sees only their shell's.
+            if cloze is not None and per_shell.get(cloze.shell, 0) < MAX_CLOZE:
                 counts["cl"] += 1
+                per_shell[cloze.shell] = per_shell.get(cloze.shell, 0) + 1
                 out.append(cloze)
         else:
             out.append(_matching(block[1], lesson.lesson_id, next_id("mt"), after, refs))

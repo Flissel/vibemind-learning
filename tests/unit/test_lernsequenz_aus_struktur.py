@@ -71,13 +71,14 @@ def test_fenced_code_and_known_shells() -> None:
             "```bash\ncurl -fsSL https://claude.ai/install.sh | bash\n```\n\n    Test-Path \"$env:USERPROFILE\\.local\\bin\"\n")
     checkpoints = structured_checkpoints(lesson(body), after="l1-1", refs=())
     assert [(c.shell, c.blanks[0].accepted[0]) for c in checkpoints] == [
-        ("cmd", "install.cmd"), ("unix", "install.sh"), ("powershell", "\"$env:USERPROFILE\\.local\\bin\"")]
+        ("cmd", "install.cmd"), ("unix", "install.sh"), ("powershell", "$env:USERPROFILE\\.local\\bin")]
+    assert checkpoints[2].template == 'Test-Path "{{wert}}"'
 
 
-def test_at_most_three_cloze_per_lesson_and_unknown_commands_are_skipped() -> None:
-    body = "# T\n\n" + "".join(f"    claude --flag{i}\n\n" for i in range(5)) + "    rm -rf /\n"
+def test_at_most_three_cloze_per_lesson_and_shell_and_unknown_commands_are_skipped() -> None:
+    body = "# T\n\n" + "".join(f"    claude --flag{i}\n\n" for i in range(5)) + "    rm -rf /\n\n    Test-Path claude.exe\n"
     checkpoints = structured_checkpoints(lesson(body), after="l1-1", refs=())
-    assert len(checkpoints) == 3 and all(c.kind == "cloze" for c in checkpoints)
+    assert [c.shell for c in checkpoints] == ["unix", "unix", "unix", "powershell"]
     assert "rm" not in "".join(c.template for c in checkpoints)
 
 
@@ -149,13 +150,20 @@ def test_cli_praesentation_takes_a_profile(monkeypatch, tmp_path) -> None:
 
 def test_plain_command_lines_count_but_sentences_do_not() -> None:
     body = ("# T\n\ncurl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd\n\n"
-            "Test-Path \"$env:USERPROFILE\.local\bin\claude.exe\"\n\n"
+            "Test-Path \"$env:USERPROFILE\\.local\\bin\\claude.exe\"\n\n"
             "claude --version prüft danach die Installation.\n")
     checkpoints = structured_checkpoints(lesson(body), after="l1-1", refs=())
     assert [(c.shell, c.blanks[0].accepted[0]) for c in checkpoints] == [
-        ("cmd", "install.cmd"), ("powershell", "\"$env:USERPROFILE\.local\bin\claude.exe\"")]
+        ("cmd", "install.cmd"), ("powershell", "$env:USERPROFILE\\.local\\bin\\claude.exe")]
     # A blank that recurs in the line is blanked everywhere, or it would give itself away.
     assert checkpoints[0].template == "curl -fsSL https://claude.ai/{{wert}} -o {{wert}} && {{wert}} && del {{wert}}"
+
+
+def test_quotes_around_the_blank_stay_in_the_line() -> None:
+    body = "# T\n\n    echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc\n"
+    cloze = structured_checkpoints(lesson(body), after="l1-1", refs=())[0]
+    assert cloze.template == "echo 'export {{wert}}' >> ~/.zshrc"
+    assert cloze.blanks[0].accepted == ('PATH="$HOME/.local/bin:$PATH"',)
 
 
 def test_pairs_whose_text_is_a_link_make_no_matching() -> None:
