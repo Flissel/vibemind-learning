@@ -7,9 +7,9 @@ the lesson literally says is used, so nothing can be made up.
 
 from __future__ import annotations
 
-import hashlib
 import random
 import re
+import secrets
 
 from spaces.learning.contracts.lernsequenz import (
     Blank,
@@ -124,14 +124,26 @@ def _scan(body: str) -> list[tuple]:
     return found
 
 
-def _opaque(prefix: str, seed: str, index: int) -> str:
-    """An id that says nothing about the position it was authored in: learners can read ids
-    in the page, so sequential ones (s1, s2 ... or b1->e1) would hand them the solution."""
-    return prefix + hashlib.sha1(f"{seed}:{index}".encode()).hexdigest()[:6]
+def _random_ids(prefix: str, count: int) -> list[str]:
+    """Ids that say nothing about the authored position: learners can read ids in the page,
+    sequential ones (s1, s2 ... or b1->e1) would hand them the solution, and a hash of the
+    position could be recomputed from this public code. Drawn once, kept in the stored sequence."""
+    ids: list[str] = []
+    while len(ids) < count:
+        candidate = prefix + secrets.token_hex(3)
+        if candidate not in ids:
+            ids.append(candidate)
+    return ids
+
+
+def command_lines(body: str) -> list[str]:
+    """The command lines a text tells the learner to run (same detection as the checkpoints)."""
+    return [block[1] for block in _scan(body) if block[0] == "command" and block[1].startswith(KNOWN_COMMANDS)]
 
 
 def _ordering(steps: list[str], checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Ordering:
-    items = tuple(OrderItem(item_id=_opaque("s", checkpoint_id, i), text=cut(step, 300)) for i, step in enumerate(steps, start=1))
+    ids = _random_ids("s", len(steps))
+    items = tuple(OrderItem(item_id=ids[i], text=cut(step, 300)) for i, step in enumerate(steps))
     return Ordering(
         checkpoint_id=checkpoint_id, after_section=after, title="Reihenfolge",
         task="Bringen Sie die Schritte in die richtige Reihenfolge.",
@@ -171,7 +183,7 @@ def _cloze(line: str, fence: str, checkpoint_id: str, after: str, refs: tuple[st
 
 def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
     left = tuple(MatchItem(item_id=f"b{i}", text=cut(term, 300)) for i, (term, _text) in enumerate(pairs, start=1))
-    right_ids = [_opaque("e", checkpoint_id, i) for i in range(1, len(pairs) + 1)]
+    right_ids = _random_ids("e", len(pairs))
     right = [MatchItem(item_id=right_ids[i], text=cut(text, 300)) for i, (_term, text) in enumerate(pairs)]
     random.Random(seed).shuffle(right)
     return Matching(

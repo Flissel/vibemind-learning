@@ -147,7 +147,7 @@ def _item(
     activity: ActivityDraft,
     refs: dict[str, str],
 ) -> AdaptiveItem:
-    rubric = [criterion.model_dump(mode="json") for criterion in activity.rubric]
+    rubric = _scaled([criterion.model_dump(mode="json") for criterion in activity.rubric])
     cited = [refs[c] for c in activity.citation_ids if c in refs]
     choice = _choice(activity)
     return AdaptiveItem(
@@ -170,6 +170,18 @@ def _item(
         # Choice items are scored deterministically and carry no rubric.
         rubric=[] if choice else (rubric or [dict(_FALLBACK_CRITERION)]),
     )
+
+
+def _scaled(rubric: list[dict[str, object]], total: int = 100) -> list[dict[str, object]]:
+    """Rubric points on one scale (sum 100) so courses grade alike; largest remainders win."""
+    points = [int(criterion["points"]) for criterion in rubric]
+    if not points or sum(points) <= 0:
+        return rubric
+    exact = [p * total / sum(points) for p in points]
+    floors = [int(value) for value in exact]
+    for index in sorted(range(len(points)), key=lambda i: exact[i] - floors[i], reverse=True)[: total - sum(floors)]:
+        floors[index] += 1
+    return [{**criterion, "points": value} for criterion, value in zip(rubric, floors)]
 
 
 def _section_hints(refs: list[str]) -> list[str]:

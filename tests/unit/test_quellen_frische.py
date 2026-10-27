@@ -45,7 +45,8 @@ def test_fetch_failures_are_skipped_not_reported() -> None:
 def test_private_loopback_and_metadata_addresses_are_never_fetched() -> None:
     from spaces.learning.services.quellen.cli import fetch, is_public_address
 
-    for bad in ("127.0.0.1", "10.0.0.5", "192.168.0.7", "172.17.0.1", "169.254.169.254", "::1", "fd00::1", "0.0.0.0"):
+    for bad in ("127.0.0.1", "10.0.0.5", "192.168.0.7", "172.17.0.1", "169.254.169.254", "::1", "fd00::1", "0.0.0.0",
+                "100.64.0.1", "::ffff:127.0.0.1", "2002:7f00:0001::1", "224.0.0.1"):
         assert is_public_address(bad) is False, bad
     assert is_public_address("93.184.216.34") is True
     for url in ("http://127.0.0.1:8090/health", "http://localhost/x", "ftp://docs.example/x", "http://169.254.169.254/latest"):
@@ -61,7 +62,7 @@ def test_redirect_hops_are_checked_and_bodies_are_capped(monkeypatch) -> None:
 
     from spaces.learning.services.quellen import cli
 
-    monkeypatch.setattr(cli, "resolve", lambda host: "93.184.216.34" if host == "docs.example" else "127.0.0.1")
+    monkeypatch.setattr(cli, "resolve", lambda host: ["93.184.216.34"] if host == "docs.example" else ["93.184.216.34", "127.0.0.1"])
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/hop":

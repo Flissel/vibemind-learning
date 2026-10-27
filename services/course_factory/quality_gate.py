@@ -39,6 +39,8 @@ def blocking_review_issues(review: QualityReviewOutput) -> list[str]:
 class QualityIssue:
     code: str
     subject_id: str
+    # A note (blocking=False) is listed but does not hold the course.
+    blocking: bool = True
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ class QualityReport:
 
     @property
     def approved(self) -> bool:
-        return not self.issues
+        return not any(issue.blocking for issue in self.issues)
 
     @property
     def issue_codes(self) -> list[str]:
@@ -175,6 +177,13 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
             issues.append(QualityIssue("rubric_missing", activity.activity_id))
         if activity.type == "quiz" and not _quiz_options_valid(activity):
             issues.append(QualityIssue("quiz_options_invalid", activity.activity_id))
+        # "All but one" can be solved by spotting the odd option, not by knowing the matter.
+        if structured_quiz and len(activity.options) >= 3 and len(activity.correct_option_ids) == len(activity.options) - 1:
+            issues.append(QualityIssue("quiz_all_but_one", activity.activity_id))
+
+    scales = {sum(criterion.points for criterion in activity.rubric) for activity in draft.activities if activity.rubric}
+    if len(scales) > 1:
+        issues.append(QualityIssue("rubric_scale_inconsistent", draft.job_id, blocking=False))
 
     lesson_coverage = {
         concept_id for lesson in draft.lessons for concept_id in lesson.concept_ids

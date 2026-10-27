@@ -363,3 +363,49 @@ def test_structured_quiz_needs_no_expected_answer_text() -> None:
 
     codes = {(issue.code, issue.subject_id) for issue in _deterministic_quality_issues(draft)}
     assert ("expected_answer_missing", "quiz-1") not in codes
+
+
+def _guessable_quiz(ids: dict[str, str]):
+    from spaces.learning.services.course_factory.schemas import ActivityDraft, QuizOptionDraft
+
+    return ActivityDraft(
+        activity_id="quiz-ratbar", chapter_id="foundations", type="quiz", concept_ids=["authority"],
+        prompt="Was gilt?", expected_answer="", citation_ids=[ids["citation"]], rubric=[],
+        options=[QuizOptionDraft(option_id=o, text=f"Option {o}") for o in "abcd"], correct_option_ids=["a", "b", "c"],
+    )
+
+
+def test_a_quiz_with_all_but_one_option_right_is_held(session_factory) -> None:
+    ids = _ids()
+    draft = _draft(ids)
+    draft.activities.append(_guessable_quiz(ids))
+    draft.chapters[0].activity_ids.append("quiz-ratbar")
+    repository = CourseFactoryRepository(session_factory)
+    job = _quality_job(repository, str(uuid4()))
+    draft.job_id = job.id
+
+    result = QualityGate(repository).evaluate_and_promote(
+        job.id, expected_revision=job.revision, draft=draft, sources=_catalog(ids), ai_review=_review(),
+    )
+
+    assert result.report.approved is False and "quiz_all_but_one" in result.report.issue_codes
+
+
+def test_an_uneven_rubric_scale_is_noted_but_does_not_hold_the_course(session_factory) -> None:
+    ids = _ids()
+    draft = _draft(ids)
+    big = draft.activities[0].model_copy(deep=True)
+    big.activity_id = "case-hundert"
+    big.rubric[0].points = 100
+    draft.activities.append(big)
+    draft.chapters[0].activity_ids.append("case-hundert")
+    repository = CourseFactoryRepository(session_factory)
+    job = _quality_job(repository, str(uuid4()))
+    draft.job_id = job.id
+
+    result = QualityGate(repository).evaluate_and_promote(
+        job.id, expected_revision=job.revision, draft=draft, sources=_catalog(ids), ai_review=_review(),
+    )
+
+    assert "rubric_scale_inconsistent" in result.report.issue_codes
+    assert result.report.approved is True and result.job.state is FactoryState.REVIEW_READY

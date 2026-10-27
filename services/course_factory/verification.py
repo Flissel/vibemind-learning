@@ -14,6 +14,8 @@ class ChunkEvidence:
     chunk_id: str
     content_hash: str
     locator: Locator
+    # The chunk's text, when the caller has it: lets command lines be checked word for word.
+    text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,10 +132,35 @@ def verify_course_sources(
                 )
             )
 
+    issues.extend(_commands_not_in_sources(draft, sources))
+
     return SourceVerificationReport(
         issues=tuple(_deduplicate_issues(issues)),
         unsupported_claim_ids=list(dict.fromkeys(unsupported)),
     )
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _commands_not_in_sources(draft: CourseDraft, sources: tuple[SourceSnapshot, ...]) -> list[VerificationIssue]:
+    """A command line a learner is told to run must stand, word for word, in a source chunk.
+    Judged only when the caller supplied chunk texts."""
+    from spaces.learning.services.lernsequenz.aus_struktur import command_lines
+
+    corpus = [_squash(chunk.text) for source in sources for chunk in source.chunks if chunk.text]
+    if not corpus:
+        return []
+    issues: list[VerificationIssue] = []
+    subjects = [(lesson.lesson_id, lesson.body) for lesson in draft.lessons]
+    subjects += [(activity.activity_id, activity.prompt + "\n" + activity.expected_answer) for activity in draft.activities]
+    for subject_id, text in subjects:
+        for command in command_lines(text):
+            if not any(_squash(command) in chunk for chunk in corpus):
+                issues.append(VerificationIssue("command_not_in_source", subject_id))
+                break
+    return issues
 
 
 def _deduplicate_issues(

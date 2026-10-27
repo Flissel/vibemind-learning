@@ -72,6 +72,7 @@ class SourceCatalogLoader:
                         chunk_id=row.id,
                         content_hash=row.content_hash,
                         locator=row.locator,
+                        text=row.content,
                     )
                     for row in rows
                 )

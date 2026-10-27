@@ -33,16 +33,26 @@ _LOCAL_SUFFIXES = (".local", ".internal", ".localhost", ".lan")
 
 
 def is_public_address(address: str) -> bool:
+    """Allowlist, not denylist: only globally routable unicast addresses; IPv6 forms that
+    embed an IPv4 address are judged by that address."""
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = ip.ipv4_mapped or ip.sixtofour
+        if embedded is not None:
+            return is_public_address(str(embedded))
+    return bool(ip.is_global and not ip.is_multicast)
 
 
-def resolve(host: str) -> str:
-    """The address a host name resolves to (first answer); patched in tests."""
-    return socket.gethostbyname(host)
+def resolve(host: str) -> list[str]:
+    """Every address a host name resolves to (IPv4 and IPv6); patched in tests."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as error:
+        raise OSError(str(error)) from error
+    return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
 def _checked(url: str) -> str:
@@ -54,19 +64,21 @@ def _checked(url: str) -> str:
         raise ValueError("host is not public")
     try:
         ipaddress.ip_address(host)
-        address = host
+        addresses = [host]
     except ValueError:
         try:
-            address = resolve(host)
+            addresses = resolve(host)
         except OSError as error:
             raise ValueError("host does not resolve") from error
-    if not is_public_address(address):
+    # Every answer must be public: a name with one private answer is refused as a whole.
+    if not addresses or not all(is_public_address(address) for address in addresses):
         raise ValueError("host is not public")
     return url
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(timeout=_TIMEOUT_S, follow_redirects=False,
+    # trust_env=False: no proxy from the environment may route around the address check.
+    return httpx.Client(timeout=_TIMEOUT_S, follow_redirects=False, trust_env=False,
                         headers={"User-Agent": "VibeMind-Learning-Quellenpruefung/1"})
 
 

@@ -82,7 +82,7 @@ def test_published_draft_becomes_a_practice_catalog_the_engine_can_serve(factory
     assert case.expected_answer == {"text": "Route the request through OpenFang."}
     assert case.scoring_config["prompt"] == "Choose the authorized execution path."
     assert case.rubric == [
-        {"criterion_id": "routing", "description": "Uses the authority chain", "points": 2}
+        {"criterion_id": "routing", "description": "Uses the authority chain", "points": 100}
     ]
     # Quiz has no structured options yet: it is graded by rubric against the answer.
     quiz = items["activity-quiz"]
@@ -328,3 +328,17 @@ def test_structured_lessons_add_ordering_cloze_and_matching_items(factory) -> No
     with factory() as session:
         linked = session.scalar(select(func.count()).select_from(ItemConcept).where(ItemConcept.item_id.in_([i.id for i in structured])))
     assert linked >= len(structured)
+
+
+def test_rubric_points_are_scaled_to_one_hundred(factory) -> None:
+    from spaces.learning.services.course_factory.schemas import RubricCriterion
+
+    ids = _ids()
+    draft = _draft(ids)
+    draft.activities[0].rubric.append(RubricCriterion(criterion_id="zweites", description="Nennt den Grund.", points=3))
+    course_id = str(uuid4())
+    PracticeCatalogProjector(factory).project(course_id=course_id, course_revision=5, draft=draft)
+
+    with factory() as session:
+        item = session.scalar(select(AdaptiveItem).where(AdaptiveItem.course_id == course_id, AdaptiveItem.item_type == "case"))
+    assert [c["points"] for c in item.rubric] == [40, 60]
