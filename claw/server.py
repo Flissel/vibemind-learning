@@ -82,6 +82,8 @@ WERKZEUGE = (
     # Zurueckgehaltene KI-Bewertungen: anzeigen; entscheiden nur die Person auf der
     # lokalen Pruefseite (pruefung_seite.py).
     werkzeuge.pruefungen_anzeigen,
+    # Nightly source check: which courses should be looked at again.
+    werkzeuge.quellen_frische,
 )
 
 SESSION_HEADER = "mcp-session-id"

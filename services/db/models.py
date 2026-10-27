@@ -114,3 +114,22 @@ class LearningNote(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class LearningSourceWatch(Base):
+    """A source page a course was built from: the digest of its visible text then, when it
+    was last checked, and when the nightly run found it changed (until taken up again)."""
+
+    __tablename__ = "learning_source_watch"
+    __table_args__ = (UniqueConstraint("course_id", "url", name="learning_source_watch_course_url_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    url: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )

@@ -37,6 +37,7 @@ SPEC_TOOLS = {
     "zeichenhinweis",
     "bewertung_zeigen",
     "pruefungen_anzeigen",
+    "quellen_frische",
 }
 
 

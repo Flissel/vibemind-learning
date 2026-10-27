@@ -424,6 +424,21 @@ def freigeben(geheimnis: str) -> dict[str, Any]:
 _MAX_PRUEFUNGEN = 20
 
 
+def quellen_frische() -> dict[str, Any]:
+    """Source pages whose visible text changed since a course was built from them (found by
+    the nightly check). `geaendert` lists `kurs_id`, `url`, `geaendert_am`, `hinweis`; an
+    empty list means every watched source still reads as it did.
+    """
+    def act(client: LearningClient) -> dict[str, Any]:
+        data = client.get("/quellen/frische", roles=ROLE_AUTHOR)
+        return {"geaendert": [{
+            "kurs_id": item["course_id"], "url": item["url"], "geaendert_am": item["changed_at"],
+            "zuletzt_geprueft": item.get("last_checked_at"), "hinweis": item.get("note", ""),
+        } for item in data.get("changed", [])]}
+
+    return _run(act)
+
+
 def pruefungen_anzeigen() -> dict[str, Any]:
     """List AI evaluations held for a person (e.g. the AI was unsure) and open the review
     page in the browser on this machine (`pruefseite` says whether that worked). The person

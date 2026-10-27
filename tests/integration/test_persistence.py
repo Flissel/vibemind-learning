@@ -169,6 +169,7 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
     assert set(Base.metadata.tables) == {
         "learning_invocation_receipts",
         "learning_notes",
+        "learning_source_watch",
         "learning_aggregate_revisions",
         "learning_outbox",
         "learning_artifacts",
