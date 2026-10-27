@@ -28,6 +28,7 @@ from spaces.learning.services.adaptive_engine import models as adaptive_models  
 from spaces.learning.services.course_factory import models as course_factory_models  # noqa: F401
 from spaces.learning.services.ingestion import models as ingestion_models  # noqa: F401
 from spaces.learning.services.migration import models as migration_models  # noqa: F401
+from spaces.learning.services.werkstatt import models as werkstatt_models  # noqa: F401
 from spaces.learning.services.db.repository import (
     PersistenceConflict,
     SqlLearningRepository,
@@ -200,6 +201,10 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_adaptive_review_decisions",
         "learning_migration_batches",
         "learning_migration_records",
+        "learning_werkstatt_kurse",
+        "learning_werkstatt_aufgaben",
+        "learning_werkstatt_fassungen",
+        "learning_werkstatt_auftraege",
     }
 
 
