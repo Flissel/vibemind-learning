@@ -30,8 +30,10 @@ _TIMEOUT_S = 30.0
 _MAX_BYTES = 5_000_000
 _MAX_REDIRECTS = 5
 _LOCAL_SUFFIXES = (".local", ".internal", ".localhost", ".lan")
-# IPv6 ranges that carry an IPv4 address in their low 32 bits (NAT64, IPv4-compatible).
-_IPV4_EMBEDDING = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"), ipaddress.ip_network("::/96"))
+# /96 ranges that carry an IPv4 address in their low 32 bits (NAT64 well-known prefix,
+# IPv4-compatible); the local-use NAT64 range 64:ff9b:1::/48 is refused as a whole.
+_IPV4_EMBEDDING = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("::/96"))
+_REFUSED = (ipaddress.ip_network("64:ff9b:1::/48"),)
 
 
 def is_public_address(address: str) -> bool:
@@ -42,6 +44,8 @@ def is_public_address(address: str) -> bool:
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address):
+        if any(ip in network for network in _REFUSED):
+            return False
         embedded = ip.ipv4_mapped or ip.sixtofour
         if embedded is None and any(ip in network for network in _IPV4_EMBEDDING):
             embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
