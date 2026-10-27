@@ -54,9 +54,12 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                     {"pairs": dict(checkpoint.pairs)},
                     {
                         "prompt": checkpoint.task,
-                        "left": [{"id": item.item_id, "label": item.text} for item in checkpoint.left],
-                        "right": [{"id": item.item_id, "label": item.text} for item in checkpoint.right],
                         "partial_credit": True,
+                        # What the learner sees; the engine passes presentation keys it allows per type.
+                        "presentation": {
+                            "left": [{"id": item.item_id, "label": item.text} for item in checkpoint.left],
+                            "right": [{"id": item.item_id, "label": item.text} for item in checkpoint.right],
+                        },
                     },
                     list(lesson.concept_ids), lesson.chapter_id,
                 )
@@ -64,7 +67,8 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                 spec = AdaptiveItemSpec(
                     activity_id, "fill_in",
                     {"answers": list(checkpoint.blanks[0].accepted)},
-                    {"prompt": checkpoint.task, "template": checkpoint.template, "shell": checkpoint.shell, "normalize": True},
+                    {"prompt": checkpoint.task, "normalize": True,
+                     "presentation": {"template": checkpoint.template, "shell": checkpoint.shell}},
                     list(lesson.concept_ids), lesson.chapter_id,
                 )
             else:

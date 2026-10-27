@@ -1189,7 +1189,10 @@ class AdaptiveSessionService:
     @staticmethod
     def _presentation(item: AdaptiveItem) -> dict[str, object]:
         allowed_by_type = {
-            "matching": frozenset({"pairs"}),
+            # Both sides of a matching task; the solution (expected_answer.pairs) never travels.
+            "matching": frozenset({"pairs", "left", "right"}),
+            # The command with its blank, and which shell it is for.
+            "fill_in": frozenset({"template", "shell"}),
             "numeric": frozenset({"unit"}),
             "penecho_canvas": frozenset({"canvas_href"}),
         }

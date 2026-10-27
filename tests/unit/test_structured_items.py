@@ -33,10 +33,11 @@ def test_structure_becomes_ordering_cloze_and_matching_items_in_engine_form() ->
     assert ordering.expected_answer["order"] != [o["id"] for o in ordering.scoring_config["options"]]
     assert ordering.scoring_config["partial_credit"] is True
     assert first_blank.expected_answer == {"answers": ["install.ps1"]}
-    assert first_blank.scoring_config["template"] == "irm https://claude.ai/{{wert}} | iex"
+    assert first_blank.scoring_config["presentation"]["template"] == "irm https://claude.ai/{{wert}} | iex"
     assert set(matching.expected_answer["pairs"]) == {"b1", "b2", "b3"}
-    assert {o["id"] for o in matching.scoring_config["right"]} == set(matching.expected_answer["pairs"].values())
-    assert [o["label"] for o in matching.scoring_config["left"]] == ["Terminal", "PATH", "Installer"]
+    shown = matching.scoring_config["presentation"]
+    assert {o["id"] for o in shown["right"]} == set(matching.expected_answer["pairs"].values())
+    assert [o["label"] for o in shown["left"]] == ["Terminal", "PATH", "Installer"]
 
 
 def test_every_generated_item_scores_itself_as_fully_correct() -> None:
