@@ -20,7 +20,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from spaces.learning.contracts.lernsequenz import Choice, DrawnExplanation, public_view
@@ -47,8 +47,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 Token = Annotated[str, Query(alias="k", min_length=16, max_length=128)]
-# The signed-in person, as LearnHouse signed it into the embed link (services/lernsequenz/person.py).
+# The signed-in person, as LearnHouse signed it into the embed link (services/lernsequenz/person.py):
+# the header is what the player sends; the query form is what the embed link carries.
 Person = Annotated[str | None, Query(alias="p", max_length=512)]
+PersonHeader = Annotated[str | None, Header(alias="X-Learning-Person", max_length=512)]
 
 
 def _actor(person: str | None) -> str:
@@ -142,9 +144,10 @@ def answer(
     k: Token,
     payload: Annotated[dict[str, Any], Body()],
     p: Person = None,
+    person_header: PersonHeader = None,
 ) -> JSONResponse:
     sequence = _checked(sequence_id, k)
-    actor_id = _actor(p)
+    actor_id = _actor(person_header or p)
     checkpoint_id = payload.get("checkpoint_id")
     reply = payload.get("answer")
     if not isinstance(checkpoint_id, str) or not isinstance(reply, dict):

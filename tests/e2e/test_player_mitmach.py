@@ -150,7 +150,7 @@ def test_cloze_matching_hotspot_terminal_and_step_grade(player_server, browser_p
     assert page.errors == []
 
 
-def test_person_token_is_forwarded_with_every_answer(player_server, browser_page, tmp_path) -> None:
+def test_person_token_travels_as_a_header_not_in_urls(player_server, browser_page, tmp_path) -> None:
     page = browser_page
     link = _sequence(player_server, tmp_path) + "&p=abc.def"
     page.goto(link)
@@ -158,6 +158,8 @@ def test_person_token_is_forwarded_with_every_answer(player_server, browser_page
     page.evaluate("localStorage.clear()")
     with page.expect_request(lambda r: "/antwort" in r.url) as answer:
         _answer_profile(page, "Windows PowerShell")
-    assert "p=abc.def" in answer.value.url
+    # As a header, and gone from the address bar: it must not end up in request logs.
+    assert answer.value.headers.get("x-learning-person") == "abc.def" and "p=" not in answer.value.url
+    assert "p=" not in page.evaluate("location.search")
     page.wait_for_selector(".overlay .fb.no")
     assert "neu laden" in page.locator(".overlay .fb.no").inner_text()

@@ -4,7 +4,9 @@ LearnHouse signs a short-lived token for the signed-in learner and appends it to
 player link (``&p=``); learning-api then books answers and notes on that person instead
 of the shared default learner. Both sides derive the signing key from the service key
 they already share (``LEARNHOUSE_LEARNING_SERVICE_KEY``), the same way ``zeichnen/link``
-derives its own. The token carries only the learner id and an expiry.
+derives its own. The token carries only the learner id and an expiry. The player reads
+it from the embed link once, drops it from the address bar and sends it as the header
+``X-Learning-Person`` from then on, so it does not sit in every request URL.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import re
 import time
 
 KEY_ENV = "LEARNHOUSE_LEARNING_SERVICE_KEY"
-TTL_SECONDS = 24 * 3600
+TTL_SECONDS = 8 * 3600   # a lesson page fetches a fresh one on every load
 _ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 

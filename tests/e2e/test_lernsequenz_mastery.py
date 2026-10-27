@@ -94,7 +94,7 @@ def test_player_answers_count_for_the_person_in_the_token(tmp_path: Path, monkey
     url = f"/lernsequenz/seq-roi/antwort?k={sequence_token('seq-roi', key)}"
     body = {"checkpoint_id": "q1", "answer": {"selected": ["b"]}}
 
-    as_anna = client.post(url + "&p=" + person_token("lh-3-anna", key=person_key), json=body)
+    as_anna = client.post(url, json=body, headers={"X-Learning-Person": person_token("lh-3-anna", key=person_key)})
     anonymous = client.post(url, json=body)
     expired = client.post(url + "&p=" + person_token("lh-3-anna", key=person_key, now=1_000.0), json=body)
     lernsequenz_routes._store.cache_clear()

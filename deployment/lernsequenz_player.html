@@ -111,9 +111,12 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
 <script nonce="__NONCE__">
 (() => {
   const token = new URLSearchParams(location.search).get('k') || '';
-  // The signed-in person, signed by LearnHouse into the embed link; sent with every call.
+  // The signed-in person, signed by LearnHouse into the embed link: read once, taken out of
+  // the address bar, and sent as a header with every call (not in request URLs or logs).
   const person = new URLSearchParams(location.search).get('p') || '';
-  const query = (path) => `${base}/${path}?k=${encodeURIComponent(token)}` + (person ? `&p=${encodeURIComponent(person)}` : '');
+  if (person) { const url = new URL(location.href); url.searchParams.delete('p'); history.replaceState(null, '', url); }
+  const query = (path) => `${base}/${path}?k=${encodeURIComponent(token)}`;
+  const headers = (extra = {}) => ({ ...extra, ...(person ? { 'X-Learning-Person': person } : {}) });
   const failure = (data, fallback) => new Error(data.code === 'person_expired' || data.code === 'person_invalid' ? 'Ihre Anmeldung ist abgelaufen – bitte die Seite neu laden.' : data.message || fallback);
   const base = location.pathname.replace(/\/$/, '');
   const $ = (id) => document.getElementById(id);
@@ -156,7 +159,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
 
   async function post(checkpoint_id, answer) {
     const res = await fetch(query('antwort'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ checkpoint_id, answer }),
     });
     const data = await res.json().catch(() => ({}));
@@ -165,7 +168,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   }
   async function postTo(path, body) {
     const res = await fetch(query(path), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw failure(data, 'Anfrage wurde nicht angenommen');
@@ -215,7 +218,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
       ask.disabled = true; out.textContent = 'Der Tutor denkt nach …';
       try {
         const res = await fetch(query('tutor'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: headers({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ question, ...context() }),
         });
         const data = await res.json().catch(() => ({}));
