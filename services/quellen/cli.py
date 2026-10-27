@@ -30,6 +30,8 @@ _TIMEOUT_S = 30.0
 _MAX_BYTES = 5_000_000
 _MAX_REDIRECTS = 5
 _LOCAL_SUFFIXES = (".local", ".internal", ".localhost", ".lan")
+# IPv6 ranges that carry an IPv4 address in their low 32 bits (NAT64, IPv4-compatible).
+_IPV4_EMBEDDING = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"), ipaddress.ip_network("::/96"))
 
 
 def is_public_address(address: str) -> bool:
@@ -41,6 +43,8 @@ def is_public_address(address: str) -> bool:
         return False
     if isinstance(ip, ipaddress.IPv6Address):
         embedded = ip.ipv4_mapped or ip.sixtofour
+        if embedded is None and any(ip in network for network in _IPV4_EMBEDDING):
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
         if embedded is not None:
             return is_public_address(str(embedded))
     return bool(ip.is_global and not ip.is_multicast)
@@ -82,11 +86,21 @@ def _client() -> httpx.Client:
                         headers={"User-Agent": "VibeMind-Learning-Quellenpruefung/1"})
 
 
+def _peer_must_be_public(response: httpx.Response) -> None:
+    """The address actually connected to (DNS may answer differently between the check and
+    the connect); nothing is read from a connection to a non-public peer."""
+    stream = response.extensions.get("network_stream")
+    peer = stream.get_extra_info("server_addr") if stream is not None else None
+    if peer and not is_public_address(str(peer[0])):
+        raise ValueError("connected to a non-public address")
+
+
 def fetch(url: str) -> str:
     with _client() as client:
         for _ in range(_MAX_REDIRECTS + 1):
             target = _checked(url)
             with client.stream("GET", target) as response:
+                _peer_must_be_public(response)
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:

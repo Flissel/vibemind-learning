@@ -46,7 +46,8 @@ def test_private_loopback_and_metadata_addresses_are_never_fetched() -> None:
     from spaces.learning.services.quellen.cli import fetch, is_public_address
 
     for bad in ("127.0.0.1", "10.0.0.5", "192.168.0.7", "172.17.0.1", "169.254.169.254", "::1", "fd00::1", "0.0.0.0",
-                "100.64.0.1", "::ffff:127.0.0.1", "2002:7f00:0001::1", "224.0.0.1"):
+                "100.64.0.1", "::ffff:127.0.0.1", "2002:7f00:0001::1", "224.0.0.1",
+                "64:ff9b::7f00:1", "64:ff9b:1::a00:5", "::7f00:1"):
         assert is_public_address(bad) is False, bad
     assert is_public_address("93.184.216.34") is True
     for url in ("http://127.0.0.1:8090/health", "http://localhost/x", "ftp://docs.example/x", "http://169.254.169.254/latest"):
