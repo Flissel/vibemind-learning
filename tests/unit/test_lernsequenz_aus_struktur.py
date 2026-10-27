@@ -257,7 +257,7 @@ def test_three_shells_give_one_window_matching_without_titles(media) -> None:
     checkpoints = structured_checkpoints(lesson(THREE_SHELLS), after="l1-1", refs=(CIT,))
 
     [windows] = [c for c in checkpoints if c.kind == "matching" and c.title == "Welches Fenster ist welche Shell?"]
-    assert all(item.image and item.width == 760 for item in windows.left)
+    assert all(item.image and item.width == 560 for item in windows.left)
     assert {item.text for item in windows.right} == {"Windows PowerShell", "Windows CMD", "macOS / Linux"}
     by_id = {item.item_id: item.text for item in windows.right}
     labels = [by_id[windows.pairs[item.item_id]] for item in windows.left]

@@ -24,8 +24,8 @@ def test_same_input_gives_the_same_png() -> None:
 
 def test_window_size_follows_the_spec() -> None:
     window = render_terminal("powershell", "claude --version")
-    assert (window.width, window.height) == (760, _TITLE + 2 * _PAD + _LINE)
-    assert _image(window.png).size == (760, window.height)
+    assert (window.width, window.height) == (560, _TITLE + 2 * _PAD + _LINE)
+    assert _image(window.png).size == (560, window.height)
 
 
 def test_blank_rect_sits_inside_the_image_and_fits_the_answer() -> None:
@@ -73,3 +73,11 @@ def test_a_repeated_placeholder_draws_every_box_and_lists_the_others() -> None:
     assert len(window.more["wert"]) == 2
     first = window.rects["wert"]
     assert all(r.w == first.w and (r.y, r.x) > (first.y, first.x) for r in window.more["wert"])
+
+
+def test_lines_wrap_at_spaces_not_inside_words() -> None:
+    from spaces.learning.services.lernsequenz.bilder import wrapped_lines
+
+    lines = wrapped_lines("cmd", "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd")
+    words = r"C:\Users\Name>curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd".split()
+    assert len(lines) >= 2 and all(token in words for line in lines for token in line.split())

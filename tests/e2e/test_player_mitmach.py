@@ -163,3 +163,79 @@ def test_person_token_travels_as_a_header_not_in_urls(player_server, browser_pag
     assert "p=" not in page.evaluate("location.search")
     page.wait_for_selector(".overlay .fb.no")
     assert "neu laden" in page.locator(".overlay .fb.no").inner_text()
+
+
+# --- Bildaufgaben (Plan 2026-10-27-learning-bildaufgaben, Task 4) ----------------------
+
+def _image_sequence(player_server) -> str:
+    from spaces.learning.services.lernsequenz.aus_struktur import _image_cloze, _window_matching
+    from spaces.learning.contracts.lernsequenz import Blank, Cloze
+    from spaces.learning.tests.unit.test_lernsequenz import sequence_data
+
+    cloze = Cloze(checkpoint_id="ic", after_section="f1", title="x", task="x",
+                  template="irm https://claude.ai/{{wert}} | iex ; echo {{wert}}",
+                  blanks=(Blank(blank_id="wert", accepted=("install.ps1",)),), shell="powershell", refs=())
+    windows = _window_matching({"powershell": "irm https://claude.ai/install.ps1 | iex",
+                                "cmd": "curl -fsSL https://claude.ai/install.cmd -o install.cmd",
+                                "unix": "curl -fsSL https://claude.ai/install.sh | bash"}, "seed", "fm", "f2", ())
+    data = sequence_data()
+    data["sequence_id"] = "seq-bild"
+    data["checkpoints"] = [_image_cloze(cloze).model_dump(mode="json"), windows.model_dump(mode="json")]
+    sequence = LernsequenzV1.model_validate(data)
+    player_server.store.save(sequence)
+    return player_server.link("seq-bild"), windows
+
+
+def _box_check(page) -> list[bool]:
+    return page.evaluate("""() => {
+      const img = document.querySelector('.overlay .imgcloze img').getBoundingClientRect();
+      return [...document.querySelectorAll('.overlay .imgcloze [data-rect]')].map((node) => {
+        const [x, y, w, h] = node.getAttribute('data-rect').split(',').map(Number);
+        const W = Number(node.getAttribute('data-w')), H = Number(node.getAttribute('data-h'));
+        const box = node.getBoundingClientRect(), cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+        const left = img.left + x / W * img.width, top = img.top + y / H * img.height;
+        return cx >= left && cx <= left + w / W * img.width && cy >= top && cy <= top + h / H * img.height;
+      });
+    }""")
+
+
+def test_image_cloze_inputs_sit_on_their_boxes(player_server, browser_page) -> None:
+    page = browser_page
+    link, _ = _image_sequence(player_server)
+    for width in (1280, 390):
+        page.set_viewport_size({"width": width, "height": 900})
+        _open(page, link)
+        page.click("#next")
+        page.wait_for_selector(".overlay .imgcloze img")
+        page.wait_for_function("document.querySelector('.overlay .imgcloze img').complete")
+        checks = _box_check(page)
+        assert len(checks) == 2 and all(checks), (width, checks)
+
+
+def test_image_cloze_right_answer_is_accepted_and_mirrored(player_server, browser_page) -> None:
+    page = browser_page
+    link, _ = _image_sequence(player_server)
+    _open(page, link)
+    page.click("#next")
+    page.wait_for_selector(".overlay .imgcloze input")
+    page.fill(".overlay .imgcloze input", "install.ps1")
+    assert page.locator(".overlay .imgcloze .mirror").inner_text() == "install.ps1"
+    page.locator(".overlay").get_by_role("button", name="Prüfen").click()
+    page.wait_for_selector(".overlay .fb.ok")
+    assert "Genau" in page.locator(".overlay .fb").inner_text()
+
+
+def test_matching_shows_window_images_and_grades(player_server, browser_page) -> None:
+    page = browser_page
+    link, windows = _image_sequence(player_server)
+    _open(page, link)
+    page.click("#next")
+    page.wait_for_selector(".overlay .imgcloze")
+    _skip(page)
+    page.click("#next")
+    page.wait_for_selector(".overlay .match img")
+    assert page.locator(".overlay .match img").count() == 3
+    for left in windows.left:
+        page.locator(f".overlay .match[data-id='{left.item_id}'] select").select_option(windows.pairs[left.item_id])
+    page.locator(".overlay").get_by_role("button", name="Prüfen").click()
+    page.wait_for_selector(".overlay .fb.ok")

@@ -17,7 +17,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from spaces.learning.contracts.lernsequenz import Rect, Shell
 
-WIDTH = 760
+# 560 px: still readable when a phone scales the window to ~310 px.
+WIDTH = 560
 FONT_SIZE = 18
 LINE = 26
 PAD = 18
@@ -29,6 +30,7 @@ _TITLE_FG = (0x33, 0x33, 0x33)
 _MIN_BOX_CELLS = 4
 _FONT = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "DejaVuSansMono.ttf"
 _PLACEHOLDER = re.compile(r"\{\{([A-Za-z0-9_-]+)\}\}")
+_SPACE = ("text", " ")
 
 
 @dataclass(frozen=True)
@@ -63,10 +65,17 @@ def _font() -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(_FONT), FONT_SIZE)
 
 
+def _char_width() -> float:
+    return _font().getlength("M")
+
+
+def _columns() -> int:
+    return int((WIDTH - 2 * PAD) // _char_width())
+
+
 def _units(command: str, blanks: dict[str, str]) -> list[tuple[str, str]]:
     """("text", one character) and ("blank", blank_id) in reading order."""
-    found = _PLACEHOLDER.findall(command)
-    if set(found) != set(blanks):
+    if set(_PLACEHOLDER.findall(command)) != set(blanks):
         raise ValueError("placeholders and blanks must match")
     units: list[tuple[str, str]] = []
     position = 0
@@ -78,6 +87,63 @@ def _units(command: str, blanks: dict[str, str]) -> list[tuple[str, str]]:
     return units
 
 
+def _layout(shell: Shell, command: str, blanks: dict[str, str]) -> tuple[list[tuple[str, str, int, int, int]], int]:
+    """(kind, value, row, column, cells) per unit and the number of rows. Lines break at spaces;
+    a word longer than a line breaks between characters; a box never splits."""
+    columns = _columns()
+    units = [("text", ch) for ch in _STYLES[shell].prompt] + _units(command, blanks)
+
+    def cells(unit: tuple[str, str]) -> int:
+        if unit[0] == "blank":
+            return min(max(len(blanks[unit[1]]), _MIN_BOX_CELLS) + 1, columns)
+        return 1
+
+    words: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    for unit in units:
+        if unit == _SPACE:
+            if current:
+                words.append(current)
+                current = []
+            words.append([unit])
+        else:
+            current.append(unit)
+    if current:
+        words.append(current)
+
+    placed: list[tuple[str, str, int, int, int]] = []
+    row = column = 0
+    for word in words:
+        if word == [_SPACE]:
+            if column == 0:
+                continue
+            if column + 1 > columns:
+                row, column = row + 1, 0
+                continue
+            placed.append(("text", " ", row, column, 1))
+            column += 1
+            continue
+        width = sum(cells(unit) for unit in word)
+        if column > 0 and column + width > columns and width <= columns:
+            row, column = row + 1, 0
+        for unit in word:
+            size = cells(unit)
+            if column + size > columns:
+                row, column = row + 1, 0
+            placed.append((unit[0], unit[1], row, column, size))
+            column += size
+    return placed, row + 1
+
+
+def wrapped_lines(shell: Shell, command: str, blanks: dict[str, str] | None = None) -> list[str]:
+    """The window's text lines as laid out (boxes as underscores), for checks and alt texts."""
+    placed, rows = _layout(shell, command, blanks or {})
+    lines = [""] * rows
+    for kind, value, row, _column, size in placed:
+        lines[row] += value if kind == "text" else "_" * size
+    return [line.rstrip() for line in lines]
+
+
 def render_terminal(
     shell: Shell, command: str, *, blanks: dict[str, str] | None = None, title: bool = True
 ) -> RenderedWindow:
@@ -87,21 +153,8 @@ def render_terminal(
     style = _STYLES[shell]
     blanks = blanks or {}
     font = _font()
-    char = font.getlength("M")
-    columns = int((WIDTH - 2 * PAD) // char)
-    units = [("text", ch) for ch in style.prompt] + _units(command, blanks)
-
-    # Lay out: text wraps at any character, a box never splits across lines.
-    placed: list[tuple[str, str, int, int, int]] = []  # kind, value, row, column, cells
-    row = column = 0
-    for kind, value in units:
-        cells = max(len(blanks[value]), _MIN_BOX_CELLS) + 1 if kind == "blank" else 1
-        cells = min(cells, columns)
-        if column + cells > columns:
-            row, column = row + 1, 0
-        placed.append((kind, value, row, column, cells))
-        column += cells
-    rows = row + 1
+    char = _char_width()
+    placed, rows = _layout(shell, command, blanks)
     height = TITLE + 2 * PAD + rows * LINE
 
     image = Image.new("RGB", (WIDTH, height), style.background)
