@@ -124,7 +124,14 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   if (person) { const url = new URL(location.href); url.searchParams.delete('p'); history.replaceState(null, '', url); }
   const query = (path) => `${base}/${path}?k=${encodeURIComponent(token)}`;
   const headers = (extra = {}) => ({ ...extra, ...(person ? { 'X-Learning-Person': person } : {}) });
-  const failure = (data, fallback) => new Error(data.code === 'person_expired' || data.code === 'person_invalid' ? 'Ihre Anmeldung ist abgelaufen – bitte die Seite neu laden.' : data.message || fallback);
+  // Server errors in the learner's language; the server's own wording is for logs.
+  const FAILURES = {
+    person_expired: 'Ihre Anmeldung ist abgelaufen – bitte die Seite neu laden.',
+    person_invalid: 'Ihre Anmeldung ist abgelaufen – bitte die Seite neu laden.',
+    person_required: 'Notizen gibt es nur angemeldet – bitte die Seite neu laden.',
+    dependency_unavailable: 'Der Tutor ist gerade nicht erreichbar – bitte später noch einmal.',
+  };
+  const failure = (data, fallback) => new Error(FAILURES[data.code] || data.message || fallback);
   const base = location.pathname.replace(/\/$/, '');
   const $ = (id) => document.getElementById(id);
   const el = (tag, attrs = {}, ...kids) => {

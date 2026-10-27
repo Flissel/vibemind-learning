@@ -54,3 +54,18 @@ def test_marking_without_a_person_still_explains_but_cannot_keep_a_note(player_s
     page.wait_for_selector(".markpop")
     assert page.get_by_role("button", name="Notiz anlegen").is_disabled()
     assert "anmelden" in page.locator(".markpop").inner_text().lower()
+
+
+def test_without_a_tutor_the_player_says_so_in_german(player_server, browser_page, monkeypatch) -> None:
+    monkeypatch.delenv("LEARNING_EVALUATION_SERVICE_URL", raising=False)
+    page = browser_page
+    player_server.store.save(LernsequenzV1.model_validate(sequence_data()))
+    page.goto(player_server.link("seq-roi"))
+    page.wait_for_function("document.getElementById('count').textContent.length > 0")
+    page.get_by_role("button", name="Stelle markieren").click()
+    stage = page.locator("#stage").bounding_box()
+    _drag(page, stage, 20, 20, stage["width"] - 40, stage["height"] - 40)
+    page.wait_for_selector(".markpop")
+    page.get_by_role("button", name="Erklär mir das").click()
+    page.wait_for_function("document.querySelector('.markpop .small[aria-live]').textContent.length > 0")
+    assert "Tutor ist gerade nicht erreichbar" in page.locator(".markpop .small[aria-live]").inner_text()
