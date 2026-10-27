@@ -186,6 +186,11 @@ def _command(checkpoint: CommandCheck, answer: dict[str, Any]) -> dict[str, Any]
         return {**base, "recognized": True, "ok": False, "score": 0.0, "fix": [],
                 "message": "Das ist der Befehl selbst, nicht seine Ausgabe. Führen Sie ihn aus und fügen Sie "
                            "ein, was das Terminal darunter ausgibt."}
+    # Success before the typography check: a correct output may well contain a dash or a
+    # curly quote of its own (review finding). Typography before the known problems: a
+    # mistyped dash is the cause, the "command not found" text only its symptom.
+    if _matches(checkpoint.success, output, shell):
+        return {**base, "recognized": True, "ok": True, "score": 1.0, "message": checkpoint.success.message, "fix": []}
     if findings.typographic:
         what = " und ".join(_TYPOGRAPHIC[name] for name in findings.typographic)
         return {**base, "recognized": True, "ok": False, "score": 0.0,
@@ -196,8 +201,6 @@ def _command(checkpoint: CommandCheck, answer: dict[str, Any]) -> dict[str, Any]
         if _matches(rule, output, shell):
             fix = [command.model_dump() for command in rule.fix if command.shell == shell]
             return {**base, "recognized": True, "ok": False, "score": 0.0, "message": rule.message, "fix": fix}
-    if _matches(checkpoint.success, output, shell):
-        return {**base, "recognized": True, "ok": True, "score": 1.0, "message": checkpoint.success.message, "fix": []}
     return {**base, "recognized": False, "ok": False, "score": 0.0, "message": checkpoint.unknown_hint, "fix": []}
 
 

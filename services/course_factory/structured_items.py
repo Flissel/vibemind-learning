@@ -67,7 +67,7 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                 spec = AdaptiveItemSpec(
                     activity_id, "fill_in",
                     {"answers": list(checkpoint.blanks[0].accepted)},
-                    {"prompt": checkpoint.task, "normalize": True,
+                    {"prompt": checkpoint.task, "normalize": "command",
                      "presentation": {"template": checkpoint.template, "shell": checkpoint.shell}},
                     list(lesson.concept_ids), lesson.chapter_id,
                 )

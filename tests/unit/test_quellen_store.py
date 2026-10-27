@@ -44,3 +44,19 @@ def test_changes_are_recorded_and_listed_until_taken_up_again(tmp_path: Path) ->
 
     store.take_up(course_id="c1", url="https://docs.example/install", sha256="d" * 64)
     assert store.changed() == []
+
+
+def test_unreachable_pages_get_a_note_and_keep_their_last_good_check(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.take_up(course_id="c1", url="https://docs.example/weg", sha256="a" * 64)
+    store.take_up(course_id="c1", url="https://docs.example/da", sha256="b" * 64)
+    first = datetime(2026, 10, 26, 3, 0, tzinfo=timezone.utc)
+    store.record([], now=first)
+    later = datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc)
+
+    store.record([Change(course_id="c1", url="https://docs.example/weg", old_sha="a" * 64, new_sha=None, error="404 Not Found")], now=later)
+
+    changed = {c["url"]: c for c in store.changed()}
+    assert "nicht erreichbar" in changed["https://docs.example/weg"]["note"] and "404" in changed["https://docs.example/weg"]["note"]
+    assert changed["https://docs.example/weg"]["last_checked_at"].startswith("2026-10-26")   # the last check that reached it
+    assert "https://docs.example/da" not in changed

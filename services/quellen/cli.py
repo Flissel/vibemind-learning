@@ -141,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     changes = check(store.watches(), fetch)
     store.record(changes)
     for change in changes:
-        print(f"GEAENDERT {change.course_id} {change.url}")
+        state = "NICHT ERREICHBAR" if change.new_sha is None else "GEAENDERT"
+        print(f"{state} {change.course_id} {change.url}")
     print(f"{len(changes)} geaenderte Quelle(n)")
     return 0
 

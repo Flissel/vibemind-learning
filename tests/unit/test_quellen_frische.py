@@ -33,11 +33,14 @@ def test_a_text_change_is_reported_with_both_digests() -> None:
     assert changes[0].old_sha != changes[0].new_sha
 
 
-def test_fetch_failures_are_skipped_not_reported() -> None:
+def test_unreachable_pages_are_reported_as_such_not_hidden() -> None:
+    # Review finding: a vanished page looked "checked today" forever.
     def fetch(url: str) -> str:
-        raise OSError("down")
+        raise OSError("404 Not Found")
 
-    assert check([_watch()], fetch) == []
+    changes = check([_watch()], fetch)
+    assert len(changes) == 1 and changes[0].new_sha is None and "404" in (changes[0].error or "")
+    assert changes[0].course_id == "c1"
 
 
 # --- fetching: only public hosts, redirects checked hop by hop, size capped -----------

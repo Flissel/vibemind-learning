@@ -15,12 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from spaces.learning.contracts.lernsequenz import (
     Calculation,
     Choice,
+    Cloze,
     CommandCheck,
     DrawnExplanation,
     Estimate,
     Explanation,
+    Hotspot,
     LernsequenzV1,
+    Matching,
+    Ordering,
+    Profile,
     Slide,
+    Step,
+    TerminalSim,
     VideoSegment,
 )
 from spaces.learning.services.course_factory.model_gateway import ModelGateway, ModelImageInput, ModelInvocation
@@ -65,10 +72,31 @@ def tutor_context(
         elif isinstance(checkpoint, CommandCheck):
             task = {"prompt": checkpoint.task, "type": "command_check",
                     "commands": [f"{c.shell}: {c.command}" for c in checkpoint.commands]}
-        else:
-            assert isinstance(checkpoint, Explanation)
+        elif isinstance(checkpoint, Explanation):
             task = {"prompt": checkpoint.title, "type": "explanation"}
             texts.append(checkpoint.text)
+        # The hands-on kinds: what the learner sees, never the order, the blanks, the pairs,
+        # the target, the simulated outputs or the check.
+        elif isinstance(checkpoint, Ordering):
+            task = {"prompt": checkpoint.task, "type": "ordering", "items": [item.text for item in checkpoint.items]}
+        elif isinstance(checkpoint, Cloze):
+            task = {"prompt": checkpoint.task, "type": "cloze", "template": checkpoint.template, "shell": checkpoint.shell}
+        elif isinstance(checkpoint, Matching):
+            task = {"prompt": checkpoint.task, "type": "matching",
+                    "left": [item.text for item in checkpoint.left], "right": [item.text for item in checkpoint.right]}
+        elif isinstance(checkpoint, Hotspot):
+            task = {"prompt": checkpoint.task, "type": "hotspot"}
+        elif isinstance(checkpoint, TerminalSim):
+            task = {"prompt": checkpoint.task, "type": "terminal_sim", "shell": checkpoint.shell, "terminal_prompt": checkpoint.prompt}
+        elif isinstance(checkpoint, Step):
+            task = {"prompt": checkpoint.instruction, "type": "step",
+                    "commands": [f"{c.shell}: {c.command}" for c in checkpoint.commands]}
+            if checkpoint.expected_text:
+                texts.append(checkpoint.expected_text)
+        elif isinstance(checkpoint, Profile):
+            task = {"prompt": checkpoint.title, "type": "profile", "questions": [q.question for q in checkpoint.questions]}
+        else:
+            raise LookupError("this checkpoint has no tutor context")
         anchor = checkpoint.after_section
     else:
         anchor = section_id or sequence.sections[0].section_id

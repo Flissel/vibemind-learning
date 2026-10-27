@@ -29,7 +29,9 @@ class Change:
     course_id: str
     url: str
     old_sha: str
-    new_sha: str
+    # None when the page could not be fetched; ``error`` then says why.
+    new_sha: str | None
+    error: str | None = None
 
 
 class _Text(HTMLParser):
@@ -63,12 +65,14 @@ def text_digest(html: str) -> str:
 
 
 def check(watches: list[Watch], fetch: Callable[[str], str]) -> list[Change]:
-    """Changes among the watches; a page that cannot be fetched is skipped, not reported."""
+    """Changes among the watches; a page that cannot be fetched is reported as unreachable
+    (a vanished page is the loudest staleness signal there is)."""
     changes: list[Change] = []
     for watch in watches:
         try:
             html = fetch(watch.url)
-        except Exception:  # noqa: BLE001 - one unreachable page must not stop the run
+        except Exception as error:  # noqa: BLE001 - one unreachable page must not stop the run
+            changes.append(Change(course_id=watch.course_id, url=watch.url, old_sha=watch.sha256, new_sha=None, error=str(error)[:200]))
             continue
         new_sha = text_digest(html)
         if new_sha != watch.sha256:

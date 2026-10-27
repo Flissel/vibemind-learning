@@ -45,18 +45,26 @@ class WatchStore:
             return [Watch(id=r.id, course_id=r.course_id, url=r.url, sha256=r.sha256) for r in rows]
 
     def record(self, changes: list[Change], *, now: datetime | None = None) -> int:
-        """Mark every watch as checked now and the changed ones as changed; the digest the
-        course was built from stays until someone takes the page up again."""
+        """Mark every reached watch as checked now and the changed ones as changed; the digest
+        the course was built from stays until someone takes the page up again. An unreachable
+        page keeps the time it was last reached and gets a note instead."""
         moment = now if now is not None else utc_now()
         changed = {(c.course_id, c.url): c for c in changes}
         with self._sessions() as db, db.begin():
             rows = db.scalars(select(LearningSourceWatch)).all()
             for row in rows:
-                row.last_checked_at = moment
                 change = changed.get((row.course_id, row.url))
-                if change is not None and row.changed_at is None:
+                if change is None:
+                    row.last_checked_at = moment
+                    continue
+                if change.new_sha is None:
+                    note = f"Quelle nicht erreichbar ({change.error or 'unbekannt'}): bitte Kurs prüfen"
+                else:
+                    row.last_checked_at = moment
+                    note = f"Quelle geändert (neuer Text, Digest {change.new_sha[:12]}…): bitte Kurs prüfen"
+                if row.changed_at is None:
                     row.changed_at = moment
-                    row.note = f"Quelle geändert (neuer Text, Digest {change.new_sha[:12]}…): bitte Kurs prüfen"
+                row.note = note
             return len(changed)
 
     def changed(self) -> list[dict[str, Any]]:

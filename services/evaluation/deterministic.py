@@ -107,7 +107,18 @@ def _score_fill_in(expected, answer, config) -> tuple[float, str]:
         or not isinstance(text, str)
     ):
         raise ValueError("fill-in values are malformed")
-    if config.get("normalize", True) is not True:
+    mode = config.get("normalize", True)
+    if mode == "command":
+        # A command or file name: typographic dashes and quotes forgiven, case and padding
+        # forgiven, but every other character counts ("version" is not "--version").
+        normalized = _command_form(text)
+        accepted = {_command_form(value) for value in expected_answers}
+        return (
+            (1.0, "normalized_match")
+            if normalized and normalized in accepted
+            else (0.0, "incorrect_text")
+        )
+    if mode is not True:
         return (
             (1.0, "exact_match")
             if text in expected_answers
@@ -173,6 +184,14 @@ def _partial_credit(config: Mapping[str, object]) -> bool:
     if not isinstance(value, bool):
         raise ValueError("partial_credit must be boolean")
     return value
+
+
+# Word and chat clients turn "--" into an en or em dash; both read as the double hyphen again.
+_ASCII_FORMS = str.maketrans({"\u2013": "--", "\u2014": "--", "\u2212": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"'})
+
+
+def _command_form(value: str) -> str:
+    return value.strip().translate(_ASCII_FORMS).casefold()
 
 
 def _normalize(value: str) -> str:

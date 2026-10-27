@@ -103,3 +103,22 @@ def test_explanation_keeps_the_extra_apart_and_must_cite(sequence) -> None:
     assert gateway.invocations[0].role == "sequence_explainer" and gateway.invocations[0].input_payload["task"]["selection"] == "45.000 €"
     with pytest.raises(ValueError):
         asyncio.run(ask_explain(_ExplainGateway(["S9"]), task=task, sources=sources, correlation_id="11111111-1111-4111-8111-111111111111"))
+
+
+def test_tutor_context_knows_every_hands_on_kind_without_solutions() -> None:
+    # Review finding: "Tutor fragen" in the new frames ended in a 500 (AssertionError).
+    from spaces.learning.tests.unit.test_lernsequenz_mitmach import mitmach_sequence
+
+    seq = mitmach_sequence()
+    for checkpoint in seq.checkpoints:
+        task, sources = tutor_context(seq, checkpoint_id=checkpoint.checkpoint_id)
+        assert task["type"] == checkpoint.kind and sources, checkpoint.kind
+        blob = str(task) + " ".join(s["source"] for s in sources)
+        if checkpoint.kind == "cloze":
+            assert "install.ps1" not in blob and "{{datei}}" in blob
+        if checkpoint.kind == "terminal_sim":
+            assert "2.1.211" not in blob and "claude\s+--version" not in blob
+        if checkpoint.kind == "matching":
+            assert "r1" not in str(task.get("pairs", ""))
+    with pytest.raises(LookupError):
+        tutor_context(seq, checkpoint_id="nope")

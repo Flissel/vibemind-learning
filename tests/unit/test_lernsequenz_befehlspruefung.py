@@ -79,3 +79,15 @@ def test_rules_stay_on_the_server_and_bad_answers_are_refused() -> None:
         _grade("   ", "unix")
     with pytest.raises(ValueError):
         _grade("2.1.0 (Claude Code)", "fish")
+
+
+def test_a_correct_output_with_a_dash_in_it_still_counts() -> None:
+    # Review finding: the typographic check fired before the success rule.
+    from spaces.learning.services.lernsequenz.bewertung import grade
+    from spaces.learning.tests.unit.test_lernsequenz_mitmach import mitmach_sequence
+
+    seq = mitmach_sequence()
+    fine = grade(seq, "st", {"state": "differs", "shell": "powershell", "output": "2.1.211 (Claude Code) – aktuell"})
+    assert fine["ok"] is True
+    broken = grade(seq, "st", {"state": "differs", "shell": "powershell", "output": "claude : Die Benennung \"claude –version\" wurde nicht erkannt"})
+    assert broken["ok"] is False and "Gedankenstrich" in broken["message"]
