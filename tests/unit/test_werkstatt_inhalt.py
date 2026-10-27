@@ -146,3 +146,19 @@ def test_fassungs_art_textkorrektur_bei_nur_anderen_zitaten() -> None:
 
 def test_fassungs_art_neu_ohne_vorgaenger() -> None:
     assert fassungs_art(None, quiz()) == "neu"
+
+
+def test_fassungs_art_neu_bei_geaendertem_lueckentext() -> None:
+    zwei = [
+        {"blank_id": "b1", "accepted": ["ChildItem"]},
+        {"blank_id": "b2", "accepted": ["Path"]},
+    ]
+    alt = luecke(template="Get-{{b1}} -{{b2}} .", blanks=zwei)
+    vertauscht = luecke(template="Get-{{b2}} -{{b1}} .", blanks=zwei)
+    assert fassungs_art(alt, vertauscht) == "neu"
+    assert fassungs_art(luecke(), luecke(template="Remove-{{b1}} -Path .")) == "neu"
+
+
+def test_fassungs_art_neu_bei_anderer_shell() -> None:
+    assert fassungs_art(luecke(), luecke(shell="cmd")) == "neu"
+    assert fassungs_art(luecke(), luecke(shell=None)) == "neu"

@@ -137,7 +137,11 @@ def _loesung(inhalt: BaseModel) -> object:
         )
         return (inhalt.expected_answer, rubrik)
     if isinstance(inhalt, Luecke):
-        return sorted((b.blank_id, sorted(b.accepted)) for b in inhalt.blanks)
+        return (
+            inhalt.template,
+            inhalt.shell,
+            sorted((b.blank_id, sorted(b.accepted)) for b in inhalt.blanks),
+        )
     if isinstance(inhalt, Reihenfolge):
         return list(inhalt.items)
     if isinstance(inhalt, Zuordnung):
