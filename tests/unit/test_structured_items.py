@@ -68,3 +68,33 @@ def test_fill_in_items_demand_the_command_form_not_just_its_letters() -> None:
     assert score_response(dash, {"text": "—version"}).score == 1.0           # typographic dash forgiven
     assert score_response(dash, {"text": "version"}).score == 0.0
     assert score_response(dash, {"text": "-version"}).score == 0.0
+
+
+# --- Bildaufgaben (Plan 2026-10-27-learning-bildaufgaben, Task 5) ----------------------
+
+def test_image_cloze_becomes_a_fill_in_with_an_image(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
+
+    specs = [s for s in structured_items(_draft_with_structure()) if s.item_type == "fill_in"]
+
+    pictured = [s for s in specs if "image" in s.scoring_config["presentation"]]
+    assert {s.scoring_config["presentation"]["shell"] for s in pictured} == {"powershell", "unix"}
+    shown = next(s for s in pictured if s.scoring_config["presentation"]["shell"] == "powershell")
+    presentation = shown.scoring_config["presentation"]
+    assert presentation["image"].startswith("/lernsequenz-medien/term-") and presentation["width"] == 560
+    assert set(presentation["rect"]) == {"x", "y", "w", "h"} and "template" not in presentation
+    assert shown.expected_answer == {"answers": ["install.ps1"]} and shown.scoring_config["normalize"] == "command"
+    assert "install.ps1" not in str(presentation)
+
+
+def test_window_matching_items_carry_their_images(tmp_path, monkeypatch) -> None:
+    from spaces.learning.tests.unit.test_lernsequenz_aus_struktur import THREE_SHELLS
+
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
+    data = _draft_with_structure().model_dump(mode="json")
+    data["lessons"][0]["body"] = THREE_SHELLS
+    specs = structured_items(CourseDraft.model_validate(data))
+
+    [windows] = [s for s in specs if s.item_type == "matching"]
+    assert all(entry["image"].startswith("/lernsequenz-medien/") and entry["height"] >= 50
+               for entry in windows.scoring_config["presentation"]["left"])

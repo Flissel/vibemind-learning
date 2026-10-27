@@ -12,7 +12,7 @@ import random
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from spaces.learning.contracts.lernsequenz import Cloze, Matching, Ordering
+from spaces.learning.contracts.lernsequenz import Cloze, ImageCloze, Matching, Ordering
 from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
 
@@ -36,6 +36,17 @@ def _options(items, seed: str) -> list[dict[str, str]]:
     return options
 
 
+def _side(items) -> list[dict[str, Any]]:
+    """A matching side as shown: id and label, plus the picture of a drawn window."""
+    side = []
+    for item in items:
+        entry: dict[str, Any] = {"id": item.item_id, "label": item.text}
+        if item.image is not None:
+            entry.update({"image": item.image, "width": item.width, "height": item.height})
+        side.append(entry)
+    return side
+
+
 def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
     specs: list[AdaptiveItemSpec] = []
     for lesson in draft.lessons:
@@ -56,10 +67,7 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                         "prompt": checkpoint.task,
                         "partial_credit": True,
                         # What the learner sees; the engine passes presentation keys it allows per type.
-                        "presentation": {
-                            "left": [{"id": item.item_id, "label": item.text} for item in checkpoint.left],
-                            "right": [{"id": item.item_id, "label": item.text} for item in checkpoint.right],
-                        },
+                        "presentation": {"left": _side(checkpoint.left), "right": _side(checkpoint.right)},
                     },
                     list(lesson.concept_ids), lesson.chapter_id,
                 )
@@ -69,6 +77,20 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                     {"answers": list(checkpoint.blanks[0].accepted)},
                     {"prompt": checkpoint.task, "normalize": "command",
                      "presentation": {"template": checkpoint.template, "shell": checkpoint.shell}},
+                    list(lesson.concept_ids), lesson.chapter_id,
+                )
+            elif isinstance(checkpoint, ImageCloze) and len(checkpoint.blanks) == 1:
+                blank = checkpoint.blanks[0]
+                spec = AdaptiveItemSpec(
+                    activity_id, "fill_in",
+                    {"answers": list(blank.accepted)},
+                    {"prompt": checkpoint.task, "normalize": "command",
+                     # The drawn window and where its boxes are; the answer is not in the picture.
+                     "presentation": {
+                         "image": checkpoint.image, "width": checkpoint.width, "height": checkpoint.height,
+                         "shell": checkpoint.shell, "rect": blank.rect.model_dump(),
+                         **({"more": [r.model_dump() for r in blank.more]} if blank.more else {}),
+                     }},
                     list(lesson.concept_ids), lesson.chapter_id,
                 )
             else:

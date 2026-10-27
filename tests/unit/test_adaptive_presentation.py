@@ -29,3 +29,12 @@ def test_fill_in_shows_the_template_and_shell_only() -> None:
 
 def test_ordering_shows_nothing_extra() -> None:
     assert AdaptiveSessionService._presentation(_item("ordering", {"order": ["s1", "s2"]})) == {}
+
+
+def test_an_image_fill_in_shows_picture_and_boxes_but_no_answer() -> None:
+    shown = AdaptiveSessionService._presentation(_item("fill_in", {
+        "image": "/lernsequenz-medien/term-0123456789abcdef.png", "width": 560, "height": 96, "shell": "powershell",
+        "rect": {"x": 300, "y": 54, "w": 120, "h": 22}, "more": [{"x": 10, "y": 80, "w": 120, "h": 22}],
+        "answers": ["install.ps1"],
+    }))
+    assert set(shown) == {"image", "width", "height", "shell", "rect", "more"}

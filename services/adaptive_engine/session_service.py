@@ -1191,8 +1191,9 @@ class AdaptiveSessionService:
         allowed_by_type = {
             # Both sides of a matching task; the solution (pairs) never travels.
             "matching": frozenset({"left", "right"}),
-            # The command with its blank, and which shell it is for.
-            "fill_in": frozenset({"template", "shell"}),
+            # The command with its blank, and which shell it is for; or the drawn window
+            # with the position of its box (and of the boxes that repeat it).
+            "fill_in": frozenset({"template", "shell", "image", "width", "height", "rect", "more"}),
             "numeric": frozenset({"unit"}),
             "penecho_canvas": frozenset({"canvas_href"}),
         }
