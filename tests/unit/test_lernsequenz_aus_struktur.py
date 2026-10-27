@@ -96,3 +96,50 @@ def test_build_presentation_places_structure_before_quizzes() -> None:
     lesson_last = [s.section_id for s in sequence.sections][-1]
     assert all(c.after_section == lesson_last for c in sequence.checkpoints)
     assert sequence.checkpoints[0].refs == (CIT,)
+
+
+# --- "Dein Weg" -------------------------------------------------------------------
+
+def test_profile_adds_the_shell_question_and_tags_slides() -> None:
+    from spaces.learning.contracts.lernsequenz import Condition
+    from spaces.learning.services.lernsequenz.aus_struktur import profile_checkpoint, shell_condition
+
+    powershell = (Condition(key="shell", option="powershell"),)
+    assert shell_condition("Schritt 2: Installieren in Windows PowerShell") == powershell
+    assert shell_condition("Eingabeaufforderung (CMD) einrichten") == (Condition(key="shell", option="cmd"),)
+    assert shell_condition("Unter macOS oder Linux") == (Condition(key="shell", option="unix"),)
+    assert shell_condition("Schritt 3: Git für Windows") == ()
+    profile = profile_checkpoint(after="l1-1")
+    assert profile.kind == "profile" and profile.after_section == "l1-1" and profile.questions[0].key == "shell"
+    assert [o.option_id for o in profile.questions[0].options] == ["powershell", "cmd", "unix"]
+
+    data = draft().model_dump(mode="json")
+    data["lessons"][0]["body"] = (
+        "# Claude Code installieren\n\nKurz.\n\n## Schritt 2: Installieren in Windows PowerShell\n\n"
+        "- Zeile kopieren\n- Einfügen\n\n`irm https://claude.ai/install.ps1 | iex`\n\n"
+        "## Schritt 3: Git für Windows\n\n- Installer laden\n"
+    )
+    sequence = build_presentation(CourseDraft.model_validate(data), course_id=COURSE, profile=True)
+    assert sequence.checkpoints[0].kind == "profile"
+    assert sequence.checkpoints[0].after_section == sequence.sections[0].section_id
+    by_title = {s.title: s.only_for for s in sequence.sections}
+    assert by_title["Schritt 2: Installieren in Windows PowerShell"] == powershell
+    assert by_title["Schritt 3: Git für Windows"] == () and by_title["Claude Code installieren"] == ()
+    cloze = next(c for c in sequence.checkpoints if c.kind == "cloze")
+    assert cloze.only_for == powershell
+    plain = build_presentation(CourseDraft.model_validate(data), course_id=COURSE)
+    assert all(c.kind != "profile" for c in plain.checkpoints) and all(s.only_for == () for s in plain.sections)
+
+
+def test_cli_praesentation_takes_a_profile(monkeypatch, tmp_path) -> None:
+    from spaces.learning.services.lernsequenz import cli
+
+    data = draft().model_dump(mode="json")
+    data["lessons"][0]["body"] = BODY
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setattr(cli, "published_draft", lambda course_id: CourseDraft.model_validate(data))
+    monkeypatch.setattr(cli, "service_key", lambda: "k" * 32, raising=False)
+    cli.main(["praesentation", "--course", COURSE, "--profil", "shell"])
+    saved = next(tmp_path.rglob("praes-*.json"))
+    import json
+    assert json.loads(saved.read_text(encoding="utf-8"))["checkpoints"][0]["kind"] == "profile"

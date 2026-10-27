@@ -14,6 +14,8 @@ import re
 from spaces.learning.contracts.lernsequenz import (
     Checkpoint,
     Choice,
+    Cloze,
+    Condition,
     LernsequenzV1,
     Option,
     Slide,
@@ -21,7 +23,7 @@ from spaces.learning.contracts.lernsequenz import (
     VideoSegment,
 )
 from spaces.learning.services.course_factory.schemas import ActivityDraft, CourseDraft, LessonDraft
-from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
+from spaces.learning.services.lernsequenz.aus_struktur import profile_checkpoint, shell_condition, structured_checkpoints
 from spaces.learning.services.lernsequenz.text import cut as _cut, plain as _plain, token as _token
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -182,7 +184,11 @@ def as_video(presentation: LernsequenzV1, *, media_name: str, slide_times: dict[
     )
 
 
-def build_presentation(draft: CourseDraft, *, course_id: str, chapter_id: str | None = None) -> LernsequenzV1:
+def build_presentation(
+    draft: CourseDraft, *, course_id: str, chapter_id: str | None = None, profile: bool = False,
+) -> LernsequenzV1:
+    """``profile``: ask "Dein Weg" (shell) after the first slide; slides whose title names a
+    shell and command blanks with a shell are then shown only for that answer."""
     chapters = [c for c in draft.chapters if chapter_id in (None, c.chapter_id)]
     if not chapters:
         raise LookupError("chapter is unknown")
@@ -207,6 +213,13 @@ def build_presentation(draft: CourseDraft, *, course_id: str, chapter_id: str | 
             checkpoint = _choice(activities[activity_id], chapter_slides[-1].section_id) if activity_id in activities else None
             if checkpoint is not None:
                 checkpoints.append(checkpoint)
+    if profile and sections:
+        sections = [slide.model_copy(update={"only_for": shell_condition(slide.title)}) for slide in sections]
+        checkpoints = [
+            c.model_copy(update={"only_for": (Condition(key="shell", option=c.shell),)}) if isinstance(c, Cloze) and c.shell else c
+            for c in checkpoints
+        ]
+        checkpoints.insert(0, profile_checkpoint(sections[0].section_id))
     used = {ref for item in [*sections, *checkpoints] for ref in item.refs}
     sources = tuple(
         SourceNote(ref=c.citation_id, title=_source_title(c.locator))

@@ -14,10 +14,14 @@ from spaces.learning.contracts.lernsequenz import (
     Blank,
     Checkpoint,
     Cloze,
+    Condition,
     MatchItem,
     Matching,
     OrderItem,
     Ordering,
+    Profile,
+    ProfileOption,
+    ProfileQuestion,
     Shell,
 )
 from spaces.learning.services.course_factory.schemas import LessonDraft
@@ -138,6 +142,36 @@ def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after
         task="Welche Erklärung gehört zu welchem Begriff?",
         left=left, right=tuple(right),
         pairs={f"b{i}": f"e{i}" for i in range(1, len(pairs) + 1)}, refs=refs,
+    )
+
+
+# --- "Dein Weg" -------------------------------------------------------------------
+
+_SHELL_WORDS: tuple[tuple[Shell, tuple[str, ...]], ...] = (
+    ("powershell", ("powershell",)),
+    ("cmd", ("cmd", "eingabeaufforderung")),
+    ("unix", ("macos", "linux", "wsl")),
+)
+
+
+def shell_condition(title: str) -> tuple[Condition, ...]:
+    """The shell a slide title names, as its ``only_for``; nothing when it names none."""
+    lowered = title.lower()
+    for shell, words in _SHELL_WORDS:
+        if any(word in lowered for word in words):
+            return (Condition(key="shell", option=shell),)
+    return ()
+
+
+def profile_checkpoint(after: str) -> Profile:
+    """The one profile question the setup courses need: which shell the person uses."""
+    return Profile(
+        checkpoint_id="dein-weg", after_section=after, title="Dein Weg",
+        questions=(ProfileQuestion(key="shell", question="Womit arbeiten Sie?", options=(
+            ProfileOption(option_id="powershell", text="Windows PowerShell (Eingabezeile beginnt mit PS)"),
+            ProfileOption(option_id="cmd", text="Windows Eingabeaufforderung (CMD)"),
+            ProfileOption(option_id="unix", text="macOS, Linux oder WSL"),
+        )),),
     )
 
 

@@ -58,10 +58,11 @@ def test_profile_filters_slides_and_preselects_shell(player_server, browser_page
     page = browser_page
     _open(page, _sequence(player_server, tmp_path, with_three_shells=True))
     _answer_profile(page, "Windows CMD")
-    for _ in range(3):            # ordering, cloze, matching after slide 1
+    # Slide 2 is for PowerShell only: with CMD chosen its checkpoints (no condition of their
+    # own) open here, after slide 1's three, and the sequence ends without slide 2.
+    for _ in range(6):
         page.wait_for_selector(".overlay")
         _skip(page)
-    # Slide 2 is for PowerShell only: with CMD chosen the sequence ends here.
     page.wait_for_function("document.querySelector('#stage h2') && document.querySelector('#stage h2').textContent === 'Geschafft'")
     assert page.evaluate("JSON.parse(localStorage.getItem('lernsequenz-profil')).shell") == "cmd"
     assert page.errors == []

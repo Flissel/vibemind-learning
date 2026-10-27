@@ -61,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     build = sub.add_parser("praesentation")
     build.add_argument("--course", required=True)
     build.add_argument("--chapter")
+    build.add_argument("--profil", choices=["shell"], help="Profilfrage 'Dein Weg' und Shell-Kennzeichnung der Folien")
     load = sub.add_parser("laden")
     load.add_argument("path", type=Path)
     video = sub.add_parser("video")
@@ -109,7 +110,9 @@ def main(argv: list[str] | None = None) -> int:
             {**sequence.model_dump(mode="json"), "checkpoints": [c.model_dump(mode="json") for c in (*kept, check)]}
         )
     elif args.command == "praesentation":
-        sequence = build_presentation(published_draft(args.course), course_id=args.course, chapter_id=args.chapter)
+        sequence = build_presentation(
+            published_draft(args.course), course_id=args.course, chapter_id=args.chapter, profile=args.profil == "shell",
+        )
     elif args.command == "video":
         times = json.loads(args.zeiten.read_text(encoding="utf-8"))
         sequence = as_video(store.load(args.von), media_name=args.medien, slide_times=times["slides"])

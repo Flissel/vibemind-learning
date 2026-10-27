@@ -270,7 +270,10 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   }
 
   function pendingAfter(section) {
-    return seq.checkpoints.filter((c) => matches(c) && c.after_section === section.section_id && !done.has(c.checkpoint_id) && (section.kind !== 'video' || c.at_s === null || c.at_s === undefined));
+    // Checkpoints anchored to slides the profile hides open here, at the previous visible slide.
+    const all = seq.sections, anchors = new Set([section.section_id]);
+    for (let i = all.indexOf(section) + 1; i < all.length && !matches(all[i]); i += 1) anchors.add(all[i].section_id);
+    return seq.checkpoints.filter((c) => matches(c) && anchors.has(c.after_section) && !done.has(c.checkpoint_id) && (section.kind !== 'video' || c.at_s === null || c.at_s === undefined));
   }
 
   function openCheckpoints(list, then) {
@@ -781,12 +784,16 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   $('prev').addEventListener('click', () => { if (index > 0) { index -= 1; render(); } });
   $('next').addEventListener('click', () => {
     const section = visible()[index];
-    openCheckpoints(pendingAfter(section), () => {
-      // A profile answered on the way can hide later slides: find our place again.
+    // What is pending is read again after every frame: a profile answered on the way
+    // changes which slides are shown and therefore which checkpoints belong here.
+    const step = () => {
+      const [first] = pendingAfter(section);
+      if (first) { showFrame(first, () => { done.add(first.checkpoint_id); step(); }); return; }
       const vis = visible(), here = vis.indexOf(section);
       if (here < vis.length - 1) { index = here + 1; render(); }
       else { $('stage').replaceChildren(el('div', { class: 'slide' }, el('h2', {}, 'Geschafft'), el('div', { class: 'statement' }, 'Sie haben diese Sequenz abgeschlossen.'))); }
-    });
+    };
+    step();
   });
   $('speak').addEventListener('click', () => speak($('narration').textContent));
   document.addEventListener('keydown', (e) => {
