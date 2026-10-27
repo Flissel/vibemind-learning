@@ -278,3 +278,22 @@ def test_without_a_media_folder_there_are_no_image_tasks(monkeypatch) -> None:
     kinds = [c.kind for c in structured_checkpoints(lesson(THREE_SHELLS), after="l1-1", refs=(CIT,))]
 
     assert "image_cloze" not in kinds and kinds.count("cloze") == 3
+
+
+def test_dein_weg_keeps_the_shell_of_an_image_cloze(media) -> None:
+    # Final review (Critical): with a media folder the first blank of each shell is an image
+    # cloze, and it lost its shell condition - a CMD learner got the PowerShell window.
+    from spaces.learning.contracts.lernsequenz import Condition
+
+    data = draft().model_dump(mode="json")
+    data["lessons"][0]["body"] = THREE_SHELLS
+    sequence = build_presentation(CourseDraft.model_validate(data), course_id=COURSE, profile=True)
+
+    images = {c.shell: c.only_for for c in sequence.checkpoints if c.kind == "image_cloze"}
+    assert images == {shell: (Condition(key="shell", option=shell),) for shell in ("powershell", "cmd", "unix")}
+
+
+def test_an_image_cloze_carries_its_public_template(media) -> None:
+    # Final review (Important): tutor and practice fallback need the command with its blank.
+    image = next(c for c in structured_checkpoints(lesson(), after="l1-4", refs=(CIT,)) if c.kind == "image_cloze")
+    assert "{{wert}}" in image.template and "install.ps1" not in image.template

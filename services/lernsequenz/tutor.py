@@ -83,7 +83,8 @@ def tutor_context(
         elif isinstance(checkpoint, Cloze):
             task = {"prompt": checkpoint.task, "type": "cloze", "template": checkpoint.template, "shell": checkpoint.shell}
         elif isinstance(checkpoint, ImageCloze):
-            task = {"prompt": checkpoint.task, "type": "image_cloze", "shell": checkpoint.shell}
+            task = {"prompt": checkpoint.task, "type": "image_cloze", "shell": checkpoint.shell,
+                    "template": checkpoint.template}
         elif isinstance(checkpoint, Matching):
             task = {"prompt": checkpoint.task, "type": "matching",
                     "left": [item.text for item in checkpoint.left], "right": [item.text for item in checkpoint.right]}

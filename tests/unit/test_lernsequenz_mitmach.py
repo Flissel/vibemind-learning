@@ -204,7 +204,7 @@ def test_profile_choices_are_validated_and_echoed() -> None:
 def _image_cloze(rect: dict | None = None) -> dict:
     return {"kind": "image_cloze", "checkpoint_id": "ic", "after_section": "f1", "title": "Im Fenster ergänzen",
             "task": "Ergänzen Sie, was im PowerShell-Fenster fehlt.", "image": "/lernsequenz-medien/term-0123456789abcdef.png",
-            "width": 760, "height": 96, "shell": "powershell",
+            "width": 760, "height": 96, "shell": "powershell", "template": "irm https://claude.ai/{{wert}} | iex",
             "blanks": [{"blank_id": "wert", "accepted": ["install.ps1"],
                         "rect": rect or {"x": 450.5, "y": 54, "w": 130.1, "h": 22}}]}
 

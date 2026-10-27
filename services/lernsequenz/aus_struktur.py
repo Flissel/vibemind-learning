@@ -198,7 +198,7 @@ def _image_cloze(cloze: Cloze) -> ImageCloze:
     return ImageCloze(
         checkpoint_id=cloze.checkpoint_id, after_section=cloze.after_section, title="Im Fenster ergänzen",
         task=f"Ergänzen Sie, was im Fenster von {SHELL_LABEL[cloze.shell]} fehlt.",
-        image=save_media(window.png), width=window.width, height=window.height,
+        template=cloze.template, image=save_media(window.png), width=window.width, height=window.height,
         blanks=(ImageBlank(blank_id=blank.blank_id, accepted=blank.accepted, rect=window.rects[blank.blank_id],
                            more=window.more.get(blank.blank_id, ())),),
         shell=cloze.shell, refs=cloze.refs,

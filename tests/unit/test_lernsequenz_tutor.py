@@ -134,4 +134,5 @@ def test_tutor_context_for_image_cloze_has_no_solution() -> None:
     task, _sources = tutor_context(LernsequenzV1.model_validate(data), checkpoint_id="ic")
 
     assert task["type"] == "image_cloze" and task["shell"] == "powershell"
+    assert task["template"] == "irm https://claude.ai/{{wert}} | iex"
     assert "install.ps1" not in str(task)

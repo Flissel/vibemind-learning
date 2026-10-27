@@ -88,6 +88,7 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                      # The drawn window and where its boxes are; the answer is not in the picture.
                      "presentation": {
                          "image": checkpoint.image, "width": checkpoint.width, "height": checkpoint.height,
+                         "template": checkpoint.template,
                          "shell": checkpoint.shell, "rect": blank.rect.model_dump(),
                          **({"more": [r.model_dump() for r in blank.more]} if blank.more else {}),
                      }},

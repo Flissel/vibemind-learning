@@ -15,6 +15,7 @@ from spaces.learning.contracts.lernsequenz import (
     Checkpoint,
     Choice,
     Cloze,
+    ImageCloze,
     Condition,
     LernsequenzV1,
     Option,
@@ -216,7 +217,7 @@ def build_presentation(
     if profile and sections:
         sections = [slide.model_copy(update={"only_for": shell_condition(slide.title)}) for slide in sections]
         checkpoints = [
-            c.model_copy(update={"only_for": (Condition(key="shell", option=c.shell),)}) if isinstance(c, Cloze) and c.shell else c
+            c.model_copy(update={"only_for": (Condition(key="shell", option=c.shell),)}) if isinstance(c, (Cloze, ImageCloze)) and c.shell else c
             for c in checkpoints
         ]
         checkpoints.insert(0, profile_checkpoint(sections[0].section_id))

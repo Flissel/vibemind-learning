@@ -394,6 +394,9 @@ class ImageCloze(_Checkpoint):
 
     kind: Literal["image_cloze"] = "image_cloze"
     task: Text
+    # The command with its {{blank}} placeholders, as in a text cloze: public (no answer in it),
+    # for the tutor and as the text fallback when the picture cannot be shown.
+    template: Annotated[str, Field(min_length=1, max_length=500)]
     image: Annotated[str, Field(pattern=_MEDIA_PATH)]
     width: Annotated[int, Field(ge=50, le=4_000)]
     height: Annotated[int, Field(ge=50, le=4_000)]
@@ -403,6 +406,8 @@ class ImageCloze(_Checkpoint):
     @model_validator(mode="after")
     def boxes_inside_the_image(self) -> "ImageCloze":
         _unique([blank.blank_id for blank in self.blanks], "image cloze blank ids")
+        if set(_PLACEHOLDER.findall(self.template)) != {blank.blank_id for blank in self.blanks}:
+            raise ValueError("image cloze placeholders and blanks must match")
         for blank in self.blanks:
             for r in (blank.rect, *blank.more):
                 if r.x + r.w > self.width or r.y + r.h > self.height:
