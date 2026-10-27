@@ -54,8 +54,14 @@ ROLE_CONTRACTS = {
         "sequence-design-prompt-v1",
         "sequence-design-v1",
     ),
+    "sequence_explainer": (
+        "tutoring",
+        "sequence-explain-prompt-v1",
+        "sequence-explain-v1",
+    ),
 }
 ROLE_PROMPTS = {
+    "sequence_explainer": "Explain the passage the learner marked (task.selection) in plain German, as a patient tutor, using only facts stated in the supplied sources; name the source keys you used in source_refs. If a short piece of general knowledge beyond the sources genuinely helps, put it in extra and set extra_is_outside_course to true; otherwise leave extra empty. If an image is given it shows the marked place. Never reveal expected answers of tasks.",
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome. If the input contains reviewer_feedback, address every point of it.",
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure. Name every concept with short lowercase slugs (for example akku-laden), never free text.",
     "lesson_author": "Draft rigorous lessons from the supplied structure and source references, using only facts stated in the supplied sources; add no outside knowledge, examples, or reasons the sources do not give. If the input contains reviewer_feedback, address every point of it.",
@@ -72,7 +78,7 @@ _MAX_REQUEST_BYTES = 500_000
 _MAX_RESPONSE_BYTES = 1_000_000
 _MAX_IMAGE_BYTES = 5_000_000
 _PROMPT_TRANSPORTS = ("system", "inline")
-_IMAGE_ROLES = frozenset({"rubric_evaluator", "learning_tutor"})
+_IMAGE_ROLES = frozenset({"rubric_evaluator", "learning_tutor", "sequence_explainer"})
 # 30 s, then 60 s for 429/5xx answers.
 _RETRY_BASE_SECONDS = 30
 # A dropped connection usually means the watchdog restarted OpenFang; live the

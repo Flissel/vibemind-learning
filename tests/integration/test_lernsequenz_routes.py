@@ -123,3 +123,74 @@ def test_media_upload_and_video_registration_need_the_author(client, tmp_path: P
     missing = client.post("/api/v1/lernsequenzen/seq-roi/video", headers=_author(),
                           json={"media_name": "fehlt.mp4", "slide_times": {}})
     assert missing.status_code == 404
+
+
+# --- a marked place: explain it, or keep it as a note -------------------------------
+
+PERSON_KEY = "shared-with-learnhouse-" + "x" * 16
+
+
+def _fake_worker(monkeypatch) -> list[dict]:
+    import httpx
+
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        calls.append(json.loads(request.content))
+        assert request.url.path == "/internal/sequence/erklaeren"
+        return httpx.Response(200, json={"explanation": {
+            "explanation": "Die Jahreskosten laut Folie.", "source_keys": ["S1"],
+            "extra": "Allgemein: Kosten je Jahr sind Stückkosten mal Menge.", "extra_is_outside_course": True,
+            "evidence_ref": "openfang://completion/e1",
+        }})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), timeout=kw.get("timeout")))
+    monkeypatch.setenv("LEARNING_EVALUATION_SERVICE_URL", "http://worker")
+    monkeypatch.setenv("LEARNING_EVALUATION_SERVICE_KEY", "e" * 32)
+    return calls
+
+
+def test_a_marked_place_is_explained_from_the_course(client, monkeypatch) -> None:
+    calls = _fake_worker(monkeypatch)
+    url = f"/lernsequenz/seq-roi/erklaeren?k={_token()}"
+    explained = client.post(url, json={"anchor": {"section_id": "f1"}, "selection": "45.000 €"})
+    assert explained.status_code == 200, explained.text
+    body = explained.json()
+    assert body["explanation"] == "Die Jahreskosten laut Folie." and body["extra_is_outside_course"] is True
+    assert body["cited"] and body["extra"].startswith("Allgemein")
+    assert calls[0]["task"]["selection"] == "45.000 €" and calls[0]["sources"][0]["key"] == "S1"
+    assert client.post(url, json={"anchor": {"section_id": "f1"}}).status_code == 400
+    assert client.post(url, json={"anchor": {"section_id": "nope"}, "selection": "x"}).status_code == 404
+
+
+def test_a_note_needs_the_person_and_keeps_the_explanation(client, monkeypatch, tmp_path: Path) -> None:
+    from sqlalchemy import create_engine
+
+    from spaces.learning.deployment import notizen_routes
+    from spaces.learning.services.db.models import Base
+    from spaces.learning.services.lernsequenz.person import person_token
+
+    _fake_worker(monkeypatch)
+    monkeypatch.setenv("LEARNING_DATABASE_URL", f"sqlite:///{tmp_path / 'notizen.db'}")
+    monkeypatch.setenv("LEARNHOUSE_LEARNING_SERVICE_KEY", PERSON_KEY)
+    engine = create_engine(f"sqlite:///{tmp_path / 'notizen.db'}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    notizen_routes._store.cache_clear()
+    url = f"/lernsequenz/seq-roi/notizen?k={_token()}"
+    body = {"anchor": {"checkpoint_id": "q1"}, "selection": "ROI"}
+
+    anonymous = client.post(url, json=body)
+    saved = client.post(url, json=body, headers={"X-Learning-Person": person_token("lh-3-anna", key=PERSON_KEY)})
+    listed = client.get("/api/v1/notizen", headers={"X-LearnHouse-Learning-Service-Key": PERSON_KEY, "X-Learning-Actor": "lh-3-anna"})
+    notizen_routes._store.cache_clear()
+
+    assert anonymous.status_code == 401 and anonymous.json()["code"] == "person_required"
+    assert saved.status_code == 200 and saved.json()["note_id"]
+    note = listed.json()["notes"][0]
+    assert note["id"] == saved.json()["note_id"] and note["selection"] == "ROI"
+    assert note["course_id"] == "b189a3ec-a82a-4ae2-8cab-e71ab0d75055" and note["anchor"] == {"checkpoint_id": "q1"}
+    assert note["explanation"] == "Die Jahreskosten laut Folie." and note["extra"].startswith("Allgemein")

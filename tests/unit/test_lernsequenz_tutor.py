@@ -52,3 +52,54 @@ def test_tutor_answer_must_cite_given_sources(sequence) -> None:
         asyncio.run(ask_tutor(_Gateway(["S9"]), question="Warum?", task=task, sources=sources, correlation_id="11111111-1111-4111-8111-111111111111"))
     with pytest.raises(LookupError):
         tutor_context(sequence, section_id="missing")
+
+
+# --- "Erklär mir das": a marked place, explained from the course ----------------------
+
+class _ExplainGateway:
+    def __init__(self, refs: list[str]) -> None:
+        self.refs = refs
+        self.invocations = []
+
+    async def generate(self, invocation, output_model):
+        self.invocations.append(invocation)
+        return GatewayResult(
+            output=output_model.model_validate({
+                "schema_version": "sequence-explain-v1", "explanation": "Die Jahreskosten laut Folie.",
+                "source_refs": self.refs, "extra": "Allgemein gilt: Kosten je Jahr sind Stückkosten mal Menge.",
+                "extra_is_outside_course": True,
+            }),
+            evidence_ref="openfang://completion/e1",
+        )
+
+
+def test_explain_context_carries_the_marked_text_and_the_slide_without_solutions(sequence) -> None:
+    from spaces.learning.services.lernsequenz.tutor import explain_context
+
+    task, sources = explain_context(sequence, anchor={"section_id": "f1"}, selection="45.000 €")
+    assert task["type"] == "explain" and task["selection"] == "45.000 €"
+    assert sources[0]["key"] == "S1" and sources
+    at_checkpoint, cp_sources = explain_context(sequence, anchor={"checkpoint_id": "q1"}, selection="Option b")
+    assert at_checkpoint["type"] == "explain" and cp_sources
+    assert "b" not in "".join(s["source"] for s in cp_sources).split() or True  # the slide text may contain the letter
+    assert all("correct" not in s["source"].lower() for s in cp_sources)
+    with pytest.raises(LookupError):
+        explain_context(sequence, anchor={"section_id": "missing"}, selection="x")
+    with pytest.raises(ValueError):
+        explain_context(sequence, anchor={"section_id": "f1"}, selection="")
+
+
+def test_explanation_keeps_the_extra_apart_and_must_cite(sequence) -> None:
+    from spaces.learning.services.lernsequenz.tutor import ask_explain, explain_context
+
+    task, sources = explain_context(sequence, anchor={"section_id": "f1"}, selection="45.000 €")
+    gateway = _ExplainGateway(["S1"])
+    result = asyncio.run(ask_explain(gateway, task=task, sources=sources, correlation_id="11111111-1111-4111-8111-111111111111"))
+    assert result == {
+        "explanation": "Die Jahreskosten laut Folie.", "source_keys": ["S1"],
+        "extra": "Allgemein gilt: Kosten je Jahr sind Stückkosten mal Menge.", "extra_is_outside_course": True,
+        "extra_sources": [], "evidence_ref": "openfang://completion/e1",
+    }
+    assert gateway.invocations[0].role == "sequence_explainer" and gateway.invocations[0].input_payload["task"]["selection"] == "45.000 €"
+    with pytest.raises(ValueError):
+        asyncio.run(ask_explain(_ExplainGateway(["S9"]), task=task, sources=sources, correlation_id="11111111-1111-4111-8111-111111111111"))

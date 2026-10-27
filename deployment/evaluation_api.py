@@ -21,7 +21,7 @@ from spaces.learning.services.course_factory.model_gateway import build_openfang
 from spaces.learning.services.db.session import create_learning_engine
 from spaces.learning.services.evaluation.schemas import RubricDecision, RubricEvaluationRequest
 from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
-from spaces.learning.services.lernsequenz.tutor import ask_tutor
+from spaces.learning.services.lernsequenz.tutor import ask_explain, ask_tutor
 
 
 KEY_HEADER = "X-VibeMind-Learning-Evaluation-Key"
@@ -56,6 +56,14 @@ class SequenceTutorRequest(_StrictModel):
     task: dict[str, object]
     sources: Annotated[tuple[dict[str, str], ...], Field(min_length=1, max_length=12)]
     correlation_id: UUID
+
+
+class SequenceExplainRequest(_StrictModel):
+    task: dict[str, object]
+    sources: Annotated[tuple[dict[str, str], ...], Field(min_length=1, max_length=12)]
+    correlation_id: UUID
+    # A video frame of the marked place, when the player sends one.
+    image_png_base64: Annotated[str, Field(max_length=4_000_000)] | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +174,32 @@ async def sequence_tutor(
     except ValueError as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
     return {"tutor": answer}
+
+
+@app.post("/internal/sequence/erklaeren")
+async def sequence_explain(
+    payload: SequenceExplainRequest,
+    key: Annotated[str, Header(alias=KEY_HEADER, max_length=512)] = "",
+) -> dict[str, object]:
+    """Explain a marked place of a sequence; context and sources are built by learning-api."""
+    _require_key(key)
+    image: bytes | None = None
+    if payload.image_png_base64:
+        try:
+            image = base64.b64decode(payload.image_png_base64, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid image") from error
+    try:
+        answer = await ask_explain(
+            build_openfang_model_gateway(),
+            task=payload.task,
+            sources=[dict(source) for source in payload.sources],
+            correlation_id=str(payload.correlation_id),
+            image_png=image,
+        )
+    except ValueError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    return {"explanation": answer}
 
 
 @app.post("/internal/rubric/evaluate")

@@ -34,7 +34,7 @@ from spaces.learning.services.lernsequenz.aus_kurs import as_video
 from spaces.learning.services.lernsequenz.bewertung import grade
 from spaces.learning.services.lernsequenz.store import SequenceStore
 from spaces.learning.services.lernsequenz.token import sequence_token
-from spaces.learning.services.lernsequenz.tutor import tutor_context
+from spaces.learning.services.lernsequenz.tutor import explain_context, tutor_context
 from spaces.learning.services.lernsequenz.zahlen import format_number, read_number, why_not_a_number
 
 # Below the worker's gateway limits (wrapper 540 s < gateway 600 s).
@@ -244,6 +244,92 @@ async def tutor(
 
 _MAX_UPLOAD_BYTES = 1_500_000_000
 Context = Annotated[VibeMindRequestContext, Depends(vibemind_context)]
+
+
+_MAX_IMAGE_B64 = 4_000_000
+
+
+async def _explain(sequence: LernsequenzV1, payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The worker's explanation of a marked place: (raw answer, what the player gets)."""
+    anchor, selection = payload.get("anchor"), payload.get("selection")
+    if not isinstance(anchor, dict) or not isinstance(selection, str) or not selection.strip():
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "anchor and selection are required")
+    image = payload.get("image_png_base64")
+    if image is not None and (not isinstance(image, str) or len(image) > _MAX_IMAGE_B64):
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "image is not usable")
+    try:
+        task, sources = explain_context(sequence, anchor=anchor, selection=selection)
+    except LookupError as error:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "not_found", str(error)) from error
+    except ValueError as error:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", str(error)) from error
+    url = os.environ.get("LEARNING_EVALUATION_SERVICE_URL", "").rstrip("/")
+    key = os.environ.get("LEARNING_EVALUATION_SERVICE_KEY", "")
+    if not url or len(key) < 32:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Tutor is not configured", retryable=True)
+    body: dict[str, Any] = {"task": task, "sources": sources, "correlation_id": str(uuid4())}
+    if image:
+        body["image_png_base64"] = image
+    try:
+        async with httpx.AsyncClient(timeout=_TUTOR_TIMEOUT_S) as client:
+            response = await client.post(
+                f"{url}/internal/sequence/erklaeren", headers={"X-VibeMind-Learning-Evaluation-Key": key}, json=body,
+            )
+    except httpx.HTTPError as error:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Tutor is unavailable", retryable=True) from error
+    if response.status_code != 200:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable", "Tutor gave no grounded answer", retryable=True)
+    answer = response.json().get("explanation") or {}
+    keys = set(answer.get("source_keys") or [])
+    return answer, {
+        "explanation": answer.get("explanation", ""),
+        "cited": [source["source"] for source in sources if source["key"] in keys],
+        "extra": answer.get("extra", ""),
+        "extra_is_outside_course": bool(answer.get("extra")),
+    }
+
+
+@router.post("/lernsequenz/{sequence_id}/erklaeren")
+async def explain(
+    sequence_id: str,
+    k: Token,
+    payload: Annotated[dict[str, Any], Body()],
+    p: Person = None,
+    person_header: PersonHeader = None,
+) -> JSONResponse:
+    """"Erklär mir das": the marked place, explained from the course by the worker."""
+    sequence = _checked(sequence_id, k)
+    _actor(person_header or p)
+    _answer, body = await _explain(sequence, payload)
+    return JSONResponse(body, headers=_headers())
+
+
+@router.post("/lernsequenz/{sequence_id}/notizen")
+async def note(
+    sequence_id: str,
+    k: Token,
+    payload: Annotated[dict[str, Any], Body()],
+    p: Person = None,
+    person_header: PersonHeader = None,
+) -> JSONResponse:
+    """"Notiz anlegen": the explanation of a marked place, kept for the signed-in person."""
+    sequence = _checked(sequence_id, k)
+    if not (person_header or p):
+        raise ApiError(status.HTTP_401_UNAUTHORIZED, "person_required", "Notizen gibt es nur angemeldet")
+    actor_id = _actor(person_header or p)
+    answer, body = await _explain(sequence, payload)
+    from spaces.learning.deployment.notizen_routes import _store as note_store
+
+    try:
+        saved = note_store().create(
+            actor_id=actor_id, course_id=sequence.course_id, sequence_id=sequence.sequence_id,
+            anchor=payload["anchor"], selection=" ".join(payload["selection"].split()),
+            explanation=answer.get("explanation", ""), extra=answer.get("extra", ""),
+            extra_sources=[s for s in answer.get("extra_sources", []) if isinstance(s, str)],
+        )
+    except ValueError as error:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", str(error)) from error
+    return JSONResponse({"note_id": saved["id"], **body}, headers=_headers())
 
 
 def _media_root() -> Path:
