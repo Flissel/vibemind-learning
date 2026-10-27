@@ -37,6 +37,7 @@ MAX_CLOZE = 3
 _MAX_COMMAND_TOKENS = 16
 _SENTENCE_END = (".", ":", "!", "?", ",")
 _QUOTES = "\"'"
+_FLAG = re.compile(r"^[-/][A-Za-z]{1,2}$")
 SHELL_LABEL: dict[Shell, str] = {"powershell": "Windows PowerShell", "cmd": "Windows CMD", "unix": "macOS / Linux"}
 
 _NUMBERED = re.compile(r"^\s*\d+[.)]\s+(.+)$")
@@ -53,6 +54,7 @@ _FENCE_SHELLS: dict[str, Shell] = {
 def _bare(t: str) -> str:
     """The token without the quotes that belong to the line: a wrapping pair, and a trailing
     quote that has no partner inside the token (``'export PATH="…"'``)."""
+    t = t.rstrip(",;")
     for q in _QUOTES:
         if len(t) > 1 and t[0] == q and t[-1] == q:
             t = t[1:-1]
@@ -134,7 +136,7 @@ def _cloze(line: str, fence: str, checkpoint_id: str, after: str, refs: tuple[st
     if not line.startswith(KNOWN_COMMANDS):
         return None
     tokens = line.split()
-    candidates = [t for t in tokens if "/" in t or "." in t]
+    candidates = [t for t in tokens if ("/" in t or "." in t) and not _FLAG.match(t)]
     chosen = max(candidates, key=len) if candidates else tokens[-1]
     # A URL keeps its address; only the file name at its end is the blank. Quotes around
     # the value belong to the line, not to the answer.

@@ -179,3 +179,12 @@ def test_titles_naming_several_shells_apply_to_all() -> None:
     assert shell_condition("PATH reparieren je Shell: PowerShell, CMD, macOS und Linux") == ()
     assert shell_condition("Andere Installationswege: Homebrew, WinGet und Linux-Paketverwaltung") == ()
     assert shell_condition("Installieren mit Homebrew")[0].option == "unix"
+
+
+def test_flags_and_trailing_commas_are_never_the_blank() -> None:
+    body = ("# T\n\n    echo %PATH% | findstr /i \"local\\bin\"\n\n"
+            "    [Environment]::SetEnvironmentVariable('PATH', \"$currentPath;$env:USERPROFILE\\.local\\bin\", 'User')\n")
+    first, second = structured_checkpoints(lesson(body), after="l1-1", refs=())
+    assert first.template == 'echo %PATH% | findstr /i "{{wert}}"' and first.blanks[0].accepted == ("local\\bin",)
+    assert second.template == "[Environment]::SetEnvironmentVariable('PATH', \"{{wert}}\", 'User')"
+    assert second.blanks[0].accepted == ("$currentPath;$env:USERPROFILE\\.local\\bin",)
