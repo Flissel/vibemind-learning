@@ -62,6 +62,30 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .tab{min-height:40px;padding:0 14px;border-radius:999px;border:2px solid var(--line);background:#fff;cursor:pointer;font-weight:600;font-size:14px}
 .tab.sel{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CDD1CB;padding:10px 12px;font:13px/1.45 Consolas,Menlo,monospace;resize:vertical}
+.order{display:flex;flex-direction:column;gap:8px}
+.orow{display:flex;align-items:center;gap:8px;border:2px solid var(--line);border-radius:10px;padding:6px 8px 6px 10px;background:#fff}
+.orow.ok{border-color:var(--accent);background:var(--accent-soft)}.orow.no{border-color:var(--warn);background:var(--warn-soft)}
+.orow .row-text{flex:1;min-width:0}
+.orow .pos{font-weight:700;color:var(--muted);min-width:2ch}
+.grip{cursor:grab;color:var(--muted);touch-action:none;user-select:none;padding:0 4px;letter-spacing:-2px}
+.btn.icon{min-width:44px;padding:0;font-size:18px}
+.match{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:2px solid var(--line);border-radius:10px;padding:8px 12px}
+.match.ok{border-color:var(--accent);background:var(--accent-soft)}.match.no{border-color:var(--warn);background:var(--warn-soft)}
+.match .row-text{flex:1;min-width:140px;font-weight:600}
+.match select{min-height:44px;border-radius:10px;border:1px solid #CDD1CB;padding:0 10px;background:#fff;font:inherit;min-width:180px}
+.cmd.cloze{user-select:text;line-height:2}
+.cmd .blank{display:inline-block;width:14ch;min-height:32px;border-radius:6px;border:1px solid #CDD1CB;padding:0 8px;font:inherit;color:var(--ink);background:#fff;vertical-align:middle;margin:0 2px}
+.cmd .blank.ok{border-color:var(--accent);background:var(--accent-soft)}.cmd .blank.no{border-color:var(--warn);background:var(--warn-soft)}
+.hotspot{position:relative;max-width:100%;margin:0 auto;flex:none;user-select:none;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden;border:1px solid var(--line)}
+.hotspot img{position:absolute;inset:0;width:100%;height:100%;display:block}
+.hotspot .mark{position:absolute;border:2px solid var(--blue);background:rgba(29,78,216,.18);pointer-events:none}
+.hotspot .mark.target{border-color:var(--accent);background:rgba(14,107,92,.22)}
+.terminal{background:#16191D;color:#E8F2EF;border-radius:10px;padding:12px 14px;font:14px/1.5 Consolas,"Cascadia Mono",Menlo,monospace}
+.terminal .screen{margin:0 0 8px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font:inherit}
+.terminal .line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.terminal .prompt{color:#9BD3C5;white-space:nowrap}
+.terminal input{flex:1;min-width:160px;min-height:36px;background:#0E1114;color:#E8F2EF;border:1px solid #3A4046;border-radius:8px;padding:0 10px;font:inherit}
+.terminal .btn{background:#2A3036;border-color:#3A4046;color:#E8F2EF}
 @media (max-width:600px){.slide{padding:24px 20px}.slide h2{font-size:24px}.statement{font-size:19px}}
 </style>
 </head>
@@ -105,6 +129,25 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   };
   const COLORS = { ink: '#16191D', accent: '#0E6B5C', warn: '#B45309', blue: '#1D4ED8' };
   let seq = null, index = 0, done = new Set(), opening = new Set(), video = null, sourceTitles = {};
+
+  // "Dein Weg": the learner's answers decide which slides and checkpoints apply (only_for).
+  // An unanswered key hides nothing; only an answer that differs does.
+  let profile = {};
+  try { profile = JSON.parse(localStorage.getItem('lernsequenz-profil') || '{}') || {}; } catch (_) { profile = {}; }
+  function setProfile(choices) {
+    profile = { ...profile, ...choices };
+    try {
+      localStorage.setItem('lernsequenz-profil', JSON.stringify(profile));
+      if (choices.shell) localStorage.setItem('lernsequenz-shell', choices.shell);
+    } catch (_) {}
+  }
+  const matches = (item) => (item.only_for || []).every((c) => !(c.key in profile) || profile[c.key] === c.option);
+  const visible = () => seq.sections.filter(matches);
+  const preferredShell = (shells) => {
+    if (shells.includes(profile.shell)) return profile.shell;
+    try { const kept = localStorage.getItem('lernsequenz-shell'); if (shells.includes(kept)) return kept; } catch (_) {}
+    return shells[0];
+  };
 
   async function post(checkpoint_id, answer) {
     const res = await fetch(`${base}/antwort?k=${encodeURIComponent(token)}`, {
@@ -193,11 +236,13 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   }
 
   function render() {
-    const section = seq.sections[index];
-    $('count').textContent = `${index + 1} / ${seq.sections.length}`;
-    $('progress').replaceChildren(...seq.sections.map((_, i) => el('span', { class: i <= index ? 'done' : '' })));
+    const vis = visible();
+    if (index >= vis.length) index = Math.max(0, vis.length - 1);
+    const section = vis[index];
+    $('count').textContent = `${index + 1} / ${vis.length}`;
+    $('progress').replaceChildren(...vis.map((_, i) => el('span', { class: i <= index ? 'done' : '' })));
     $('prev').disabled = index === 0;
-    $('next').textContent = index === seq.sections.length - 1 ? 'Abschließen' : 'Weiter';
+    $('next').textContent = index === vis.length - 1 ? 'Abschließen' : 'Weiter';
     $('narration').textContent = section.narration || section.transcript || '';
     $('sources').textContent = refsText(section.refs) || 'Kursmaterial';
     video = null;
@@ -207,7 +252,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
       video = el('video', { controls: true, preload: 'metadata', playsinline: true });
       if (/\.mp4$/.test(section.url)) video.append(el('source', { src: section.url.replace(/\.mp4$/, '.webm') + at, type: 'video/webm' }));
       video.append(el('source', { src: section.url + at, type: /\.webm$/.test(section.url) ? 'video/webm' : 'video/mp4' }));
-      const timed = seq.checkpoints.filter((c) => c.after_section === section.section_id && c.at_s !== null && c.at_s !== undefined);
+      const timed = seq.checkpoints.filter((c) => matches(c) && c.after_section === section.section_id && c.at_s !== null && c.at_s !== undefined);
       video.addEventListener('timeupdate', () => {
         // timeupdate fires again before the pause lands; open each checkpoint only once.
         const due = timed.find((c) => !done.has(c.checkpoint_id) && !opening.has(c.checkpoint_id) && video.currentTime >= c.at_s);
@@ -225,7 +270,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   }
 
   function pendingAfter(section) {
-    return seq.checkpoints.filter((c) => c.after_section === section.section_id && !done.has(c.checkpoint_id) && (section.kind !== 'video' || c.at_s === null || c.at_s === undefined));
+    return seq.checkpoints.filter((c) => matches(c) && c.after_section === section.section_id && !done.has(c.checkpoint_id) && (section.kind !== 'video' || c.at_s === null || c.at_s === undefined));
   }
 
   function openCheckpoints(list, then) {
@@ -239,7 +284,8 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
     tutor.classList.add('hidden');
     const overlay = el('div', { class: 'overlay', role: 'dialog', 'aria-label': cp.title },
       el('div', { class: 'frame' },
-        el('header', {}, el('span', {}, ({ explanation: 'ERKLÄRUNG', choice: 'HALTEPUNKT · FRAGE', calculation: 'RECHENAUFGABE', estimate: 'SCHÄTZEN', drawn_explanation: 'AN DER TAFEL ERKLÄRT', command_check: 'IM TERMINAL PRÜFEN' })[cp.kind] || 'HALTEPUNKT'),
+        el('header', {}, el('span', {}, ({ explanation: 'ERKLÄRUNG', choice: 'HALTEPUNKT · FRAGE', calculation: 'RECHENAUFGABE', estimate: 'SCHÄTZEN', drawn_explanation: 'AN DER TAFEL ERKLÄRT', command_check: 'IM TERMINAL PRÜFEN',
+          ordering: 'REIHENFOLGE', cloze: 'BEFEHL VERVOLLSTÄNDIGEN', matching: 'ZUORDNEN', hotspot: 'STELLE MARKIEREN', terminal_sim: 'ÜBUNGS-TERMINAL', step: 'SCHRITT', profile: 'DEIN WEG' })[cp.kind] || 'HALTEPUNKT'),
           el('button', { class: 'btn link', type: 'button', style: 'min-height:32px;font-size:13px', onclick: () => tutor.classList.toggle('hidden') }, 'Tutor fragen')),
         el('div', { class: 'body' }, body, tutor),
         el('footer', {}, footerKids)));
@@ -260,6 +306,13 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
     else if (cp.kind === 'estimate') estimateFrame(cp, finish);
     else if (cp.kind === 'drawn_explanation') drawFrame(cp, finish);
     else if (cp.kind === 'command_check') commandFrame(cp, finish);
+    else if (cp.kind === 'ordering') orderingFrame(cp, finish);
+    else if (cp.kind === 'cloze') clozeFrame(cp, finish);
+    else if (cp.kind === 'matching') matchingFrame(cp, finish);
+    else if (cp.kind === 'hotspot') hotspotFrame(cp, finish);
+    else if (cp.kind === 'terminal_sim') terminalFrame(cp, finish);
+    else if (cp.kind === 'step') stepFrame(cp, finish);
+    else if (cp.kind === 'profile') profileFrame(cp, finish);
     else finish({ remove() {} });
   }
 
@@ -286,8 +339,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
 
   function commandFrame(cp, finish) {
     const shells = cp.commands.map((c) => c.shell);
-    let shell = shells[0];
-    try { const kept = localStorage.getItem('lernsequenz-shell'); if (shells.includes(kept)) shell = kept; } catch (_) {}
+    let shell = preferredShell(shells);
     const tabs = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Ihre Shell' });
     const hint = el('div', { class: 'small' });
     const cmdBox = el('div');
@@ -316,6 +368,254 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
       el('div', { class: 'small' }, 'Führen Sie den Befehl in Ihrem Terminal aus und fügen Sie die Ausgabe hier ein:'), output, fb],
       [el('button', { class: 'btn link', type: 'button', onclick: () => finish(o) }, 'Überspringen'),
        el('div', { class: 'row' }, check, el('button', { class: 'btn', type: 'button', onclick: () => finish(o) }, 'Weiter'))]);
+  }
+
+  const skipButton = (finish, getOverlay) => el('button', { class: 'btn link', type: 'button', onclick: () => finish(getOverlay()) }, 'Überspringen');
+  const feedback = (fb, ok, lead, text, refs) => {
+    fb.className = 'fb ' + (ok ? 'ok' : 'no');
+    fb.replaceChildren(...[el('strong', {}, lead), text || null, el('div', { class: 'refs' }, refsText(refs))].filter(Boolean));
+  };
+
+  function profileFrame(cp, finish) {
+    const choices = Object.fromEntries(cp.questions.filter((q) => q.key in profile).map((q) => [q.key, profile[q.key]]));
+    const update = () => { save.disabled = !cp.questions.every((q) => q.key in choices); };
+    const blocks = cp.questions.map((q) => {
+      const labels = q.options.map((o) => {
+        const input = el('input', { type: 'radio', name: `profil-${q.key}`, value: o.option_id, checked: choices[q.key] === o.option_id });
+        const label = el('label', { class: 'opt' + (choices[q.key] === o.option_id ? ' sel' : '') }, input, o.text);
+        input.addEventListener('change', () => { choices[q.key] = o.option_id; labels.forEach((l) => l.classList.toggle('sel', l === label)); update(); });
+        return label;
+      });
+      return el('div', { style: 'display:flex;flex-direction:column;gap:8px' }, el('p', { class: 'q' }, q.question), ...labels);
+    });
+    const fb = el('div', { class: 'hidden' });
+    const save = el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      try { const r = await post(cp.checkpoint_id, { choices }); setProfile(r.choices); finish(o); }
+      catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Weiter');
+    update();
+    const o = frame(cp, [el('div', { class: 'small' }, 'Damit zeigen wir nur, was zu Ihrem Weg passt. Sie können die Wahl jederzeit ändern.'), ...blocks, fb],
+      [skipButton(finish, () => o), save]);
+  }
+
+  function orderingFrame(cp, finish) {
+    let order = cp.items.map((i) => i.item_id), checked = false, drag = null;
+    const texts = Object.fromEntries(cp.items.map((i) => [i.item_id, i.text]));
+    const list = el('div', { class: 'order', role: 'list' });
+    const fb = el('div', { class: 'hidden' });
+    const renumber = () => order.forEach((id, i) => { rows[id].querySelector('.pos').textContent = `${i + 1}.`; });
+    const sync = () => { order = [...list.children].map((n) => n.getAttribute('data-id')); renumber(); };
+    const draw = () => { list.replaceChildren(...order.map((id) => rows[id])); renumber(); };
+    const rows = Object.fromEntries(order.map((id) => {
+      const grip = el('span', { class: 'grip', 'aria-hidden': 'true', title: 'Ziehen' }, '⋮⋮');
+      grip.addEventListener('pointerdown', (e) => { if (checked) return; drag = id; grip.setPointerCapture(e.pointerId); e.preventDefault(); });
+      grip.addEventListener('pointermove', (e) => {
+        if (drag !== id) return;
+        // The dragged row stays where it is in the tree (moving it would end the pointer capture); neighbours hop over it.
+        const node = rows[id], prev = node.previousElementSibling, next = node.nextElementSibling;
+        if (prev && e.clientY < prev.getBoundingClientRect().top + prev.offsetHeight / 2) list.insertBefore(prev, node.nextElementSibling);
+        else if (next && e.clientY > next.getBoundingClientRect().top + next.offsetHeight / 2) list.insertBefore(next, node);
+      });
+      const drop = () => { if (drag === id) { drag = null; sync(); } };
+      grip.addEventListener('pointerup', drop); grip.addEventListener('pointercancel', drop);
+      const move = (delta, button) => {
+        if (checked) return;
+        const i = order.indexOf(id), j = i + delta;
+        if (j < 0 || j >= order.length) return;
+        [order[i], order[j]] = [order[j], order[i]];
+        draw(); button.focus();
+      };
+      const up = el('button', { class: 'btn icon', type: 'button', 'aria-label': 'Nach oben', onclick: () => move(-1, up) }, '↑');
+      const down = el('button', { class: 'btn icon', type: 'button', 'aria-label': 'Nach unten', onclick: () => move(1, down) }, '↓');
+      return [id, el('div', { class: 'orow', role: 'listitem', 'data-id': id }, grip, el('span', { class: 'pos' }), el('span', { class: 'row-text' }, texts[id]), up, down)];
+    }));
+    const check = el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      if (checked) { finish(o); return; }
+      try {
+        const r = await post(cp.checkpoint_id, { order });
+        checked = true;
+        order.forEach((id, i) => rows[id].classList.add(id === r.correct_order[i] ? 'ok' : 'no'));
+        list.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        const right = order.filter((id, i) => id === r.correct_order[i]).length;
+        feedback(fb, r.correct, r.correct ? 'Genau. ' : 'Noch nicht. ',
+          r.correct ? '' : `${right} von ${order.length} stehen an der richtigen Stelle. Richtig ist: ` + r.correct_order.map((id, i) => `${i + 1}. ${texts[id]}`).join(' · '), r.refs);
+        check.textContent = 'Weiter';
+      } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Prüfen');
+    draw();
+    const o = frame(cp, [el('p', { class: 'q' }, cp.task), el('div', { class: 'small' }, 'Mit ↑ / ↓ oder durch Ziehen sortieren.'), list, fb],
+      [skipButton(finish, () => o), check]);
+  }
+
+  function clozeFrame(cp, finish) {
+    const inputs = {};
+    let checked = false;
+    const parts = cp.template.split(/(\{\{\w+\}\})/).filter(Boolean).map((part) => {
+      const m = part.match(/^\{\{(\w+)\}\}$/);
+      if (!m) return part;
+      const input = el('input', { class: 'blank', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Lücke ${m[1]}` });
+      inputs[m[1]] = input;
+      return input;
+    });
+    const fb = el('div', { class: 'hidden' });
+    const check = el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      if (checked) { finish(o); return; }
+      const values = Object.fromEntries(Object.entries(inputs).map(([id, input]) => [id, input.value]));
+      if (!Object.values(values).some((v) => v.trim())) { Object.values(inputs)[0].focus(); return; }
+      try {
+        const r = await post(cp.checkpoint_id, { values });
+        checked = true;
+        r.blanks.forEach((b) => { inputs[b.blank_id].classList.add(b.correct ? 'ok' : 'no'); inputs[b.blank_id].readOnly = true; });
+        const right = r.blanks.filter((b) => b.correct).length;
+        feedback(fb, r.score === 1, r.score === 1 ? 'Genau. ' : 'Noch nicht. ',
+          r.score === 1 ? '' : `${right} von ${r.blanks.length} Lücken stimmen. Der Befehl steht auf der Folie davor.`, r.refs);
+        check.textContent = 'Weiter';
+      } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Prüfen');
+    Object.values(inputs).forEach((i) => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') check.click(); }));
+    const o = frame(cp, [el('p', { class: 'q' }, cp.task), cp.shell ? el('div', { class: 'small' }, `Für ${SHELL_NAMES[cp.shell] || cp.shell}`) : null,
+      el('pre', { class: 'cmd cloze' }, ...parts), fb],
+      [skipButton(finish, () => o), check]);
+  }
+
+  function matchingFrame(cp, finish) {
+    const selects = {};
+    let checked = false;
+    const fb = el('div', { class: 'hidden' });
+    const rows = cp.left.map((l) => {
+      const select = el('select', { 'aria-label': `Zuordnung für ${l.text}` }, el('option', { value: '' }, '– bitte wählen –'),
+        ...cp.right.map((r) => el('option', { value: r.item_id }, r.text)));
+      select.addEventListener('change', () => { check.disabled = checked || !cp.left.every((x) => selects[x.item_id].value); });
+      selects[l.item_id] = select;
+      return el('div', { class: 'match', 'data-id': l.item_id }, el('span', { class: 'row-text' }, l.text), el('span', { 'aria-hidden': 'true' }, '→'), select);
+    });
+    const check = el('button', { class: 'btn primary', type: 'button', disabled: true, onclick: async () => {
+      if (checked) { finish(o); return; }
+      const pairs = Object.fromEntries(cp.left.map((l) => [l.item_id, selects[l.item_id].value]));
+      try {
+        const r = await post(cp.checkpoint_id, { pairs });
+        checked = true;
+        rows.forEach((row) => { const id = row.getAttribute('data-id'); row.classList.add(r.pairs[id] === pairs[id] ? 'ok' : 'no'); selects[id].disabled = true; });
+        const right = cp.left.filter((l) => r.pairs[l.item_id] === pairs[l.item_id]).length;
+        feedback(fb, r.correct, r.correct ? 'Genau. ' : 'Noch nicht. ', r.correct ? '' : `${right} von ${cp.left.length} Paaren stimmen.`, r.refs);
+        check.disabled = false; check.textContent = 'Weiter';
+      } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Prüfen');
+    const o = frame(cp, [el('p', { class: 'q' }, cp.task), ...rows, fb], [skipButton(finish, () => o), check]);
+  }
+
+  function hotspotFrame(cp, finish) {
+    let start = null, rect = null, checked = false;
+    const img = el('img', { src: cp.image, alt: cp.title, draggable: 'false', width: cp.width, height: cp.height });
+    const mark = el('div', { class: 'mark hidden' });
+    const box = el('div', { class: 'hotspot' }, img, mark);
+    // Sized by hand: as wide as the frame allows, at most half the viewport high, never upscaled.
+    const fit = () => {
+      const parent = box.parentElement, style = parent ? getComputedStyle(parent) : null;
+      const avail = parent ? parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) : cp.width;
+      const scale = Math.min(avail / cp.width, window.innerHeight * 0.5 / cp.height, 1);
+      box.style.width = `${Math.round(cp.width * scale)}px`; box.style.height = `${Math.round(cp.height * scale)}px`;
+    };
+    window.addEventListener('resize', fit);
+    const leave = (overlay) => { window.removeEventListener('resize', fit); finish(overlay); };
+    const fb = el('div', { class: 'hidden' });
+    const clamp = (v) => Math.min(Math.max(v, 0), 1);
+    const toImage = (e) => { const r = img.getBoundingClientRect(); return { x: Math.round(clamp((e.clientX - r.left) / r.width) * cp.width), y: Math.round(clamp((e.clientY - r.top) / r.height) * cp.height) }; };
+    const place = (node, r) => {
+      node.style.left = `${r.x / cp.width * 100}%`; node.style.top = `${r.y / cp.height * 100}%`;
+      node.style.width = `${r.w / cp.width * 100}%`; node.style.height = `${r.h / cp.height * 100}%`;
+      node.classList.remove('hidden');
+    };
+    box.addEventListener('pointerdown', (e) => { if (checked) return; e.preventDefault(); box.setPointerCapture(e.pointerId); start = toImage(e); rect = { ...start, w: 0, h: 0 }; place(mark, rect); check.disabled = true; });
+    box.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      const p = toImage(e);
+      rect = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) };
+      place(mark, rect);
+    });
+    const release = () => { if (!start) return; start = null; check.disabled = !(rect && rect.w > 2 && rect.h > 2); };
+    box.addEventListener('pointerup', release); box.addEventListener('pointercancel', release);
+    const check = el('button', { class: 'btn primary', type: 'button', disabled: true, onclick: async () => {
+      if (checked) { leave(o); return; }
+      try {
+        const r = await post(cp.checkpoint_id, { rect });
+        checked = true;
+        const target = el('div', { class: 'mark target' }); box.append(target); place(target, r.target);
+        feedback(fb, r.hit, r.hit ? 'Getroffen. ' : 'Nicht getroffen. ', r.hit ? '' : 'Die gesuchte Stelle ist jetzt grün markiert.', r.refs);
+        check.textContent = 'Weiter';
+      } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Prüfen');
+    const o = frame(cp, [el('p', { class: 'q' }, cp.task), el('div', { class: 'small' }, 'Ziehen Sie mit gedrückter Maustaste oder dem Finger einen Rahmen um die Stelle.'), box, fb],
+      [skipButton(leave, () => o), check]);
+    fit();
+  }
+
+  function terminalFrame(cp, finish) {
+    const screen = el('pre', { class: 'screen', 'aria-live': 'polite' }, `${SHELL_NAMES[cp.shell] || cp.shell} · Übungs-Terminal – auf Ihrem Rechner wird nichts ausgeführt.\n`);
+    const input = el('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Befehl eingeben' });
+    const fb = el('div', { class: 'hidden' });
+    let reached = false;
+    async function run() {
+      const command = input.value.trim();
+      if (!command) return;
+      input.value = ''; input.disabled = true;
+      screen.append(`${cp.prompt} ${command}\n`);
+      try {
+        const r = await post(cp.checkpoint_id, { command });
+        screen.append((r.output || '') + '\n');
+        if (r.reached && !reached) { reached = true; feedback(fb, true, 'Ziel erreicht. ', 'Genau dieser Befehl zeigt, ob die Installation geklappt hat.', r.refs); }
+      } catch (err) { screen.append(err.message + '\n'); }
+      input.disabled = false; input.focus(); screen.scrollTop = screen.scrollHeight;
+    }
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); run(); } });
+    const o = frame(cp, [el('p', { class: 'q' }, cp.task),
+      el('div', { class: 'terminal' }, screen, el('div', { class: 'line' }, el('span', { class: 'prompt' }, cp.prompt), input,
+        el('button', { class: 'btn', type: 'button', style: 'min-height:36px', onclick: run }, 'Ausführen'))), fb],
+      [skipButton(finish, () => o), el('button', { class: 'btn primary', type: 'button', onclick: () => finish(o) }, 'Weiter')]);
+    input.focus();
+  }
+
+  function stepFrame(cp, finish) {
+    const shells = cp.commands.map((c) => c.shell);
+    let shell = preferredShell(shells);
+    const tabs = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Ihre Shell' });
+    const cmdBox = el('div', { style: 'display:flex;flex-direction:column;gap:6px' });
+    const fb = el('div', { class: 'hidden' });
+    const output = el('textarea', { class: 'out hidden', 'aria-label': 'Ausgabe des Befehls', placeholder: 'Hier einfügen, was bei Ihnen stattdessen erschienen ist …' });
+    const outputLabel = el('div', { class: 'small hidden' }, 'Was bei Ihnen stattdessen erschienen ist:');
+    function show() {
+      tabs.replaceChildren(...shells.map((s) => el('button', { class: 'tab' + (s === shell ? ' sel' : ''), type: 'button', role: 'tab', 'aria-selected': String(s === shell),
+        onclick: () => { shell = s; try { localStorage.setItem('lernsequenz-shell', s); } catch (_) {} show(); } }, SHELL_NAMES[s] || s)));
+      cmdBox.replaceChildren(...cp.commands.filter((c) => c.shell === shell).map((c) => commandLine(c.command)));
+    }
+    const weiter = el('button', { class: 'btn hidden', type: 'button', onclick: () => finish(o) }, 'Weiter');
+    const doneBtn = el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      try { await post(cp.checkpoint_id, { state: 'done' }); finish(o); } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, cp.expected_text || cp.expected_image ? 'Sieht bei mir so aus' : 'Erledigt');
+    const differs = el('button', { class: 'btn', type: 'button', onclick: async () => {
+      if (cp.has_check) { differs.classList.add('hidden'); outputLabel.classList.remove('hidden'); output.classList.remove('hidden'); checkBtn.classList.remove('hidden'); output.focus(); return; }
+      try { const r = await post(cp.checkpoint_id, { state: 'differs' }); fb.className = 'fb no'; fb.textContent = r.message; weiter.classList.remove('hidden'); }
+      catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Sieht anders aus');
+    const checkBtn = el('button', { class: 'btn hidden', type: 'button', onclick: async () => {
+      if (!output.value.trim()) { output.focus(); return; }
+      try {
+        const r = await post(cp.checkpoint_id, { state: 'differs', shell, output: output.value });
+        fb.className = 'fb ' + (r.ok ? 'ok' : 'no');
+        fb.replaceChildren(...[el('strong', {}, r.ok ? 'Doch geschafft. ' : r.recognized ? 'Erkannt: ' : 'Noch nicht erkannt. '), r.message,
+          r.warning ? el('div', { class: 'small', style: 'margin-top:6px;color:var(--warn)' }, r.warning) : null,
+          r.fix && r.fix.length ? el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px' },
+            el('div', { class: 'small' }, `So beheben Sie es in ${SHELL_NAMES[shell] || shell}:`), ...r.fix.map((f) => commandLine(f.command))) : null,
+          el('div', { class: 'refs' }, refsText(r.refs))].filter(Boolean));
+        weiter.classList.remove('hidden');
+      } catch (err) { fb.className = 'fb no'; fb.textContent = err.message; }
+    } }, 'Ausgabe prüfen');
+    if (shells.length) show();
+    const o = frame(cp, [el('p', { class: 'q' }, cp.instruction), shells.length > 1 ? el('div', { class: 'small' }, 'Ihre Shell:') : null, shells.length ? tabs : null, cmdBox,
+      cp.expected_text ? el('div', {}, el('div', { class: 'small' }, 'So sollte es ungefähr aussehen:'), el('pre', { class: 'cmd', style: 'user-select:text' }, cp.expected_text)) : null,
+      cp.expected_image ? el('img', { src: cp.expected_image, alt: 'So sollte es aussehen', style: 'max-width:100%;border-radius:10px;border:1px solid var(--line)' }) : null,
+      outputLabel, output, fb],
+      [skipButton(finish, () => o), el('div', { class: 'row' }, differs, checkBtn, weiter, doneBtn)]);
   }
 
   function choiceFrame(cp, finish) {
@@ -480,9 +780,11 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
 
   $('prev').addEventListener('click', () => { if (index > 0) { index -= 1; render(); } });
   $('next').addEventListener('click', () => {
-    const section = seq.sections[index];
+    const section = visible()[index];
     openCheckpoints(pendingAfter(section), () => {
-      if (index < seq.sections.length - 1) { index += 1; render(); }
+      // A profile answered on the way can hide later slides: find our place again.
+      const vis = visible(), here = vis.indexOf(section);
+      if (here < vis.length - 1) { index = here + 1; render(); }
       else { $('stage').replaceChildren(el('div', { class: 'slide' }, el('h2', {}, 'Geschafft'), el('div', { class: 'statement' }, 'Sie haben diese Sequenz abgeschlossen.'))); }
     });
   });
@@ -500,7 +802,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
     document.title = data.title;
     $('kind').textContent = data.kind === 'video' ? 'Interaktives Video' : 'Interaktive Präsentation';
     if (!('speechSynthesis' in window)) $('speak').classList.add('hidden');
-    $('tutorPanel').append(tutorBox(() => ({ section_id: seq.sections[index].section_id })));
+    $('tutorPanel').append(tutorBox(() => ({ section_id: visible()[index].section_id })));
     render();
   }).catch(() => { $('title').textContent = 'Diese Lernsequenz ist nicht verfügbar.'; });
 })();
