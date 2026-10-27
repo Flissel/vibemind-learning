@@ -26,11 +26,20 @@ def player_server(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LEARNING_VIBEMIND_SERVICE_KEY", PLAYER_KEY)
     monkeypatch.setenv("LEARNHOUSE_LEARNING_SERVICE_KEY", PLAYER_KEY)   # signs the person token
     monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
-    from spaces.learning.deployment import lernsequenz_routes, runtime_api
+    monkeypatch.setenv("LEARNING_DATABASE_URL", f"sqlite:///{tmp_path / 'player.db'}")   # notes, mastery
+    from sqlalchemy import create_engine
+
+    from spaces.learning.deployment import lernsequenz_routes, notizen_routes, runtime_api
+    from spaces.learning.services.db.models import Base
     from spaces.learning.services.lernsequenz.store import SequenceStore
     from spaces.learning.services.lernsequenz.token import sequence_token
 
+    engine = create_engine(f"sqlite:///{tmp_path / 'player.db'}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
     lernsequenz_routes._store.cache_clear()
+    lernsequenz_routes._sessions.cache_clear()
+    notizen_routes._store.cache_clear()
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(runtime_api.app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -52,6 +61,44 @@ def player_server(tmp_path: Path, monkeypatch):
     server.should_exit = True
     thread.join(timeout=5)
     lernsequenz_routes._store.cache_clear()
+    lernsequenz_routes._sessions.cache_clear()
+    notizen_routes._store.cache_clear()
+
+
+@pytest.fixture()
+def explain_worker(monkeypatch):
+    """A stand-in for learning-worker's explain endpoint; records what it was asked."""
+    uvicorn = pytest.importorskip("uvicorn")
+    from fastapi import Body, FastAPI
+
+    app = FastAPI()
+    calls: list[dict] = []
+
+    @app.post("/internal/sequence/erklaeren")
+    def explain(payload: dict = Body()) -> dict:
+        calls.append(payload)
+        return {"explanation": {
+            "explanation": "Die Jahreskosten laut Folie.", "source_keys": ["S1"],
+            "extra": "Allgemein: Kosten je Jahr sind Stückkosten mal Menge.", "extra_is_outside_course": True,
+            "extra_sources": [], "evidence_ref": "openfang://completion/e1",
+        }}
+
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                break
+        except OSError:
+            time.sleep(0.1)
+    monkeypatch.setenv("LEARNING_EVALUATION_SERVICE_URL", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("LEARNING_EVALUATION_SERVICE_KEY", "e" * 32)
+    yield SimpleNamespace(calls=calls)
+    server.should_exit = True
+    thread.join(timeout=5)
 
 
 @pytest.fixture()
