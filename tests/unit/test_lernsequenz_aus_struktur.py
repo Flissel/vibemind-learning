@@ -194,9 +194,11 @@ def test_item_ids_do_not_reveal_the_solution() -> None:
     # A learner can read ids in the page: they must not sort into the answer.
     checkpoints = structured_checkpoints(lesson(), after="l1-4", refs=(CIT,))
     ordering, matching = checkpoints[0], checkpoints[3]
-    # Hashed per checkpoint, not numbered: the id carries no position and no partner index.
+    # Random, not numbered and not a hash of the position (the code is public): the id carries
+    # no position and no partner index, and two builds never draw the same ids.
     assert all(not i.item_id.lstrip("s").isdigit() and len(i.item_id) == 7 for i in ordering.items)
     assert all(not r.item_id.lstrip("e").isdigit() and len(r.item_id) == 7 for r in matching.right)
     assert all(matching.pairs[l.item_id] != l.item_id.replace("b", "e") for l in matching.left)
-    other = structured_checkpoints(lesson(), after="l2-1", refs=())
-    assert [i.item_id for i in ordering.items] == [i.item_id for i in other[0].items]   # stable per lesson
+    other = structured_checkpoints(lesson(), after="l1-4", refs=(CIT,))
+    assert [i.item_id for i in ordering.items] != [i.item_id for i in other[0].items]
+    assert len({i.item_id for i in ordering.items}) == len(ordering.items)

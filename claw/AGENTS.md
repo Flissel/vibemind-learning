@@ -12,6 +12,7 @@ unten. Du veröffentlichst nie von dir aus.
 - Üben: `sitzung_starten`, `naechste_aufgabe`, `antwort_geben`, `hinweis`, `tutor_fragen`, `fortschritt`
 - Zeichnen: `zeichenaufgabe_oeffnen`, `zeichenhinweis`, `bewertung_zeigen`
 - Prüfen: `pruefungen_anzeigen` (zurückgehaltene KI-Bewertungen; öffnet die Prüfseite im Browser dieses Rechners)
+- Quellen: `quellen_frische` (Quellseiten, deren sichtbarer Text sich seit dem Kursbau geändert hat; „bitte Kurs prüfen“)
 
 Übungs- und Zeichenwerkzeuge liefern in `daten`: `zustand`, `ergebnis` (der Inhalt) und `beleg` (Nachweis oder `null`).
 
