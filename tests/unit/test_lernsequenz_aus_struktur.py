@@ -188,3 +188,15 @@ def test_flags_and_trailing_commas_are_never_the_blank() -> None:
     assert first.template == 'echo %PATH% | findstr /i "{{wert}}"' and first.blanks[0].accepted == ("local\\bin",)
     assert second.template == "[Environment]::SetEnvironmentVariable('PATH', \"{{wert}}\", 'User')"
     assert second.blanks[0].accepted == ("$currentPath;$env:USERPROFILE\\.local\\bin",)
+
+
+def test_item_ids_do_not_reveal_the_solution() -> None:
+    # A learner can read ids in the page: they must not sort into the answer.
+    checkpoints = structured_checkpoints(lesson(), after="l1-4", refs=(CIT,))
+    ordering, matching = checkpoints[0], checkpoints[3]
+    # Hashed per checkpoint, not numbered: the id carries no position and no partner index.
+    assert all(not i.item_id.lstrip("s").isdigit() and len(i.item_id) == 7 for i in ordering.items)
+    assert all(not r.item_id.lstrip("e").isdigit() and len(r.item_id) == 7 for r in matching.right)
+    assert all(matching.pairs[l.item_id] != l.item_id.replace("b", "e") for l in matching.left)
+    other = structured_checkpoints(lesson(), after="l2-1", refs=())
+    assert [i.item_id for i in ordering.items] == [i.item_id for i in other[0].items]   # stable per lesson

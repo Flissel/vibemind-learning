@@ -17,7 +17,7 @@ def test_matching_shows_both_sides_but_never_the_pairs_solution() -> None:
         "pairs": {"b1": "e1"}, "solution": "x",
     }))
     assert shown["left"][0]["label"] == "Terminal" and shown["right"][0]["id"] == "e1"
-    assert "solution" not in shown
+    assert "solution" not in shown and "pairs" not in shown
 
 
 def test_fill_in_shows_the_template_and_shell_only() -> None:

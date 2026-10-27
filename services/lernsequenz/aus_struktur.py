@@ -7,6 +7,7 @@ the lesson literally says is used, so nothing can be made up.
 
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 
@@ -123,8 +124,14 @@ def _scan(body: str) -> list[tuple]:
     return found
 
 
+def _opaque(prefix: str, seed: str, index: int) -> str:
+    """An id that says nothing about the position it was authored in: learners can read ids
+    in the page, so sequential ones (s1, s2 ... or b1->e1) would hand them the solution."""
+    return prefix + hashlib.sha1(f"{seed}:{index}".encode()).hexdigest()[:6]
+
+
 def _ordering(steps: list[str], checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Ordering:
-    items = tuple(OrderItem(item_id=f"s{i}", text=cut(step, 300)) for i, step in enumerate(steps, start=1))
+    items = tuple(OrderItem(item_id=_opaque("s", checkpoint_id, i), text=cut(step, 300)) for i, step in enumerate(steps, start=1))
     return Ordering(
         checkpoint_id=checkpoint_id, after_section=after, title="Reihenfolge",
         task="Bringen Sie die Schritte in die richtige Reihenfolge.",
@@ -164,13 +171,14 @@ def _cloze(line: str, fence: str, checkpoint_id: str, after: str, refs: tuple[st
 
 def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
     left = tuple(MatchItem(item_id=f"b{i}", text=cut(term, 300)) for i, (term, _text) in enumerate(pairs, start=1))
-    right = [MatchItem(item_id=f"e{i}", text=cut(text, 300)) for i, (_term, text) in enumerate(pairs, start=1)]
+    right_ids = [_opaque("e", checkpoint_id, i) for i in range(1, len(pairs) + 1)]
+    right = [MatchItem(item_id=right_ids[i], text=cut(text, 300)) for i, (_term, text) in enumerate(pairs)]
     random.Random(seed).shuffle(right)
     return Matching(
         checkpoint_id=checkpoint_id, after_section=after, title="Zuordnen",
         task="Welche Erklärung gehört zu welchem Begriff?",
         left=left, right=tuple(right),
-        pairs={f"b{i}": f"e{i}" for i in range(1, len(pairs) + 1)}, refs=refs,
+        pairs={f"b{i}": right_ids[i - 1] for i in range(1, len(pairs) + 1)}, refs=refs,
     )
 
 
