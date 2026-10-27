@@ -318,6 +318,7 @@ _GATE_NOTES = {
     "chapter_lesson_thin": "Chapter {subject} piles too many tasks on too few lessons; keep separate chapters, each with its own lesson.",
     "lesson_body_thin": "Lesson {subject} only announces its content; its body must teach every claim in full sentences.",
     "lesson_command_missing": "Lesson {subject} names a command in its claims that its body does not show; put every command verbatim into the body as a fenced code block.",
+    "lesson_contains_tasks": "Lesson {subject} writes tasks, options or answers into its text; the lesson only teaches, tasks and their answers belong to the activities.",
     "address_mixed": "Lessons and task prompts mix formal and informal address; in German address the learner with 'Sie' throughout.",
     "too_many_chapters": "The course has too many chapters for its short source; merge chapters (for example one chapter for the same step on every operating system, troubleshooting at the end).",
 }

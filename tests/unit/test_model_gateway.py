@@ -744,3 +744,10 @@ def test_task_roles_ask_for_application_not_recall(role: str, version: str) -> N
     prompt = ROLE_PROMPTS[role]
     assert "recite" in prompt and "no two activities test the same fact" in prompt
     assert ROLE_CONTRACTS[role][1] >= version
+
+
+def test_the_lesson_author_keeps_tasks_out_of_the_lesson_text() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS
+
+    assert "no tasks, options or answers" in ROLE_PROMPTS["lesson_author"]
+    assert ROLE_CONTRACTS["lesson_author"][1] >= "lesson-prompt-v5"

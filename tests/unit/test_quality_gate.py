@@ -529,3 +529,26 @@ def test_a_command_with_escaped_inner_quotes_in_a_claim_is_found_in_the_lesson_t
     codes = {issue.code for issue in _deterministic_quality_issues(draft)}
 
     assert "lesson_command_missing" not in codes
+
+
+def test_a_lesson_text_with_tasks_and_their_answers_is_held() -> None:
+    # 27.10. (job 50638c2a): the author put "Aufgabe 1 (Auswahlaufgabe) ... Richtig ist A" into
+    # the lesson text - the learner reads the answer before the task.
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    body = (_CLAIM + "\n\nAufgabe 1 (Auswahlaufgabe): Welche Shell verwenden Sie?\nA) PowerShell\nB) CMD\n"
+            "Richtig ist A, da die Eingabezeile mit PS beginnt.")
+    draft = _german_lesson(_ids(), body, _CLAIM)
+
+    issues = [i for i in _deterministic_quality_issues(draft) if i.code == "lesson_contains_tasks"]
+
+    assert [i.subject_id for i in issues] == ["lesson-authority"] and issues[0].blocking
+
+
+def test_a_lesson_text_that_mentions_a_task_word_in_prose_passes() -> None:
+    from spaces.learning.services.course_factory.quality_gate import _deterministic_quality_issues
+
+    body = _CLAIM + "\n\nDie Aufgabe des Installers ist es, Claude Code einzurichten; richtig ist dabei jede Shell."
+    draft = _german_lesson(_ids(), body, _CLAIM)
+
+    assert "lesson_contains_tasks" not in {i.code for i in _deterministic_quality_issues(draft)}

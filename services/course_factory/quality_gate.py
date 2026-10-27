@@ -30,6 +30,9 @@ _QUOTED = re.compile(r"[`'\"\u201e\u201c\u201a]([^`'\"\u201e\u201c\u201d\u201a\u
 _FENCED = re.compile(r"```.*?```", re.S)
 _INFORMAL = re.compile(r"\b(du|dich|dir|dein|deine|deinen|deinem|deiner|deines)\b")
 _FORMAL = re.compile(r"\b(Sie|Ihnen|Ihr|Ihre|Ihren|Ihrem|Ihrer|Ihres)\b")
+# A task with its options or solution written into the lesson text (job 50638c2a: "Aufgabe 1
+# (Auswahlaufgabe) ... Richtig ist A"): a line that starts like one, not the word in prose.
+_TASK_LINE = re.compile(r"(?mi)^\s*(?:\*\*)?(?:aufgabe\s+\d+\b|erwartete antwort\b|richtig ist\b|l(?:ö|oe)sung:)")
 # One chapter per this many source words at most (the 1,074-word terminal guide had 15).
 _WORDS_PER_CHAPTER = 150
 _MIN_CHAPTERS = 3
@@ -233,6 +236,8 @@ def _lesson_teaching_issues(lesson) -> list[QualityIssue]:
     from spaces.learning.services.lernsequenz.aus_struktur import KNOWN_COMMANDS
 
     issues: list[QualityIssue] = []
+    if _TASK_LINE.search(lesson.body):
+        issues.append(QualityIssue("lesson_contains_tasks", lesson.lesson_id))
     claims = " ".join(claim.text for claim in lesson.claims)
     words = {word.lower() for word in _CONTENT_WORD.findall(claims)}
     body = lesson.body.lower()
