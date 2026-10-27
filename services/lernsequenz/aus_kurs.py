@@ -1,8 +1,10 @@
 """Build an interactive presentation from a verified course draft, without a model.
 
 Every lesson becomes one slide per section (``##`` heading), bullet lists become slide
-points, the prose becomes the narration. The chapter's choice questions become
-checkpoints after its last slide. Only what the draft already says (and cites) is used.
+points, the prose becomes the narration. The lesson's numbered lists, command lines and
+term lists become hands-on checkpoints after its last slide (``aus_struktur``); the
+chapter's choice questions follow after its last slide. Only what the draft already says
+(and cites) is used.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import re
 
 from spaces.learning.contracts.lernsequenz import (
+    Checkpoint,
     Choice,
     LernsequenzV1,
     Option,
@@ -18,24 +21,11 @@ from spaces.learning.contracts.lernsequenz import (
     VideoSegment,
 )
 from spaces.learning.services.course_factory.schemas import ActivityDraft, CourseDraft, LessonDraft
+from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
+from spaces.learning.services.lernsequenz.text import cut as _cut, plain as _plain, token as _token
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
-_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-def _token(value: str, limit: int = 60) -> str:
-    cleaned = _TOKEN.sub("-", value).strip("-.") or "x"
-    return cleaned[:limit]
-
-
-def _plain(text: str) -> str:
-    return re.sub(r"(\*\*|__|`)", "", text).strip()
-
-
-def _cut(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
 def _sections(lesson: LessonDraft) -> list[tuple[str, list[str], list[str]]]:
@@ -199,15 +189,20 @@ def build_presentation(draft: CourseDraft, *, course_id: str, chapter_id: str | 
     lessons = {lesson.lesson_id: lesson for lesson in draft.lessons}
     activities = {activity.activity_id: activity for activity in draft.activities}
     sections: list[Slide] = []
-    checkpoints: list[Choice] = []
+    checkpoints: list[Checkpoint] = []
     for chapter in chapters:
-        chapter_slides = [
-            slide for lesson_id in chapter.lesson_ids if lesson_id in lessons
-            for slide in _slides(lessons[lesson_id])
-        ]
+        chapter_slides: list[Slide] = []
+        structured: list[Checkpoint] = []
+        for lesson_id in chapter.lesson_ids:
+            slides = _slides(lessons[lesson_id]) if lesson_id in lessons else []
+            if not slides:
+                continue
+            chapter_slides.extend(slides)
+            structured.extend(structured_checkpoints(lessons[lesson_id], after=slides[-1].section_id, refs=slides[-1].refs))
         if not chapter_slides:
             continue
         sections.extend(chapter_slides)
+        checkpoints.extend(structured)
         for activity_id in chapter.activity_ids:
             checkpoint = _choice(activities[activity_id], chapter_slides[-1].section_id) if activity_id in activities else None
             if checkpoint is not None:
