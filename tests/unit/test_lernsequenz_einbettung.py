@@ -55,3 +55,18 @@ def test_without_a_video_only_the_presentation_is_embedded(tmp_path: Path) -> No
     asyncio.run(embedder.embed(course_id=COURSE, draft=draft(), correlation_id="c"))
     assert [e["heading"] for e in learnhouse.calls[0]["embeds"]] == ["Interaktive Präsentation zum Kurs"]
     assert learnhouse.calls[0]["embeds"][0]["url"].startswith("http://127.0.0.1:8090/lernsequenz/")
+
+
+def test_republishing_keeps_the_profile_and_the_command_check(tmp_path: Path) -> None:
+    from spaces.learning.services.lernsequenz.befehlspruefungen import claude_installiert
+
+    store = SequenceStore(tmp_path)
+    earlier = build_presentation(draft(), course_id=COURSE, profile=True)
+    check = claude_installiert("claude-installiert", earlier.sections[-1].section_id)
+    store.save(earlier.model_copy(update={"checkpoints": (*earlier.checkpoints, check)}))
+    embedder = SequenceEmbedder(store=store, learnhouse=_LearnHouse(), service_key=KEY, public_base="http://127.0.0.1:8090")
+    asyncio.run(embedder.embed(course_id=COURSE, draft=draft(), correlation_id="c"))
+    rebuilt = store.load(earlier.sequence_id)
+    kinds = [c.kind for c in rebuilt.checkpoints]
+    assert kinds[0] == "profile" and kinds.count("profile") == 1
+    assert "claude-installiert" in {c.checkpoint_id for c in rebuilt.checkpoints}

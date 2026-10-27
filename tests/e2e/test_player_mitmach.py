@@ -25,6 +25,8 @@ def _sequence(player_server, tmp_path: Path, *, with_three_shells: bool = False)
             {"shell": "cmd", "command": "claude --version"},
             {"shell": "unix", "command": "claude --version"},
         ]
+    # The same blank twice: typed once, mirrored into the second place.
+    data["checkpoints"][2]["template"] = "irm https://claude.ai/{{datei}} | iex ; echo {{datei}}"
     media = tmp_path / "lernsequenzen" / "medien"
     media.mkdir(parents=True, exist_ok=True)
     (media / "app.png").write_bytes(_PNG)
@@ -108,6 +110,7 @@ def test_cloze_matching_hotspot_terminal_and_step_grade(player_server, browser_p
 
     page.wait_for_selector(".overlay input.blank")
     page.fill(".overlay input.blank", "install.ps1")
+    assert page.locator(".overlay .blank.mirror").inner_text() == "install.ps1"
     page.get_by_role("button", name="Prüfen").click()
     page.wait_for_selector(".overlay .fb.ok")
     _weiter(page)

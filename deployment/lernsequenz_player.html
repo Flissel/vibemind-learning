@@ -76,6 +76,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
 .cmd.cloze{user-select:text;line-height:2}
 .cmd .blank{display:inline-block;width:14ch;min-height:32px;border-radius:6px;border:1px solid #CDD1CB;padding:0 8px;font:inherit;color:var(--ink);background:#fff;vertical-align:middle;margin:0 2px}
 .cmd .blank.ok{border-color:var(--accent);background:var(--accent-soft)}.cmd .blank.no{border-color:var(--warn);background:var(--warn-soft)}
+.cmd .blank.mirror{width:auto;min-width:6ch;line-height:30px;color:var(--muted);border-style:dashed}
 .hotspot{position:relative;max-width:100%;margin:0 auto;flex:none;user-select:none;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden;border:1px solid var(--line)}
 .hotspot img{position:absolute;inset:0;width:100%;height:100%;display:block}
 .hotspot .mark{position:absolute;border:2px solid var(--blue);background:rgba(29,78,216,.18);pointer-events:none}
@@ -453,9 +454,15 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
   function clozeFrame(cp, finish) {
     const inputs = {};
     let checked = false;
+    // A blank that recurs in the command is typed once; the other places mirror it.
     const parts = cp.template.split(/(\{\{\w+\}\})/).filter(Boolean).map((part) => {
       const m = part.match(/^\{\{(\w+)\}\}$/);
       if (!m) return part;
+      if (inputs[m[1]]) {
+        const mirror = el('span', { class: 'blank mirror', 'aria-hidden': 'true' }, '…');
+        inputs[m[1]].addEventListener('input', () => { mirror.textContent = inputs[m[1]].value || '…'; });
+        return mirror;
+      }
       const input = el('input', { class: 'blank', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Lücke ${m[1]}` });
       inputs[m[1]] = input;
       return input;
@@ -469,6 +476,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
         const r = await post(cp.checkpoint_id, { values });
         checked = true;
         r.blanks.forEach((b) => { inputs[b.blank_id].classList.add(b.correct ? 'ok' : 'no'); inputs[b.blank_id].readOnly = true; });
+        o.querySelectorAll('.blank.mirror').forEach((m) => m.classList.add(r.score === 1 ? 'ok' : 'no'));
         const right = r.blanks.filter((b) => b.correct).length;
         feedback(fb, r.score === 1, r.score === 1 ? 'Genau. ' : 'Noch nicht. ',
           r.score === 1 ? '' : `${right} von ${r.blanks.length} Lücken stimmen. Der Befehl steht auf der Folie davor.`, r.refs);

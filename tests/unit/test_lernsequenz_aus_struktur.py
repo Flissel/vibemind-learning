@@ -143,3 +143,31 @@ def test_cli_praesentation_takes_a_profile(monkeypatch, tmp_path) -> None:
     saved = next(tmp_path.rglob("praes-*.json"))
     import json
     assert json.loads(saved.read_text(encoding="utf-8"))["checkpoints"][0]["kind"] == "profile"
+
+
+# --- what the real setup courses looked like (27.10.) ------------------------------
+
+def test_plain_command_lines_count_but_sentences_do_not() -> None:
+    body = ("# T\n\ncurl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd\n\n"
+            "Test-Path \"$env:USERPROFILE\.local\bin\claude.exe\"\n\n"
+            "claude --version prüft danach die Installation.\n")
+    checkpoints = structured_checkpoints(lesson(body), after="l1-1", refs=())
+    assert [(c.shell, c.blanks[0].accepted[0]) for c in checkpoints] == [
+        ("cmd", "install.cmd"), ("powershell", "\"$env:USERPROFILE\.local\bin\claude.exe\"")]
+    # A blank that recurs in the line is blanked everywhere, or it would give itself away.
+    assert checkpoints[0].template == "curl -fsSL https://claude.ai/{{wert}} -o {{wert}} && {{wert}} && del {{wert}}"
+
+
+def test_pairs_whose_text_is_a_link_make_no_matching() -> None:
+    body = ("# T\n\n- **Windows (x64)**: https://claude.ai/api/desktop/win32/x64\n"
+            "- **macOS**: https://claude.ai/api/desktop/darwin\n- **Linux**: https://claude.ai/api/desktop/linux\n")
+    assert structured_checkpoints(lesson(body), after="l1-1", refs=()) == []
+
+
+def test_titles_naming_several_shells_apply_to_all() -> None:
+    from spaces.learning.services.lernsequenz.aus_struktur import shell_condition
+
+    assert shell_condition("Schritt 1: Die eigene Shell erkennen (PowerShell, CMD, macOS)") == ()
+    assert shell_condition("PATH reparieren je Shell: PowerShell, CMD, macOS und Linux") == ()
+    assert shell_condition("Andere Installationswege: Homebrew, WinGet und Linux-Paketverwaltung") == ()
+    assert shell_condition("Installieren mit Homebrew")[0].option == "unix"

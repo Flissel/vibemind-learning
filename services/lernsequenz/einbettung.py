@@ -41,13 +41,20 @@ class SequenceEmbedder:
     async def embed(self, *, course_id: str, draft: CourseDraft, correlation_id: str) -> dict[str, object]:
         presentation = build_presentation(draft, course_id=course_id)
         try:
-            # Keep model-designed checkpoints of an earlier presentation of this course.
             earlier = self._store.load(presentation.sequence_id)
-            extra = tuple(c for c in earlier.checkpoints if c.checkpoint_id.startswith("ki-")
-                          and c.after_section in {s.section_id for s in presentation.sections})
-            presentation = presentation.model_copy(update={"checkpoints": (*presentation.checkpoints, *extra)})
         except LookupError:
-            pass
+            earlier = None
+        if earlier is not None:
+            if any(c.kind == "profile" for c in earlier.checkpoints):
+                # "Dein Weg" was switched on by hand (praesentation --profil): keep it on.
+                presentation = build_presentation(draft, course_id=course_id, profile=True)
+            # Keep model-designed checkpoints and hand-placed terminal checks of the earlier presentation.
+            sections = {s.section_id for s in presentation.sections}
+            extra = tuple(
+                c for c in earlier.checkpoints
+                if (c.checkpoint_id.startswith("ki-") or c.kind == "command_check") and c.after_section in sections
+            )
+            presentation = presentation.model_copy(update={"checkpoints": (*presentation.checkpoints, *extra)})
         self._store.save(presentation)
         embeds: list[dict[str, object]] = []
         video_id = "video-" + presentation.sequence_id.removeprefix("praes-")

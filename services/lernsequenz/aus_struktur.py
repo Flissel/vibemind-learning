@@ -33,6 +33,9 @@ KNOWN_COMMANDS = (
     "source ", "$env:", "[Environment]",
 )
 MAX_CLOZE = 3
+# A bare line counts as a command when it starts like one and does not read like a sentence.
+_MAX_COMMAND_TOKENS = 16
+_SENTENCE_END = (".", ":", "!", "?", ",")
 SHELL_LABEL: dict[Shell, str] = {"powershell": "Windows PowerShell", "cmd": "Windows CMD", "unix": "macOS / Linux"}
 
 _NUMBERED = re.compile(r"^\s*\d+[.)]\s+(.+)$")
@@ -88,16 +91,20 @@ def _scan(body: str) -> list[tuple]:
             numbered.append(plain(step.group(1)))
             continue
         pair = _PAIR.match(raw)
-        if pair:
+        # A term whose "explanation" is a link (download lists) is nothing to match.
+        if pair and not pair.group(3).strip().startswith(("http://", "https://")):
             if numbered:
                 flush()
             pairs.append((plain(pair.group(1) or pair.group(2)), plain(pair.group(3))))
             continue
         flush()
+        line = raw.strip()
         if raw.startswith(("    ", "\t")):
-            found.append(("command", raw.strip(), ""))
+            found.append(("command", line, ""))
         elif (inline := _INLINE.match(raw)):
             found.append(("command", inline.group(1).strip(), ""))
+        elif line.startswith(KNOWN_COMMANDS) and not line.endswith(_SENTENCE_END) and len(line.split()) <= _MAX_COMMAND_TOKENS:
+            found.append(("command", line, ""))
     flush()
     return found
 
@@ -115,14 +122,17 @@ def _cloze(line: str, fence: str, checkpoint_id: str, after: str, refs: tuple[st
     if not line.startswith(KNOWN_COMMANDS):
         return None
     tokens = line.split()
-    candidates = [(i, t) for i, t in enumerate(tokens) if "/" in t or "." in t]
-    index, chosen = max(candidates, key=lambda c: len(c[1])) if candidates else (len(tokens) - 1, tokens[-1])
+    candidates = [t for t in tokens if "/" in t or "." in t]
+    chosen = max(candidates, key=len) if candidates else tokens[-1]
     # A URL keeps its address; only the file name at its end is the blank.
     blank = chosen.rsplit("/", 1)[-1] if "://" in chosen else chosen
     if not blank or len(blank) > 200:
         return None
-    tokens[index] = chosen[: len(chosen) - len(blank)] + "{{wert}}"
-    template = " ".join(tokens)
+    # Everywhere it occurs, or the rest of the line would give the answer away.
+    template = " ".join(
+        "{{wert}}" if t == blank else t[: -len(blank)] + "{{wert}}" if "://" in t and t.endswith("/" + blank) else t
+        for t in tokens
+    )
     if len(template) > 500:
         return None
     shell = _shell_of(line, fence)
@@ -147,20 +157,23 @@ def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after
 
 # --- "Dein Weg" -------------------------------------------------------------------
 
-_SHELL_WORDS: tuple[tuple[Shell, tuple[str, ...]], ...] = (
+_SHELL_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("powershell", ("powershell",)),
     ("cmd", ("cmd", "eingabeaufforderung")),
-    ("unix", ("macos", "linux", "wsl")),
+    ("unix", ("macos", "linux", "wsl", "homebrew", "brew")),
+    # Windows without a shell (WinGet): no condition of its own, but a second family.
+    ("windows", ("winget",)),
 )
 
 
 def shell_condition(title: str) -> tuple[Condition, ...]:
-    """The shell a slide title names, as its ``only_for``; nothing when it names none."""
+    """The one shell a slide title names, as its ``only_for``; a title naming none or
+    several ("PowerShell, CMD, macOS") applies to everyone."""
     lowered = title.lower()
-    for shell, words in _SHELL_WORDS:
-        if any(word in lowered for word in words):
-            return (Condition(key="shell", option=shell),)
-    return ()
+    named = [shell for shell, words in _SHELL_WORDS if any(word in lowered for word in words)]
+    if len(named) != 1 or named[0] == "windows":
+        return ()
+    return (Condition(key="shell", option=named[0]),)
 
 
 def profile_checkpoint(after: str) -> Profile:
