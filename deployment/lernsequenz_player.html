@@ -856,7 +856,7 @@ textarea.out{width:100%;min-height:110px;border-radius:10px;border:1px solid #CD
       } catch (_) { image = null; }
     } else {
       const hit = (n) => { const b = n.getBoundingClientRect(); return b.right > frame.left && b.left < frame.right && b.bottom > frame.top && b.top < frame.bottom; };
-      const parts = [...$('stage').querySelectorAll('h2, .statement, .point, p, li')].filter(hit).map((n) => n.innerText.trim()).filter(Boolean);
+      const parts = [...$('stage').querySelectorAll('h2, .statement, .point span, p, li')].filter(hit).map((n) => n.innerText.trim()).filter(Boolean);
       selection = (parts.length ? parts.join(' ') : $('stage').innerText.trim()).slice(0, 2000);
     }
     return { anchor, selection, image };
