@@ -339,6 +339,17 @@ class Cloze(_Checkpoint):
 class MatchItem(ContractModel):
     item_id: SafeToken
     text: ShortText
+    # A drawn window (or other picture) shown instead of / above the text; its size is
+    # needed to lay it out before it loads.
+    image: Annotated[str, Field(pattern=_MEDIA_PATH)] | None = None
+    width: Annotated[int, Field(ge=50, le=4_000)] | None = None
+    height: Annotated[int, Field(ge=50, le=4_000)] | None = None
+
+    @model_validator(mode="after")
+    def image_has_a_size(self) -> "MatchItem":
+        if self.image is not None and (self.width is None or self.height is None):
+            raise ValueError("a match item image needs width and height")
+        return self
 
 
 class Matching(_Checkpoint):
@@ -366,6 +377,35 @@ class Rect(ContractModel):
     y: Annotated[float, Field(ge=0)]
     w: Annotated[float, Field(gt=0)]
     h: Annotated[float, Field(gt=0)]
+
+
+class ImageBlank(ContractModel):
+    blank_id: SafeToken
+    accepted: Annotated[
+        tuple[Annotated[str, Field(min_length=1, max_length=200)], ...], Field(min_length=1, max_length=6)
+    ]
+    rect: Rect
+
+
+class ImageCloze(_Checkpoint):
+    """Fill the empty boxes of a drawn terminal window. Answer: ``{"values": {blank_id: text}}``."""
+
+    kind: Literal["image_cloze"] = "image_cloze"
+    task: Text
+    image: Annotated[str, Field(pattern=_MEDIA_PATH)]
+    width: Annotated[int, Field(ge=50, le=4_000)]
+    height: Annotated[int, Field(ge=50, le=4_000)]
+    blanks: Annotated[tuple[ImageBlank, ...], Field(min_length=1, max_length=6)]
+    shell: Shell
+
+    @model_validator(mode="after")
+    def boxes_inside_the_image(self) -> "ImageCloze":
+        _unique([blank.blank_id for blank in self.blanks], "image cloze blank ids")
+        for blank in self.blanks:
+            r = blank.rect
+            if r.x + r.w > self.width or r.y + r.h > self.height:
+                raise ValueError("image cloze boxes must lie inside the image")
+        return self
 
 
 class Hotspot(_Checkpoint):
@@ -456,7 +496,7 @@ class Profile(_Checkpoint):
 Checkpoint = Annotated[
     Union[
         Explanation, Choice, Calculation, Estimate, DrawnExplanation, CommandCheck,
-        Ordering, Cloze, Matching, Hotspot, TerminalSim, Step, Profile,
+        Ordering, Cloze, ImageCloze, Matching, Hotspot, TerminalSim, Step, Profile,
     ],
     Field(discriminator="kind"),
 ]
@@ -531,6 +571,9 @@ def public_view(sequence: LernsequenzV1) -> dict[str, object]:
                 checkpoint["multiple"] = len(checkpoint["correct"]) > 1
             elif checkpoint["kind"] == "cloze":
                 checkpoint["blank_ids"] = [blank["blank_id"] for blank in checkpoint["blanks"]]
+            elif checkpoint["kind"] == "image_cloze":
+                # Where the boxes are, never what goes in them.
+                checkpoint["blanks"] = [{"blank_id": b["blank_id"], "rect": b["rect"]} for b in checkpoint["blanks"]]
             elif checkpoint["kind"] == "ordering":
                 checkpoint["items"] = _fixed_shuffle(checkpoint["items"], salt)
             elif checkpoint["kind"] == "matching":

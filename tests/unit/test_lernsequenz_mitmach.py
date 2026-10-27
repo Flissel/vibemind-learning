@@ -197,3 +197,41 @@ def test_profile_choices_are_validated_and_echoed() -> None:
     assert _g("pr", {"choices": {"shell": "cmd"}}) == {"kind": "profile", "saved": True, "choices": {"shell": "cmd"}, "refs": []}
     with pytest.raises(ValueError):
         _g("pr", {"choices": {"shell": "fish"}})
+
+
+# --- Bildaufgaben (Plan 2026-10-27-learning-bildaufgaben, Task 2) ---------------------
+
+def _image_cloze(rect: dict | None = None) -> dict:
+    return {"kind": "image_cloze", "checkpoint_id": "ic", "after_section": "f1", "title": "Im Fenster ergänzen",
+            "task": "Ergänzen Sie, was im PowerShell-Fenster fehlt.", "image": "/lernsequenz-medien/term-0123456789abcdef.png",
+            "width": 760, "height": 96, "shell": "powershell",
+            "blanks": [{"blank_id": "wert", "accepted": ["install.ps1"],
+                        "rect": rect or {"x": 450.5, "y": 54, "w": 130.1, "h": 22}}]}
+
+
+def test_image_cloze_validates_and_rejects_rects_outside_the_image() -> None:
+    data = sequence_data()
+    data["checkpoints"] = [_image_cloze()]
+    assert LernsequenzV1.model_validate(data).checkpoints[0].kind == "image_cloze"
+    data["checkpoints"] = [_image_cloze({"x": 700, "y": 54, "w": 130, "h": 22})]
+    with pytest.raises(ValidationError):
+        LernsequenzV1.model_validate(data)
+
+
+def test_public_view_keeps_rects_and_drops_answers() -> None:
+    data = sequence_data()
+    data["checkpoints"] = [_image_cloze()]
+    view = public_view(LernsequenzV1.model_validate(data))["checkpoints"][0]
+    assert view["blanks"] == [{"blank_id": "wert", "rect": {"x": 450.5, "y": 54.0, "w": 130.1, "h": 22.0}}]
+    assert "install.ps1" not in str(view)
+
+
+def test_match_items_may_carry_an_image_with_its_size() -> None:
+    data = mitmach_data()
+    matching = next(c for c in data["checkpoints"] if c["kind"] == "matching")
+    for item in matching["left"]:
+        item.update({"image": f"/lernsequenz-medien/term-{item['item_id']}000000000000.png", "width": 760, "height": 96})
+    assert LernsequenzV1.model_validate(data)
+    del matching["left"][0]["width"]
+    with pytest.raises(ValidationError):
+        LernsequenzV1.model_validate(data)
