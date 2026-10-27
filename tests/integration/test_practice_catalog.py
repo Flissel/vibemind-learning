@@ -305,3 +305,26 @@ def test_training_can_be_limited_to_task_types(factory) -> None:
                                 mode="training",
                                 blueprint={"max_attempts": 2, "item_types": ["penecho_canvas"]})
         )
+
+
+def test_structured_lessons_add_ordering_cloze_and_matching_items(factory) -> None:
+    from spaces.learning.tests.unit.test_lernsequenz_aus_struktur import BODY
+
+    ids = _ids()
+    draft = _draft(ids)
+    lesson = draft.lessons[0].model_copy(update={"body": BODY})
+    draft = draft.model_copy(update={"lessons": [lesson, *draft.lessons[1:]]})
+    course_id = str(uuid4())
+
+    written = PracticeCatalogProjector(factory).project(course_id=course_id, course_revision=5, draft=draft)
+
+    with factory() as session:
+        items = session.scalars(select(AdaptiveItem).where(AdaptiveItem.course_id == course_id)).all()
+    kinds = sorted(item.item_type for item in items)
+    assert written == len(items) and {"ordering", "matching", "fill_in"} <= set(kinds)
+    structured = [item for item in items if item.item_type in {"ordering", "matching", "fill_in"}]
+    assert all(item.rubric == [] and item.quality_status == "approved" for item in structured)
+    assert all(item.scoring_config["prompt"] and "presentation" in item.scoring_config for item in structured)
+    with factory() as session:
+        linked = session.scalar(select(func.count()).select_from(ItemConcept).where(ItemConcept.item_id.in_([i.id for i in structured])))
+    assert linked >= len(structured)

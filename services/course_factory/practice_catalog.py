@@ -21,6 +21,7 @@ from spaces.learning.services.adaptive_engine.models import (
     ItemConcept,
 )
 from spaces.learning.services.course_factory.schemas import ActivityDraft, CourseDraft
+from spaces.learning.services.course_factory.structured_items import structured_items
 from spaces.learning.services.ingestion.models import LearningSourceChunk
 
 
@@ -94,6 +95,30 @@ class PracticeCatalogProjector:
                             course_revision=course_revision,
                         )
                     )
+                written += 1
+            # Hands-on items from the lessons' own structure (numbered lists, commands, terms).
+            for spec in structured_items(draft):
+                linked = [concept_ids[c] for c in spec.concept_ids if c in concept_ids]
+                if not linked:
+                    continue
+                item_id = _stable_id(course_id, course_revision, "item", spec.activity_id)
+                session.add(AdaptiveItem(
+                    id=item_id,
+                    course_id=course_id,
+                    course_revision=course_revision,
+                    activity_id=spec.activity_id,
+                    item_type=spec.item_type,
+                    difficulty=STARTING_DIFFICULTY,
+                    quality_status="approved",
+                    expected_answer=spec.expected_answer,
+                    scoring_config={"source_refs": [], "hints": [], "presentation": {}, **spec.scoring_config},
+                    rubric=[],
+                ))
+                session.flush()
+                for concept_id in dict.fromkeys(linked):
+                    session.add(ItemConcept(
+                        item_id=item_id, concept_id=concept_id, course_id=course_id, course_revision=course_revision,
+                    ))
                 written += 1
             session.flush()
             return written
