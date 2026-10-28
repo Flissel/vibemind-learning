@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .formeln import KOPF, csp
 from .freigabe import FreigabeAbgelehnt
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
@@ -30,11 +31,7 @@ _HEADERS = [
     (b"cache-control", b"no-store"),
     (b"referrer-policy", b"same-origin"),
     (b"x-content-type-options", b"nosniff"),
-    (
-        b"content-security-policy",
-        b"default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; "
-        b"frame-ancestors 'none'",
-    ),
+    (b"content-security-policy", csp(bilder=True)),
 ]
 _GRUENDE = {
     "low_confidence": "Die KI war sich unsicher",
@@ -210,8 +207,8 @@ def _eintrag(e: dict[str, Any]) -> str:
 
 async def _antwort(send: Send, status: int, titel: str, text: str) -> None:
     seite = (
-        "<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>"
-        f"{html.escape(titel)}</title><body style=\"font-family:sans-serif;max-width:48rem;"
+        "<!doctype html><html lang=\"de\"><meta charset=\"utf-8\">"
+        f"<title>{html.escape(titel)}</title>{KOPF}<body style=\"font-family:sans-serif;max-width:48rem;"
         f"margin:2rem auto\"><h1>{html.escape(titel)}</h1>{text}</body></html>"
     ).encode("utf-8")
     await send({"type": "http.response.start", "status": status,

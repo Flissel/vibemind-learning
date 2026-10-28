@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from . import werkzeuge
+from .formeln import KOPF, csp
 from .freigabe import WERKSTATT, FreigabeAbgelehnt, handy_basis
 
 PREFIX = "/freigabe/"
@@ -31,10 +32,7 @@ _HEADERS = [
     # real click was refused (24.10.). "same-origin" still keeps the link from others.
     (b"referrer-policy", b"same-origin"),
     (b"x-content-type-options", b"nosniff"),
-    (
-        b"content-security-policy",
-        b"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-    ),
+    (b"content-security-policy", csp()),
 ]
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
@@ -287,8 +285,8 @@ async def _antwort(
         form = ""
     seite = (
         "<!doctype html><html lang=\"de\"><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>"
-        f"{html.escape(titel)}</title><body style=\"font-family:sans-serif;max-width:40rem;"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>{html.escape(titel)}</title>{KOPF}<body style=\"font-family:sans-serif;max-width:40rem;"
         f"margin:2rem auto;padding:0 1rem\"><h1>{html.escape(titel)}</h1>{text}{form}</body></html>"
     ).encode("utf-8")
     await send({"type": "http.response.start", "status": status,

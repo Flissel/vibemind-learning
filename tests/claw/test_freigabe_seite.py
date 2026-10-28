@@ -89,7 +89,7 @@ def test_page_shows_the_outline_and_a_button(store) -> None:
 def test_titles_are_escaped(store) -> None:
     secret = _pending(store, titel="<script>alert(1)</script>")
     page = _call("GET", f"/freigabe/{secret}")
-    assert "<script>" not in page.text and "&lt;script&gt;" in page.text
+    assert "<script>alert(1)</script>" not in page.text and "&lt;script&gt;" in page.text
 
 
 def test_button_with_own_origin_publishes_once(store, published) -> None:
@@ -383,3 +383,26 @@ def test_produktiver_uvicorn_umschreibt_den_client_nicht_per_forwarded_for(
             )
 
     assert asyncio.run(go()).status_code == 200
+
+
+_KATEX = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+
+
+def _katex_pruefen(page) -> None:
+    for datei in ("katex.min.css", "katex.min.js", "contrib/auto-render.min.js"):
+        tag = next(t for t in page.text.split("<") if f"{_KATEX}{datei}" in t)
+        assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag
+    assert "throwOnError:false" in page.text
+    assert "left:'$$'" in page.text and "left:'$'" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "script-src https://cdn.jsdelivr.net 'sha256-" in csp
+    assert "font-src https://cdn.jsdelivr.net" in csp
+    assert "'unsafe-inline'" not in csp.split("style-src")[0]
+
+
+def test_page_loads_katex_with_sri_and_keeps_formula_text_escaped(store) -> None:
+    secret = _pending(store, titel="Wert $x^2$ <b>fett</b>")
+    page = _call("GET", f"/freigabe/{secret}")
+    assert page.status_code == 200
+    _katex_pruefen(page)
+    assert "$x^2$ &lt;b&gt;fett&lt;/b&gt;" in page.text and "<b>fett</b>" not in page.text

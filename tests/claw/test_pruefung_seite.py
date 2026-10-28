@@ -146,3 +146,14 @@ def test_bad_points_are_refused_before_anything_is_sent(store, api, opened) -> N
     response = _call("POST", f"/pruefung/{_secret(opened)}", headers={"Origin": ORIGIN},
                      data={"review_id": REVIEW, "entscheidung": "override", "punkte": "150"})
     assert response.status_code == 409 and api.decisions == []
+
+
+def test_the_page_loads_katex_with_sri(store, api, opened) -> None:
+    werkzeuge.pruefungen_anzeigen()
+    page = _call("GET", f"/pruefung/{_secret(opened)}")
+    base = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    for datei in ("katex.min.css", "katex.min.js", "contrib/auto-render.min.js"):
+        tag = next(t for t in page.text.split("<") if f"{base}{datei}" in t)
+        assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag
+    csp = page.headers["content-security-policy"]
+    assert "img-src data:" in csp and "font-src https://cdn.jsdelivr.net" in csp
