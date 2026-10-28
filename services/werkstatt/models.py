@@ -45,6 +45,8 @@ class WerkstattAufgabe(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    herkunft_key: Mapped[str | None] = mapped_column(String(200))
+    lektion_herkunft_key: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -90,3 +92,27 @@ class WerkstattAuftrag(Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WerkstattFreigabe(Base):
+    __tablename__ = "learning_werkstatt_freigaben"
+    __table_args__ = (
+        UniqueConstraint("course_id", "nummer", name="learning_werkstatt_freigaben_course_nummer_key"),
+        CheckConstraint("zustand IN ('angefordert','freigegeben','verworfen')"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    nummer: Mapped[int] = mapped_column(Integer, nullable=False)
+    zustand: Mapped[str] = mapped_column(String(16), nullable=False)
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    vergleich: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    befunde: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    learnhouse_revision_vorher: Mapped[int | None] = mapped_column(Integer)
+    learnhouse_revision: Mapped[int | None] = mapped_column(Integer)
+    approval_ref: Mapped[str | None] = mapped_column(String(128))
+    angefordert_von: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    freigegeben_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

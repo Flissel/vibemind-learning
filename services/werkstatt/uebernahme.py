@@ -84,6 +84,32 @@ def _kurzer_fehler(error: ValidationError) -> str:
     return f"{ort}: {erster['msg']}"[:200]
 
 
+def _entwurf_laden(
+    artifact_store: CourseFactoryArtifactStore,
+    session_factory: sessionmaker[Session],
+    course_id: str,
+) -> CourseDraft:
+    """The verified draft of the newest publication of the course."""
+    with session_factory() as session:
+        veroeffentlichung = session.scalars(
+            select(CourseFactoryPublication)
+            .where(CourseFactoryPublication.course_id == course_id)
+            .order_by(CourseFactoryPublication.created_at.desc())
+            .limit(1)
+        ).first()
+        if veroeffentlichung is None:
+            raise NichtVeroeffentlicht("nicht_veroeffentlicht")
+        job_id, versuch = veroeffentlichung.job_id, veroeffentlichung.attempt_number
+    try:
+        ausgabe = artifact_store.read_stage_output(
+            job_id, attempt_number=versuch, stage=FactoryState.VERIFYING
+        )
+        return CourseDraft.model_validate(dict(ausgabe["source_verifier"])["draft"])  # type: ignore[call-overload]
+    except (LookupError, ValueError, OSError, KeyError, TypeError) as error:
+        # ValidationError is a ValueError; read/parse/integrity failures all land here.
+        raise EntwurfNichtLesbar("entwurf_nicht_lesbar") from error
+
+
 def kurs_uebernehmen(
     store: WerkstattStore,
     artifact_store: CourseFactoryArtifactStore,
@@ -102,24 +128,7 @@ def kurs_uebernehmen(
         pass
     else:
         raise SchonUebernommen("schon_uebernommen")
-    with session_factory() as session:
-        veroeffentlichung = session.scalars(
-            select(CourseFactoryPublication)
-            .where(CourseFactoryPublication.course_id == course_id)
-            .order_by(CourseFactoryPublication.created_at.desc())
-            .limit(1)
-        ).first()
-        if veroeffentlichung is None:
-            raise NichtVeroeffentlicht("nicht_veroeffentlicht")
-        job_id, versuch = veroeffentlichung.job_id, veroeffentlichung.attempt_number
-    try:
-        ausgabe = artifact_store.read_stage_output(
-            job_id, attempt_number=versuch, stage=FactoryState.VERIFYING
-        )
-        draft = CourseDraft.model_validate(dict(ausgabe["source_verifier"])["draft"])  # type: ignore[call-overload]
-    except (LookupError, ValueError, OSError, KeyError, TypeError) as error:
-        # ValidationError is a ValueError; read/parse/integrity failures all land here.
-        raise EntwurfNichtLesbar("entwurf_nicht_lesbar") from error
+    draft = _entwurf_laden(artifact_store, session_factory, course_id)
 
     snapshots: tuple[SourceSnapshot, ...] | None = None
     if quellen_laden is not None:
@@ -148,7 +157,8 @@ def kurs_uebernehmen(
             if a.type not in _UEBERNEHMBAR:
                 details.append({"activity_id": aid, "grund": "typ_nicht_uebernehmbar"})
                 continue
-            inhalt = _inhalt(a, draft, _lektion(gehoerig) if erste and gehoerig else None)
+            traegt_lektion = erste and bool(gehoerig)
+            inhalt = _inhalt(a, draft, _lektion(gehoerig) if traegt_lektion else None)
             try:
                 gelesen = inhalt_lesen(inhalt)
                 inhalt = gelesen.model_dump(mode="json")
@@ -163,6 +173,8 @@ def kurs_uebernehmen(
             aufgaben.append({
                 "chapter_title": ch.title, "summary": a.prompt[:120], "content": inhalt,
                 "findings": befunde,
+                "herkunft_key": aid,
+                "lektion_herkunft_key": gehoerig[0].lesson_id if traegt_lektion else None,
             })
         if angelegt:
             kapitel += 1
@@ -189,3 +201,40 @@ def kurs_uebernehmen(
     if snapshots is None:
         ergebnis["pruefung_uebersprungen"] = True
     return ergebnis
+
+
+def herkunft_nachtragen(
+    store: WerkstattStore,
+    artifact_store: CourseFactoryArtifactStore,
+    session_factory: sessionmaker[Session],
+    course_id: str,
+) -> dict[str, Any]:
+    """Fill the origin keys of an already taken-over course. Each task is matched by the exact
+    prompt of its Fassung 1 against the activities of the newest published draft; the task that
+    carries the chapter lesson (`lektion` in Fassung 1) gets the chapter's first lesson id.
+    Only empty columns are filled, so a second run changes nothing."""
+    kurs = store.kurs(course_id)  # LookupError("kurs_unbekannt") for an unknown course
+    draft = _entwurf_laden(artifact_store, session_factory, course_id)
+    nach_prompt = {a.prompt: a for a in draft.activities}
+    lektionen = {e.lesson_id for e in draft.lessons}
+    kapitel_von: dict[str, Any] = {}
+    for ch in draft.chapters:
+        for aid in ch.activity_ids:
+            kapitel_von.setdefault(aid, ch)
+    zuordnung: dict[str, tuple[str | None, str | None]] = {}
+    ohne: list[str] = []
+    for aufgabe in kurs["aufgaben"]:
+        erste = next((f for f in store.fassungen(aufgabe["task_id"]) if f["number"] == 1), None)
+        inhalt = erste["content"] if erste else {}
+        prompt = inhalt.get("prompt")
+        aktivitaet = nach_prompt.get(prompt) if isinstance(prompt, str) else None
+        if aktivitaet is None:
+            ohne.append(aufgabe["task_id"])
+            continue
+        lektion_key: str | None = None
+        if inhalt.get("lektion") is not None:
+            kap = kapitel_von.get(aktivitaet.activity_id)
+            lektion_key = next((i for i in (kap.lesson_ids if kap else []) if i in lektionen), None)
+        zuordnung[aufgabe["task_id"]] = (aktivitaet.activity_id, lektion_key)
+    store.herkunft_setzen(zuordnung)
+    return {"zugeordnet": len(zuordnung), "ohne_zuordnung": ohne}

@@ -295,3 +295,18 @@ def test_uebernahme_ohne_katalog_uebernimmt_und_meldet_uebersprungen(tmp_path):
     ergebnis = _uebernehmen(store, fake, factory, kaputt)
     assert ergebnis["aufgaben"] == 3 and ergebnis["pruefung_uebersprungen"] is True
     assert all(store.neueste(a["task_id"])["findings"] == [] for a in store.kurs(COURSE)["aufgaben"])
+
+
+def test_uebernahme_merkt_herkunft_der_aktivitaet(tmp_path):
+    store, fake, factory = _setup(tmp_path)
+    _uebernehmen(store, fake, factory)
+    aufgaben = store.kurs(COURSE)["aufgaben"]
+    assert [a["herkunft_key"] for a in aufgaben] == ["a1", "a2", "a3"]
+
+
+def test_lektion_herkunft_an_der_tragenden_aufgabe(tmp_path):
+    store, fake, factory = _setup(tmp_path)
+    _uebernehmen(store, fake, factory)
+    aufgaben = store.kurs(COURSE)["aufgaben"]
+    # chapter 1 joins l1 + l2: the FIRST lesson id is remembered, only on the carrying task
+    assert [a["lektion_herkunft_key"] for a in aufgaben] == ["l1", None, "l3"]

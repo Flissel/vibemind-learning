@@ -48,6 +48,7 @@ def _aufgabe_dict(a: WerkstattAufgabe, neueste: int | None = None) -> dict[str, 
     return {
         "task_id": a.task_id, "course_id": a.course_id, "chapter_title": a.chapter_title,
         "position": a.position, "summary": a.summary, "deleted": a.deleted,
+        "herkunft_key": a.herkunft_key, "lektion_herkunft_key": a.lektion_herkunft_key,
         "neueste_fassung": neueste, "created_at": _iso(a.created_at),
     }
 
@@ -186,7 +187,9 @@ class WerkstattStore:
             session.flush()
             for eintrag in aufgaben:
                 aufgabe = self._aufgabe_einfuegen(
-                    session, course_id, eintrag["chapter_title"], eintrag["summary"], None
+                    session, course_id, eintrag["chapter_title"], eintrag["summary"], None,
+                    herkunft_key=eintrag.get("herkunft_key"),
+                    lektion_herkunft_key=eintrag.get("lektion_herkunft_key"),
                 )
                 self._schreiben(
                     session, aufgabe["task_id"], content=eintrag["content"], based_on=None,
@@ -197,7 +200,8 @@ class WerkstattStore:
 
     def _aufgabe_einfuegen(
         self, session: Session, course_id: str, chapter_title: str, summary: str,
-        position: int | None,
+        position: int | None, *, herkunft_key: str | None = None,
+        lektion_herkunft_key: str | None = None,
     ) -> dict[str, Any]:
         if session.get(WerkstattKurs, course_id) is None:
             raise LookupError("kurs_unbekannt")
@@ -217,10 +221,30 @@ class WerkstattStore:
         aufgabe = WerkstattAufgabe(
             task_id=str(uuid4()), course_id=course_id, chapter_title=chapter_title,
             position=position, summary=summary, deleted=False,
+            herkunft_key=herkunft_key, lektion_herkunft_key=lektion_herkunft_key,
         )
         session.add(aufgabe)
         session.flush()
         return _aufgabe_dict(aufgabe)
+
+    def herkunft_setzen(
+        self, zuordnung: dict[str, tuple[str | None, str | None]]
+    ) -> int:
+        """Fill EMPTY origin keys only: `{task_id: (herkunft_key, lektion_herkunft_key)}`.
+        Returns the number of tasks that changed."""
+        geaendert = 0
+        with self._sessions.begin() as session:
+            for task_id, (herkunft, lektion) in zuordnung.items():
+                aufgabe = session.get(WerkstattAufgabe, task_id)
+                if aufgabe is None:
+                    continue
+                neu = False
+                if herkunft and not aufgabe.herkunft_key:
+                    aufgabe.herkunft_key, neu = herkunft, True
+                if lektion and not aufgabe.lektion_herkunft_key:
+                    aufgabe.lektion_herkunft_key, neu = lektion, True
+                geaendert += neu
+        return geaendert
 
     def reihenfolge_setzen(self, course_id: str, task_ids: list[str]) -> None:
         with self._sessions.begin() as session:

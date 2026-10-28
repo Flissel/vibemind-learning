@@ -205,6 +205,7 @@ def test_core_migration_and_metadata_own_the_exact_prefixed_tables() -> None:
         "learning_werkstatt_aufgaben",
         "learning_werkstatt_fassungen",
         "learning_werkstatt_auftraege",
+        "learning_werkstatt_freigaben",
     }
 
 

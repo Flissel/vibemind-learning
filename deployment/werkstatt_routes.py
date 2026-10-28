@@ -40,6 +40,7 @@ from spaces.learning.services.werkstatt.uebernahme import (
     EntwurfNichtLesbar,
     NichtVeroeffentlicht,
     SchonUebernommen,
+    herkunft_nachtragen,
     kurs_uebernehmen,
 )
 from spaces.learning.services.werkstatt.vorschau import vorschau as vorschau_bauen
@@ -271,6 +272,30 @@ def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> di
         raise _fehler(
             status.HTTP_409_CONFLICT, "schon_uebernommen", "Der Kurs ist schon uebernommen"
         ) from error
+    except EntwurfNichtLesbar as error:
+        raise _fehler(
+            status.HTTP_502_BAD_GATEWAY, "entwurf_nicht_lesbar",
+            "Der gespeicherte Entwurf ist nicht lesbar",
+        ) from error
+
+
+@router.post("/kurse/{course_id}/herkunft-nachtragen")
+def herkunft_nachtragen_route(course_id: str, context: Context, autor: Autor) -> dict[str, Any]:
+    """Fill the LearnHouse origin keys of a course taken over before they were remembered."""
+    context.require(ROLE_AUTHOR)
+    runtime = _runtime()
+    try:
+        return herkunft_nachtragen(
+            runtime.store, _artifact_store(runtime.session_factory), runtime.session_factory,
+            course_id,
+        )
+    except NichtVeroeffentlicht as error:
+        raise _fehler(
+            status.HTTP_404_NOT_FOUND, "nicht_veroeffentlicht",
+            "Der Kurs ist nicht veroeffentlicht",
+        ) from error
+    except LookupError as error:
+        raise _fehler(status.HTTP_404_NOT_FOUND, "kurs_unbekannt", "Kurs nicht gefunden") from error
     except EntwurfNichtLesbar as error:
         raise _fehler(
             status.HTTP_502_BAD_GATEWAY, "entwurf_nicht_lesbar",
