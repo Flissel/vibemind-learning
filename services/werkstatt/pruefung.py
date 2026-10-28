@@ -18,8 +18,10 @@ from spaces.learning.services.course_factory.verification import (
     SourceSnapshot,
     subjects_with_unsourced_command,
 )
+from spaces.learning.services.werkstatt.formeln import formel_fehler
 from spaces.learning.services.werkstatt.inhalt import (
     AufgabeInhalt,
+    Fach,
     Fall,
     Lektionsabschnitt,
     Luecke,
@@ -53,6 +55,8 @@ _TEXTE = {
     "cloze_blank_empty": "Eine Lücke hat keine zulässige Antwort.",
     "ordering_duplicate": "In der Reihenfolge kommt ein Schritt doppelt vor.",
     "matching_duplicate": "In der Zuordnung kommt ein Begriff doppelt vor.",
+    "formel_ungueltig": "Eine Formel ist nicht schreibbar: ein „$“ wird nicht geschlossen, Klammern sind nicht ausgeglichen oder ein Formelbefehl ist unbekannt.",
+    "luecke_mit_term": "Eine Lücke erwartet einen Term; Lücken sind nur für Zahlen oder einzelne Wörter, Terme gehören in eine offene Aufgabe.",
 }
 
 
@@ -93,7 +97,7 @@ def _codeblock_tags(text: str) -> list[str]:
     return tags
 
 
-def _text_codes(inhalt: AufgabeInhalt) -> list[str]:
+def _text_codes(inhalt: AufgabeInhalt, fach: Fach = "terminal") -> list[str]:
     texte = [inhalt.prompt, getattr(inhalt, "expected_answer", "") or ""]
     if isinstance(inhalt, Quiz):
         texte += [o.text for o in inhalt.options]
@@ -102,7 +106,9 @@ def _text_codes(inhalt: AufgabeInhalt) -> list[str]:
     codes: list[str] = []
     if any(_SCHLUESSEL_IM_TEXT.search(_ohne_code(t)) for t in texte):
         codes.append("quellenschluessel_im_text")
-    if any(tag not in _ERLAUBTE_SHELLS for t in texte for tag in _codeblock_tags(t)):
+    if fach == "terminal" and any(
+        tag not in _ERLAUBTE_SHELLS for t in texte for tag in _codeblock_tags(t)
+    ):
         codes.append("codeblock_ohne_shell")
     if _ANKUENDIGUNG.search(_ohne_code(body)):
         codes.append("lektion_kuendigt_an")
@@ -159,7 +165,40 @@ def _platzhalter_ok(inhalt: Luecke) -> bool:
     return set(re.findall(r"\{\{([^{}]+)\}\}", inhalt.template)) == {b.blank_id for b in inhalt.blanks}
 
 
-def aufgabe_pruefen(inhalt: AufgabeInhalt, *, sources: tuple[SourceSnapshot, ...]) -> list[Befund]:
+_REINE_ZAHL = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+
+
+def _formel_texte(inhalt: AufgabeInhalt) -> list[str]:
+    texte = [inhalt.prompt, getattr(inhalt, "expected_answer", "") or ""]
+    if isinstance(inhalt, Quiz):
+        texte += [o.text for o in inhalt.options]
+    if isinstance(inhalt, Zuordnung):
+        texte += [t for p in inhalt.pairs for t in (p.left, p.right)]
+    if isinstance(inhalt, Reihenfolge):
+        texte += inhalt.items
+    if isinstance(inhalt, Luecke):
+        texte.append(inhalt.template)
+    if inhalt.lektion is not None:
+        texte.append(inhalt.lektion.body)
+    return texte
+
+
+def _mathe_codes(inhalt: AufgabeInhalt) -> list[str]:
+    codes: list[str] = []
+    if any(formel_fehler(t) for t in _formel_texte(inhalt)):
+        codes.append("formel_ungueltig")
+    if isinstance(inhalt, Luecke):
+        for blank in inhalt.blanks:
+            for a in blank.accepted:
+                wert = a.strip()
+                if any(z in wert for z in "+-*/^=()") and not _REINE_ZAHL.fullmatch(wert):
+                    codes.append("luecke_mit_term")
+    return codes
+
+
+def aufgabe_pruefen(
+    inhalt: AufgabeInhalt, *, sources: tuple[SourceSnapshot, ...], fach: Fach = "terminal"
+) -> list[Befund]:
     codes = _aufgabe_codes(inhalt)
     texte = [inhalt.prompt]
     abschnitt = inhalt.lektion
@@ -173,9 +212,11 @@ def aufgabe_pruefen(inhalt: AufgabeInhalt, *, sources: tuple[SourceSnapshot, ...
         zitiert = {z.citation_id for z in inhalt.zitate}
         if any(not zitiert.intersection(claim.citation_ids) for claim in abschnitt.claims):
             codes.append("claim_uncited")
-        if subjects_with_unsourced_command([("lektion", abschnitt.body)], sources):
+        if fach == "terminal" and subjects_with_unsourced_command([("lektion", abschnitt.body)], sources):
             codes.append("command_not_in_source")
-    codes += _text_codes(inhalt)
+    codes += _text_codes(inhalt, fach)
+    if fach == "mathe":
+        codes += _mathe_codes(inhalt)
     return [_befund(code) for code in dict.fromkeys(codes)]
 
 

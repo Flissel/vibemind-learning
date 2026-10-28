@@ -386,6 +386,10 @@ def ausformulieren(
     return {"auftrag_id": auftrag["id"]}
 
 
+def _fach(kurs: dict[str, Any] | None) -> Fach:
+    return "mathe" if kurs and kurs.get("fach") == "mathe" else "terminal"
+
+
 def _katalog(kurs: dict[str, Any]) -> SourceCatalog:
     """The course follows the current source state: re-pin its sources, then load the catalog."""
     runtime = _runtime()
@@ -434,7 +438,7 @@ def aufgabe_aendern(
     try:
         return store.fassung_anlegen(
             task_id, content=neu, based_on=body.based_on, author_ref=autor, reason=body.reason,
-            art=fassungs_art(alt, neu), findings=list(aufgabe_pruefen(inhalt, sources=katalog.snapshots)),
+            art=fassungs_art(alt, neu), findings=list(aufgabe_pruefen(inhalt, sources=katalog.snapshots, fach=_fach(kurs))),
         )
     except WerkstattKonflikt as konflikt:
         return _konflikt(context, konflikt.neueste)

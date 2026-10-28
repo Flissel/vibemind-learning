@@ -313,3 +313,61 @@ def test_lektion_kuendigt_an_ist_befund() -> None:
 def test_saubere_lektion_hat_keinen_der_neuen_befunde() -> None:
     neu = {"quellenschluessel_im_text", "codeblock_ohne_shell", "lektion_kuendigt_an"}
     assert not neu & set(codes(aufgabe_pruefen(gut(), sources=SRC)))
+
+
+def _mathe_offen(**over: Any) -> Any:
+    base: dict[str, Any] = {
+        "kind": "open", "prompt": "Berechnen Sie die Ableitung.", "expected_answer": "3",
+        "rubric": [{"criterion_id": "r1", "description": "Ableitung korrekt", "points": 2}],
+        "concept_ids": ["k1"], "citation_ids": [],
+    }
+    base.update(over)
+    return inhalt_lesen(base)
+
+
+def test_mathe_ohne_shell_regel() -> None:
+    body = "Die Ableitung von $x^2$ ist $2x$." + chr(10)*2 + "```text" + chr(10) + "f(x)=x^2" + chr(10) + "```" + chr(10)
+    inhalt = inhalt_lesen(quiz(lektion=lektion(body=body, claims=[])))
+    assert "codeblock_ohne_shell" in codes(aufgabe_pruefen(inhalt, sources=SRC))
+    assert "codeblock_ohne_shell" not in codes(aufgabe_pruefen(inhalt, sources=SRC, fach="mathe"))
+    assert "command_not_in_source" not in codes(aufgabe_pruefen(inhalt, sources=SRC, fach="mathe"))
+
+
+def test_mathe_formel_ungueltig() -> None:
+    inhalt = _mathe_offen(prompt="Berechnen Sie $f(2$")
+    assert "formel_ungueltig" in codes(aufgabe_pruefen(inhalt, sources=SRC, fach="mathe"))
+    assert "formel_ungueltig" not in codes(aufgabe_pruefen(inhalt, sources=SRC))
+    ok = _mathe_offen(prompt="Berechnen Sie $f(2)$")
+    assert "formel_ungueltig" not in codes(aufgabe_pruefen(ok, sources=SRC, fach="mathe"))
+
+
+def _luecke(accepted: list[str]) -> Any:
+    return inhalt_lesen({
+        "kind": "cloze", "prompt": "Ergaenzen Sie.", "template": "Ergebnis: {{b1}}",
+        "blanks": [{"blank_id": "b1", "accepted": accepted}],
+        "concept_ids": ["k1"], "citation_ids": [],
+    })
+
+
+def test_mathe_luecke_mit_term() -> None:
+    def c(accepted: list[str]) -> list[str]:
+        return codes(aufgabe_pruefen(_luecke(accepted), sources=SRC, fach="mathe"))
+
+    assert "luecke_mit_term" in c(["3x^2-3"])
+    assert "luecke_mit_term" not in c(["2"])
+    assert "luecke_mit_term" not in c(["-1,5"])
+    assert "luecke_mit_term" not in c(["Hochpunkt"])
+    assert "luecke_mit_term" not in codes(aufgabe_pruefen(_luecke(["3x^2-3"]), sources=SRC))
+
+
+def test_terminal_befunde_unveraendert() -> None:
+    faelle = [
+        gut(),
+        inhalt_lesen(quiz(options=[{"option_id": x, "text": f"O {x}"} for x in "abcd"],
+                          correct_option_ids=["a", "b", "c"])),
+        inhalt_lesen(quiz(lektion=lektion(body="```text" + chr(10) + "x" + chr(10) + "```" + chr(10) + "Foo $5 und $6.", claims=[]))),
+        _luecke(["3x^2-3"]),
+    ]
+    for f in faelle:
+        assert aufgabe_pruefen(f, sources=SRC) == aufgabe_pruefen(f, sources=SRC, fach="terminal")
+    assert "formel_ungueltig" not in codes(aufgabe_pruefen(faelle[2], sources=SRC))
