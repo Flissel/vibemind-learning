@@ -30,6 +30,7 @@ from spaces.learning.contracts.lernsequenz import (
     Step,
     TerminalSim,
     VideoSegment,
+    public_view,
 )
 from spaces.learning.services.course_factory.model_gateway import ModelGateway, ModelImageInput, ModelInvocation
 from spaces.learning.mcp.tools.tutor import TutorModelOutput
@@ -50,6 +51,12 @@ class SequenceExplainOutput(BaseModel):
     extra: str = Field(default="", max_length=10_000)
     extra_is_outside_course: bool = True
     extra_sources: list[str] = Field(default_factory=list, max_length=20)
+
+
+def _shown(sequence: LernsequenzV1, checkpoint_id: str) -> dict[str, Any]:
+    """The checkpoint as the learner's browser gets it: ordering items are stored in solution
+    order, so the tutor gets the shown order, never the stored one."""
+    return next(c for c in public_view(sequence)["checkpoints"] if c["checkpoint_id"] == checkpoint_id)
 
 
 def tutor_context(
@@ -79,7 +86,8 @@ def tutor_context(
         # The hands-on kinds: what the learner sees, never the order, the blanks, the pairs,
         # the target, the simulated outputs or the check.
         elif isinstance(checkpoint, Ordering):
-            task = {"prompt": checkpoint.task, "type": "ordering", "items": [item.text for item in checkpoint.items]}
+            task = {"prompt": checkpoint.task, "type": "ordering",
+                    "items": [i["text"] for i in _shown(sequence, checkpoint_id)["items"]]}
         elif isinstance(checkpoint, Cloze):
             task = {"prompt": checkpoint.task, "type": "cloze", "template": checkpoint.template, "shell": checkpoint.shell}
         elif isinstance(checkpoint, ImageCloze):
@@ -87,7 +95,8 @@ def tutor_context(
                     "template": checkpoint.template}
         elif isinstance(checkpoint, Matching):
             task = {"prompt": checkpoint.task, "type": "matching",
-                    "left": [item.text for item in checkpoint.left], "right": [item.text for item in checkpoint.right]}
+                    "left": [item.text for item in checkpoint.left],
+                    "right": [r["text"] for r in _shown(sequence, checkpoint_id)["right"]]}
         elif isinstance(checkpoint, Hotspot):
             task = {"prompt": checkpoint.task, "type": "hotspot"}
         elif isinstance(checkpoint, TerminalSim):

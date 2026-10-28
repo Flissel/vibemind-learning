@@ -136,3 +136,24 @@ def test_tutor_context_for_image_cloze_has_no_solution() -> None:
     assert task["type"] == "image_cloze" and task["shell"] == "powershell"
     assert task["template"] == "irm https://claude.ai/{{wert}} | iex"
     assert "install.ps1" not in str(task)
+
+
+def test_tutor_sees_hands_on_items_in_the_order_the_learner_sees() -> None:
+    # Security review: ordering items are stored in solution order, so handing them to the
+    # tutor model as stored would put the answer into its prompt.
+    from spaces.learning.contracts.lernsequenz import public_view
+    from spaces.learning.tests.unit.test_lernsequenz_mitmach import mitmach_sequence
+
+    seq = mitmach_sequence()
+    shown = {c["checkpoint_id"]: c for c in public_view(seq)["checkpoints"]}
+    kinds = set()
+    for checkpoint in seq.checkpoints:
+        task, _sources = tutor_context(seq, checkpoint_id=checkpoint.checkpoint_id)
+        if checkpoint.kind == "ordering":
+            kinds.add("ordering")
+            assert task["items"] == [i["text"] for i in shown[checkpoint.checkpoint_id]["items"]]
+            assert task["items"] != [i.text for i in checkpoint.items]
+        if checkpoint.kind == "matching":
+            kinds.add("matching")
+            assert task["right"] == [r["text"] for r in shown[checkpoint.checkpoint_id]["right"]]
+    assert kinds == {"ordering", "matching"}
