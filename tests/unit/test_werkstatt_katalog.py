@@ -1,0 +1,444 @@
+"""Uebungskatalog je Freigabe: Items aus den Werkstatt-Inhalten, Lernstand bleibt bei unveraenderten Aufgaben."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+import pytest
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from spaces.learning.services.adaptive_engine.models import (
+    AdaptiveConcept,
+    AdaptiveItem,
+    ConceptMastery,
+    ItemConcept,
+    LearningEvaluation,
+    Misconception,
+    ReviewSchedule,
+)
+from spaces.learning.services.adaptive_engine.session_service import (
+    AdaptiveSessionService,
+    AnswerCommand,
+    SessionStartCommand,
+    SessionTurn,
+)
+from spaces.learning.services.db.models import Base
+from spaces.learning.services.werkstatt.freigabe import (
+    freigabe_ausfuehren,
+    freigabe_vorbereiten,
+    loesung_hash,
+)
+from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
+from spaces.learning.services.werkstatt.store import WerkstattStore
+from spaces.learning.tests.unit.test_werkstatt_freigabe_ausfuehren import FakeGateway
+
+COURSE = "6d0f4b8e-3a51-4c1e-9f0a-2b7c1d9e4a10"
+LERNENDE = "lernende-a"
+
+
+def _factory(tmp_path: Path) -> sessionmaker[Session]:
+    engine = create_engine(f"sqlite:///{tmp_path / 'katalog.db'}")
+
+    @event.listens_for(engine, "connect")
+    def _fremdschluessel(connection, connection_record) -> None:
+        del connection_record
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def _quiz(frage: str, konzept: str, richtig: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "kind": "quiz", "prompt": frage, "concept_ids": [konzept],
+        "options": [
+            {"option_id": "a", "text": "ls"}, {"option_id": "b", "text": "cd"},
+            {"option_id": "c", "text": "pwd"},
+        ],
+        "correct_option_ids": richtig or ["a"],
+    }
+
+
+def _offen(kind: str = "open") -> dict[str, Any]:
+    return {
+        "kind": kind, "prompt": "Erklären Sie, was ein Ordner ist.", "concept_ids": ["k2"],
+        "expected_answer": "Ein Ordner fasst Dateien zusammen.",
+        "rubric": [
+            {"criterion_id": "kern", "description": "Nennt das Zusammenfassen", "points": 3},
+            {"criterion_id": "beispiel", "description": "Gibt ein Beispiel", "points": 1},
+        ],
+    }
+
+
+def _luecke(shell: str | None = "powershell") -> dict[str, Any]:
+    return {
+        "kind": "cloze", "prompt": "Ergänzen Sie den Befehl, der den Ordner wechselt.",
+        "concept_ids": ["k3"], "template": "{{befehl}} Dokumente",
+        "blanks": [{"blank_id": "befehl", "accepted": ["cd", "Set-Location"]}], "shell": shell,
+    }
+
+
+def _eintrag(key: str, content: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": key, "fassung": 1, "aufgaben_key": key,
+        "loesung_hash": loesung_hash(content), "content": content,
+    }
+
+
+def _zwei_quiz(frage_a: str = "Welcher Befehl listet Dateien auf?", richtig_b: str = "b"):
+    return [
+        _eintrag("aufgabe-a", _quiz(frage_a, "k1")),
+        _eintrag("aufgabe-b", _quiz("Welcher Befehl wechselt den Ordner?", "k2", [richtig_b])),
+    ]
+
+
+def _konzept_id(factory, revision: int, key: str) -> str:
+    with factory() as s:
+        return s.scalar(select(AdaptiveConcept.id).where(
+            AdaptiveConcept.course_id == COURSE, AdaptiveConcept.course_revision == revision,
+            AdaptiveConcept.concept_key == key,
+        ))
+
+
+def _richtig(factory, turn: SessionTurn) -> dict[str, Any]:
+    with factory() as s:
+        return dict(s.get(AdaptiveItem, turn.task.id).expected_answer)
+
+
+def _start(service: AdaptiveSessionService, revision: int, versuche: int = 2) -> SessionTurn:
+    return service.start(SessionStartCommand(
+        course_id=COURSE, course_revision=revision, actor_id=LERNENDE, mode="training",
+        blueprint={"max_attempts": versuche},
+    ))
+
+
+def _antworten(factory, service: AdaptiveSessionService, turn: SessionTurn) -> SessionTurn:
+    return service.answer(AnswerCommand(
+        session_id=turn.session_id, actor_id=LERNENDE,
+        expected_session_revision=turn.session_revision, answer=_richtig(factory, turn),
+    ))
+
+
+def _lernstand_auf_revision_1(factory) -> None:
+    """Both quiz tasks answered once on revision 1, plus a misconception on k1."""
+    WerkstattKatalog(factory).projizieren(COURSE, 1, _zwei_quiz(), None)
+    service = AdaptiveSessionService(factory)
+    turn = _start(service, 1)
+    turn = _antworten(factory, service, turn)
+    _antworten(factory, service, turn)
+    with factory() as s, s.begin():
+        bewertung = s.scalars(select(LearningEvaluation.id)).first()
+        s.add(Misconception(
+            id="7a1e2c3d-0000-4000-8000-000000000001", actor_id=LERNENDE,
+            concept_id=_konzept_id(factory, 1, "k1"), tag="verwechselt-ls-cd", status="unresolved",
+            first_evaluation_id=bewertung, latest_evaluation_id=bewertung,
+        ))
+
+
+def _zeilen(factory, modell, konzept_id: str) -> list[Any]:
+    with factory() as s:
+        return list(s.scalars(select(modell).where(modell.concept_id == konzept_id)))
+
+
+def _anzahl(factory) -> dict[str, int]:
+    with factory() as s:
+        return {
+            m.__tablename__: s.scalar(select(func.count()).select_from(m))
+            for m in (AdaptiveConcept, AdaptiveItem, ItemConcept, ConceptMastery, ReviewSchedule, Misconception)
+        }
+
+
+def test_jede_aufgabe_wird_ein_item_ihres_typs(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path / "artefakte"))
+    factory = _factory(tmp_path)
+    mehrere = _quiz("Welche Befehle zeigen etwas an?", "k1", ["a", "c"])
+    mehrfach_luecke = {
+        "kind": "cloze", "prompt": "Ergänzen Sie den Satz.", "concept_ids": ["k3"],
+        "template": "Mit {{a}} wechseln Sie, mit {{b}} listen Sie.",
+        "blanks": [{"blank_id": "a", "accepted": ["cd"]}, {"blank_id": "b", "accepted": ["ls"]}],
+    }
+    reihenfolge = {
+        "kind": "ordering", "prompt": "Bringen Sie die Schritte in die richtige Reihenfolge.",
+        "concept_ids": ["k4"], "items": ["Terminal öffnen", "Befehl tippen", "Enter drücken"],
+    }
+    zuordnung = {
+        "kind": "matching", "prompt": "Ordnen Sie jedem Befehl seine Wirkung zu.", "concept_ids": ["k4"],
+        "pairs": [
+            {"left": "ls", "right": "listet Dateien"}, {"left": "cd", "right": "wechselt den Ordner"},
+            {"left": "pwd", "right": "zeigt den Ordner"},
+        ],
+    }
+    eintraege = [
+        _eintrag("quiz", _quiz("Welcher Befehl listet Dateien auf?", "k1")),
+        _eintrag("quiz-mehrere", mehrere),
+        _eintrag("offen", _offen()),
+        _eintrag("fall", _offen("case")),
+        _eintrag("luecke-text", _luecke(None)),
+        _eintrag("luecke-fenster", _luecke("powershell")),
+        _eintrag("luecke-mehrfach", mehrfach_luecke),
+        _eintrag("reihenfolge", reihenfolge),
+        _eintrag("zuordnung", zuordnung),
+    ]
+
+    ergebnis = WerkstattKatalog(factory).projizieren(COURSE, 3, eintraege, None)
+
+    assert ergebnis == {"items": 9, "konzepte": 4, "lernstand_uebernommen": 0}
+    with factory() as s:
+        items = {i.activity_id: i for i in s.scalars(select(AdaptiveItem))}
+        konzepte = {c.concept_key: c for c in s.scalars(select(AdaptiveConcept))}
+        links = {(l.item_id, l.concept_id) for l in s.scalars(select(ItemConcept))}
+    assert set(konzepte) == {"k1", "k2", "k3", "k4"}
+    assert all(c.course_revision == 3 and c.course_id == COURSE for c in konzepte.values())
+    assert all(i.course_revision == 3 and i.quality_status == "approved" for i in items.values())
+    assert (items["quiz"].id, konzepte["k1"].id) in links
+    assert (items["zuordnung"].id, konzepte["k4"].id) in links and len(links) == 9
+
+    quiz = items["quiz"]
+    assert quiz.item_type == "single_choice" and quiz.expected_answer == {"choice_id": "a"}
+    assert sorted(o["id"] for o in quiz.scoring_config["options"]) == ["a", "b", "c"]
+    assert quiz.scoring_config["prompt"] == "Welcher Befehl listet Dateien auf?" and quiz.rubric == []
+    assert items["quiz-mehrere"].item_type == "multiple_choice"
+    assert items["quiz-mehrere"].expected_answer == {"choice_ids": ["a", "c"]}
+
+    offen, fall = items["offen"], items["fall"]
+    assert (offen.item_type, fall.item_type) == ("open", "case")
+    assert offen.expected_answer == {"text": "Ein Ordner fasst Dateien zusammen."}
+    assert [k["points"] for k in offen.rubric] == [75, 25]
+
+    text = items["luecke-text"]
+    assert text.item_type == "fill_in" and text.expected_answer == {"answers": ["cd", "Set-Location"]}
+    assert text.scoring_config["presentation"] == {"template": "{{befehl}} Dokumente", "shell": None}
+    fenster = items["luecke-fenster"].scoring_config
+    assert fenster["normalize"] == "command"
+    darstellung = fenster["presentation"]
+    assert darstellung["template"] == "{{befehl}} Dokumente" and darstellung["shell"] == "powershell"
+    assert darstellung["image"].startswith("/lernsequenz-medien/term-")
+    assert darstellung["width"] > 0 and darstellung["height"] > 0 and set(darstellung["rect"]) == {"x", "y", "w", "h"}
+
+    # Several blanks: the engine scores one text per fill_in, so it becomes an open answer.
+    mehrfach = items["luecke-mehrfach"]
+    assert mehrfach.item_type == "open"
+    assert mehrfach.expected_answer == {"text": "Mit cd wechseln Sie, mit ls listen Sie."}
+    assert "Mit ___ wechseln Sie, mit ___ listen Sie." in mehrfach.scoring_config["prompt"]
+
+    ordnung = items["reihenfolge"]
+    assert ordnung.item_type == "ordering"
+    beschriftung = {o["id"]: o["label"] for o in ordnung.scoring_config["options"]}
+    assert [beschriftung[i] for i in ordnung.expected_answer["order"]] == reihenfolge["items"]
+    assert ordnung.scoring_config["partial_credit"] is True
+
+    paare = items["zuordnung"]
+    assert paare.item_type == "matching"
+    links_seite = {e["id"]: e["label"] for e in paare.scoring_config["presentation"]["left"]}
+    rechts_seite = {e["id"]: e["label"] for e in paare.scoring_config["presentation"]["right"]}
+    assert {links_seite[l]: rechts_seite[r] for l, r in paare.expected_answer["pairs"].items()} == {
+        p["left"]: p["right"] for p in zuordnung["pairs"]
+    }
+
+    # "Üben" serves them: the deterministic ones start without a model.
+    turn = _start(AdaptiveSessionService(factory), 3)
+    assert turn.task is not None
+
+
+def test_lernstand_bleibt_bei_unveraenderten_aufgaben(tmp_path):
+    factory = _factory(tmp_path)
+    _lernstand_auf_revision_1(factory)
+    alt = _konzept_id(factory, 1, "k1")
+    (alte_mastery,) = _zeilen(factory, ConceptMastery, alt)
+
+    # Task b gets a new solution; task a stays as it was.
+    ergebnis = WerkstattKatalog(factory).projizieren(COURSE, 2, _zwei_quiz(richtig_b="c"), 1,
+                                                     vorher_eintraege=_zwei_quiz())
+
+    neu = _konzept_id(factory, 2, "k1")
+    assert neu != alt
+    (mastery,) = _zeilen(factory, ConceptMastery, neu)
+    assert (mastery.actor_id, mastery.alpha, mastery.beta) == (LERNENDE, alte_mastery.alpha, alte_mastery.beta)
+    (plan,) = _zeilen(factory, ReviewSchedule, neu)
+    (alter_plan,) = _zeilen(factory, ReviewSchedule, alt)
+    assert (plan.interval_index, plan.last_evaluation_id) == (alter_plan.interval_index, alter_plan.last_evaluation_id)
+    (fehlvorstellung,) = _zeilen(factory, Misconception, neu)
+    assert (fehlvorstellung.tag, fehlvorstellung.status) == ("verwechselt-ls-cd", "unresolved")
+    # The old rows stay: a session on revision 1 keeps its state.
+    assert len(_zeilen(factory, ConceptMastery, alt)) == 1 and len(_zeilen(factory, Misconception, alt)) == 1
+    assert ergebnis == {"items": 2, "konzepte": 2, "lernstand_uebernommen": 1}
+
+
+def test_lernstand_neu_bei_geaenderter_loesung(tmp_path):
+    factory = _factory(tmp_path)
+    _lernstand_auf_revision_1(factory)
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 1, "k2"))
+
+    WerkstattKatalog(factory).projizieren(COURSE, 2, _zwei_quiz(richtig_b="c"), 1,
+                                          vorher_eintraege=_zwei_quiz())
+
+    neu = _konzept_id(factory, 2, "k2")
+    assert _zeilen(factory, ConceptMastery, neu) == []
+    assert _zeilen(factory, ReviewSchedule, neu) == []
+
+
+def test_textkorrektur_behaelt_lernstand(tmp_path):
+    factory = _factory(tmp_path)
+    _lernstand_auf_revision_1(factory)
+
+    # Only the wording of both questions changed (same solution, kind and concepts).
+    neu = _zwei_quiz(frage_a="Mit welchem Befehl listen Sie Dateien auf?")
+    neu[1]["content"]["prompt"] = "Mit welchem Befehl wechseln Sie den Ordner?"
+    neu[1]["loesung_hash"] = loesung_hash(neu[1]["content"])
+    assert [e["loesung_hash"] for e in neu] == [e["loesung_hash"] for e in _zwei_quiz()]
+    ergebnis = WerkstattKatalog(factory).projizieren(COURSE, 2, neu, 1, vorher_eintraege=_zwei_quiz())
+
+    assert ergebnis["lernstand_uebernommen"] == 2
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 2, "k1"))
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 2, "k2"))
+
+
+def test_projektion_ist_idempotent(tmp_path):
+    factory = _factory(tmp_path)
+    _lernstand_auf_revision_1(factory)
+    katalog = WerkstattKatalog(factory)
+
+    katalog.projizieren(COURSE, 2, _zwei_quiz(), 1, vorher_eintraege=_zwei_quiz())
+    vorher = _anzahl(factory)
+    zweites = katalog.projizieren(COURSE, 2, _zwei_quiz(), 1, vorher_eintraege=_zwei_quiz())
+
+    assert _anzahl(factory) == vorher
+    assert zweites == {"items": 0, "konzepte": 0, "lernstand_uebernommen": 0}
+
+
+def test_alte_sitzung_bleibt_nach_freigabe_nutzbar(tmp_path):
+    factory = _factory(tmp_path)
+    katalog = WerkstattKatalog(factory)
+    katalog.projizieren(COURSE, 1, _zwei_quiz(), None)
+    service = AdaptiveSessionService(factory)
+    with factory() as s:
+        alte_items = set(s.scalars(select(AdaptiveItem.id).where(AdaptiveItem.course_revision == 1)))
+    laufend = _start(service, 1, versuche=3)
+    laufend = _antworten(factory, service, laufend)
+
+    katalog.projizieren(COURSE, 2, _zwei_quiz(richtig_b="c"), 1, vorher_eintraege=_zwei_quiz())
+
+    # The running session keeps serving revision 1 ...
+    assert service.current(laufend.session_id, actor_id=LERNENDE).task.id in alte_items
+    weiter = _antworten(factory, service, laufend)
+    assert weiter.task is not None and weiter.task.id in alte_items
+    # ... and a new session gets revision 2.
+    with factory() as s:
+        neue_items = set(s.scalars(select(AdaptiveItem.id).where(AdaptiveItem.course_revision == 2)))
+    neu = service.start(SessionStartCommand(
+        course_id=COURSE, course_revision=2, actor_id="lernende-b", mode="training",
+        blueprint={"max_attempts": 1},
+    ))
+    assert neu.task is not None and neu.task.id in neue_items
+
+
+# --- Hook in freigabe_ausfuehren -----------------------------------------------------
+
+
+def _store(factory) -> WerkstattStore:
+    s = WerkstattStore(factory)
+    s.kurs_anlegen(
+        COURSE, title="Terminal", audience="Einsteiger", default_kind="quiz",
+        outcomes=["Befehle eingeben"], source_provenance=[], owner_ref="kursleitung-a",
+    )
+    return s
+
+
+def _aufgabe(s: WerkstattStore, content: dict[str, Any], art: str = "neu") -> str:
+    t = s.aufgabe_anlegen(COURSE, chapter_title="Kapitel 1", summary=content["prompt"][:40])
+    s.fassung_anlegen(t["task_id"], content=content, based_on=None, author_ref="kursleitung-a",
+                      reason="r", art=art, findings=[])
+    return t["task_id"]
+
+
+def _fassung(s: WerkstattStore, task_id: str, content: dict[str, Any], art: str) -> None:
+    s.fassung_anlegen(task_id, content=content, based_on=s.neueste(task_id)["number"],
+                      author_ref="kursleitung-a", reason="r", art=art, findings=[])
+
+
+async def _freigeben(s: WerkstattStore, katalog: Any, revision: int) -> dict[str, Any]:
+    v = freigabe_vorbereiten(s, COURSE, autor="kursleitung-a", learnhouse_revision=revision)
+    return await freigabe_ausfuehren(
+        s, FakeGateway(), v["freigabe_id"], approval_ref="klick", learnhouse_revision=revision,
+        katalog=katalog,
+    )
+
+
+def _lernen(factory, revision: int) -> None:
+    service = AdaptiveSessionService(factory)
+    turn = _start(service, revision)
+    turn = _antworten(factory, service, turn)
+    _antworten(factory, service, turn)
+
+
+@pytest.mark.asyncio
+async def test_freigabe_projiziert_katalog_der_neuen_revision(tmp_path):
+    factory = _factory(tmp_path)
+    s = _store(factory)
+    katalog = WerkstattKatalog(factory)
+    t1 = _aufgabe(s, _quiz("Welcher Befehl listet Dateien auf?", "k1"))
+    t2 = _aufgabe(s, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["b"]))
+
+    erste = await _freigeben(s, katalog, 4)
+
+    assert erste["learnhouse_revision"] == 5
+    assert erste["katalog"] == {"items": 2, "konzepte": 2, "lernstand_uebernommen": 0}
+    with factory() as session:
+        keys = set(session.scalars(select(AdaptiveItem.activity_id).where(AdaptiveItem.course_revision == 5)))
+    assert keys == {f"werkstatt:{t1}", f"werkstatt:{t2}"}
+
+    _lernen(factory, 5)
+    _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
+    _fassung(s, t2, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["c"]), "neu")
+    zweite = await _freigeben(s, katalog, 5)
+
+    assert zweite["katalog"] == {"items": 2, "konzepte": 2, "lernstand_uebernommen": 1}
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 6, "k1"))
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 6, "k2")) == []
+
+
+@pytest.mark.asyncio
+async def test_erste_freigabe_nach_uebernahme_behaelt_lernstand(tmp_path):
+    # The taken-over course already had a catalog (revision 2) and learners on it; its tasks
+    # came in as Fassung 1 ("uebernommen"), which is what that catalog held.
+    factory = _factory(tmp_path)
+    s = _store(factory)
+    katalog = WerkstattKatalog(factory)
+    a, b = _quiz("Welcher Befehl listet Dateien auf?", "k1"), _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["b"])
+    katalog.projizieren(COURSE, 2, [_eintrag("fabrik-a", a), _eintrag("fabrik-b", b)], None)
+    _lernen(factory, 2)
+    t1, t2 = _aufgabe(s, a, art="uebernommen"), _aufgabe(s, b, art="uebernommen")
+    _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
+    _fassung(s, t2, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["c"]), "neu")
+
+    r = await _freigeben(s, katalog, 2)
+
+    assert r["katalog"]["lernstand_uebernommen"] == 1
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 3, "k1"))
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 3, "k2")) == []
+
+
+class _KaputterKatalog:
+    def letzte_revision(self, course_id: str, *, unter: int) -> int | None:
+        return None
+
+    def projizieren(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("datenbank weg")
+
+
+@pytest.mark.asyncio
+async def test_katalog_fehler_haelt_freigabe_nicht_auf(tmp_path, caplog):
+    factory = _factory(tmp_path)
+    s = _store(factory)
+    _aufgabe(s, _quiz("Welcher Befehl listet Dateien auf?", "k1"))
+
+    with caplog.at_level(logging.ERROR):
+        r = await _freigeben(s, _KaputterKatalog(), 1)
+
+    assert r["katalog_fehler"] == "RuntimeError" and "katalog" not in r
+    assert r["learnhouse_revision"] == 2
+    assert s.freigabe_letzte_freigegebene(COURSE)["zustand"] == "freigegeben"
+    assert any(rec.message == "werkstatt_katalog_projektion_fehlgeschlagen" for rec in caplog.records)

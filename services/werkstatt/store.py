@@ -423,12 +423,18 @@ class WerkstattStore:
                 raise LookupError("freigabe_unbekannt")
             return _freigabe_dict(freigabe)
 
-    def freigabe_letzte_freigegebene(self, course_id: str) -> dict[str, Any] | None:
+    def freigabe_letzte_freigegebene(
+        self, course_id: str, *, vor_nummer: int | None = None
+    ) -> dict[str, Any] | None:
+        """The newest released one; with `vor_nummer` the newest one released before that number."""
         with self._sessions() as session:
+            bedingungen = [WerkstattFreigabe.course_id == course_id,
+                           WerkstattFreigabe.zustand == "freigegeben"]
+            if vor_nummer is not None:
+                bedingungen.append(WerkstattFreigabe.nummer < vor_nummer)
             freigabe = session.scalars(
                 select(WerkstattFreigabe)
-                .where(WerkstattFreigabe.course_id == course_id,
-                       WerkstattFreigabe.zustand == "freigegeben")
+                .where(*bedingungen)
                 .order_by(WerkstattFreigabe.nummer.desc())
                 .limit(1)
             ).first()

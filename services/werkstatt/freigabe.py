@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import Counter
 from typing import Any, Protocol
 
@@ -22,6 +23,8 @@ from spaces.learning.services.course_factory.quality_gate import (
 from spaces.learning.services.werkstatt.inhalt import Fall, Offen, Quiz, _loesung, inhalt_lesen
 from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion
 from spaces.learning.services.werkstatt.store import WerkstattStore
+
+logger = logging.getLogger(__name__)
 
 # Findings that remind but do not hold a release back.
 _NICHT_BLOCKIEREND = frozenset({"rubric_scale_inconsistent", "lesson_body_thin"})
@@ -193,16 +196,27 @@ class _StandSchreiber(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class _Katalog(Protocol):
+    def letzte_revision(self, course_id: str, *, unter: int) -> int | None: ...
+
+    def projizieren(
+        self, course_id: str, course_revision: int, eintraege: list[dict[str, Any]],
+        vorher_revision: int | None, vorher_eintraege: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
+
+
+def _fassungs_inhalt(store: WerkstattStore, task_id: str, number: int) -> dict[str, Any]:
+    fassung = next((f for f in store.fassungen(task_id) if f["number"] == number), None)
+    if fassung is None:
+        raise ValueError("manifest_fassung_fehlt")
+    return fassung["content"]
+
+
 def _kapitel_aus_manifest(store: WerkstattStore, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Chapters in manifest order; each task's lesson first. Reads the approved version, not the newest."""
     kapitel: dict[str, dict[str, Any]] = {}
     for m in sorted(manifest, key=lambda e: e["position"]):
-        fassung = next(
-            (f for f in store.fassungen(m["task_id"]) if f["number"] == m["fassung"]), None
-        )
-        if fassung is None:
-            raise ValueError("manifest_fassung_fehlt")
-        inhalt = inhalt_lesen(fassung["content"])
+        inhalt = inhalt_lesen(_fassungs_inhalt(store, m["task_id"], m["fassung"]))
         eintraege = kapitel.setdefault(
             m["kapitel"], {"titel": m["kapitel"], "eintraege": []}
         )["eintraege"]
@@ -219,13 +233,51 @@ def _kapitel_aus_manifest(store: WerkstattStore, manifest: list[dict[str, Any]])
     return list(kapitel.values())
 
 
+def _mit_inhalt(store: WerkstattStore, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**m, "content": _fassungs_inhalt(store, m["task_id"], m["fassung"])} for m in manifest]
+
+
+def _uebernommen(store: WerkstattStore, course_id: str) -> list[dict[str, Any]]:
+    """Before the first release: the taken-over Fassungen, i.e. what the factory catalog held."""
+    eintraege = []
+    for a in store.aufgaben_alle(course_id):
+        f = next((f for f in store.fassungen(a["task_id"]) if f["art"] == "uebernommen"), None)
+        if f is not None:
+            eintraege.append({
+                "task_id": a["task_id"], "fassung": f["number"],
+                "loesung_hash": loesung_hash(f["content"]), "content": f["content"],
+            })
+    return eintraege
+
+
+def _katalog_projizieren(
+    store: WerkstattStore, katalog: _Katalog, freigabe: dict[str, Any], revision: int
+) -> dict[str, Any]:
+    """Catalog of the new LearnHouse revision; learner state from the previous release's catalog
+    (before the first release: the taken-over course's catalog, compared with Fassung 1)."""
+    course_id = freigabe["course_id"]
+    vorige = store.freigabe_letzte_freigegebene(course_id, vor_nummer=freigabe["nummer"])
+    if vorige is not None:
+        vorher_revision = vorige["learnhouse_revision"]
+        vorher = _mit_inhalt(store, vorige["manifest"])
+    else:
+        vorher_revision = katalog.letzte_revision(course_id, unter=revision)
+        vorher = _uebernommen(store, course_id)
+    return katalog.projizieren(
+        course_id, revision, _mit_inhalt(store, freigabe["manifest"]), vorher_revision,
+        vorher_eintraege=vorher,
+    )
+
+
 async def freigabe_ausfuehren(
     store: WerkstattStore, gateway: _StandSchreiber, freigabe_id: str, *,
-    approval_ref: str, learnhouse_revision: int,
+    approval_ref: str, learnhouse_revision: int, katalog: _Katalog | None = None,
 ) -> dict[str, Any]:
     """Write the approved manifest into LearnHouse. All checks run before the first write.
 
-    On a gateway error the release stays `angefordert`. No model is called."""
+    On a gateway error the release stays `angefordert`. With `katalog`, the practice catalog of
+    the new revision is projected afterwards; a catalog failure is logged and reported as
+    `katalog_fehler`, it never undoes the release. No model is called."""
     freigabe = store.freigabe(freigabe_id)
     if freigabe["zustand"] != "angefordert":
         raise ValueError("freigabe_nicht_offen")
@@ -252,7 +304,19 @@ async def freigabe_ausfuehren(
     store.freigabe_markieren_freigegeben(
         freigabe_id, learnhouse_revision=revision, approval_ref=approval_ref
     )
-    return {
+    ergebnis: dict[str, Any] = {
         "learnhouse_revision": revision, "aktualisiert": antwort["aktualisiert"],
         "neu": antwort["neu"], "unveroeffentlicht": antwort["unveroeffentlicht"],
     }
+    if katalog is not None:
+        # After the release is recorded: a catalog failure never hides it. The projection is
+        # idempotent and can be repeated for this revision.
+        try:
+            ergebnis["katalog"] = _katalog_projizieren(store, katalog, freigabe, revision)
+        except Exception as fehler:
+            logger.exception(
+                "werkstatt_katalog_projektion_fehlgeschlagen",
+                extra={"freigabe_id": freigabe_id, "course_revision": revision},
+            )
+            ergebnis["katalog_fehler"] = type(fehler).__name__
+    return ergebnis
