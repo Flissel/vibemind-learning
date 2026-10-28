@@ -183,6 +183,18 @@ def _formel_texte(inhalt: AufgabeInhalt) -> list[str]:
     return texte
 
 
+_MINUS_ZWISCHEN_BUCHSTABEN = re.compile(r"(?<=[^\W\d_])-(?=[^\W\d_])")
+
+
+def _ist_term(wert: str) -> bool:
+    """A cloze answer is a term if it has an operator; `-` between two letters is a hyphen
+    ("x-Achse"), and a number such as "-1,5" stays a number."""
+    if _REINE_ZAHL.fullmatch(wert):
+        return False
+    rest = _MINUS_ZWISCHEN_BUCHSTABEN.sub("", wert)
+    return any(z in rest for z in "+-*/^=()")
+
+
 def _mathe_codes(inhalt: AufgabeInhalt) -> list[str]:
     codes: list[str] = []
     if any(formel_fehler(t) for t in _formel_texte(inhalt)):
@@ -191,7 +203,7 @@ def _mathe_codes(inhalt: AufgabeInhalt) -> list[str]:
         for blank in inhalt.blanks:
             for a in blank.accepted:
                 wert = a.strip()
-                if any(z in wert for z in "+-*/^=()") and not _REINE_ZAHL.fullmatch(wert):
+                if _ist_term(wert):
                     codes.append("luecke_mit_term")
     return codes
 

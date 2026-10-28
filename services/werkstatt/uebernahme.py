@@ -18,7 +18,7 @@ from spaces.learning.services.course_factory.schemas import (
 )
 from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.services.course_factory.verification import SourceSnapshot
-from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+from spaces.learning.services.werkstatt.inhalt import Fach, inhalt_lesen
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen
 from spaces.learning.services.werkstatt.store import WerkstattStore
 
@@ -169,7 +169,12 @@ def kurs_uebernehmen(
                 continue
             erste = False
             angelegt += 1
-            befunde = list(aufgabe_pruefen(gelesen, sources=snapshots)) if snapshots is not None else []
+            # No course record exists yet at takeover, and a takeover is always a terminal course.
+            fach: Fach = "terminal"
+            befunde = (
+                list(aufgabe_pruefen(gelesen, sources=snapshots, fach=fach))
+                if snapshots is not None else []
+            )
             aufgaben.append({
                 "chapter_title": ch.title, "summary": a.prompt[:120], "content": inhalt,
                 "findings": befunde,

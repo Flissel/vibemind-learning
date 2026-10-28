@@ -9,7 +9,10 @@ ERLAUBTE_BEFEHLE: frozenset[str] = frozenset(
     "frac dfrac sqrt cdot times div pm mp le leq ge geq ne neq approx infty lim to rightarrow "
     "Rightarrow Leftrightarrow left right sum int ln log exp sin cos tan pi alpha beta gamma "
     "Delta delta varepsilon mathbb mathrm text quad qquad underbrace overline in notin cup cap "
-    "setminus emptyset mid ldots cdots prime begin end cases".split()
+    "setminus emptyset mid ldots cdots prime begin end cases "
+    "lambda mu sigma theta vec bar hat mathbf implies iff Longrightarrow leftarrow subset subseteq "
+    "forall exists dots displaystyle operatorname lvert rvert vert max min arcsin arccos arctan cot "
+    "binom partial langle rangle lfloor rfloor lceil rceil".split()
 )
 _UMGEBUNGEN = {"cases", "aligned"}
 

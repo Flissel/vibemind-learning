@@ -354,6 +354,10 @@ def test_mathe_luecke_mit_term() -> None:
         return codes(aufgabe_pruefen(_luecke(accepted), sources=SRC, fach="mathe"))
 
     assert "luecke_mit_term" in c(["3x^2-3"])
+    assert "luecke_mit_term" in c(["x=2"])
+    assert "luecke_mit_term" in c(["1/2"])
+    assert "luecke_mit_term" not in c(["x-Achse"])
+    assert "luecke_mit_term" not in c(["Sattel-Punkt"])
     assert "luecke_mit_term" not in c(["2"])
     assert "luecke_mit_term" not in c(["-1,5"])
     assert "luecke_mit_term" not in c(["Hochpunkt"])
@@ -368,6 +372,8 @@ def test_terminal_befunde_unveraendert() -> None:
         inhalt_lesen(quiz(lektion=lektion(body="```text" + chr(10) + "x" + chr(10) + "```" + chr(10) + "Foo $5 und $6.", claims=[]))),
         _luecke(["3x^2-3"]),
     ]
-    for f in faelle:
-        assert aufgabe_pruefen(f, sources=SRC) == aufgabe_pruefen(f, sources=SRC, fach="terminal")
+    erwartet = [[], ["quiz_all_but_one", "claim_uncited"], ["codeblock_ohne_shell"], []]
+    for f, soll in zip(faelle, erwartet, strict=True):
+        assert codes(aufgabe_pruefen(f, sources=SRC)) == soll
+        assert codes(aufgabe_pruefen(f, sources=SRC, fach="terminal")) == soll
     assert "formel_ungueltig" not in codes(aufgabe_pruefen(faelle[2], sources=SRC))
