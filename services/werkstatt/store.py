@@ -173,7 +173,7 @@ class WerkstattStore:
     ) -> int:
         """Take over a published course in ONE transaction: course, tasks and Fassung 1, or nothing.
 
-        aufgaben is [{"chapter_title": str, "summary": str, "content": dict}, ...] in order.
+        aufgaben is [{"chapter_title": str, "summary": str, "content": dict, "findings": list}, ...] in order.
         """
         with self._sessions.begin() as session:
             if session.get(WerkstattKurs, course_id) is not None:
@@ -191,7 +191,7 @@ class WerkstattStore:
                 self._schreiben(
                     session, aufgabe["task_id"], content=eintrag["content"], based_on=None,
                     author_ref=author_ref, reason="Aus veroeffentlichtem Kurs uebernommen",
-                    art="uebernommen", findings=[],
+                    art="uebernommen", findings=list(eintrag.get("findings", [])),
                 )
             return len(aufgaben)
 

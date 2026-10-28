@@ -103,8 +103,10 @@ def _setup(tmp_path: Path, draft: dict[str, Any] | None = None, publiziert: bool
     return WerkstattStore(factory), fake, factory
 
 
-def _uebernehmen(store, fake, factory):
-    return kurs_uebernehmen(store, fake, factory, COURSE, author_ref="kursleitung-a")
+def _uebernehmen(store, fake, factory, katalog=lambda _cid, _ids: ()):
+    return kurs_uebernehmen(
+        store, fake, factory, COURSE, author_ref="kursleitung-a", quellen_laden=katalog
+    )
 
 
 def test_uebernahme_legt_je_aktivitaet_eine_aufgabe_mit_fassung_1_an(tmp_path):
@@ -270,3 +272,26 @@ def test_viele_lektionszitate_sprengen_die_uebernahme_nicht(tmp_path):
     assert ergebnis["uebersprungen"] == 0, ergebnis["uebersprungen_details"]
     a1 = store.neueste(store.kurs(COURSE)["aufgaben"][0]["task_id"])["content"]
     assert len(a1["zitate"]) == 121
+
+
+def test_uebernahme_speichert_befunde_in_fassung_1(tmp_path):
+    draft = _draft()
+    draft["activities"][1]["prompt"] = "Erklaeren Sie, was du dabei tust."
+    draft["activities"][1]["prompt"] += " " + "x" * 200
+    store, fake, factory = _setup(tmp_path, draft)
+    ergebnis = _uebernehmen(store, fake, factory)
+    assert "pruefung_uebersprungen" not in ergebnis
+    a1, a2, a3 = store.kurs(COURSE)["aufgaben"]
+    assert [f["code"] for f in store.neueste(a2["task_id"])["findings"]] == ["address_mixed"]
+    assert store.neueste(a3["task_id"])["findings"] == []
+
+
+def test_uebernahme_ohne_katalog_uebernimmt_und_meldet_uebersprungen(tmp_path):
+    store, fake, factory = _setup(tmp_path)
+
+    def kaputt(_cid, _ids):
+        raise ValueError("course factory source provenance is stale")
+
+    ergebnis = _uebernehmen(store, fake, factory, kaputt)
+    assert ergebnis["aufgaben"] == 3 and ergebnis["pruefung_uebersprungen"] is True
+    assert all(store.neueste(a["task_id"])["findings"] == [] for a in store.kurs(COURSE)["aufgaben"])

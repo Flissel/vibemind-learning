@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -16,7 +17,9 @@ from spaces.learning.services.course_factory.schemas import (
     LessonDraft,
 )
 from spaces.learning.services.course_factory.state_machine import FactoryState
+from spaces.learning.services.course_factory.verification import SourceSnapshot
 from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen
 from spaces.learning.services.werkstatt.store import WerkstattStore
 
 _UEBERNEHMBAR = {"quiz", "open", "case"}
@@ -88,7 +91,11 @@ def kurs_uebernehmen(
     course_id: str,
     *,
     author_ref: str,
+    quellen_laden: Callable[[str, tuple[str, ...]], tuple[SourceSnapshot, ...]] | None = None,
 ) -> dict[str, Any]:
+    """`quellen_laden(course_id, source_ids)` returns the current source snapshots for the
+    checks of Fassung 1. Without it, or if it raises (stale or missing sources), the takeover
+    still succeeds with the checks skipped and `pruefung_uebersprungen: True` in the result."""
     try:
         store.kurs(course_id)
     except LookupError:
@@ -114,6 +121,15 @@ def kurs_uebernehmen(
         # ValidationError is a ValueError; read/parse/integrity failures all land here.
         raise EntwurfNichtLesbar("entwurf_nicht_lesbar") from error
 
+    snapshots: tuple[SourceSnapshot, ...] | None = None
+    if quellen_laden is not None:
+        try:
+            snapshots = quellen_laden(
+                course_id, tuple(p.source_id for p in draft.source_provenance)
+            )
+        except (ValueError, LookupError, OSError):
+            snapshots = None
+
     aktivitaeten = {a.activity_id: a for a in draft.activities}
     lektionen = {e.lesson_id: e for e in draft.lessons}
     aufgaben: list[dict[str, Any]] = []
@@ -134,7 +150,8 @@ def kurs_uebernehmen(
                 continue
             inhalt = _inhalt(a, draft, _lektion(gehoerig) if erste and gehoerig else None)
             try:
-                inhalt = inhalt_lesen(inhalt).model_dump(mode="json")
+                gelesen = inhalt_lesen(inhalt)
+                inhalt = gelesen.model_dump(mode="json")
             except ValidationError as error:
                 details.append({
                     "activity_id": aid, "grund": f"inhalt_ungueltig: {_kurzer_fehler(error)}",
@@ -142,9 +159,11 @@ def kurs_uebernehmen(
                 continue
             erste = False
             angelegt += 1
-            aufgaben.append(
-                {"chapter_title": ch.title, "summary": a.prompt[:120], "content": inhalt}
-            )
+            befunde = list(aufgabe_pruefen(gelesen, sources=snapshots)) if snapshots is not None else []
+            aufgaben.append({
+                "chapter_title": ch.title, "summary": a.prompt[:120], "content": inhalt,
+                "findings": befunde,
+            })
         if angelegt:
             kapitel += 1
         elif gehoerig:
@@ -163,7 +182,10 @@ def kurs_uebernehmen(
         if str(error) == "schon_uebernommen":  # lost a race with a second takeover
             raise SchonUebernommen("schon_uebernommen") from error
         raise
-    return {
+    ergebnis: dict[str, Any] = {
         "aufgaben": len(aufgaben), "kapitel": kapitel, "uebersprungen": len(details),
         "uebersprungen_details": details, "lektionen_verloren": verloren,
     }
+    if snapshots is None:
+        ergebnis["pruefung_uebersprungen"] = True
+    return ergebnis

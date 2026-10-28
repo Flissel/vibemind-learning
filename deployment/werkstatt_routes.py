@@ -243,6 +243,15 @@ def grobentwurf_neu(
     return {"auftrag_id": auftrag["id"]}
 
 
+def _snapshots(runtime: Any, course_id: str, source_ids: tuple[str, ...]) -> Any:
+    """Current source snapshots for the takeover checks (no re-pinning: the takeover stores
+    the draft's own provenance). Raises ValueError if the sources are stale or not ready."""
+    provenance = current_provenance(runtime.session_factory, course_id, source_ids)
+    return SourceCatalogLoader(runtime.session_factory).load(
+        course_id=course_id, provenance=provenance
+    ).snapshots
+
+
 @router.post("/kurse/{course_id}/uebernehmen", status_code=status.HTTP_201_CREATED)
 def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> dict[str, Any]:
     context.require(ROLE_AUTHOR)
@@ -251,6 +260,7 @@ def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> di
         return kurs_uebernehmen(
             runtime.store, _artifact_store(runtime.session_factory), runtime.session_factory,
             course_id, author_ref=autor,
+            quellen_laden=lambda cid, ids: _snapshots(runtime, cid, ids),
         )
     except NichtVeroeffentlicht as error:
         raise _fehler(
