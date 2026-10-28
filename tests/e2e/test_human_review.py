@@ -59,7 +59,7 @@ def test_confirming_credits_mastery_and_resolves_the_review(held) -> None:
     service, factory, session_id = held
     review_id = service.pending_reviews()[0]["review_id"]
 
-    result = service.resolve_review(review_id, reviewer_id="felix", decision="confirm")
+    result = service.resolve_review(review_id, reviewer_id="reviewer-1", decision="confirm")
 
     assert result["score"] == 0.8 and result["decision"] == "confirm"
     assert service.pending_reviews() == []
@@ -69,9 +69,9 @@ def test_confirming_credits_mastery_and_resolves_the_review(held) -> None:
         assert db.scalar(select(func.count()).select_from(MasteryEvidence)) == 1
         assert db.scalar(select(LearningReviewItem.status)) == "resolved"
         decision = db.scalar(select(LearningReviewDecision))
-        assert decision.reviewer_id == "felix" and decision.human_evaluation_id == manual.id
+        assert decision.reviewer_id == "reviewer-1" and decision.human_evaluation_id == manual.id
     with pytest.raises(PersistenceConflict):
-        service.resolve_review(review_id, reviewer_id="felix", decision="confirm")
+        service.resolve_review(review_id, reviewer_id="reviewer-1", decision="confirm")
 
 
 def test_overriding_uses_the_persons_score_everywhere(held) -> None:
@@ -79,7 +79,7 @@ def test_overriding_uses_the_persons_score_everywhere(held) -> None:
     review_id = service.pending_reviews()[0]["review_id"]
 
     result = service.resolve_review(
-        review_id, reviewer_id="felix", decision="override", score=0.2, note="Zwinge fehlt"
+        review_id, reviewer_id="reviewer-1", decision="override", score=0.2, note="Zwinge fehlt"
     )
 
     assert result["score"] == 0.2
@@ -92,9 +92,9 @@ def test_an_override_needs_a_score_between_0_and_1(held) -> None:
     review_id = service.pending_reviews()[0]["review_id"]
     for bad in (None, 1.5, -0.1):
         with pytest.raises(ValueError):
-            service.resolve_review(review_id, reviewer_id="felix", decision="override", score=bad)
+            service.resolve_review(review_id, reviewer_id="reviewer-1", decision="override", score=bad)
     with pytest.raises(ValueError):
-        service.resolve_review(review_id, reviewer_id="felix", decision="maybe")
+        service.resolve_review(review_id, reviewer_id="reviewer-1", decision="maybe")
 
 
 @pytest.fixture()

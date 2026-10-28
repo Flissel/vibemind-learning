@@ -94,14 +94,14 @@ def test_player_answers_count_for_the_person_in_the_token(tmp_path: Path, monkey
     url = f"/lernsequenz/seq-roi/antwort?k={sequence_token('seq-roi', key)}"
     body = {"checkpoint_id": "q1", "answer": {"selected": ["b"]}}
 
-    as_anna = client.post(url, json=body, headers={"X-Learning-Person": person_token("lh-3-anna", key=person_key)})
+    as_learner = client.post(url, json=body, headers={"X-Learning-Person": person_token("lh-3-lernende", key=person_key)})
     anonymous = client.post(url, json=body)
-    expired = client.post(url + "&p=" + person_token("lh-3-anna", key=person_key, now=1_000.0), json=body)
+    expired = client.post(url + "&p=" + person_token("lh-3-lernende", key=person_key, now=1_000.0), json=body)
     lernsequenz_routes._store.cache_clear()
     lernsequenz_routes._sessions.cache_clear()
 
-    assert as_anna.status_code == 200 and as_anna.json()["mastery"]["counted"] is True
+    assert as_learner.status_code == 200 and as_learner.json()["mastery"]["counted"] is True
     assert anonymous.status_code == 200 and anonymous.json()["mastery"]["counted"] is True
     assert expired.status_code == 401 and expired.json()["code"] == "person_expired"
     with factory() as db:
-        assert sorted(db.scalars(select(ConceptMastery.actor_id))) == ["learning-claw", "lh-3-anna"]
+        assert sorted(db.scalars(select(ConceptMastery.actor_id))) == ["learning-claw", "lh-3-lernende"]

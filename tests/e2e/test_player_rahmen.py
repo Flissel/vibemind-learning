@@ -20,7 +20,7 @@ def _drag(page, box: dict, x0: float, y0: float, x1: float, y1: float) -> None:
 def test_marked_place_is_explained_and_kept_as_a_note(player_server, explain_worker, browser_page) -> None:
     page = browser_page
     player_server.store.save(LernsequenzV1.model_validate(sequence_data()))
-    page.goto(player_server.link("seq-roi") + "&p=" + person_token("lh-3-anna", key=PLAYER_KEY))
+    page.goto(player_server.link("seq-roi") + "&p=" + person_token("lh-3-lernende", key=PLAYER_KEY))
     page.wait_for_function("document.getElementById('count').textContent.length > 0")
     title = page.locator("#stage h2").inner_text()
 
@@ -37,7 +37,7 @@ def test_marked_place_is_explained_and_kept_as_a_note(player_server, explain_wor
     page.get_by_role("button", name="Notiz anlegen").click()
     page.wait_for_selector(".markpop .saved")
     notes = httpx.get(player_server.base + "/api/v1/notizen",
-                      headers={"X-LearnHouse-Learning-Service-Key": PLAYER_KEY, "X-Learning-Actor": "lh-3-anna"}).json()["notes"]
+                      headers={"X-LearnHouse-Learning-Service-Key": PLAYER_KEY, "X-Learning-Actor": "lh-3-lernende"}).json()["notes"]
     assert len(notes) == 1 and title in notes[0]["selection"] and notes[0]["anchor"] == {"section_id": "f1"}
     assert notes[0]["explanation"] == "Die Jahreskosten laut Folie." and notes[0]["extra"].startswith("Allgemein")
     assert page.errors == []

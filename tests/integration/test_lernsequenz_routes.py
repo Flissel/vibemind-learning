@@ -184,8 +184,8 @@ def test_a_note_needs_the_person_and_keeps_the_explanation(client, monkeypatch, 
     body = {"anchor": {"checkpoint_id": "q1"}, "selection": "ROI"}
 
     anonymous = client.post(url, json=body)
-    saved = client.post(url, json=body, headers={"X-Learning-Person": person_token("lh-3-anna", key=PERSON_KEY)})
-    listed = client.get("/api/v1/notizen", headers={"X-LearnHouse-Learning-Service-Key": PERSON_KEY, "X-Learning-Actor": "lh-3-anna"})
+    saved = client.post(url, json=body, headers={"X-Learning-Person": person_token("lh-3-lernende", key=PERSON_KEY)})
+    listed = client.get("/api/v1/notizen", headers={"X-LearnHouse-Learning-Service-Key": PERSON_KEY, "X-Learning-Actor": "lh-3-lernende"})
     notizen_routes._store.cache_clear()
 
     assert anonymous.status_code == 401 and anonymous.json()["code"] == "person_required"

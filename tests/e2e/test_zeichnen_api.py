@@ -66,7 +66,7 @@ def world(tmp_path: Path, monkeypatch):
         db.add(ItemConcept(item_id=str(item), concept_id=str(concept_id), course_id=str(course_id),
                            course_revision=1))
     sessions = AdaptiveSessionService(factory, external_rubric_types=frozenset({"penecho_canvas"}))
-    started = sessions.start(SessionInput(course_id=str(course_id), course_revision=1, actor_id="lh-3-anna",
+    started = sessions.start(SessionInput(course_id=str(course_id), course_revision=1, actor_id="lh-3-lernende",
                                           mode="training", blueprint={"max_attempts": 1}))
     backend = LocalCanvasBackend(root=tmp_path / "canvas", origin="http://127.0.0.1:8139")
     (tmp_path / "artifacts").mkdir()
@@ -93,7 +93,7 @@ def world(tmp_path: Path, monkeypatch):
     engine.dispose()
 
 
-def _open(post, started, item, actor="lh-3-anna") -> dict:
+def _open(post, started, item, actor="lh-3-lernende") -> dict:
     answer = post("", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "learning_canvas_open", "arguments": {
             "event_type": "learning.canvas.open", "invocation_id": str(uuid4()),

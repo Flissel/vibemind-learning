@@ -40,7 +40,7 @@ def mitmach_data() -> dict:
          "task": "Markiere, wo du Claude Code öffnest.", "image": "/lernsequenz-medien/app.png",
          "width": 1200, "height": 800, "target": {"x": 300, "y": 40, "w": 80, "h": 30}},
         {"kind": "terminal_sim", "checkpoint_id": "ts", "after_section": "f2", "title": "Übungs-Terminal",
-         "task": "Prüfe die Installation.", "shell": "powershell", "prompt": "PS C:\\Users\\anna>",
+         "task": "Prüfe die Installation.", "shell": "powershell", "prompt": "PS C:\\Users\\Name>",
          "commands": [{"pattern": r"^claude\s+--version$", "output": "2.1.211 (Claude Code)", "reaches_goal": True},
                       {"pattern": r"^claude\s+doctor$", "output": "Install health: ok"}],
          "unknown_output": "Der Befehl ist nicht bekannt. Versuche es mit claude --version."},
