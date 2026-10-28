@@ -4,6 +4,7 @@ At most three model calls per task: author, one repair on findings, checker."""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -138,13 +139,14 @@ async def aufgabe_ausformulieren(
     inhalt, zitate = quellen_aufloesen(
         await _autor(gateway, correlation_id, payload), source_refs, course_id=course_id
     )
-    befunde = aufgabe_pruefen(inhalt, sources=sources, fach=fach)
+    # In a thread: a number task's check runs a child process (up to its time limit).
+    befunde = await asyncio.to_thread(aufgabe_pruefen, inhalt, sources=sources, fach=fach)
     if befunde:
         reparatur = {**payload, "reviewer_feedback": [b["text"] for b in befunde]}
         inhalt, zitate = quellen_aufloesen(
             await _autor(gateway, correlation_id, reparatur), source_refs, course_id=course_id
         )
-        befunde = aufgabe_pruefen(inhalt, sources=sources, fach=fach)
+        befunde = await asyncio.to_thread(aufgabe_pruefen, inhalt, sources=sources, fach=fach)
     if inhalt.kind != kind:
         befunde.append(
             {

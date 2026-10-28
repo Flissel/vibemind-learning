@@ -299,3 +299,22 @@ async def test_das_modell_bekommt_je_quellstueck_nur_schluessel_ueberschrift_und
     await grobentwurf_erzeugen(plan, correlation_id=str(uuid4()), title="D", audience="E", outcomes=["o"],
                                default_kind="quiz", hinweise=[], source_refs=refs)
     assert plan.invocations[0].input_payload["source_refs"][1] == {"key": "S2", "heading": "Dateien", "content": "Text 2"}
+
+
+@pytest.mark.asyncio
+async def test_pruefung_laeuft_neben_der_event_loop(monkeypatch) -> None:
+    # A number task's check starts a child process; it must not block the loop.
+    import threading
+
+    from spaces.learning.services.werkstatt import autor
+
+    echt = autor.aufgabe_pruefen
+    threads: list[threading.Thread] = []
+
+    def merken(*args, **kwargs):
+        threads.append(threading.current_thread())
+        return echt(*args, **kwargs)
+
+    monkeypatch.setattr(autor, "aufgabe_pruefen", merken)
+    await _ausformulieren(_Fake(_autor(), _sauber_pruefer()))
+    assert threads and all(t is not threading.main_thread() for t in threads)

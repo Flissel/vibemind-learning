@@ -31,7 +31,12 @@ from spaces.learning.services.werkstatt.inhalt import (
     Zahl,
     Zuordnung,
 )
-from spaces.learning.services.werkstatt.nachrechnen import NachrechnenFehler, nachrechnen
+from spaces.learning.services.werkstatt.nachrechnen import (
+    ERLAUBTE_NAMEN,
+    MAX_ZIFFERN,
+    NachrechnenFehler,
+    nachrechnen,
+)
 
 
 class Befund(TypedDict):
@@ -60,7 +65,14 @@ _TEXTE = {
     "formel_ungueltig": "Eine Formel ist nicht schreibbar: ein „$“ wird nicht geschlossen, Klammern sind nicht ausgeglichen oder ein Formelbefehl ist unbekannt.",
     "luecke_mit_term": "Eine Lücke erwartet einen Term; Lücken sind nur für Zahlen oder einzelne Wörter, Terme gehören in eine offene Aufgabe.",
     "zahl_falsch": "Die angegebene Lösung stimmt nicht mit dem Ergebnis der Rechnung überein; bitte Lösung oder Rechnung berichtigen.",
-    "zahl_unpruefbar": "Die Rechnung zur Lösung lässt sich nicht nachrechnen: Sie enthält nicht erlaubte Zeichen oder Namen, liefert keine endliche reelle Zahl oder dauert zu lange.",
+    # Tells the author model what is allowed, so the repair round can succeed.
+    "zahl_unpruefbar": (
+        "Die Rechnung zur Lösung lässt sich nicht nachrechnen; erlaubt sind nur Zahlen bis "
+        f"{MAX_ZIFFERN} Stellen, x, + - * / ^ ohne Potenztürme wie 2^3^4, runde Klammern, "
+        "Ausdruck.subs(x, Wert), N(…) nur als Funktion und "
+        + ", ".join(sorted(ERLAUBTE_NAMEN - {"x", "subs", "N"}, key=str.lower))
+        + ", und das Ergebnis muss schnell eine endliche reelle Zahl ergeben."
+    ),
 }
 
 

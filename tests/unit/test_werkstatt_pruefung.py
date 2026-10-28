@@ -399,3 +399,5 @@ def test_zahl_wird_nachgerechnet() -> None:
     assert codes(aufgabe_pruefen(_zahl(value=2.02), sources=SRC)) == ["zahl_falsch"]
     befund = aufgabe_pruefen(_zahl(rechnung="__import__('os')"), sources=SRC)
     assert befund[0]["code"] == "zahl_unpruefbar" and "nachrechnen" in befund[0]["text"]
+    # The repair round needs to know what is allowed.
+    assert all(n in befund[0]["text"] for n in ("solve", "diff", "subs", "N(", "30 Stellen"))
