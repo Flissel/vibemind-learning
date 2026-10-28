@@ -257,13 +257,27 @@ def ausformulieren(
 
 
 def _katalog(kurs: dict[str, Any]) -> SourceCatalog:
+    """The course follows the current source state: re-pin its sources, then load the catalog."""
+    runtime = _runtime()
     try:
-        return SourceCatalogLoader(_runtime().session_factory).load(
-            course_id=kurs["course_id"], provenance=_provenance(kurs)
+        provenance = current_provenance(
+            runtime.session_factory, kurs["course_id"],
+            tuple(p.source_id for p in _provenance(kurs)),
         )
-    except ValueError as error:
+        runtime.store.kurs_quellen_setzen(
+            kurs["course_id"],
+            [
+                {"source_id": p.source_id, "revision": p.revision, "content_hash": p.content_hash}
+                for p in provenance
+            ],
+        )
+        return SourceCatalogLoader(runtime.session_factory).load(
+            course_id=kurs["course_id"], provenance=provenance
+        )
+    except ValueError as error:  # SourceNotReady, no chunks or too large
         raise _fehler(
-            status.HTTP_409_CONFLICT, "quellen_veraltet", "Die Quellen des Kurses haben sich geaendert"
+            status.HTTP_409_CONFLICT, "quellen_nicht_bereit",
+            "Die Quellen des Kurses sind derzeit nicht bereit",
         ) from error
 
 

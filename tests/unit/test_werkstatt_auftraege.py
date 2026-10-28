@@ -149,11 +149,37 @@ async def test_auftrag_fehler_speichert_keine_fassung(tmp_path: Path) -> None:
 
     c = s.auftrag_anlegen("c1", kind="ausformulieren", task_id=t, input={"based_on": None})["id"]
     await _arbeiter(s, _Fake(_aufgabe()), _Katalog(fehler=ValueError("stale"))).einen_ausfuehren()
-    assert s.auftrag(c)["error"] == "quellen_veraltet" and s.fassungen(t) == []
+    assert s.auftrag(c)["error"] == "quellen_nicht_bereit" and s.fassungen(t) == []
 
     d = s.auftrag_anlegen("c1", kind="ausformulieren", task_id=t, input={"based_on": None})["id"]
     await _arbeiter(s, _Fake(RuntimeError("boom"))).einen_ausfuehren()
     assert s.auftrag(d)["error"] == "interner_fehler" and s.fassungen(t) == []
+
+
+@pytest.mark.asyncio
+async def test_auftrag_nutzt_aktuelle_quellrevision(tmp_path: Path) -> None:
+    from spaces.learning.services.course_factory.repository import SourceProvenance
+
+    s = _store(tmp_path)
+    _kurs(s)
+    t = s.aufgabe_anlegen("c1", chapter_title="K", summary="x")["task_id"]
+    a = s.auftrag_anlegen("c1", kind="ausformulieren", task_id=t, input={"based_on": None})["id"]
+    katalog = _Katalog()
+    aufrufe: list = []
+
+    def aktuell(course_id, source_ids):
+        aufrufe.append((course_id, source_ids))
+        return (SourceProvenance(source_id=_SRC_ID, revision=2, content_hash="b" * 64),)
+
+    arbeiter = WerkstattArbeiter(s, lambda: _Fake(_aufgabe(), _pruefer()), katalog, aktuell)
+    await arbeiter.einen_ausfuehren()
+    assert s.auftrag(a)["state"] == "fertig", s.auftrag(a)
+    assert aufrufe == [("c1", (_SRC_ID,))]
+    prov = katalog.gesehen[1][0]
+    assert (prov.revision, prov.content_hash) == (2, "b" * 64)
+    assert s.kurs("c1")["source_provenance"] == [
+        {"source_id": _SRC_ID, "revision": 2, "content_hash": "b" * 64}
+    ]
 
 
 @pytest.mark.asyncio

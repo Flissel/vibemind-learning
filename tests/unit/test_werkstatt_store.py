@@ -143,3 +143,13 @@ def test_kurs_aendern_und_unbekannter_kurs(tmp_path):
     assert k["title"] == "Neu" and k["default_kind"] == "exercise"
     with pytest.raises(LookupError):
         s.kurs("nope")
+
+
+def test_kurs_quellen_setzen_ersetzt_die_provenienz(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    _kurs(s)
+    neu = [{"source_id": "s1", "revision": 2, "content_hash": "b" * 64}]
+    s.kurs_quellen_setzen("c1", neu)
+    assert s.kurs("c1")["source_provenance"] == neu
+    with pytest.raises(LookupError):
+        s.kurs_quellen_setzen("gibt-es-nicht", neu)

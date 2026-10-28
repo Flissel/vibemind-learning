@@ -54,10 +54,13 @@ class WerkstattArbeiter:
         store: WerkstattStore,
         gateway_factory: Callable[[], Any],
         catalog_loader: _Katalog,
+        aktuelle_quellen: Callable[[str, tuple[str, ...]], tuple[SourceProvenance, ...]] | None = None,
     ) -> None:
         self._store = store
         self._gateway_factory = gateway_factory
         self._catalog = catalog_loader
+        # (course_id, source_ids) -> the current revisions; without it the stored pin is used.
+        self._aktuelle_quellen = aktuelle_quellen
 
     def haengende_abbrechen(self) -> int:
         return self._store.haengende_auftraege_abbrechen()
@@ -116,9 +119,21 @@ class WerkstattArbeiter:
             for p in kurs["source_provenance"]
         )
         try:
+            if self._aktuelle_quellen is not None:
+                # The course follows the current source state: re-pin before every job.
+                provenance = self._aktuelle_quellen(
+                    kurs["course_id"], tuple(p.source_id for p in provenance)
+                )
+                self._store.kurs_quellen_setzen(
+                    kurs["course_id"],
+                    [
+                        {"source_id": p.source_id, "revision": p.revision, "content_hash": p.content_hash}
+                        for p in provenance
+                    ],
+                )
             return self._catalog.load(course_id=kurs["course_id"], provenance=provenance)
-        except ValueError as error:
-            raise _Fehler("quellen_veraltet") from error
+        except ValueError as error:  # includes SourceNotReady
+            raise _Fehler("quellen_nicht_bereit") from error
 
     async def _ausfuehren(self, auftrag: dict[str, Any], gateway: ModelGateway) -> dict[str, Any]:
         kurs = self._store.kurs(auftrag["course_id"])

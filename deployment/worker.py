@@ -24,6 +24,7 @@ from spaces.learning.services.ingestion.retrieval import (
 from spaces.learning.services.course_factory.artifact_store import (
     CourseFactoryArtifactStore,
 )
+from spaces.learning.services.course_factory.application import current_provenance
 from spaces.learning.services.course_factory.catalog import SourceCatalogLoader
 from spaces.learning.services.course_factory.learnhouse_gateway import (
     build_learnhouse_http_gateway,
@@ -171,7 +172,10 @@ def run() -> None:
     evaluation_api.start()
     # Werkstatt jobs run in their own thread so a 40-minute factory job never delays them.
     werkstatt = WerkstattArbeiter(
-        WerkstattStore(factory), build_openfang_model_gateway, SourceCatalogLoader(factory)
+        WerkstattStore(factory),
+        build_openfang_model_gateway,
+        SourceCatalogLoader(factory),
+        lambda course_id, source_ids: current_provenance(factory, course_id, source_ids),
     )
     Thread(target=werkstatt.run_forever, name="learning-werkstatt", daemon=True).start()
     executor = JobExecutor(course_runner)

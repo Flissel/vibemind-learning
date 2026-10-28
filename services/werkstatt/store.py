@@ -129,6 +129,15 @@ class WerkstattStore:
             session.flush()
             return _kurs_dict(kurs)
 
+    def kurs_quellen_setzen(self, course_id: str, source_provenance: list[dict[str, Any]]) -> None:
+        """Replace the pinned source revisions (the course follows the current source state)."""
+        with self._sessions.begin() as session:
+            kurs = session.get(WerkstattKurs, course_id)
+            if kurs is None:
+                raise LookupError("kurs_unbekannt")
+            kurs.source_provenance = list(source_provenance)
+            kurs.updated_at = utc_now()
+
     # tasks
 
     def aufgabe_anlegen(

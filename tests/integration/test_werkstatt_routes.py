@@ -12,7 +12,12 @@ from fastapi.testclient import TestClient
 
 from spaces.learning.deployment import runtime_api, werkstatt_routes
 from spaces.learning.deployment.vibemind_auth import SERVICE_KEY_ENV
-from spaces.learning.services.ingestion.models import LearningSourceChunk
+from spaces.learning.services.db.models import LearningArtifact
+from spaces.learning.services.ingestion.models import (
+    LearningSource,
+    LearningSourceChunk,
+    LearningSourceRevision,
+)
 
 from spaces.learning.tests.integration.course_factory_api_support import SERVICE_KEY, ApiHarness, headers, sha256
 
@@ -298,6 +303,52 @@ def test_patch_loest_quellenschluessel_auf_und_prueft(env: Env) -> None:
         {"claim_id": "c1", "text": TEXT, "citation_ids": ["S9"]}]}})
     assert ohne.status_code == 200, ohne.text
     assert "claim_uncited" in [f["code"] for f in ohne.json()["findings"]]
+
+
+def test_patch_nach_neuer_quellrevision_funktioniert(env: Env) -> None:
+    env.kurs()
+    task_id = env.aufgabe()
+    env.erste_fassung(task_id)
+    quelle = env.harness.ready_source
+    neuer_hash = sha256(b"revision-2")
+    text = f"Revision 2: mit {BEFEHL} pruefen Sie, ob eine Datei existiert."
+    with env.harness.session_factory() as session, session.begin():
+        artifact_id = str(uuid4())
+        session.add(LearningArtifact(
+            id=artifact_id, relative_path=f"sources/{quelle}-2.txt", content_hash=neuer_hash,
+            media_type="text/plain", size_bytes=36, aggregate_type="source", aggregate_id=quelle,
+            revision=2,
+        ))
+        session.add(LearningSourceRevision(
+            source_id=quelle, revision=2, artifact_id=artifact_id, content_hash=neuer_hash,
+            ingestion_spec_version="ingestion-v1", media_type="text/plain", size_bytes=36,
+            status="stored",
+        ))
+        session.flush()
+        session.add(LearningSourceChunk(
+            id=str(uuid4()), source_id=quelle, source_revision=2, ordinal=0, content=text,
+            content_hash=sha256(text.encode()), locator={"page": 1}, locator_hash=sha256(b"p"),
+            metadata_json={},
+        ))
+        session.get(LearningSource, quelle).current_revision = 2
+
+    response = env.patch(task_id, 1, {"prompt": "Mit welchem Befehl pruefen Sie eine Datei?"})
+    assert response.status_code == 200, response.text
+    kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
+    assert kurs["source_provenance"] == [
+        {"source_id": quelle, "revision": 2, "content_hash": neuer_hash}
+    ]
+
+
+def test_patch_ohne_bereite_quelle_ist_409_quellen_nicht_bereit(env: Env) -> None:
+    env.kurs()
+    task_id = env.aufgabe()
+    env.erste_fassung(task_id)
+    with env.harness.session_factory() as session, session.begin():
+        session.get(LearningSourceRevision, (env.harness.ready_source, 1)).status = "failed"
+    response = env.patch(task_id, 1, {"prompt": "Mit welchem Befehl pruefen Sie eine Datei?"})
+    assert response.status_code == 409
+    assert response.json()["code"] == "quellen_nicht_bereit"
 
 
 def test_loeschen_und_zurueckholen(env: Env) -> None:
