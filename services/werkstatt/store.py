@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from spaces.learning.services.db.models import utc_now
@@ -370,7 +371,31 @@ class WerkstattStore:
         self, course_id: str, *, manifest: list[dict[str, Any]], vergleich: dict[str, Any],
         befunde: list[dict[str, Any]], learnhouse_revision_vorher: int | None, autor: str,
     ) -> dict[str, Any]:
-        """New request; an older open one of the course is discarded in the same transaction."""
+        """New request; an older open one of the course is discarded in the same transaction.
+
+        Two requests at once can draw the same `nummer`; the unique key rejects the second,
+        which is retried once with a fresh maximum."""
+        for versuch in (1, 2):
+            try:
+                return self._freigabe_einfuegen(
+                    course_id, manifest, vergleich, befunde, learnhouse_revision_vorher, autor
+                )
+            except IntegrityError:
+                if versuch == 2:
+                    raise ValueError("freigabe_gleichzeitig") from None
+        raise AssertionError("unreachable")
+
+    def _naechste_nummer(self, session: Session, course_id: str) -> int:
+        hoechste = session.scalar(
+            select(func.max(WerkstattFreigabe.nummer))
+            .where(WerkstattFreigabe.course_id == course_id)
+        )
+        return (hoechste or 0) + 1
+
+    def _freigabe_einfuegen(
+        self, course_id: str, manifest: list[dict[str, Any]], vergleich: dict[str, Any],
+        befunde: list[dict[str, Any]], learnhouse_revision_vorher: int | None, autor: str,
+    ) -> dict[str, Any]:
         with self._sessions.begin() as session:
             if session.get(WerkstattKurs, course_id) is None:
                 raise LookupError("kurs_unbekannt")
@@ -380,13 +405,9 @@ class WerkstattStore:
                        WerkstattFreigabe.zustand == "angefordert")
                 .values(zustand="verworfen")
             )
-            hoechste = session.scalar(
-                select(func.max(WerkstattFreigabe.nummer))
-                .where(WerkstattFreigabe.course_id == course_id)
-            )
             freigabe = WerkstattFreigabe(
-                id=str(uuid4()), course_id=course_id, nummer=(hoechste or 0) + 1,
-                zustand="angefordert",
+                id=str(uuid4()), course_id=course_id,
+                nummer=self._naechste_nummer(session, course_id), zustand="angefordert",
                 manifest=list(manifest),  # type: ignore[arg-type]  # the column holds a JSON list
                 vergleich=dict(vergleich), befunde=list(befunde),
                 learnhouse_revision_vorher=learnhouse_revision_vorher, angefordert_von=autor,

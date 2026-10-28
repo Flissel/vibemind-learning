@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from typing import Any
 
 from pydantic import ValidationError
@@ -24,13 +25,29 @@ from spaces.learning.services.werkstatt.store import WerkstattStore
 # Findings that remind but do not hold a release back.
 _NICHT_BLOCKIEREND = frozenset({"rubric_scale_inconsistent", "lesson_body_thin"})
 
-_KURS_TEXTE = {
-    "task_type_distribution": "Die Aufgabentypen sind zu einseitig verteilt, bitte mehr Abwechslung in den Kurs bringen.",
-    "concept_missing_lesson": "Zu einem Konzept gibt es im Kurs keine Lektion, die es vermittelt.",
-    "concept_missing_activity": "Zu einem Konzept gibt es im Kurs keine Aufgabe, die es übt.",
-    "address_mixed": _TEXTE["address_mixed"],
-    "rubric_scale_inconsistent": "Die Bewertungskriterien nutzen unterschiedliche Punkteskalen.",
-}
+# In the Werkstatt only a mixed form of address holds a release back; the other course-wide
+# rules are hints (the factory's own gate is unchanged).
+_KURS_SPERREN = frozenset({"address_mixed"})
+
+
+def _kurs_text(code: str, subject: str, sichten: list[AktivitaetsSicht]) -> str:
+    if code == "concept_missing_lesson":
+        return f"Zum Konzept „{subject}“ gibt es im Kurs keine Lektion, die es vermittelt."
+    if code == "concept_missing_activity":
+        return f"Zum Konzept „{subject}“ gibt es im Kurs keine Aufgabe, die es übt."
+    if code == "task_type_distribution":
+        zaehler = Counter(a.typ for a in sichten)
+        typ, anzahl = zaehler.most_common(1)[0]
+        anteil = round(100 * anzahl / len(sichten))
+        return (
+            f"Die Aufgabentypen sind zu einseitig verteilt: {anzahl} von {len(sichten)} Aufgaben "
+            f"({anteil} %) sind vom Typ „{typ}“. Mehr Abwechslung hilft den Lernenden."
+        )
+    if code == "address_mixed":
+        return _TEXTE["address_mixed"]
+    if code == "rubric_scale_inconsistent":
+        return "Die Bewertungskriterien nutzen unterschiedliche Punkteskalen."
+    return "Die Kursprüfung hat ein Problem gefunden."
 
 
 def werkstatt_schluessel(aufgabe: dict[str, Any]) -> tuple[str, str]:
@@ -49,6 +66,12 @@ def loesung_hash(content: dict[str, Any]) -> str:
         [inhalt.kind, sorted(inhalt.concept_ids), _loesung(inhalt)],
         sort_keys=True, ensure_ascii=False, default=list,
     )
+    return hashlib.sha256(roh.encode("utf-8")).hexdigest()
+
+
+def inhalt_hash(content: dict[str, Any]) -> str:
+    """sha256 over the whole canonical content: equal means the very same task text and solution."""
+    roh = json.dumps(content, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(roh.encode("utf-8")).hexdigest()
 
 
@@ -72,7 +95,8 @@ def _vergleichen(
         v = vorher.get(m["task_id"])
         if v is None:
             vergleich["neu"].append(_eintrag(a, None, m["fassung"]))
-        elif v["fassung"] == m["fassung"]:
+        elif v["fassung"] == m["fassung"] or v.get("inhalt_hash") == m["inhalt_hash"]:
+            # Also a task brought back to the released content (new number, same content).
             vergleich["unveraendert"] += 1
         elif v["loesung_hash"] == m["loesung_hash"]:
             vergleich["textkorrektur"].append(_eintrag(a, v["fassung"], m["fassung"]))
@@ -100,7 +124,7 @@ def freigabe_vorbereiten(
         neueste = store.neueste(a["task_id"])
         if neueste is None:
             befunde.append({
-                "code": "aufgabe_ohne_fassung", "task_id": a["task_id"],
+                "code": "aufgabe_ohne_fassung", "task_id": a["task_id"], "blockierend": True,
                 "text": f"Die Aufgabe „{a['summary']}“ hat noch keinen Inhalt und kann nicht veröffentlicht werden.",
             })
             continue
@@ -109,13 +133,14 @@ def freigabe_vorbereiten(
             hash_ = loesung_hash(neueste["content"])
         except ValidationError:
             befunde.append({
-                "code": "aufgabe_mit_befunden", "task_id": a["task_id"],
+                "code": "aufgabe_mit_befunden", "task_id": a["task_id"], "blockierend": True,
                 "text": f"Der Inhalt der Aufgabe „{a['summary']}“ ist ungültig und kann nicht veröffentlicht werden.",
             })
             continue
         aufgaben_key, lektion_key = werkstatt_schluessel(a)
         manifest.append({
             "task_id": a["task_id"], "fassung": neueste["number"], "loesung_hash": hash_,
+            "inhalt_hash": inhalt_hash(neueste["content"]),
             "kapitel": a["chapter_title"], "position": a["position"],
             "aufgaben_key": aufgaben_key, "lektion_key": lektion_key,
         })
@@ -123,7 +148,7 @@ def freigabe_vorbereiten(
         if blockierend:
             texte = " ".join(str(f.get("text") or f.get("code", "")) for f in blockierend)
             befunde.append({
-                "code": "aufgabe_mit_befunden", "task_id": a["task_id"],
+                "code": "aufgabe_mit_befunden", "task_id": a["task_id"], "blockierend": True,
                 "text": f"Die Aufgabe „{a['summary']}“ hat offene Befunde: {texte}",
             })
         punkte = None
@@ -138,20 +163,17 @@ def freigabe_vorbereiten(
             lektionen.append(LektionsSicht(a["task_id"], tuple(lek.concept_ids), lek.body))
     if not kurs["aufgaben"]:
         befunde.append({
-            "code": "kurs_ohne_aufgaben", "task_id": None,
+            "code": "kurs_ohne_aufgaben", "task_id": None, "blockierend": True,
             "text": "Der Kurs hat noch keine Aufgaben, es gibt nichts zu veröffentlichen.",
         })
-    blockierende_kursregeln = False
     for issue in kurs_regeln(sichten, lektionen, kurs_id=course_id):
-        blockierende_kursregeln = blockierende_kursregeln or issue.blocking
         befunde.append({
-            "code": issue.code, "task_id": None,
-            "text": _KURS_TEXTE.get(issue.code, "Die Kursprüfung hat ein Problem gefunden."),
+            "code": issue.code, "task_id": None, "blockierend": issue.code in _KURS_SPERREN,
+            "text": _kurs_text(issue.code, issue.subject_id, sichten),
         })
     letzte = store.freigabe_letzte_freigegebene(course_id)
     vergleich = _vergleichen(manifest, letzte["manifest"] if letzte else [], aufgaben)
-    eigene = {"aufgabe_ohne_fassung", "aufgabe_mit_befunden", "kurs_ohne_aufgaben"}
-    blockiert = blockierende_kursregeln or any(b["code"] in eigene for b in befunde)
+    blockiert = any(b["blockierend"] for b in befunde)
     nichts = not any(vergleich[k] for k in ("neu", "geaendert", "textkorrektur", "geloescht"))
     angelegt = store.freigabe_anlegen(
         course_id, manifest=manifest, vergleich=vergleich, befunde=befunde,

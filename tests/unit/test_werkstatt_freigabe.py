@@ -206,3 +206,119 @@ def test_loesung_hash_gleich_bei_textkorrektur():
     anders = _quiz()
     anders["options"] = list(reversed(anders["options"]))
     assert loesung_hash(anders) == loesung_hash(_quiz())
+
+
+def _befund(r: dict[str, Any], code: str) -> list[dict[str, Any]]:
+    return [b for b in r["befunde"] if b["code"] == code]
+
+
+def test_konzept_ohne_lektion_ist_hinweis_nicht_sperre(tmp_path):
+    s = _store(tmp_path)
+    ohne_lektion = _quiz()
+    ohne_lektion.pop("lektion")
+    ohne_lektion["concept_ids"] = ["k-ohne"]
+    _aufgabe(s, _quiz())
+    _aufgabe(s, ohne_lektion)
+    r = _vorbereiten(s)
+    b = _befund(r, "concept_missing_lesson")
+    assert len(b) == 1 and "k-ohne" in b[0]["text"] and b[0]["blockierend"] is False
+    assert r["blockiert"] is False
+
+
+def test_typverteilung_ist_hinweis(tmp_path):
+    s = _store(tmp_path)
+    for i in range(4):
+        _aufgabe(s, _quiz(f"Frage {i}?"))
+    r = _vorbereiten(s)
+    b = _befund(r, "task_type_distribution")
+    assert len(b) == 1 and b[0]["blockierend"] is False
+    assert "quiz" in b[0]["text"] and "100" in b[0]["text"]
+    assert r["blockiert"] is False
+
+
+def test_du_anrede_sperrt_die_freigabe(tmp_path):
+    s = _store(tmp_path)
+    b = _quiz("Zweite Frage?")
+    b["lektion"]["body"] = "Dazu sagen wir, dass du cd verwenden kannst."
+    _aufgabe(s, _quiz())
+    _aufgabe(s, b)
+    r = _vorbereiten(s)
+    assert _befund(r, "address_mixed")[0]["blockierend"] is True
+    assert r["blockiert"] is True
+
+
+def test_aufgabenbefund_ist_blockierend_markiert(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz(), findings=[{"code": "quiz_all_but_one", "text": "Raten."}])
+    assert _befund(_vorbereiten(s), "aufgabe_mit_befunden")[0]["blockierend"] is True
+
+
+def test_zurueckgeholt_auf_freigegebenen_stand_ist_unveraendert(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    _neue_fassung(s, t1, _quiz(richtig="b"))
+    s.zurueckholen(t1, 1, author_ref="kursleitung-a")
+    r = _vorbereiten(s)
+    assert s.neueste(t1)["number"] == 3
+    assert r["vergleich"]["unveraendert"] == 1
+    assert all(r["vergleich"][k] == [] for k in ("neu", "geaendert", "textkorrektur", "geloescht"))
+    assert r["nichts_zu_veroeffentlichen"] is True
+
+
+def test_zurueckgeholt_nach_loeschen_mit_freigegebenem_inhalt_ist_unveraendert(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    s.aufgabe_loeschen(t1, author_ref="kursleitung-a")
+    s.zurueckholen(t1, 1, author_ref="kursleitung-a")
+    r = _vorbereiten(s)
+    assert r["vergleich"]["unveraendert"] == 1 and r["nichts_zu_veroeffentlichen"] is True
+
+
+def test_textkorrektur_bleibt_textkorrektur_mit_inhalts_hash(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    _neue_fassung(s, t1, _quiz("Anderer Wortlaut?"), "textkorrektur")
+    r = _vorbereiten(s)
+    assert [e["task_id"] for e in r["vergleich"]["textkorrektur"]] == [t1]
+    assert len(s.freigabe_offene(COURSE)["manifest"][0]["inhalt_hash"]) == 64
+
+
+def test_ungueltiger_inhalt_blockiert_und_fehlt_im_manifest(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    kaputt = _aufgabe(s, {"kind": "exercise", "prompt": "kein gueltiger Typ"})
+    r = _vorbereiten(s)
+    b = _befund(r, "aufgabe_mit_befunden")
+    assert [x["task_id"] for x in b] == [kaputt] and "ungültig" in b[0]["text"]
+    assert b[0]["blockierend"] is True and r["blockiert"] is True
+    assert kaputt not in [m["task_id"] for m in s.freigabe_offene(COURSE)["manifest"]]
+
+
+def test_nummernkollision_wird_einmal_wiederholt(tmp_path, monkeypatch):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    _vorbereiten(s)
+    echte = s._naechste_nummer
+    aufrufe: list[int] = []
+
+    def veraltet(session, course_id):
+        aufrufe.append(1)
+        return 1 if len(aufrufe) == 1 else echte(session, course_id)
+
+    monkeypatch.setattr(s, "_naechste_nummer", veraltet)
+    assert _vorbereiten(s)["nummer"] == 2 and len(aufrufe) == 2
+
+
+def test_dauerhafte_nummernkollision_meldet_freigabe_gleichzeitig(tmp_path, monkeypatch):
+    import pytest
+
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    _vorbereiten(s)
+    monkeypatch.setattr(s, "_naechste_nummer", lambda session, course_id: 1)
+    with pytest.raises(ValueError, match="freigabe_gleichzeitig"):
+        _vorbereiten(s)
+    assert s.freigabe_offene(COURSE)["nummer"] == 1  # nothing was discarded by the failed try
