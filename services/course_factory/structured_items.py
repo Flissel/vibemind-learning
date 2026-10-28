@@ -8,12 +8,12 @@ sequence player (``lernsequenz.aus_struktur``) become engine items here, in the 
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from spaces.learning.contracts.lernsequenz import Cloze, ImageCloze, Matching, Ordering
 from spaces.learning.services.course_factory.schemas import CourseDraft
+from spaces.learning.services import zufall
 from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
 
 ItemType = Literal["ordering", "matching", "fill_in"]
@@ -32,8 +32,7 @@ class AdaptiveItemSpec:
 def _options(items, seed: str) -> list[dict[str, str]]:
     """Fixed per item, so the authored order (the solution) is not what the learner sees."""
     options = [{"id": item.item_id, "label": item.text} for item in items]
-    random.Random(seed).shuffle(options)
-    return options
+    return zufall.anders_gemischt(options)
 
 
 def _side(items) -> list[dict[str, Any]]:

@@ -8,7 +8,6 @@ the lesson literally says is used, so nothing can be made up.
 from __future__ import annotations
 
 import os
-import random
 import re
 import secrets
 
@@ -28,6 +27,7 @@ from spaces.learning.contracts.lernsequenz import (
     ProfileQuestion,
     Shell,
 )
+from spaces.learning.services import zufall
 from spaces.learning.services.course_factory.schemas import LessonDraft
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
@@ -208,7 +208,7 @@ def _image_cloze(cloze: Cloze) -> ImageCloze:
 def _window_matching(lines: dict[str, str], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
     """One window per shell (its prompt and this lesson's command, no title bar) to the shell's name."""
     shells = list(lines)
-    random.Random(seed).shuffle(shells)
+    zufall.ZUFALL.shuffle(shells)
     left_ids, right_ids = _random_ids("f", len(shells)), _random_ids("s", len(shells))
     left = []
     for number, (item_id, shell) in enumerate(zip(left_ids, shells), start=1):
@@ -216,7 +216,7 @@ def _window_matching(lines: dict[str, str], seed: str, checkpoint_id: str, after
         left.append(MatchItem(item_id=item_id, text=f"Fenster {number}", image=save_media(window.png),
                               width=window.width, height=window.height))
     right = [MatchItem(item_id=right_ids[i], text=SHELL_LABEL[shell]) for i, shell in enumerate(shells)]
-    random.Random(seed + ":rechts").shuffle(right)
+    right = zufall.anders_gemischt(right, lambda item: item.item_id)
     return Matching(
         checkpoint_id=checkpoint_id, after_section=after, title="Welches Fenster ist welche Shell?",
         task="Ordnen Sie jedem Fenster die Shell zu. Achten Sie auf die Eingabezeile.",
@@ -228,7 +228,7 @@ def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after
     left = tuple(MatchItem(item_id=f"b{i}", text=cut(term, 300)) for i, (term, _text) in enumerate(pairs, start=1))
     right_ids = _random_ids("e", len(pairs))
     right = [MatchItem(item_id=right_ids[i], text=cut(text, 300)) for i, (_term, text) in enumerate(pairs)]
-    random.Random(seed).shuffle(right)
+    right = zufall.anders_gemischt(right, lambda item: item.item_id)
     return Matching(
         checkpoint_id=checkpoint_id, after_section=after, title="Zuordnen",
         task="Welche Erklärung gehört zu welchem Begriff?",

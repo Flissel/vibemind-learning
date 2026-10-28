@@ -41,6 +41,7 @@ from spaces.learning.services.course_factory.practice_catalog import (
     _stable_id,
 )
 from spaces.learning.services.lernsequenz.aus_struktur import _media_available, _random_ids
+from spaces.learning.services.zufall import anders_gemischt
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
 from spaces.learning.services.werkstatt.inhalt import (
@@ -68,14 +69,7 @@ _ZUFALL = secrets.SystemRandom()
 
 def _gemischt(eintraege: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A shuffled copy that never shows the authored (= solution) order while it can differ."""
-    gemischt = list(eintraege)
-    if len({e["label"] for e in eintraege}) < 2:
-        _ZUFALL.shuffle(gemischt)
-        return gemischt
-    while True:
-        _ZUFALL.shuffle(gemischt)
-        if [e["label"] for e in gemischt] != [e["label"] for e in eintraege]:
-            return gemischt
+    return anders_gemischt(eintraege, lambda e: e["label"], _ZUFALL)
 
 
 def _hashes_je_konzept(eintraege: list[dict[str, Any]]) -> dict[str, frozenset[str]]:
