@@ -139,6 +139,24 @@ async def test_pruefer_bekommt_nur_zitierte_quellen() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pruefer_sieht_quellenschluessel_statt_zitat_ids() -> None:
+    import re
+
+    fake = _Fake(_autor(), _sauber_pruefer())
+    await _ausformulieren(fake)
+    payload = fake.invocations[1].input_payload
+    keys = {r["key"] for r in payload["source_refs"]}
+    aufgabe = payload["aufgabe"]
+    gesehen = list(aufgabe["citation_ids"])
+    for claim in aufgabe["lektion"]["claims"]:
+        gesehen += claim["citation_ids"]
+    assert gesehen and set(gesehen) <= keys
+    uuid_form = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-")
+    assert not [i for i in gesehen if uuid_form.match(i)]
+    assert "zitate" not in aufgabe
+
+
+@pytest.mark.asyncio
 async def test_wunsch_und_vorherige_fassung_gehen_ins_modell() -> None:
     fake = _Fake(_autor(), _sauber_pruefer())
     vorherige = quiz()

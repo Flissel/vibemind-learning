@@ -139,7 +139,7 @@ async def aufgabe_ausformulieren(
 
     zitierte = {z.chunk_id for z in zitate}
     pruefer_payload: dict[str, object] = {
-        "aufgabe": inhalt.model_dump(mode="json", exclude={"zitate"}),
+        "aufgabe": mit_quellenschluesseln(inhalt.model_dump(mode="json"), source_refs),
         "source_refs": [ref for ref in keyed if ref["chunk_id"] in zitierte],
     }
     pruefung = await gateway.generate(
