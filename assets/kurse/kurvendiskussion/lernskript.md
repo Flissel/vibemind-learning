@@ -14,11 +14,11 @@ Der Definitionsbereich enthält alle $x$-Werte, die Sie in den Funktionsterm ein
 
 ### Achsensymmetrie zur y-Achse
 
-Der Graph von $f$ ist achsensymmetrisch zur $y$-Achse, wenn für alle $x$ gilt: $f(-x)=f(x)$. Bei einer ganzrationalen Funktion ist das genau dann der Fall, wenn im Term nur gerade Exponenten vorkommen; ein konstantes Glied zählt dabei als $x^0$, also als gerade.
+Der Graph von $f$ ist achsensymmetrisch zur $y$-Achse, wenn für alle $x$ gilt: $f(-x)=f(x)$. Bei einer ganzrationalen Funktion ist das genau dann der Fall, wenn im ausmultiplizierten Term nur gerade Exponenten vorkommen; ein konstantes Glied zählt dabei als $x^0$, also als gerade. So ist $(x-1)^2=x^2-2x+1$ nicht achsensymmetrisch, obwohl in der Klammerform nur ein gerader Exponent steht.
 
 ### Punktsymmetrie zum Ursprung
 
-Der Graph von $f$ ist punktsymmetrisch zum Ursprung, wenn für alle $x$ gilt: $f(-x)=-f(x)$. Bei einer ganzrationalen Funktion ist das genau dann der Fall, wenn im Term nur ungerade Exponenten vorkommen; ein konstantes Glied ungleich null verhindert diese Symmetrie.
+Der Graph von $f$ ist punktsymmetrisch zum Ursprung, wenn für alle $x$ gilt: $f(-x)=-f(x)$. Bei einer ganzrationalen Funktion ist das genau dann der Fall, wenn im ausmultiplizierten Term nur ungerade Exponenten vorkommen; ein konstantes Glied ungleich null verhindert diese Symmetrie.
 
 ### Beispiel: Symmetrie prüfen
 
@@ -26,7 +26,7 @@ Für $f(x)=x^4-2x^2+1$ gilt $f(-x)=(-x)^4-2(-x)^2+1=x^4-2x^2+1=f(x)$, der Graph 
 
 ### Häufiger Fehler bei der Symmetrie
 
-Ein konstantes Glied wird oft übersehen: $k(x)=x^3+1$ ist nicht punktsymmetrisch zum Ursprung, denn $k(-x)+k(x)=2$ statt $0$. Prüfen Sie Symmetrie deshalb immer am vollständigen Term.
+Ein konstantes Glied wird oft übersehen: $k(x)=x^3+1$ ist nicht punktsymmetrisch zum Ursprung, denn $k(-x)+k(x)=2$ statt $0$. Prüfen Sie Symmetrie deshalb immer am vollständigen, ausmultiplizierten Term.
 
 ## 2. Ableiten: Regeln, f′ und f″ als Werkzeug
 
@@ -44,7 +44,7 @@ Für $f(x)=\frac{u(x)}{v(x)}$ mit $v(x) \ne 0$ gilt $f'(x)=\frac{u'(x)v(x)-u(x)v
 
 ### Bedeutung der Ableitungen
 
-Der Wert $f'(x_0)$ ist die Steigung des Graphen von $f$ an der Stelle $x_0$, also die Steigung der Tangente dort. Die zweite Ableitung $f''$ beschreibt, wie sich die Steigung ändert, und damit die Krümmung des Graphen. Die dritte Ableitung $f'''$ brauchen Sie als hinreichende Bedingung für Wendepunkte.
+Der Wert $f'(x_0)$ ist die Steigung des Graphen von $f$ an der Stelle $x_0$, also die Steigung der Tangente dort. Die zweite Ableitung $f''$ beschreibt, wie sich die Steigung ändert, und damit die Krümmung des Graphen. Mit $f'''$ können Sie (zusammen mit $f''(x_0)=0$) eine hinreichende Bedingung für Wendestellen prüfen; alternativ genügt ein Vorzeichenwechsel von $f''$.
 
 ### Beispiel: Ableitungen bilden
 
@@ -74,11 +74,11 @@ Kommen nur die Potenzen $x^4$ und $x^2$ (und eine Konstante) vor, setzen Sie $z=
 
 ### Verfahren: Polynomdivision
 
-Bei einer Funktion dritten Grades ohne Ausklammermöglichkeit raten Sie eine Nullstelle $x_1$, meist unter den Teilern des konstanten Glieds. Dann teilen Sie den Term durch $(x-x_1)$ und lösen die verbleibende quadratische Gleichung.
+Bei einer Funktion dritten Grades ohne Ausklammermöglichkeit raten Sie eine Nullstelle $x_1$; bei ganzzahligen Koeffizienten kommen als ganzzahlige Nullstellen nur die Teiler des konstanten Glieds in Frage. Dann teilen Sie den Term durch $(x-x_1)$ und lösen die verbleibende quadratische Gleichung.
 
 ### Vielfachheit einer Nullstelle
 
-Kommt der Faktor $(x-x_1)$ genau einmal vor, schneidet der Graph die $x$-Achse dort mit Vorzeichenwechsel. Kommt er doppelt vor, wie in $(x-2)^2$, berührt der Graph die $x$-Achse nur; an einer doppelten Nullstelle liegt deshalb immer ein Extrempunkt. Bei einer dreifachen Nullstelle wie in $(x-2)^3$ schneidet der Graph die $x$-Achse mit waagerechter Tangente, dort liegt ein Sattelpunkt.
+Kommt der Faktor $(x-x_1)$ genau einmal vor, schneidet der Graph die $x$-Achse dort mit Vorzeichenwechsel. Kommt er genau doppelt vor (allgemein: mit gerader Vielfachheit), wie in $(x-2)^2$, berührt der Graph die $x$-Achse nur, ohne Vorzeichenwechsel; an einer solchen Nullstelle liegt deshalb immer ein Extrempunkt. Bei einer dreifachen Nullstelle wie in $(x-2)^3$ schneidet der Graph die $x$-Achse mit waagerechter Tangente, dort liegt ein Sattelpunkt.
 
 ### Schnittpunkte zweier Graphen
 
@@ -112,7 +112,7 @@ Gilt $f'(x) > 0$ für alle $x$ eines Intervalls, ist $f$ dort streng monoton ste
 
 ### Hochpunkt, Tiefpunkt, lokal und global
 
-Ein Hochpunkt hat einen größeren Funktionswert als alle Punkte in seiner Umgebung, ein Tiefpunkt einen kleineren; beide heißen Extrempunkte. Ein lokales Extremum gilt nur für die Umgebung; ist der Wert der größte oder kleinste des gesamten Definitionsbereichs, spricht man von einem globalen Extremum.
+Ein Hochpunkt $(x_0|f(x_0))$ hat einen größeren Funktionswert als alle anderen Funktionswerte in einer Umgebung von $x_0$, ein Tiefpunkt einen kleineren; beide heißen Extrempunkte. Ein lokales Extremum gilt nur für die Umgebung; ist der Wert der größte oder kleinste des gesamten Definitionsbereichs, spricht man von einem globalen Extremum.
 
 ### Notwendige Bedingung für Extremstellen
 
@@ -228,11 +228,11 @@ Ist $x_0$ eine Nullstelle des Nenners, aber nicht des Zählers, ist $x_0$ eine P
 
 ### Hebbare Definitionslücke
 
-Sind Zähler und Nenner an der Stelle $x_0$ beide null, kürzen Sie den gemeinsamen Faktor $(x-x_0)$. Ist der Nenner des gekürzten Terms bei $x_0$ ungleich null, ist die Lücke hebbar und der Graph hat dort nur ein Loch; andernfalls ist $x_0$ trotzdem eine Polstelle. So gilt $\frac{x^2-1}{x-1}=x+1$ für $x \ne 1$, und der Graph ist die Gerade $y=x+1$ ohne den Punkt $(1|2)$.
+Sind Zähler und Nenner an der Stelle $x_0$ beide null, kürzen Sie den Faktor $(x-x_0)$ so oft wie möglich. Ist der Nenner des vollständig gekürzten Terms bei $x_0$ ungleich null, ist die Lücke hebbar und der Graph hat dort nur ein Loch; ist er dort null, ist $x_0$ eine Polstelle. So gilt $\frac{x^2-1}{x-1}=x+1$ für $x \ne 1$, und der Graph ist die Gerade $y=x+1$ ohne den Punkt $(1|2)$. Dagegen bleibt bei $\frac{x-1}{(x-1)^2}=\frac{1}{x-1}$ der Nenner bei $x=1$ null, dort liegt also eine Polstelle.
 
 ### Waagerechte Asymptote
 
-Ist der Zählergrad kleiner als der Nennergrad, ist $y=0$ waagerechte Asymptote, zum Beispiel bei $\frac{x+5}{x^2+1}$. Sind Zählergrad und Nennergrad gleich, ist $y=\frac{a}{b}$ waagerechte Asymptote, wobei $a$ und $b$ die Leitkoeffizienten von Zähler und Nenner sind; für $\frac{3x^2-1}{x^2+2}$ ist das $y=3$.
+Ist der Zählergrad kleiner als der Nennergrad, ist $y=0$ waagerechte Asymptote, zum Beispiel bei $\frac{x+5}{x^2+1}$. Sind Zählergrad und Nennergrad gleich, ist $y=\frac{a}{b}$ waagerechte Asymptote, wobei $a$ und $b$ die Leitkoeffizienten von Zähler und Nenner sind; für $\frac{3x^2-1}{x^2+2}$ ist das $y=3$. Ist der Zählergrad größer als der Nennergrad, gibt es keine waagerechte Asymptote.
 
 ### Schiefe Asymptote
 
@@ -248,11 +248,11 @@ Die Nullstelle von $f(x)=\frac{2x+1}{x-1}$ ist die Nullstelle des Zählers, $x=-
 
 ### Beispiel: schiefe Asymptote
 
-Für $f(x)=\frac{x^2+x-1}{x-1}$ liefert die Polynomdivision $f(x)=x+2+\frac{1}{x-1}$. Die Gerade $y=x+2$ ist schiefe Asymptote, und weil der Zähler bei $x=1$ den Wert $1 \ne 0$ hat, ist $x=1$ eine senkrechte Asymptote.
+Für $f(x)=\frac{x^2+x-1}{x-1}$ liefert die Polynomdivision $f(x)=x+2+\frac{1}{x-1}$. Die Gerade $y=x+2$ ist schiefe Asymptote, und weil der Zähler bei $x=1$ den Wert $1 \ne 0$ hat, ist $x=1$ Polstelle und die Gerade $x=1$ senkrechte Asymptote.
 
 ### Häufiger Fehler: nicht jede Nennernullstelle ist eine Polstelle
 
-Eine Nullstelle des Nenners ist erst dann sicher eine Polstelle, wenn Sie geprüft haben, dass sie nach dem Kürzen nicht verschwindet. Bei $\frac{x^2-1}{x-1}$ liegt bei $x=1$ keine Polstelle, sondern eine hebbare Lücke.
+Eine Nullstelle des Nenners ist erst dann sicher eine Polstelle, wenn Sie geprüft haben, dass sie nach dem vollständigen Kürzen nicht verschwindet. Bei $\frac{x^2-1}{x-1}$ liegt bei $x=1$ keine Polstelle, sondern eine hebbare Lücke.
 
 ## 8. Komplette Kurvendiskussion
 
@@ -266,31 +266,31 @@ Untersucht wird $f(x)=x^3-3x^2+4$. Als ganzrationale Funktion ist $f$ auf ganz $
 
 ### Schritt 2: Schnittpunkte mit den Achsen
 
-Wegen $f(0)=4$ schneidet der Graph die $y$-Achse in $S_y(0|4)$. Durch Probieren finden Sie $f(-1)=-1-3+4=0$; die Polynomdivision durch $(x+1)$ ergibt $x^2-4x+4=(x-2)^2$. Also ist $f(x)=(x+1)(x-2)^2$ mit der einfachen Nullstelle $x_1=-1$ und der doppelten Nullstelle $x_2=2$, an der der Graph die $x$-Achse berührt.
+Für $f(x)=x^3-3x^2+4$ gilt $f(0)=4$, der Graph schneidet die $y$-Achse also in $S_y(0|4)$. Durch Probieren finden Sie $f(-1)=-1-3+4=0$; die Polynomdivision durch $(x+1)$ ergibt $x^2-4x+4=(x-2)^2$. Also ist $f(x)=(x+1)(x-2)^2$ mit der einfachen Nullstelle $x_1=-1$ und der doppelten Nullstelle $x_2=2$, an der der Graph die $x$-Achse berührt.
 
 ### Schritt 3: Ableitungen
 
-Es gilt $f'(x)=3x^2-6x$, $f''(x)=6x-6$ und $f'''(x)=6$.
+Für $f(x)=x^3-3x^2+4$ gilt $f'(x)=3x^2-6x$, $f''(x)=6x-6$ und $f'''(x)=6$.
 
 ### Schritt 4: Extrempunkte
 
-Aus $f'(x)=3x(x-2)=0$ folgen $x=0$ und $x=2$. Wegen $f''(0)=-6 < 0$ und $f(0)=4$ ist $H(0|4)$ ein Hochpunkt; wegen $f''(2)=6 > 0$ und $f(2)=0$ ist $T(2|0)$ ein Tiefpunkt. Der Tiefpunkt liegt auf der $x$-Achse, wie es die doppelte Nullstelle erwarten lässt.
+Für $f(x)=x^3-3x^2+4$ folgen aus $f'(x)=3x^2-6x=3x(x-2)=0$ die Stellen $x=0$ und $x=2$, und es gilt $f''(x)=6x-6$. Wegen $f''(0)=-6 < 0$ und $f(0)=4$ ist $H(0|4)$ ein Hochpunkt; wegen $f''(2)=6 > 0$ und $f(2)=0$ ist $T(2|0)$ ein Tiefpunkt. Der Tiefpunkt liegt auf der $x$-Achse, wie es die doppelte Nullstelle $x=2$ erwarten lässt.
 
 ### Schritt 5: Wendepunkt und Wendetangente
 
-Aus $f''(x)=6x-6=0$ folgt $x=1$, und wegen $f'''(1)=6 \ne 0$ ist das eine Wendestelle. Mit $f(1)=2$ ergibt sich $W(1|2)$; der Graph ist punktsymmetrisch zu diesem Wendepunkt. Die Wendetangente hat die Steigung $f'(1)=-3$ und lautet $t(x)=-3(x-1)+2=-3x+5$.
+Für $f(x)=x^3-3x^2+4$ folgt aus $f''(x)=6x-6=0$ die Stelle $x=1$, und wegen $f'''(1)=6 \ne 0$ ist das eine Wendestelle. Mit $f(1)=2$ ergibt sich $W(1|2)$; wie bei jeder Funktion dritten Grades ist der Graph punktsymmetrisch zu seinem Wendepunkt. Die Wendetangente hat die Steigung $f'(1)=3-6=-3$ und lautet $t(x)=-3(x-1)+2=-3x+5$.
 
 ### Schritt 6: Monotonie und Krümmung
 
-Der Graph steigt für $x \le 0$, fällt für $0 \le x \le 2$ und steigt für $x \ge 2$; Stichproben sind $f'(-1)=9$, $f'(1)=-3$ und $f'(3)=9$. Für $x < 1$ ist $f''(x) < 0$ und der Graph rechtsgekrümmt, für $x > 1$ ist $f''(x) > 0$ und der Graph linksgekrümmt.
+Für $f(x)=x^3-3x^2+4$ mit $f'(x)=3x(x-2)$ steigt der Graph für $x \le 0$, fällt für $0 \le x \le 2$ und steigt für $x \ge 2$; Stichproben sind $f'(-1)=9$, $f'(1)=-3$ und $f'(3)=9$. Wegen $f''(x)=6x-6$ ist der Graph für $x < 1$ rechtsgekrümmt und für $x > 1$ linksgekrümmt.
 
 ### Schritt 7: Skizze
 
-Für die Skizze tragen Sie die Punkte $(-1|0)$, $H(0|4)$, $W(1|2)$, $T(2|0)$ sowie zur Orientierung $(-2|-16)$ und $(3|4)$ ein. Der Graph kommt von links unten, schneidet die $x$-Achse bei $-1$, steigt zum Hochpunkt, fällt durch den Wendepunkt zum Tiefpunkt auf der $x$-Achse und steigt danach unbegrenzt.
+Für die Skizze von $f(x)=x^3-3x^2+4$ tragen Sie die Nullstelle $(-1|0)$, den Hochpunkt $H(0|4)$, den Wendepunkt $W(1|2)$, den Tiefpunkt $T(2|0)$ sowie zur Orientierung $(-2|-16)$ und $(3|4)$ ein. Der Graph kommt von links unten, schneidet die $x$-Achse bei $-1$, steigt zum Hochpunkt, fällt durch den Wendepunkt zum Tiefpunkt auf der $x$-Achse und steigt danach unbegrenzt.
 
 ### Häufiger Fehler in der Kurvendiskussion
 
-Die $y$-Koordinaten von Extrem- und Wendepunkten gehören immer zur Ausgangsfunktion $f$, nicht zu $f'$ oder $f''$. Wer etwa $f''(0)=-6$ als $y$-Wert des Hochpunkts angibt, verwechselt die Prüfgröße mit dem Funktionswert $f(0)=4$.
+Die $y$-Koordinaten von Extrem- und Wendepunkten gehören immer zur Ausgangsfunktion $f$, nicht zu $f'$ oder $f''$. Wer etwa für $f(x)=x^3-3x^2+4$ den Wert $f''(0)=-6$ als $y$-Wert des Hochpunkts angibt, verwechselt die Prüfgröße mit dem Funktionswert $f(0)=4$.
 
 ## Zum Weiterlesen
 
