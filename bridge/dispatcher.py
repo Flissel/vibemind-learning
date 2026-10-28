@@ -73,6 +73,8 @@ class ReceiptStore(Protocol):
 
     def finalize(self, idempotency_key: str, receipt: Receipt) -> Receipt: ...
 
+    def release(self, idempotency_key: str, request_digest: str) -> None: ...
+
 
 class InMemoryReceiptStore:
     """Test/bootstrap receipt store; durable storage replaces it in Phase 1 Task 6."""
@@ -113,6 +115,12 @@ class InMemoryReceiptStore:
                 return existing
             self._receipts[idempotency_key] = receipt
             return receipt
+
+    def release(self, idempotency_key: str, request_digest: str) -> None:
+        with self._lock:
+            existing = self._receipts.get(idempotency_key)
+            if existing is not None and not existing.terminal and existing.request_digest == request_digest:
+                del self._receipts[idempotency_key]
 
 
 def _request_digest(request: ToolRequestV1) -> str:
@@ -322,6 +330,10 @@ class LearningDispatcher:
         self, key: str | None, digest: str, result: ToolResultV1
     ) -> ToolResultV1:
         if key is None:
+            return result
+        if result.error is not None and result.error.retryable:
+            # A retry with the same key must try again, not replay this failure.
+            self._receipts.release(key, digest)
             return result
         return self._receipts.finalize(
             key,

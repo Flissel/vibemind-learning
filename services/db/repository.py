@@ -108,6 +108,13 @@ class SqlReceiptStore(ReceiptStore):
             row.terminal = True
             return receipt
 
+    def release(self, idempotency_key: str, request_digest: str) -> None:
+        """Drop an open claim after a retryable failure; terminal receipts stay."""
+        with self._session_factory() as session, session.begin():
+            row = session.get(LearningInvocationReceipt, idempotency_key)
+            if row is not None and not row.terminal and row.request_digest == request_digest:
+                session.delete(row)
+
 
 class SqlLearningRepository:
     def __init__(self, session_factory: SessionFactory) -> None:

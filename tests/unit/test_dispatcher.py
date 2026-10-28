@@ -256,3 +256,75 @@ def test_unverified_backend_result_never_emits_ui_intent() -> None:
 
     assert result.state == "unavailable"
     assert delivery.calls == 0
+
+
+@dataclass
+class FlakyGateway:
+    """Fails with an exception on the first call, then behaves like ``inner``."""
+
+    inner: FakeGateway
+    execute_calls: int = 0
+
+    def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        self.execute_calls += 1
+        if self.execute_calls == 1:
+            raise ConnectionError("backend 503")
+        return self.inner.execute(request)
+
+    def readback(self, request: ToolRequestV1, outcome: ApplicationOutcomeV1) -> TruthReadbackV1 | None:
+        return self.inner.readback(request, outcome)
+
+
+def test_a_retryable_failure_is_not_kept_under_the_idempotency_key() -> None:
+    # Live 28.10.: a 503 was stored under the key, so the retry with the same key replayed
+    # the stale failure instead of trying again.
+    gateway = FlakyGateway(_completed_gateway())
+    receipts = InMemoryReceiptStore()
+    dispatcher = LearningDispatcher(gateways={LearningToolName.COURSE_CREATE: gateway}, receipts=receipts)
+
+    first = dispatcher.dispatch(_request())
+    assert first.state == "unavailable" and first.error and first.error.retryable
+    assert receipts.get("create-1") is None
+
+    second = dispatcher.dispatch(_request())
+    assert second.state == "completed" and gateway.execute_calls == 2
+    assert dispatcher.dispatch(_request()).model_dump() == second.model_dump()
+    assert gateway.execute_calls == 2
+
+
+def test_a_final_failure_stays_under_the_idempotency_key() -> None:
+    gateway = FakeGateway(outcome=ApplicationOutcomeV1(
+        state="rejected", error=ToolErrorV1(code="revision_conflict", message="stale", retryable=False),
+    ))
+    dispatcher = LearningDispatcher(gateways={LearningToolName.COURSE_CREATE: gateway},
+                                    receipts=InMemoryReceiptStore())
+    first = dispatcher.dispatch(_request())
+    second = dispatcher.dispatch(_request())
+    assert first.state == "rejected" and second.model_dump() == first.model_dump()
+    assert gateway.execute_calls == 1
+
+
+def test_sql_receipt_store_releases_only_its_own_open_claim(tmp_path) -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from spaces.learning.bridge.dispatcher import Receipt
+    from spaces.learning.contracts.outcomes import ToolResultV1
+    from spaces.learning.services.db.models import Base
+    from spaces.learning.services.db.repository import SqlReceiptStore
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'r.db'}")
+    Base.metadata.create_all(engine)
+    store = SqlReceiptStore(sessionmaker(engine))
+    offen = Receipt(request_digest="d1",
+                    result=ToolResultV1(invocation_id=uuid4(), correlation_id=uuid4(), state="accepted"),
+                    terminal=False)
+    store.claim("k", offen)
+    store.release("k", "other-digest")
+    assert store.get("k") is not None
+    store.release("k", "d1")
+    assert store.get("k") is None
+    store.claim("k", offen)
+    store.finalize("k", Receipt(request_digest="d1", result=offen.result, terminal=True))
+    store.release("k", "d1")
+    assert store.get("k") is not None and store.get("k").terminal
