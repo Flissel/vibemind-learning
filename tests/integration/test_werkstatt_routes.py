@@ -461,3 +461,56 @@ def test_vorschau_je_fassung(env: Env) -> None:
     assert (fehlt.status_code, fehlt.json()["code"]) == (404, "fassung_unbekannt")
     unbekannt = env.client.get("/api/v1/werkstatt/aufgaben/nope/vorschau", headers=env.h())
     assert (unbekannt.status_code, unbekannt.json()["code"]) == (404, "aufgabe_unbekannt")
+
+
+class _FakeArtifacts:
+    def read_stage_output(self, job_id: str, *, attempt_number: int, stage: Any) -> dict[str, Any]:
+        quelle, h = "3" * 8 + "-3333-4333-8333-" + "3" * 12, "a" * 64
+        aktivitaet = {
+            "activity_id": "a1", "chapter_id": "ch1", "type": "quiz", "concept_ids": ["k1"],
+            "prompt": "Welcher Befehl prueft eine Datei?", "expected_answer": "", "citation_ids": [],
+            "rubric": [], "options": [{"option_id": "a", "text": "A"}, {"option_id": "b", "text": "B"}],
+            "correct_option_ids": ["a"],
+        }
+        entwurf = {
+            "schema_version": "course-draft-v1", "job_id": job_id, "attempt_number": attempt_number,
+            "title": "Veroeffentlicht", "outcomes": ["Ziel"],
+            "source_provenance": [{"source_id": quelle, "revision": 1, "content_hash": h}],
+            "citations": [{"citation_id": "1" * 36, "source_id": quelle, "source_revision": 1,
+                           "chunk_id": "2" * 36, "content_hash": h, "locator": {"page": 1}}],
+            "concepts": [{"concept_id": "k1", "title": "K"}],
+            "chapters": [{"chapter_id": "ch1", "title": "Kapitel", "lesson_ids": ["l1"],
+                          "activity_ids": ["a1"]}],
+            "lessons": [{"lesson_id": "l1", "chapter_id": "ch1", "title": "Lektion", "body": "Text",
+                         "concept_ids": ["k1"], "claims": []}],
+            "activities": [aktivitaet],
+        }
+        return {"source_verifier": {"schema_version": "x", "draft": entwurf,
+                                    "unsupported_claim_ids": []}}
+
+
+def test_uebernehmen_201_dann_409_und_ohne_veroeffentlichung_404(env: Env, monkeypatch) -> None:
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", "unused")
+    monkeypatch.setattr(werkstatt_routes, "_artifact_store", lambda factory: _FakeArtifacts())
+    url = f"/api/v1/werkstatt/kurse/{env.course_id}/uebernehmen"
+    nein = env.client.post(url, headers=env.h())
+    assert nein.status_code == 404 and nein.json()["code"] == "nicht_veroeffentlicht"
+    from spaces.learning.services.course_factory.models import CourseFactoryPublication
+
+    with env.harness.session_factory() as session, session.begin():
+        session.add(CourseFactoryPublication(
+            id=str(uuid4()), job_id=str(uuid4()), attempt_id=str(uuid4()), attempt_number=1,
+            course_id=env.course_id, draft_hash="a" * 64, learnhouse_revision=1,
+            confirmation_ref="c", readback_evidence_ref="r",
+        ))
+    erste = env.client.post(url, headers=env.h())
+    assert erste.status_code == 201, erste.text
+    assert erste.json() == {"aufgaben": 1, "kapitel": 1, "uebersprungen": 0}
+    kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
+    assert kurs["title"] == "Veroeffentlicht" and len(kurs["aufgaben"]) == 1
+    zweite = env.client.post(url, headers=env.h())
+    assert zweite.status_code == 409 and zweite.json()["code"] == "schon_uebernommen"
+    kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
+    assert len(kurs["aufgaben"]) == 1
+    ohne = env.client.post(url, headers={k: v for k, v in env.h().items() if k != "X-Werkstatt-Author"})
+    assert ohne.status_code == 400

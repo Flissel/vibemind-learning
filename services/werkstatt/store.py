@@ -166,6 +166,35 @@ class WerkstattStore:
                 for t in k["tasks"]
             ]
 
+    def uebernahme_anwenden(
+        self, course_id: str, *, title: str, audience: str, default_kind: str,
+        outcomes: list[str], source_provenance: list[dict[str, Any]], owner_ref: str,
+        aufgaben: list[dict[str, Any]], author_ref: str,
+    ) -> int:
+        """Take over a published course in ONE transaction: course, tasks and Fassung 1, or nothing.
+
+        aufgaben is [{"chapter_title": str, "summary": str, "content": dict}, ...] in order.
+        """
+        with self._sessions.begin() as session:
+            if session.get(WerkstattKurs, course_id) is not None:
+                raise ValueError("schon_uebernommen")
+            session.add(WerkstattKurs(
+                course_id=course_id, title=title, audience=audience, default_kind=default_kind,
+                outcomes=list(outcomes), source_provenance=list(source_provenance),
+                owner_ref=owner_ref,
+            ))
+            session.flush()
+            for eintrag in aufgaben:
+                aufgabe = self._aufgabe_einfuegen(
+                    session, course_id, eintrag["chapter_title"], eintrag["summary"], None
+                )
+                self._schreiben(
+                    session, aufgabe["task_id"], content=eintrag["content"], based_on=None,
+                    author_ref=author_ref, reason="Aus veroeffentlichtem Kurs uebernommen",
+                    art="uebernommen", findings=[],
+                )
+            return len(aufgaben)
+
     def _aufgabe_einfuegen(
         self, session: Session, course_id: str, chapter_title: str, summary: str,
         position: int | None,

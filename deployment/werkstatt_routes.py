@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated, Any, Literal
@@ -28,12 +29,14 @@ from spaces.learning.services.course_factory.application import (
     SourceNotReady,
     current_provenance,
 )
+from spaces.learning.services.course_factory.artifact_store import CourseFactoryArtifactStore
 from spaces.learning.services.course_factory.catalog import SourceCatalog, SourceCatalogLoader
 from spaces.learning.services.course_factory.repository import SourceProvenance
 from spaces.learning.services.werkstatt.inhalt import fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
+from spaces.learning.services.werkstatt.uebernahme import kurs_uebernehmen
 from spaces.learning.services.werkstatt.vorschau import vorschau as vorschau_bauen
 
 router = APIRouter(prefix="/api/v1/werkstatt")
@@ -64,6 +67,16 @@ def _runtime() -> _Runtime:
         )
     factory = build_session_factory(create_learning_engine(url))
     return _Runtime(WerkstattStore(factory), factory)
+
+
+def _artifact_store(factory: sessionmaker[Session]) -> CourseFactoryArtifactStore:
+    root = os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip()
+    if not root:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable",
+            "Learning artifact root is not configured",
+        )
+    return CourseFactoryArtifactStore(factory, artifact_root=Path(root))
 
 
 def _autor(
@@ -198,6 +211,26 @@ def kurs_anlegen(body: KursAnlegen, context: Context, autor: Autor) -> dict[str,
         body.course_id, kind="grobentwurf", input={"hinweise": list(body.hinweise)}
     )
     return {"auftrag_id": auftrag["id"]}
+
+
+@router.post("/kurse/{course_id}/uebernehmen", status_code=status.HTTP_201_CREATED)
+def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> dict[str, int]:
+    context.require(ROLE_AUTHOR)
+    runtime = _runtime()
+    try:
+        return kurs_uebernehmen(
+            runtime.store, _artifact_store(runtime.session_factory), runtime.session_factory,
+            course_id, author_ref=autor,
+        )
+    except LookupError as error:
+        raise _fehler(
+            status.HTTP_404_NOT_FOUND, "nicht_veroeffentlicht",
+            "Der Kurs ist nicht veroeffentlicht",
+        ) from error
+    except ValueError as error:
+        raise _fehler(
+            status.HTTP_409_CONFLICT, "schon_uebernommen", "Der Kurs ist schon uebernommen"
+        ) from error
 
 
 @router.get("/kurse/{course_id}")
