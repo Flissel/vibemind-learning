@@ -192,3 +192,28 @@ def test_naechster_auftrag_vergibt_jeden_auftrag_nur_einmal(tmp_path: Path) -> N
     assert {erste["id"], zweite["id"]} == set(ids) and erste["state"] == "running"
     assert s.naechster_auftrag() is None
 
+
+
+@pytest.mark.asyncio
+async def test_grobentwurf_fehler_laesst_kurs_unveraendert(tmp_path: Path, monkeypatch) -> None:
+    from spaces.learning.services.werkstatt import store as store_modul
+
+    s = _store(tmp_path)
+    _kurs(s)
+    vorher = s.aufgabe_anlegen("c1", chapter_title="Alt", summary="alt")
+    echt = store_modul.WerkstattStore._aufgabe_einfuegen
+    aufrufe: list[int] = []
+
+    def kaputt(self, session, *args, **kwargs):
+        aufrufe.append(1)
+        if len(aufrufe) == 2:
+            raise RuntimeError("db kaputt")
+        return echt(self, session, *args, **kwargs)
+
+    monkeypatch.setattr(store_modul.WerkstattStore, "_aufgabe_einfuegen", kaputt)
+    a = s.auftrag_anlegen("c1", kind="grobentwurf", input={})["id"]
+    await _arbeiter(s, _Fake(_grob())).einen_ausfuehren()
+    assert s.auftrag(a)["state"] == "fehler" and s.auftrag(a)["error"] == "interner_fehler"
+    kurs = s.kurs("c1")
+    assert kurs["title"] == "Neu" and kurs["default_kind"] == "quiz"
+    assert [x["task_id"] for x in kurs["aufgaben"]] == [vorher["task_id"]]

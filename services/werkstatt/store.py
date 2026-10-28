@@ -135,28 +135,54 @@ class WerkstattStore:
         self, course_id: str, *, chapter_title: str, summary: str, position: int | None = None
     ) -> dict[str, Any]:
         with self._sessions.begin() as session:
-            if session.get(WerkstattKurs, course_id) is None:
+            return self._aufgabe_einfuegen(session, course_id, chapter_title, summary, position)
+
+    def grobentwurf_anwenden(
+        self, course_id: str, *, title: str, default_kind: str, kapitel: list[dict[str, Any]]
+    ) -> list[str]:
+        """Apply a rough plan in ONE transaction: course title/kind plus all tasks, or nothing.
+
+        kapitel is [{"title": str, "tasks": [{"summary": str}, ...]}, ...].
+        """
+        with self._sessions.begin() as session:
+            kurs = session.get(WerkstattKurs, course_id)
+            if kurs is None:
                 raise LookupError("kurs_unbekannt")
-            alle = list(session.scalars(
-                select(WerkstattAufgabe)
-                .where(WerkstattAufgabe.course_id == course_id)
-                .order_by(WerkstattAufgabe.position, WerkstattAufgabe.created_at)
-            ))
-            if position is None:
-                # End of the chapter: after its last task, or at the end if the chapter is new.
-                im_kapitel = [a.position for a in alle if a.chapter_title == chapter_title]
-                position = max(im_kapitel) + 1 if im_kapitel else len(alle)
-            position = max(0, min(position, len(alle)))
-            for a in alle:
-                if a.position >= position:
-                    a.position += 1
-            aufgabe = WerkstattAufgabe(
-                task_id=str(uuid4()), course_id=course_id, chapter_title=chapter_title,
-                position=position, summary=summary, deleted=False,
-            )
-            session.add(aufgabe)
-            session.flush()
-            return _aufgabe_dict(aufgabe)
+            kurs.title = title
+            kurs.default_kind = default_kind
+            kurs.updated_at = utc_now()
+            return [
+                self._aufgabe_einfuegen(session, course_id, k["title"], t["summary"], None)["task_id"]
+                for k in kapitel
+                for t in k["tasks"]
+            ]
+
+    def _aufgabe_einfuegen(
+        self, session: Session, course_id: str, chapter_title: str, summary: str,
+        position: int | None,
+    ) -> dict[str, Any]:
+        if session.get(WerkstattKurs, course_id) is None:
+            raise LookupError("kurs_unbekannt")
+        alle = list(session.scalars(
+            select(WerkstattAufgabe)
+            .where(WerkstattAufgabe.course_id == course_id)
+            .order_by(WerkstattAufgabe.position, WerkstattAufgabe.created_at)
+        ))
+        if position is None:
+            # End of the chapter: after its last task, or at the end if the chapter is new.
+            im_kapitel = [a.position for a in alle if a.chapter_title == chapter_title]
+            position = max(im_kapitel) + 1 if im_kapitel else len(alle)
+        position = max(0, min(position, len(alle)))
+        for a in alle:
+            if a.position >= position:
+                a.position += 1
+        aufgabe = WerkstattAufgabe(
+            task_id=str(uuid4()), course_id=course_id, chapter_title=chapter_title,
+            position=position, summary=summary, deleted=False,
+        )
+        session.add(aufgabe)
+        session.flush()
+        return _aufgabe_dict(aufgabe)
 
     def reihenfolge_setzen(self, course_id: str, task_ids: list[str]) -> None:
         with self._sessions.begin() as session:

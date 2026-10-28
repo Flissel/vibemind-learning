@@ -136,17 +136,16 @@ class WerkstattArbeiter:
                 hinweise=list(eingabe.get("hinweise", [])),
                 source_refs=katalog.model_refs,
             )
-            # Everything the model said is validated; only now is the course touched.
-            self._store.kurs_aendern(
-                kurs["course_id"], title=entwurf.title, default_kind=entwurf.default_kind
+            # Validated model output is applied in one transaction: all of it or nothing.
+            task_ids = self._store.grobentwurf_anwenden(
+                kurs["course_id"],
+                title=entwurf.title,
+                default_kind=entwurf.default_kind,
+                kapitel=[
+                    {"title": k.title, "tasks": [{"summary": t.summary} for t in k.tasks]}
+                    for k in entwurf.chapters
+                ],
             )
-            task_ids = [
-                self._store.aufgabe_anlegen(
-                    kurs["course_id"], chapter_title=kapitel.title, summary=aufgabe.summary
-                )["task_id"]
-                for kapitel in entwurf.chapters
-                for aufgabe in kapitel.tasks
-            ]
             return {"task_ids": task_ids}
         return await self._ausformulieren(auftrag, kurs, katalog, gateway, correlation_id)
 
