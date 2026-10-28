@@ -215,26 +215,43 @@ def herkunft_nachtragen(
     Only empty columns are filled, so a second run changes nothing."""
     kurs = store.kurs(course_id)  # LookupError("kurs_unbekannt") for an unknown course
     draft = _entwurf_laden(artifact_store, session_factory, course_id)
-    nach_prompt = {a.prompt: a for a in draft.activities}
+    aus_entwurf: dict[str, list[Any]] = {}
+    for a in draft.activities:
+        aus_entwurf.setdefault(a.prompt, []).append(a)
     lektionen = {e.lesson_id for e in draft.lessons}
     kapitel_von: dict[str, Any] = {}
     for ch in draft.chapters:
         for aid in ch.activity_ids:
             kapitel_von.setdefault(aid, ch)
-    zuordnung: dict[str, tuple[str | None, str | None]] = {}
-    ohne: list[str] = []
+    inhalte: dict[str, dict[str, Any]] = {}
     for aufgabe in kurs["aufgaben"]:
         erste = next((f for f in store.fassungen(aufgabe["task_id"]) if f["number"] == 1), None)
-        inhalt = erste["content"] if erste else {}
+        inhalte[aufgabe["task_id"]] = erste["content"] if erste else {}
+    # A prompt shared by several tasks cannot be told apart: none of them is assigned.
+    prompts_der_aufgaben = [i.get("prompt") for i in inhalte.values() if isinstance(i.get("prompt"), str)]
+    vergeben = {a["herkunft_key"] for a in kurs["aufgaben"] if a["herkunft_key"]}
+    zuordnung: dict[str, tuple[str | None, str | None]] = {}
+    ohne: list[str] = []
+    schon = 0
+    for aufgabe in kurs["aufgaben"]:
+        if aufgabe["herkunft_key"]:
+            schon += 1
+            continue
+        inhalt = inhalte[aufgabe["task_id"]]
         prompt = inhalt.get("prompt")
-        aktivitaet = nach_prompt.get(prompt) if isinstance(prompt, str) else None
-        if aktivitaet is None:
+        treffer = aus_entwurf.get(prompt, []) if isinstance(prompt, str) else []
+        if len(treffer) != 1 or prompts_der_aufgaben.count(prompt) != 1:
             ohne.append(aufgabe["task_id"])
             continue
+        aktivitaet = treffer[0]
+        if aktivitaet.activity_id in vergeben:
+            ohne.append(aufgabe["task_id"])
+            continue
+        vergeben.add(aktivitaet.activity_id)
         lektion_key: str | None = None
         if inhalt.get("lektion") is not None:
             kap = kapitel_von.get(aktivitaet.activity_id)
             lektion_key = next((i for i in (kap.lesson_ids if kap else []) if i in lektionen), None)
         zuordnung[aufgabe["task_id"]] = (aktivitaet.activity_id, lektion_key)
-    store.herkunft_setzen(zuordnung)
-    return {"zugeordnet": len(zuordnung), "ohne_zuordnung": ohne}
+    geschrieben = store.herkunft_setzen(zuordnung)
+    return {"zugeordnet": geschrieben, "schon_zugeordnet": schon, "ohne_zuordnung": ohne}
