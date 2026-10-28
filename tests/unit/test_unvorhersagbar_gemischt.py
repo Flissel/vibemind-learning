@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from spaces.learning.services import zufall as zufall_modul
 from spaces.learning.services.adaptive_engine.models import AdaptiveItem
-from spaces.learning.services.course_factory.neu_mischen import lernsequenzen_neu_mischen, reihenfolgen_neu_mischen
+from spaces.learning.services.course_factory.neu_mischen import reihenfolgen_neu_mischen
 from spaces.learning.services.course_factory.structured_items import structured_items
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
@@ -282,48 +282,3 @@ def test_quiz_options_use_the_secure_rng_in_both_catalogs(monkeypatch) -> None:
     })
     _typ, _erwartet, scoring, _rubrik = katalog._item_felder("item-1", quiz)
     assert [o["id"] for o in scoring["options"]] == ["d", "c", "b", "a"]
-
-
-# --- stored Lernsequenz presentations ------------------------------------------------------
-
-
-def _gespeichert(tmp_path):
-    from pathlib import Path
-
-    from spaces.learning.services.course_factory.schemas import CourseDraft
-    from spaces.learning.services.lernsequenz.aus_kurs import build_presentation
-    from spaces.learning.services.lernsequenz.store import SequenceStore
-    from spaces.learning.tests.unit.test_lernsequenz_aus_kurs import COURSE, draft
-
-    data = draft().model_dump(mode="json")
-    data["lessons"][0]["body"] = BODY
-    sequence = build_presentation(CourseDraft.model_validate(data), course_id=COURSE)
-    store = SequenceStore(Path(tmp_path))
-    store.save(sequence)
-    return store, sequence
-
-
-def test_stored_sequences_get_a_fresh_right_column_and_keep_pairs(tmp_path) -> None:
-    store, sequence = _gespeichert(tmp_path)
-    alt = next(c for c in sequence.checkpoints if c.kind == "matching")
-    result = lernsequenzen_neu_mischen(store)
-    assert result["sequenzen"] == 1 and result["matching"] == 1
-    neu_seq = store.load(sequence.sequence_id)
-    neu = next(c for c in neu_seq.checkpoints if c.kind == "matching")
-    assert neu.pairs == alt.pairs and neu.left == alt.left
-    assert sorted(r.item_id for r in neu.right) == sorted(r.item_id for r in alt.right)
-    assert [r.item_id for r in neu.right] != [neu.pairs[l.item_id] for l in neu.left]
-    assert [c for c in neu_seq.checkpoints if c.kind != "matching"] == [
-        c for c in sequence.checkpoints if c.kind != "matching"
-    ]
-    assert not list((tmp_path / "lernsequenzen").glob("*.tmp"))
-
-
-def test_stored_sequences_secure_rng_and_unreadable_files_are_skipped(tmp_path, monkeypatch) -> None:
-    store, sequence = _gespeichert(tmp_path)
-    (tmp_path / "lernsequenzen" / "kaputt.json").write_text("{nicht json", encoding="utf-8")
-    monkeypatch.setattr(zufall_modul, "ZUFALL", _Umkehr())
-    result = lernsequenzen_neu_mischen(tmp_path)  # a root path works too
-    assert result["sequenzen"] == 1 and result["matching"] == 1 and result["uebersprungen"] == 1
-    neu = next(c for c in store.load(sequence.sequence_id).checkpoints if c.kind == "matching")
-    assert [r.item_id for r in neu.right] == list(reversed([neu.pairs[l.item_id] for l in neu.left]))

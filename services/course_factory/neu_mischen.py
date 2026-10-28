@@ -1,16 +1,16 @@
-"""Reshuffle the shown order of stored ordering, matching and choice items, and of stored
-Lernsequenz matching checkpoints.
+"""Reshuffle the shown order of stored ordering, matching and choice catalog items.
 
-Catalogs and sequences made before the secure shuffle carry orders that were a function of a
+Catalogs made before the secure shuffle carry orders that were a function of a
 public seed (item id, checkpoint id), so the solution could be recomputed from the public
 code. This rewrites only what is shown (``scoring_config`` options / right column);
 ``expected_answer``, ``pairs`` and every other key stay as they are, because answers
 reference ids, not positions.
 
-    python -m spaces.learning.services.course_factory.neu_mischen                  # catalog items
-    python -m spaces.learning.services.course_factory.neu_mischen --lernsequenzen  # stored sequences
+    python -m spaces.learning.services.course_factory.neu_mischen
 
-Runs inside the learning-api container (database / LEARNING_ARTIFACT_ROOT from its environment).
+Runs inside the learning-api container (database from its environment).
+Stored Lernsequenzen need nothing: ``public_view`` re-sorts their right column by a hash of
+random item ids, which says nothing about the pairing.
 Safe to run twice: each run draws a fresh order.
 """
 
@@ -20,7 +20,6 @@ import argparse
 import json
 import os
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -28,7 +27,6 @@ from sqlalchemy.orm import Session
 
 from spaces.learning.services import zufall
 from spaces.learning.services.adaptive_engine.models import AdaptiveItem
-from spaces.learning.services.lernsequenz.store import SequenceStore
 
 SessionFactory = Callable[[], Session]
 
@@ -105,48 +103,12 @@ def reihenfolgen_neu_mischen(session_factory: SessionFactory) -> dict[str, int]:
     return counts
 
 
-def lernsequenzen_neu_mischen(store_or_root: SequenceStore | Path) -> dict[str, int]:
-    """Reshuffle the right column of every stored matching checkpoint (``pairs`` and ids stay)."""
-    store = store_or_root if isinstance(store_or_root, SequenceStore) else SequenceStore(Path(store_or_root))
-    counts = {"sequenzen": 0, "matching": 0, "uebersprungen": 0}
-    for sequence_id in store.sequence_ids():
-        try:
-            sequence = store.load(sequence_id)
-            checkpoints = []
-            geaendert = 0
-            for checkpoint in sequence.checkpoints:
-                if checkpoint.kind == "matching":
-                    by_id = {r.item_id: r for r in checkpoint.right}
-                    aligned = _aligned(
-                        [e.item_id for e in checkpoint.left], [r.item_id for r in checkpoint.right], checkpoint.pairs,
-                    )
-                    if aligned is not None:
-                        shown = zufall.anders_gemischt([by_id[i] for i in aligned], lambda e: e.item_id)
-                        checkpoint = checkpoint.model_copy(update={"right": tuple(shown)})
-                        geaendert += 1
-                checkpoints.append(checkpoint)
-            if geaendert:
-                store.save(sequence.model_copy(update={"checkpoints": tuple(checkpoints)}))
-        except (LookupError, ValueError, KeyError, OSError):
-            counts["uebersprungen"] += 1
-            continue
-        if geaendert:
-            counts["sequenzen"] += 1
-            counts["matching"] += geaendert
-    return counts
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="neu_mischen")
-    parser.add_argument("--lernsequenzen", action="store_true", help="stored sequences instead of catalog items")
-    args = parser.parse_args(argv)
-    if args.lernsequenzen:
-        result = lernsequenzen_neu_mischen(Path(os.environ["LEARNING_ARTIFACT_ROOT"]))
-    else:
-        from spaces.learning.services.db.session import build_session_factory, create_learning_engine
+    argparse.ArgumentParser(prog="neu_mischen").parse_args(argv)
+    from spaces.learning.services.db.session import build_session_factory, create_learning_engine
 
-        factory = build_session_factory(create_learning_engine(os.environ["LEARNING_DATABASE_URL"]))
-        result = reihenfolgen_neu_mischen(factory)
+    factory = build_session_factory(create_learning_engine(os.environ["LEARNING_DATABASE_URL"]))
+    result = reihenfolgen_neu_mischen(factory)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 
