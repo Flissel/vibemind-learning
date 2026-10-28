@@ -32,11 +32,15 @@ class LearningUnavailable(Exception):
 class LearningRejected(Exception):
     """The Learning service answered with a typed refusal."""
 
-    def __init__(self, code: str, message: str, status: int) -> None:
+    def __init__(
+        self, code: str, message: str, status: int, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
         self.status = status
+        # Extra fields of the refusal body worth showing the model (e.g. ``neueste``).
+        self.details = details or {}
 
 
 def idempotency_key(tool: str, args: dict[str, Any]) -> str:
@@ -76,14 +80,28 @@ class LearningClient:
         *,
         roles: str,
         idempotency_key_value: str | None = None,
+        extra: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         key = idempotency_key_value or idempotency_key(path, body)
         return self._request(
-            "POST", self.api_url + path, roles, json_body=body, extra={"Idempotency-Key": key}
+            "POST", self.api_url + path, roles, json_body=body,
+            extra={"Idempotency-Key": key, **(extra or {})},
         )
 
-    def get(self, path: str, *, roles: str) -> dict[str, Any]:
-        return self._request("GET", self.api_url + path, roles)
+    def get(
+        self, path: str, *, roles: str, extra: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        return self._request("GET", self.api_url + path, roles, extra=extra)
+
+    def patch(
+        self, path: str, body: dict[str, Any], *, roles: str, extra: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        return self._request("PATCH", self.api_url + path, roles, json_body=body, extra=extra)
+
+    def delete(
+        self, path: str, *, roles: str, extra: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        return self._request("DELETE", self.api_url + path, roles, extra=extra)
 
     def mcp_call(
         self, tool: str, event: dict[str, Any], *, timeout: float | None = None
@@ -152,12 +170,18 @@ class LearningClient:
                 code if isinstance(code, str) else f"http_{response.status_code}",
                 self._scrub(message if isinstance(message, str) else ""),
                 response.status_code,
+                _details(data),
             )
         return data
 
     def _scrub(self, text: str) -> str:
         scrubbed = text.replace(self._key, "[redacted]") if self._key else text
         return scrubbed[:_MESSAGE_LIMIT]
+
+
+def _details(data: dict[str, Any]) -> dict[str, Any]:
+    neueste = data.get("neueste")
+    return {"neueste": neueste} if isinstance(neueste, dict) else {}
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:

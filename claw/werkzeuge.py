@@ -31,6 +31,7 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any, Literal
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import httpx
@@ -98,6 +99,7 @@ _REASONS = {
     "course_published": "Der Kurs ist schon veroeffentlicht und unveraenderlich - fuer neue Inhalte einen neuen Kurs anlegen",
     "not_found": "Nicht gefunden",
     "idempotency_conflict": "Gleiche Anfrage mit anderem Inhalt",
+    "konflikt": "Die Aufgabe wurde inzwischen geaendert - die neueste Fassung steht in `neueste`",
 }
 
 
@@ -117,7 +119,10 @@ def _run(action: Callable[[LearningClient], dict[str, Any]]) -> dict[str, Any]:
     except LearningRejected as error:
         reason = _REASONS.get(error.code) or (error.message or error.code)[:_MESSAGE_LIMIT]
         logger.info("Learning rejected a claw call: %s", error.code)
-        return {"ok": False, "fehler": reason}
+        out: dict[str, Any] = {"ok": False, "fehler": reason}
+        if error.details.get("neueste") is not None:
+            out["neueste"] = error.details["neueste"]
+        return out
     except LearningUnavailable as error:
         return {"ok": False, "fehler": str(error)}
     except httpx.HTTPError:
@@ -761,3 +766,157 @@ def bewertung_zeigen(evaluation_id: str, session_id: str) -> dict[str, Any]:
         session_id=session_id,
         payload={"evaluation_id": evaluation_id, "session_ref": session_ref},
     )
+
+
+# --- Werkstatt: courses and tasks as numbered versions -----------------------
+#
+# Every write names the claw as author. Nothing here publishes: changes reach learners
+# only after the owner's release, which the claw cannot do. Jobs run in the background.
+
+_WERKSTATT = "/werkstatt"
+_AUTOR = {"X-Werkstatt-Author": "claw"}
+
+
+def _seg(value: str) -> str:
+    return quote(str(value), safe="")
+
+
+def _ws_get(path: str) -> dict[str, Any]:
+    return _run(lambda client: client.get(_WERKSTATT + path, roles=ROLE_AUTHOR))
+
+
+def _ws_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    return _run(
+        lambda client: client.post(_WERKSTATT + path, body, roles=ROLE_AUTHOR, extra=_AUTOR)
+    )
+
+
+def _ws_patch(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    return _run(
+        lambda client: client.patch(_WERKSTATT + path, body, roles=ROLE_AUTHOR, extra=_AUTOR)
+    )
+
+
+def werkstatt_kurs_neu(
+    course_id: str,
+    titel: str,
+    zielgruppe: str,
+    lernziele: list[str],
+    source_ids: list[str],
+    standard_typ: str | None = None,
+    hinweise: list[str] | None = None,
+) -> dict[str, Any]:
+    """Legt einen Werkstatt-Kurs an und startet den Grobentwurf aus den Quellen
+    (`standard_typ`: quiz, open, case, cloze, ordering oder matching). Gibt `auftrag_id`
+    zurueck. Auftraege laufen im Hintergrund; mit werkstatt_auftrag nachsehen.
+    """
+    body: dict[str, Any] = {
+        "course_id": course_id, "title": titel, "audience": zielgruppe,
+        "outcomes": list(lernziele), "source_ids": list(source_ids),
+    }
+    if standard_typ is not None:
+        body["default_kind"] = standard_typ
+    if hinweise:
+        body["hinweise"] = list(hinweise)
+    return _ws_post("/kurse", body)
+
+
+def werkstatt_kurs_zeigen(course_id: str) -> dict[str, Any]:
+    """Zeigt einen Werkstatt-Kurs mit seinen Aufgaben, Reihenfolge und der Zahl offener Befunde."""
+    return _ws_get(f"/kurse/{_seg(course_id)}")
+
+
+def werkstatt_kurs_aendern(
+    course_id: str,
+    titel: str | None = None,
+    standard_typ: str | None = None,
+    reihenfolge: list[str] | None = None,
+) -> dict[str, Any]:
+    """Aendert Titel, Standard-Aufgabentyp oder Reihenfolge der Aufgaben (alle task_ids genau
+    einmal) eines Werkstatt-Kurses.
+    """
+    body: dict[str, Any] = {}
+    if titel is not None:
+        body["title"] = titel
+    if standard_typ is not None:
+        body["default_kind"] = standard_typ
+    if reihenfolge is not None:
+        body["reihenfolge"] = list(reihenfolge)
+    if not body:
+        return {"ok": False, "fehler": "Mindestens eine Aenderung angeben"}
+    return _ws_patch(f"/kurse/{_seg(course_id)}", body)
+
+
+def werkstatt_kurs_uebernehmen(course_id: str) -> dict[str, Any]:
+    """Uebernimmt die Aufgaben eines bereits veroeffentlichten Kurses als erste Fassungen in
+    die Werkstatt; veroeffentlicht nichts. Meldet Zaehler, `uebersprungen_details` und
+    `lektionen_verloren`.
+    """
+    return _ws_post(f"/kurse/{_seg(course_id)}/uebernehmen", {})
+
+
+def werkstatt_aufgabe_neu(
+    course_id: str, kapitel: str, kurzfassung: str, position: int | None = None
+) -> dict[str, Any]:
+    """Legt eine leere Aufgabe mit Kapitel und Kurzfassung im Werkstatt-Kurs an
+    (`position` optional); ausformuliert wird sie mit werkstatt_aufgabe_ausformulieren.
+    """
+    body: dict[str, Any] = {"chapter_title": kapitel, "summary": kurzfassung}
+    if position is not None:
+        body["position"] = position
+    return _ws_post(f"/kurse/{_seg(course_id)}/aufgaben", body)
+
+
+def werkstatt_aufgabe_ausformulieren(
+    task_id: str, basis: int | None, wunsch: str | None = None, typ: str | None = None
+) -> dict[str, Any]:
+    """Laesst eine Aufgabe aus Quellen ausformulieren und legt das Ergebnis als neue Fassung ab.
+    `basis` ist die Nummer der neuesten Fassung (null, wenn es noch keine gibt); bei
+    Abweichung kommt ein Konflikt mit `neueste`. Auftraege laufen im Hintergrund; mit
+    werkstatt_auftrag nachsehen.
+    """
+    return _ws_post(
+        f"/aufgaben/{_seg(task_id)}/ausformulieren",
+        {"based_on": basis, "wunsch": wunsch, "kind": typ},
+    )
+
+
+def werkstatt_aufgabe_aendern(
+    task_id: str, basis: int | None, felder: dict[str, Any], grund: str
+) -> dict[str, Any]:
+    """Aendert Felder einer Aufgabe und legt eine neue Fassung mit Begruendung `grund` an.
+    `basis` ist die Nummer der neuesten Fassung; bei Abweichung kommt ein Konflikt mit `neueste`.
+    """
+    return _ws_patch(
+        f"/aufgaben/{_seg(task_id)}", {"based_on": basis, "felder": dict(felder), "reason": grund}
+    )
+
+
+def werkstatt_aufgabe_loeschen(task_id: str) -> dict[str, Any]:
+    """Loescht eine Aufgabe in der Werkstatt (ihre Fassungen bleiben nachvollziehbar)."""
+    return _run(
+        lambda client: client.delete(
+            f"{_WERKSTATT}/aufgaben/{_seg(task_id)}", roles=ROLE_AUTHOR, extra=_AUTOR
+        )
+    )
+
+
+def werkstatt_fassungen(task_id: str) -> dict[str, Any]:
+    """Listet alle nummerierten Fassungen einer Aufgabe mit Autor, Grund und Befunden."""
+    return _ws_get(f"/aufgaben/{_seg(task_id)}/fassungen")
+
+
+def werkstatt_zurueckholen(task_id: str, fassung: int) -> dict[str, Any]:
+    """Holt eine fruehere Fassung als neue neueste Fassung zurueck."""
+    return _ws_post(f"/aufgaben/{_seg(task_id)}/zurueckholen", {"number": fassung})
+
+
+def werkstatt_vorschau(task_id: str, fassung: int | None = None) -> dict[str, Any]:
+    """Zeigt die Lernenden-Vorschau einer Fassung (ohne `fassung` die neueste)."""
+    suffix = "" if fassung is None else f"?fassung={int(fassung)}"
+    return _ws_get(f"/aufgaben/{_seg(task_id)}/vorschau{suffix}")
+
+
+def werkstatt_auftrag(auftrag_id: str) -> dict[str, Any]:
+    """Zeigt Zustand, Ergebnis und Fehler eines Hintergrund-Auftrags der Werkstatt."""
+    return _ws_get(f"/auftraege/{_seg(auftrag_id)}")

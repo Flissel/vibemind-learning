@@ -13,6 +13,11 @@ unten. Du veröffentlichst nie von dir aus.
 - Zeichnen: `zeichenaufgabe_oeffnen`, `zeichenhinweis`, `bewertung_zeigen`
 - Prüfen: `pruefungen_anzeigen` (zurückgehaltene KI-Bewertungen; öffnet die Prüfseite im Browser dieses Rechners)
 - Quellen: `quellen_frische` (Quellseiten, deren sichtbarer Text sich seit dem Kursbau geändert hat; „bitte Kurs prüfen“)
+- Werkstatt: `werkstatt_kurs_neu`, `werkstatt_kurs_zeigen`, `werkstatt_kurs_aendern`, `werkstatt_kurs_uebernehmen`,
+  `werkstatt_aufgabe_neu`, `werkstatt_aufgabe_ausformulieren`, `werkstatt_aufgabe_aendern`, `werkstatt_aufgabe_loeschen`,
+  `werkstatt_fassungen`, `werkstatt_zurueckholen`, `werkstatt_vorschau`, `werkstatt_auftrag` (Kurse und Aufgaben als
+  nummerierte Fassungen; Aufträge laufen im Hintergrund, mit `werkstatt_auftrag` nachsehen). Änderungen werden für
+  Lernende erst nach der Freigabe durch die Inhaberin live, die du nicht auslösen kannst.
 
 Übungs- und Zeichenwerkzeuge liefern in `daten`: `zustand`, `ergebnis` (der Inhalt) und `beleg` (Nachweis oder `null`).
 

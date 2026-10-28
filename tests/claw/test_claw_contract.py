@@ -38,6 +38,18 @@ SPEC_TOOLS = {
     "bewertung_zeigen",
     "pruefungen_anzeigen",
     "quellen_frische",
+    "werkstatt_kurs_neu",
+    "werkstatt_kurs_zeigen",
+    "werkstatt_kurs_aendern",
+    "werkstatt_kurs_uebernehmen",
+    "werkstatt_aufgabe_neu",
+    "werkstatt_aufgabe_ausformulieren",
+    "werkstatt_aufgabe_aendern",
+    "werkstatt_aufgabe_loeschen",
+    "werkstatt_fassungen",
+    "werkstatt_zurueckholen",
+    "werkstatt_vorschau",
+    "werkstatt_auftrag",
 }
 
 

@@ -27,6 +27,18 @@
     "mcp__learning__zeichenhinweis",
     "mcp__learning__bewertung_zeigen",
     "mcp__learning__pruefungen_anzeigen",
-    "mcp__learning__quellen_frische"
+    "mcp__learning__quellen_frische",
+    "mcp__learning__werkstatt_kurs_neu",
+    "mcp__learning__werkstatt_kurs_zeigen",
+    "mcp__learning__werkstatt_kurs_aendern",
+    "mcp__learning__werkstatt_kurs_uebernehmen",
+    "mcp__learning__werkstatt_aufgabe_neu",
+    "mcp__learning__werkstatt_aufgabe_ausformulieren",
+    "mcp__learning__werkstatt_aufgabe_aendern",
+    "mcp__learning__werkstatt_aufgabe_loeschen",
+    "mcp__learning__werkstatt_fassungen",
+    "mcp__learning__werkstatt_zurueckholen",
+    "mcp__learning__werkstatt_vorschau",
+    "mcp__learning__werkstatt_auftrag"
   ]
 }

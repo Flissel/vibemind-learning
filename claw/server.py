@@ -84,6 +84,20 @@ WERKZEUGE = (
     werkzeuge.pruefungen_anzeigen,
     # Nightly source check: which courses should be looked at again.
     werkzeuge.quellen_frische,
+    # Werkstatt: Kurse und Aufgaben als nummerierte Fassungen. Nichts davon veroeffentlicht;
+    # fuer Lernende wird es erst nach der Freigabe durch die Inhaberin live.
+    werkzeuge.werkstatt_kurs_neu,
+    werkzeuge.werkstatt_kurs_zeigen,
+    werkzeuge.werkstatt_kurs_aendern,
+    werkzeuge.werkstatt_kurs_uebernehmen,
+    werkzeuge.werkstatt_aufgabe_neu,
+    werkzeuge.werkstatt_aufgabe_ausformulieren,
+    werkzeuge.werkstatt_aufgabe_aendern,
+    werkzeuge.werkstatt_aufgabe_loeschen,
+    werkzeuge.werkstatt_fassungen,
+    werkzeuge.werkstatt_zurueckholen,
+    werkzeuge.werkstatt_vorschau,
+    werkzeuge.werkstatt_auftrag,
 )
 
 SESSION_HEADER = "mcp-session-id"
