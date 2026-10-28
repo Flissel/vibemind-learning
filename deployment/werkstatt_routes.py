@@ -36,7 +36,12 @@ from spaces.learning.services.werkstatt.inhalt import fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
-from spaces.learning.services.werkstatt.uebernahme import kurs_uebernehmen
+from spaces.learning.services.werkstatt.uebernahme import (
+    EntwurfNichtLesbar,
+    NichtVeroeffentlicht,
+    SchonUebernommen,
+    kurs_uebernehmen,
+)
 from spaces.learning.services.werkstatt.vorschau import vorschau as vorschau_bauen
 
 router = APIRouter(prefix="/api/v1/werkstatt")
@@ -214,7 +219,7 @@ def kurs_anlegen(body: KursAnlegen, context: Context, autor: Autor) -> dict[str,
 
 
 @router.post("/kurse/{course_id}/uebernehmen", status_code=status.HTTP_201_CREATED)
-def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> dict[str, int]:
+def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> dict[str, Any]:
     context.require(ROLE_AUTHOR)
     runtime = _runtime()
     try:
@@ -222,14 +227,19 @@ def kurs_uebernehmen_route(course_id: str, context: Context, autor: Autor) -> di
             runtime.store, _artifact_store(runtime.session_factory), runtime.session_factory,
             course_id, author_ref=autor,
         )
-    except LookupError as error:
+    except NichtVeroeffentlicht as error:
         raise _fehler(
             status.HTTP_404_NOT_FOUND, "nicht_veroeffentlicht",
             "Der Kurs ist nicht veroeffentlicht",
         ) from error
-    except ValueError as error:
+    except SchonUebernommen as error:
         raise _fehler(
             status.HTTP_409_CONFLICT, "schon_uebernommen", "Der Kurs ist schon uebernommen"
+        ) from error
+    except EntwurfNichtLesbar as error:
+        raise _fehler(
+            status.HTTP_502_BAD_GATEWAY, "entwurf_nicht_lesbar",
+            "Der gespeicherte Entwurf ist nicht lesbar",
         ) from error
 
 

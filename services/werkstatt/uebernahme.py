@@ -22,6 +22,18 @@ from spaces.learning.services.werkstatt.store import WerkstattStore
 _UEBERNEHMBAR = {"quiz", "open", "case"}
 
 
+class SchonUebernommen(ValueError):
+    """The course already exists in the Werkstatt."""
+
+
+class NichtVeroeffentlicht(LookupError):
+    """No publication (or no draft belonging to it) exists for the course."""
+
+
+class EntwurfNichtLesbar(Exception):
+    """The stored draft exists but cannot be read or validated (hash, JSON, path, schema)."""
+
+
 def _lektion(lektionen: list[LessonDraft]) -> dict[str, Any]:
     """One section per chapter. Several lessons are joined: titles with ' / ', each body under
     its own '## title' heading, claims appended, concept ids de-duplicated in order."""
@@ -54,6 +66,12 @@ def _inhalt(a: ActivityDraft, draft: CourseDraft) -> dict[str, Any]:
     return inhalt
 
 
+def _kurzer_fehler(error: ValidationError) -> str:
+    erster = error.errors()[0]
+    ort = ".".join(str(t) for t in erster["loc"])
+    return f"{ort}: {erster['msg']}"[:200]
+
+
 def kurs_uebernehmen(
     store: WerkstattStore,
     artifact_store: CourseFactoryArtifactStore,
@@ -61,13 +79,13 @@ def kurs_uebernehmen(
     course_id: str,
     *,
     author_ref: str,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     try:
         store.kurs(course_id)
     except LookupError:
         pass
     else:
-        raise ValueError("schon_uebernommen")
+        raise SchonUebernommen("schon_uebernommen")
     with session_factory() as session:
         veroeffentlichung = session.scalars(
             select(CourseFactoryPublication)
@@ -76,50 +94,69 @@ def kurs_uebernehmen(
             .limit(1)
         ).first()
         if veroeffentlichung is None:
-            raise LookupError("nicht_veroeffentlicht")
+            raise NichtVeroeffentlicht("nicht_veroeffentlicht")
         job_id, versuch = veroeffentlichung.job_id, veroeffentlichung.attempt_number
     try:
         ausgabe = artifact_store.read_stage_output(
             job_id, attempt_number=versuch, stage=FactoryState.VERIFYING
         )
         draft = CourseDraft.model_validate(dict(ausgabe["source_verifier"])["draft"])  # type: ignore[call-overload]
-    except (LookupError, KeyError, TypeError, ValidationError) as error:
-        raise LookupError("nicht_veroeffentlicht") from error
+    except (LookupError, ValueError, OSError, KeyError, TypeError) as error:
+        # ValidationError is a ValueError; read/parse/integrity failures all land here.
+        raise EntwurfNichtLesbar("entwurf_nicht_lesbar") from error
 
     aktivitaeten = {a.activity_id: a for a in draft.activities}
     lektionen = {e.lesson_id: e for e in draft.lessons}
     aufgaben: list[dict[str, Any]] = []
-    uebersprungen = 0
+    details: list[dict[str, str]] = []
+    verloren: list[dict[str, str]] = []
     kapitel = 0
     for ch in draft.chapters:
         erste = True
         angelegt = 0
+        gehoerig = [lektionen[i] for i in ch.lesson_ids if i in lektionen]
         for aid in ch.activity_ids:
             a = aktivitaeten.get(aid)
-            if a is None or a.type not in _UEBERNEHMBAR:
-                uebersprungen += 1
+            if a is None:
+                details.append({"activity_id": aid, "grund": "aktivitaet_fehlt"})
+                continue
+            if a.type not in _UEBERNEHMBAR:
+                details.append({"activity_id": aid, "grund": "typ_nicht_uebernehmbar"})
                 continue
             inhalt = _inhalt(a, draft)
-            if erste:
-                gehoerig = [lektionen[i] for i in ch.lesson_ids if i in lektionen]
-                if gehoerig:
-                    inhalt["lektion"] = _lektion(gehoerig)
+            if erste and gehoerig:
+                inhalt["lektion"] = _lektion(gehoerig)
             try:
                 inhalt = inhalt_lesen(inhalt).model_dump(mode="json")
-            except ValidationError:
-                uebersprungen += 1  # does not fit the Werkstatt schema; counted, not silent
+            except ValidationError as error:
+                details.append({
+                    "activity_id": aid, "grund": f"inhalt_ungueltig: {_kurzer_fehler(error)}",
+                })
                 continue
             erste = False
             angelegt += 1
             aufgaben.append(
                 {"chapter_title": ch.title, "summary": a.prompt[:120], "content": inhalt}
             )
-        kapitel += 1 if angelegt else 0
+        if angelegt:
+            kapitel += 1
+        elif gehoerig:
+            verloren.extend(
+                {"lesson_id": e.lesson_id, "grund": "lektion_ohne_aufgabe"} for e in gehoerig
+            )
 
-    store.uebernahme_anwenden(
-        course_id, title=draft.title, audience="", default_kind="quiz",
-        outcomes=list(draft.outcomes),
-        source_provenance=[p.model_dump(mode="json") for p in draft.source_provenance],
-        owner_ref=author_ref, aufgaben=aufgaben, author_ref=author_ref,
-    )
-    return {"aufgaben": len(aufgaben), "kapitel": kapitel, "uebersprungen": uebersprungen}
+    try:
+        store.uebernahme_anwenden(
+            course_id, title=draft.title, audience="", default_kind="quiz",
+            outcomes=list(draft.outcomes),
+            source_provenance=[p.model_dump(mode="json") for p in draft.source_provenance],
+            owner_ref=author_ref, aufgaben=aufgaben, author_ref=author_ref,
+        )
+    except ValueError as error:
+        if str(error) == "schon_uebernommen":  # lost a race with a second takeover
+            raise SchonUebernommen("schon_uebernommen") from error
+        raise
+    return {
+        "aufgaben": len(aufgaben), "kapitel": kapitel, "uebersprungen": len(details),
+        "uebersprungen_details": details, "lektionen_verloren": verloren,
+    }

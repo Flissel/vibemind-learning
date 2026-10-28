@@ -15,7 +15,12 @@ from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe, WerkstattFassung
 from spaces.learning.services.werkstatt.store import WerkstattStore
-from spaces.learning.services.werkstatt.uebernahme import kurs_uebernehmen
+from spaces.learning.services.werkstatt.uebernahme import (
+    EntwurfNichtLesbar,
+    NichtVeroeffentlicht,
+    SchonUebernommen,
+    kurs_uebernehmen,
+)
 
 COURSE = "11111111-1111-4111-8111-111111111111"
 JOB = "22222222-2222-4222-8222-222222222222"
@@ -105,7 +110,10 @@ def _uebernehmen(store, fake, factory):
 def test_uebernahme_legt_je_aktivitaet_eine_aufgabe_mit_fassung_1_an(tmp_path):
     store, fake, factory = _setup(tmp_path)
     ergebnis = _uebernehmen(store, fake, factory)
-    assert ergebnis == {"aufgaben": 3, "kapitel": 2, "uebersprungen": 0}
+    assert ergebnis == {
+        "aufgaben": 3, "kapitel": 2, "uebersprungen": 0, "uebersprungen_details": [],
+        "lektionen_verloren": [],
+    }
     assert fake.calls == [(JOB, 1, "verifying")]
     kurs = store.kurs(COURSE)
     assert kurs["title"] == "Beispielkurs" and kurs["outcomes"] == ["Ziel 1"]
@@ -157,7 +165,11 @@ def test_unveroeffentlichter_kurs_wird_abgelehnt(tmp_path):
 
 def test_codeaufgaben_werden_uebersprungen_und_gezaehlt(tmp_path):
     store, fake, factory = _setup(tmp_path, _draft(code=True))
-    assert _uebernehmen(store, fake, factory) == {"aufgaben": 3, "kapitel": 2, "uebersprungen": 1}
+    assert _uebernehmen(store, fake, factory) == {
+        "aufgaben": 3, "kapitel": 2, "uebersprungen": 1,
+        "uebersprungen_details": [{"activity_id": "a3", "grund": "typ_nicht_uebernehmbar"}],
+        "lektionen_verloren": [],
+    }
     letzte = store.neueste(store.kurs(COURSE)["aufgaben"][2]["task_id"])["content"]
     # the lesson of chapter 2 moves to its first TAKEN task, since the code task is skipped
     assert letzte["kind"] == "quiz" and letzte["lektion"]["title"] == "Lektion C"
@@ -186,3 +198,46 @@ def test_fehler_mitten_drin_hinterlaesst_nichts(tmp_path, monkeypatch):
 
 def test_entwurf_ist_gueltiger_coursedraft():
     CourseDraft.model_validate(_draft())
+
+
+def test_ungueltige_aktivitaet_wird_mit_grund_gemeldet(tmp_path):
+    entwurf = _draft()
+    entwurf["activities"][0]["options"] = [{"option_id": "a", "text": "A"}]  # quiz needs >= 2
+    entwurf["chapters"][0]["activity_ids"].append("gibt-es-nicht")
+    store, fake, factory = _setup(tmp_path, entwurf)
+    ergebnis = _uebernehmen(store, fake, factory)
+    assert ergebnis["aufgaben"] == 2 and ergebnis["uebersprungen"] == 2
+    details = {d["activity_id"]: d["grund"] for d in ergebnis["uebersprungen_details"]}
+    assert details["gibt-es-nicht"] == "aktivitaet_fehlt"
+    assert details["a1"].startswith("inhalt_ungueltig: ") and len(details["a1"]) < 300
+    # the lesson of chapter 1 still lands on its first taken task (a2)
+    assert ergebnis["lektionen_verloren"] == []
+
+
+def test_lektion_ohne_aufgabe_wird_gemeldet(tmp_path):
+    entwurf = _draft()
+    entwurf["activities"][2]["type"] = "penecho_canvas"  # chapter 2 has only this activity
+    store, fake, factory = _setup(tmp_path, entwurf)
+    ergebnis = _uebernehmen(store, fake, factory)
+    assert ergebnis["kapitel"] == 1 and ergebnis["uebersprungen"] == 1
+    assert ergebnis["lektionen_verloren"] == [{"lesson_id": "l3", "grund": "lektion_ohne_aufgabe"}]
+
+
+def test_fehlerklassen_sind_getrennt(tmp_path):
+    store, fake, factory = _setup(tmp_path, publiziert=False)
+    with pytest.raises(NichtVeroeffentlicht):
+        _uebernehmen(store, fake, factory)
+    store, fake, factory = _setup(tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path)
+    _uebernehmen(store, fake, factory)
+    with pytest.raises(SchonUebernommen):
+        _uebernehmen(store, fake, factory)
+
+    class Kaputt:
+        def read_stage_output(self, *a: Any, **k: Any) -> dict[str, Any]:
+            raise ValueError("factory stage output failed integrity verification")
+
+    s2, _, f2 = _setup(tmp_path / "c" if (tmp_path / "c").mkdir() is None else tmp_path)
+    with pytest.raises(EntwurfNichtLesbar):
+        kurs_uebernehmen(s2, Kaputt(), f2, COURSE, author_ref="anna")
+    with pytest.raises(LookupError):
+        s2.kurs(COURSE)

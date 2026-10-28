@@ -505,7 +505,10 @@ def test_uebernehmen_201_dann_409_und_ohne_veroeffentlichung_404(env: Env, monke
         ))
     erste = env.client.post(url, headers=env.h())
     assert erste.status_code == 201, erste.text
-    assert erste.json() == {"aufgaben": 1, "kapitel": 1, "uebersprungen": 0}
+    assert erste.json() == {
+        "aufgaben": 1, "kapitel": 1, "uebersprungen": 0, "uebersprungen_details": [],
+        "lektionen_verloren": [],
+    }
     kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
     assert kurs["title"] == "Veroeffentlicht" and len(kurs["aufgaben"]) == 1
     zweite = env.client.post(url, headers=env.h())
@@ -514,3 +517,28 @@ def test_uebernehmen_201_dann_409_und_ohne_veroeffentlichung_404(env: Env, monke
     assert len(kurs["aufgaben"]) == 1
     ohne = env.client.post(url, headers={k: v for k, v in env.h().items() if k != "X-Werkstatt-Author"})
     assert ohne.status_code == 400
+
+
+def test_kaputtes_artefakt_ist_502_nicht_409(env: Env, monkeypatch) -> None:
+    from spaces.learning.services.course_factory.models import CourseFactoryPublication
+
+    class Kaputt:
+        def __init__(self, fehler: Exception) -> None:
+            self.fehler = fehler
+
+        def read_stage_output(self, *a: Any, **k: Any) -> dict[str, Any]:
+            raise self.fehler
+
+    with env.harness.session_factory() as session, session.begin():
+        session.add(CourseFactoryPublication(
+            id=str(uuid4()), job_id=str(uuid4()), attempt_id=str(uuid4()), attempt_number=1,
+            course_id=env.course_id, draft_hash="a" * 64, learnhouse_revision=1,
+            confirmation_ref="c", readback_evidence_ref="r",
+        ))
+    url = f"/api/v1/werkstatt/kurse/{env.course_id}/uebernehmen"
+    for fehler in (ValueError("hash"), FileNotFoundError("weg"), LookupError("fehlt")):
+        monkeypatch.setattr(werkstatt_routes, "_artifact_store", lambda f, e=fehler: Kaputt(e))
+        antwort = env.client.post(url, headers=env.h())
+        assert antwort.status_code == 502, (fehler, antwort.text)
+        assert antwort.json()["code"] == "entwurf_nicht_lesbar"
+    assert env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).status_code == 404
