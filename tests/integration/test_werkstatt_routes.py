@@ -444,3 +444,20 @@ def test_ohne_autorenrolle_ist_403(env: Env) -> None:
             **({"json": {"chapter_title": "K", "summary": "S"}} if method == "post" else {}),
         )
         assert response.status_code == 403, (method, path)
+
+
+def test_vorschau_je_fassung(env: Env) -> None:
+    env.kurs()
+    task_id = env.aufgabe()
+    url = f"/api/v1/werkstatt/aufgaben/{task_id}/vorschau"
+    assert env.client.get(url, headers=env.h()).status_code == 404
+    env.erste_fassung(task_id)
+    assert env.patch(task_id, 1, {"correct_option_ids": ["b"]}).status_code == 200
+    neueste = env.client.get(url, headers=env.h()).json()
+    assert (neueste["number"], neueste["loesung"]) == (2, "Richtig: B")
+    erste = env.client.get(url, headers=env.h(), params={"fassung": 1}).json()
+    assert erste["loesung"] == "Richtig: A" and "Richtig" not in erste["text"]
+    fehlt = env.client.get(url, headers=env.h(), params={"fassung": 9})
+    assert (fehlt.status_code, fehlt.json()["code"]) == (404, "fassung_unbekannt")
+    unbekannt = env.client.get("/api/v1/werkstatt/aufgaben/nope/vorschau", headers=env.h())
+    assert (unbekannt.status_code, unbekannt.json()["code"]) == (404, "aufgabe_unbekannt")

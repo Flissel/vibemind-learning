@@ -34,6 +34,7 @@ from spaces.learning.services.werkstatt.inhalt import fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
+from spaces.learning.services.werkstatt.vorschau import vorschau as vorschau_bauen
 
 router = APIRouter(prefix="/api/v1/werkstatt")
 Context = Annotated[VibeMindRequestContext, Depends(vibemind_context)]
@@ -325,6 +326,20 @@ def fassungen(task_id: str, context: Context) -> dict[str, Any]:
     context.require(ROLE_AUTHOR)
     _aufgabe(task_id)
     return {"fassungen": _runtime().store.fassungen(task_id)}
+
+
+@router.get("/aufgaben/{task_id}/vorschau")
+def vorschau(task_id: str, context: Context, fassung: int | None = None) -> dict[str, Any]:
+    context.require(ROLE_AUTHOR)
+    _aufgabe(task_id)
+    alle = _runtime().store.fassungen(task_id)
+    if fassung is None:
+        gewaehlt = alle[-1] if alle else None
+    else:
+        gewaehlt = next((f for f in alle if f["number"] == fassung), None)
+    if gewaehlt is None:
+        raise _fehler(status.HTTP_404_NOT_FOUND, "fassung_unbekannt", "Fassung nicht gefunden")
+    return {"number": gewaehlt["number"], **vorschau_bauen(gewaehlt["content"])}
 
 
 @router.post("/aufgaben/{task_id}/zurueckholen", response_model=None)
