@@ -200,12 +200,15 @@ def _herkunft_fehlt(a: dict[str, Any], erste: dict[str, Any] | None) -> dict[str
         fehlt.append("ihrer Lektion")
     if not fehlt:
         return None
-    return {
-        "code": "herkunft_fehlt", "task_id": a["task_id"], "blockierend": True,
-        "text": f"Bei der übernommenen Aufgabe „{a['summary']}“ fehlt der Bezug zu "
+    if a.get("deleted"):
+        text = (f"Bei der gelöschten übernommenen Aufgabe „{a['summary']}“ fehlt der Bezug zu "
+                f"{' und '.join(fehlt)} im veröffentlichten Kurs. Ohne ihn bliebe sie dort "
+                "online, obwohl sie gelöscht ist. Bitte zuerst die Herkunft nachtragen.")
+    else:
+        text = (f"Bei der übernommenen Aufgabe „{a['summary']}“ fehlt der Bezug zu "
                 f"{' und '.join(fehlt)} im veröffentlichten Kurs. Eine Freigabe würde sie dort "
-                "doppelt anlegen. Bitte zuerst die Herkunft nachtragen.",
-    }
+                "doppelt anlegen. Bitte zuerst die Herkunft nachtragen.")
+    return {"code": "herkunft_fehlt", "task_id": a["task_id"], "blockierend": True, "text": text}
 
 
 def _vergleichen(
@@ -308,6 +311,11 @@ def freigabe_vorbereiten(
             lek = _als_lektion(inhalt, inhalt.lektion)
             lektionen.append(LektionsSicht(a["task_id"], tuple(lek.concept_ids), lek.body))
             texte_je_aufgabe[a["task_id"]].append(lek.body)
+    for a in aufgaben.values():
+        if a["deleted"]:
+            fehlt = _herkunft_fehlt(a, ersten.get(a["task_id"]))
+            if fehlt is not None:
+                befunde.append(fehlt)
     if not kurs["aufgaben"]:
         befunde.append({
             "code": "kurs_ohne_aufgaben", "task_id": None, "blockierend": True,

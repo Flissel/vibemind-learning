@@ -271,3 +271,56 @@ def test_zusammengefuehrte_lektionen_werden_nur_bei_der_ersten_freigabe_entfernt
         store, gw, zweite["freigabe_id"], approval_ref="k2", learnhouse_revision=5
     ))
     assert gw.aufrufe[1]["entfernen"] == []
+
+
+def _eine_loeschen(store, factory, *, leeren: bool):
+    t1 = store.kurs(COURSE)["aufgaben"][0]["task_id"]
+    if leeren:
+        _leeren(factory)
+    store.aufgabe_loeschen(t1, author_ref="kursleitung-a")
+    return t1
+
+
+def test_herkunft_nachtragen_auch_fuer_geloeschte_aufgaben(tmp_path):
+    store, fake, factory = _setup(tmp_path)
+    _uebernehmen(store, fake, factory, katalog=None)
+    t1 = _eine_loeschen(store, factory, leeren=True)
+    ergebnis = herkunft_nachtragen(store, fake, factory, COURSE)
+    assert ergebnis == {"zugeordnet": 3, "schon_zugeordnet": 0, "ohne_zuordnung": []}
+    geloescht = next(a for a in store.aufgaben_alle(COURSE) if a["task_id"] == t1)
+    assert geloescht["deleted"] is True
+    assert geloescht["herkunft_key"] == "a1" and geloescht["lektion_herkunft_key"] == "l1"
+
+
+def test_geloeschte_uebernommene_aufgabe_ohne_herkunft_sperrt(tmp_path):
+    store, fake, factory = _setup(tmp_path)
+    _uebernehmen(store, fake, factory, katalog=None)
+    t1 = _eine_loeschen(store, factory, leeren=False)
+    with factory.begin() as session:
+        session.get(WerkstattAufgabe, t1).herkunft_key = None
+        session.get(WerkstattAufgabe, t1).lektion_herkunft_key = None
+    r = _vorbereiten(store, _entwurf(fake))
+    (befund,) = [b for b in r["befunde"] if b["code"] == "herkunft_fehlt"]
+    assert befund["task_id"] == t1 and befund["blockierend"] is True
+    assert "gelöscht" in befund["text"] and "Frage a1" in befund["text"]
+    assert "Lektion" in befund["text"] and r["blockiert"] is True
+
+
+def test_geloeschte_uebernommene_aufgabe_geht_mit_herkunft_offline(tmp_path):
+    import asyncio
+
+    from spaces.learning.services.werkstatt.freigabe import freigabe_ausfuehren
+    from spaces.learning.tests.unit.test_werkstatt_freigabe_ausfuehren import FakeGateway
+
+    store, fake, factory = _setup(tmp_path)
+    _uebernehmen(store, fake, factory, katalog=None)
+    _eine_loeschen(store, factory, leeren=True)
+    herkunft_nachtragen(store, fake, factory, COURSE)
+    r = _vorbereiten(store, _entwurf(fake))
+    assert [b for b in r["befunde"] if b["code"] == "herkunft_fehlt"] == []
+    assert {o["key"] for o in r["vergleich"]["offline"]} == {"a1", "l1"}
+    gw = FakeGateway()
+    asyncio.run(freigabe_ausfuehren(
+        store, gw, r["freigabe_id"], approval_ref="k1", learnhouse_revision=4
+    ))
+    assert {"a1", "l1"} <= set(gw.aufrufe[0]["entfernen"])

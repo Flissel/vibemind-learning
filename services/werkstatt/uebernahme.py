@@ -213,8 +213,9 @@ def herkunft_nachtragen(
     prompt of its Fassung 1 against the activities of the newest published draft; the task that
     carries the chapter lesson (`lektion` in Fassung 1) gets the chapter's first lesson id, also
     when only that lesson id is missing. Only empty columns are filled, so a second run changes
-    nothing."""
-    kurs = store.kurs(course_id)  # LookupError("kurs_unbekannt") for an unknown course
+    nothing. Deleted tasks are included: their factory activities must still go offline."""
+    store.kurs(course_id)  # LookupError("kurs_unbekannt") for an unknown course
+    alle = store.aufgaben_alle(course_id)
     draft = _entwurf_laden(artifact_store, session_factory, course_id)
     aus_entwurf: dict[str, list[Any]] = {}
     for a in draft.activities:
@@ -225,12 +226,12 @@ def herkunft_nachtragen(
         for aid in ch.activity_ids:
             kapitel_von.setdefault(aid, ch)
     inhalte: dict[str, dict[str, Any]] = {}
-    for aufgabe in kurs["aufgaben"]:
+    for aufgabe in alle:
         erste = next((f for f in store.fassungen(aufgabe["task_id"]) if f["number"] == 1), None)
         inhalte[aufgabe["task_id"]] = erste["content"] if erste else {}
     # A prompt shared by several tasks cannot be told apart: none of them is assigned.
     prompts_der_aufgaben = [i.get("prompt") for i in inhalte.values() if isinstance(i.get("prompt"), str)]
-    vergeben = {a["herkunft_key"] for a in kurs["aufgaben"] if a["herkunft_key"]}
+    vergeben = {a["herkunft_key"] for a in alle if a["herkunft_key"]}
     zuordnung: dict[str, tuple[str | None, str | None]] = {}
     ohne: list[str] = []
     schon = 0
@@ -239,7 +240,7 @@ def herkunft_nachtragen(
         kap = kapitel_von.get(activity_id)
         return next((i for i in (kap.lesson_ids if kap else []) if i in lektionen), None)
 
-    for aufgabe in kurs["aufgaben"]:
+    for aufgabe in alle:
         inhalt = inhalte[aufgabe["task_id"]]
         if aufgabe["herkunft_key"]:
             schon += 1
