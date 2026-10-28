@@ -63,3 +63,16 @@ def test_matching_right_column_is_never_aligned_with_the_left() -> None:
         assert task.presentation["left"] == left
         assert sorted(shown_right) == sorted(pairs.values())
         assert shown_right != [pairs[entry["id"]] for entry in left]
+
+
+def test_orders_other_than_the_solution_are_equally_likely() -> None:
+    # Security review: rotating a solution-order draw made "solution shifted by one" twice as
+    # likely, so the most frequent order across many sessions named the answer.
+    from collections import Counter
+
+    ids = ["s1", "s2", "s3"]
+    counts = Counter(
+        tuple(zufall.verdeckt_sortiert(ids, f"sess-{n}:item", lambda e: e, ids)) for n in range(3000)
+    )
+    assert tuple(ids) not in counts and len(counts) == 5
+    assert max(counts.values()) < 1.3 * min(counts.values())

@@ -61,12 +61,16 @@ def verdeckt_sortiert(
     process secret.
 
     With ``loesung`` (the ids in solution order) and three or more distinct entries the result
-    differs from it, as in ``anders_gemischt``."""
-    def rang(eintrag: T) -> bytes:
-        return hmac.new(SCHLUESSEL, f"{salz}:{schluessel(eintrag)}".encode(), hashlib.sha256).digest()
+    differs from it, as in ``anders_gemischt``: a solution draw is redrawn with the next round
+    in the key, so every other order stays equally likely (a fixed fix-up such as a rotation
+    would make one order more frequent and name the answer across sessions)."""
+    distinct = len({schluessel(e) for e in eintraege}) >= 3
+    runde = 0
+    while True:
+        def rang(eintrag: T) -> bytes:
+            return hmac.new(SCHLUESSEL, f"{salz}:{runde}:{schluessel(eintrag)}".encode(), hashlib.sha256).digest()
 
-    ordnung = sorted(eintraege, key=rang)
-    ids = [schluessel(e) for e in ordnung]
-    if loesung is not None and len(set(ids)) >= 3 and ids == list(loesung):
-        ordnung = ordnung[1:] + ordnung[:1]
-    return ordnung
+        ordnung = sorted(eintraege, key=rang)
+        if loesung is None or not distinct or [schluessel(e) for e in ordnung] != list(loesung):
+            return ordnung
+        runde += 1
