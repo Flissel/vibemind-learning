@@ -507,7 +507,7 @@ def test_uebernehmen_201_dann_409_und_ohne_veroeffentlichung_404(env: Env, monke
     assert erste.status_code == 201, erste.text
     assert erste.json() == {
         "aufgaben": 1, "kapitel": 1, "uebersprungen": 0, "uebersprungen_details": [],
-        "lektionen_verloren": [],
+        "lektionen_verloren": [], "pruefung_uebersprungen": True,  # fake source: no catalog
     }
     kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
     assert kurs["title"] == "Veroeffentlicht" and len(kurs["aufgaben"]) == 1
