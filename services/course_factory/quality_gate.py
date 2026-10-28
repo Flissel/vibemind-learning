@@ -190,34 +190,102 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
                 issues.append(QualityIssue("activity_concept_missing", concept_id))
         issues.extend(activity_issues(activity))
 
-    scales = {sum(criterion.points for criterion in activity.rubric) for activity in draft.activities if activity.rubric}
-    if len(scales) > 1:
-        issues.append(QualityIssue("rubric_scale_inconsistent", draft.job_id, blocking=False))
+    aufgaben = [
+        AktivitaetsSicht(
+            a.activity_id, a.type, tuple(a.concept_ids), a.prompt,
+            sum(c.points for c in a.rubric) if a.rubric else None,
+        )
+        for a in draft.activities
+    ]
+    lektionen = [LektionsSicht(l.lesson_id, tuple(l.concept_ids), l.body) for l in draft.lessons]
+    issues.extend(_regel_rubrik_skala(aufgaben, draft.job_id))
+    issues.extend(_regel_konzepte(aufgaben, lektionen, concept_ids))
+    issues.extend(_regel_typverteilung(aufgaben, draft.job_id))
 
-    lesson_coverage = {
-        concept_id for lesson in draft.lessons for concept_id in lesson.concept_ids
-    }
-    activity_coverage = {
-        concept_id
-        for activity in draft.activities
-        for concept_id in activity.concept_ids
-    }
-    for concept_id in sorted(concept_ids):
+    for lesson in draft.lessons:
+        issues.extend(lesson_teaching_issues(lesson))
+    issues.extend(_regel_anrede(aufgaben, lektionen, draft.job_id))
+    return issues
+
+
+@dataclass(frozen=True)
+class AktivitaetsSicht:
+    """What the course-wide rules need to know about one task (a factory activity or a Werkstatt task)."""
+
+    aufgabe_id: str
+    typ: str
+    concept_ids: tuple[str, ...]
+    prompt: str
+    # Sum of the rubric points; None when the task has no rubric.
+    rubrik_punkte: int | None = None
+
+
+@dataclass(frozen=True)
+class LektionsSicht:
+    lektion_id: str
+    concept_ids: tuple[str, ...]
+    text: str
+
+
+def _regel_rubrik_skala(aufgaben: list[AktivitaetsSicht], kurs_id: str) -> list[QualityIssue]:
+    scales = {a.rubrik_punkte for a in aufgaben if a.rubrik_punkte is not None}
+    if len(scales) > 1:
+        return [QualityIssue("rubric_scale_inconsistent", kurs_id, blocking=False)]
+    return []
+
+
+def _regel_konzepte(
+    aufgaben: list[AktivitaetsSicht], lektionen: list[LektionsSicht], konzepte: set[str]
+) -> list[QualityIssue]:
+    issues: list[QualityIssue] = []
+    lesson_coverage = {c for lesson in lektionen for c in lesson.concept_ids}
+    activity_coverage = {c for a in aufgaben for c in a.concept_ids}
+    for concept_id in sorted(konzepte):
         if concept_id not in lesson_coverage:
             issues.append(QualityIssue("concept_missing_lesson", concept_id))
         if concept_id not in activity_coverage:
             issues.append(QualityIssue("concept_missing_activity", concept_id))
-
-    if len(draft.activities) >= 4:
-        counts = Counter(activity.type for activity in draft.activities)
-        if len(counts) < 2 or max(counts.values()) / len(draft.activities) > 0.75:
-            issues.append(QualityIssue("task_type_distribution", draft.job_id))
-
-    for lesson in draft.lessons:
-        issues.extend(lesson_teaching_issues(lesson))
-    if mixes_address([lesson.body for lesson in draft.lessons] + [activity.prompt for activity in draft.activities]):
-        issues.append(QualityIssue("address_mixed", draft.job_id))
     return issues
+
+
+def _regel_typverteilung(aufgaben: list[AktivitaetsSicht], kurs_id: str) -> list[QualityIssue]:
+    if len(aufgaben) >= 4:
+        counts = Counter(a.typ for a in aufgaben)
+        if len(counts) < 2 or max(counts.values()) / len(aufgaben) > 0.75:
+            return [QualityIssue("task_type_distribution", kurs_id)]
+    return []
+
+
+def _regel_anrede(
+    aufgaben: list[AktivitaetsSicht], lektionen: list[LektionsSicht], kurs_id: str
+) -> list[QualityIssue]:
+    if mixes_address([lesson.text for lesson in lektionen] + [a.prompt for a in aufgaben]):
+        return [QualityIssue("address_mixed", kurs_id)]
+    return []
+
+
+def kurs_regeln(
+    aufgaben: list[AktivitaetsSicht],
+    lektionen: list[LektionsSicht],
+    *,
+    kurs_id: str,
+    konzepte: set[str] | None = None,
+) -> list[QualityIssue]:
+    """The rules that look at the whole course, on plain lists: task_type_distribution,
+    concept_missing_lesson/_activity, address_mixed and rubric_scale_inconsistent.
+
+    `konzepte` is the course's concept list; without it the concepts named by tasks and
+    lessons count (a Werkstatt course has no separate concept list)."""
+    if konzepte is None:
+        konzepte = {c for a in aufgaben for c in a.concept_ids} | {
+            c for lesson in lektionen for c in lesson.concept_ids
+        }
+    return [
+        *_regel_rubrik_skala(aufgaben, kurs_id),
+        *_regel_konzepte(aufgaben, lektionen, konzepte),
+        *_regel_typverteilung(aufgaben, kurs_id),
+        *_regel_anrede(aufgaben, lektionen, kurs_id),
+    ]
 
 
 def activity_issues(activity: ActivityDraft) -> list[QualityIssue]:

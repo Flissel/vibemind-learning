@@ -1,8 +1,36 @@
-"""Freigabe der Werkstatt: Schluessel, unter denen Aufgaben in LearnHouse und im Katalog stehen."""
+"""Freigabe der Werkstatt: Schluessel, Manifest, Vergleich mit der letzten Freigabe, Kursregeln.
+
+Nothing here calls a model. `freigabe_vorbereiten` only reads the Werkstatt and writes one
+`angefordert` row; publishing is a separate, deliberate step.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
+
+from pydantic import ValidationError
+
+from spaces.learning.services.course_factory.quality_gate import (
+    AktivitaetsSicht,
+    LektionsSicht,
+    kurs_regeln,
+)
+from spaces.learning.services.werkstatt.inhalt import Fall, Offen, Quiz, _loesung, inhalt_lesen
+from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion
+from spaces.learning.services.werkstatt.store import WerkstattStore
+
+# Findings that remind but do not hold a release back.
+_NICHT_BLOCKIEREND = frozenset({"rubric_scale_inconsistent", "lesson_body_thin"})
+
+_KURS_TEXTE = {
+    "task_type_distribution": "Die Aufgabentypen sind zu einseitig verteilt, bitte mehr Abwechslung in den Kurs bringen.",
+    "concept_missing_lesson": "Zu einem Konzept gibt es im Kurs keine Lektion, die es vermittelt.",
+    "concept_missing_activity": "Zu einem Konzept gibt es im Kurs keine Aufgabe, die es übt.",
+    "address_mixed": _TEXTE["address_mixed"],
+    "rubric_scale_inconsistent": "Die Bewertungskriterien nutzen unterschiedliche Punkteskalen.",
+}
 
 
 def werkstatt_schluessel(aufgabe: dict[str, Any]) -> tuple[str, str]:
@@ -12,3 +40,124 @@ def werkstatt_schluessel(aufgabe: dict[str, Any]) -> tuple[str, str]:
         aufgabe.get("herkunft_key") or f"werkstatt:{task_id}",
         aufgabe.get("lektion_herkunft_key") or f"werkstatt:{task_id}:lektion",
     )
+
+
+def loesung_hash(content: dict[str, Any]) -> str:
+    """sha256 over what `fassungs_art` calls 'neu': kind, concepts and the solution (order-free)."""
+    inhalt = inhalt_lesen(content)
+    roh = json.dumps(
+        [inhalt.kind, sorted(inhalt.concept_ids), _loesung(inhalt)],
+        sort_keys=True, ensure_ascii=False, default=list,
+    )
+    return hashlib.sha256(roh.encode("utf-8")).hexdigest()
+
+
+def _eintrag(aufgabe: dict[str, Any], fassung_alt: int | None, fassung_neu: int | None) -> dict[str, Any]:
+    return {
+        "task_id": aufgabe["task_id"], "kapitel": aufgabe["chapter_title"],
+        "summary": aufgabe["summary"], "fassung_alt": fassung_alt, "fassung_neu": fassung_neu,
+    }
+
+
+def _vergleichen(
+    manifest: list[dict[str, Any]], alt: list[dict[str, Any]], aufgaben: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    vorher = {m["task_id"]: m for m in alt}
+    jetzt = {m["task_id"] for m in manifest}
+    vergleich: dict[str, Any] = {
+        "neu": [], "geaendert": [], "textkorrektur": [], "geloescht": [], "unveraendert": 0,
+    }
+    for m in manifest:
+        a = aufgaben[m["task_id"]]
+        v = vorher.get(m["task_id"])
+        if v is None:
+            vergleich["neu"].append(_eintrag(a, None, m["fassung"]))
+        elif v["fassung"] == m["fassung"]:
+            vergleich["unveraendert"] += 1
+        elif v["loesung_hash"] == m["loesung_hash"]:
+            vergleich["textkorrektur"].append(_eintrag(a, v["fassung"], m["fassung"]))
+        else:
+            vergleich["geaendert"].append(_eintrag(a, v["fassung"], m["fassung"]))
+    for v in alt:
+        if v["task_id"] not in jetzt:
+            a = aufgaben.get(v["task_id"]) or {
+                "task_id": v["task_id"], "chapter_title": v["kapitel"], "summary": "",
+            }
+            vergleich["geloescht"].append(_eintrag(a, v["fassung"], None))
+    return vergleich
+
+
+def freigabe_vorbereiten(
+    store: WerkstattStore, course_id: str, *, autor: str, learnhouse_revision: int
+) -> dict[str, Any]:
+    kurs = store.kurs(course_id)
+    aufgaben = {a["task_id"]: a for a in store.aufgaben_alle(course_id)}
+    befunde: list[dict[str, Any]] = []
+    manifest: list[dict[str, Any]] = []
+    sichten: list[AktivitaetsSicht] = []
+    lektionen: list[LektionsSicht] = []
+    for a in kurs["aufgaben"]:
+        neueste = store.neueste(a["task_id"])
+        if neueste is None:
+            befunde.append({
+                "code": "aufgabe_ohne_fassung", "task_id": a["task_id"],
+                "text": f"Die Aufgabe „{a['summary']}“ hat noch keinen Inhalt und kann nicht veröffentlicht werden.",
+            })
+            continue
+        try:
+            inhalt = inhalt_lesen(neueste["content"])
+            hash_ = loesung_hash(neueste["content"])
+        except ValidationError:
+            befunde.append({
+                "code": "aufgabe_mit_befunden", "task_id": a["task_id"],
+                "text": f"Der Inhalt der Aufgabe „{a['summary']}“ ist ungültig und kann nicht veröffentlicht werden.",
+            })
+            continue
+        aufgaben_key, lektion_key = werkstatt_schluessel(a)
+        manifest.append({
+            "task_id": a["task_id"], "fassung": neueste["number"], "loesung_hash": hash_,
+            "kapitel": a["chapter_title"], "position": a["position"],
+            "aufgaben_key": aufgaben_key, "lektion_key": lektion_key,
+        })
+        blockierend = [f for f in neueste["findings"] if f.get("code") not in _NICHT_BLOCKIEREND]
+        if blockierend:
+            texte = " ".join(str(f.get("text") or f.get("code", "")) for f in blockierend)
+            befunde.append({
+                "code": "aufgabe_mit_befunden", "task_id": a["task_id"],
+                "text": f"Die Aufgabe „{a['summary']}“ hat offene Befunde: {texte}",
+            })
+        punkte = None
+        if isinstance(inhalt, (Quiz, Offen, Fall)):
+            rubrik = _als_aktivitaet(inhalt).rubric
+            punkte = sum(c.points for c in rubrik) if rubrik else None
+        sichten.append(
+            AktivitaetsSicht(a["task_id"], inhalt.kind, tuple(inhalt.concept_ids), inhalt.prompt, punkte)
+        )
+        if inhalt.lektion is not None:
+            lek = _als_lektion(inhalt, inhalt.lektion)
+            lektionen.append(LektionsSicht(a["task_id"], tuple(lek.concept_ids), lek.body))
+    if not kurs["aufgaben"]:
+        befunde.append({
+            "code": "kurs_ohne_aufgaben", "task_id": None,
+            "text": "Der Kurs hat noch keine Aufgaben, es gibt nichts zu veröffentlichen.",
+        })
+    blockierende_kursregeln = False
+    for issue in kurs_regeln(sichten, lektionen, kurs_id=course_id):
+        blockierende_kursregeln = blockierende_kursregeln or issue.blocking
+        befunde.append({
+            "code": issue.code, "task_id": None,
+            "text": _KURS_TEXTE.get(issue.code, "Die Kursprüfung hat ein Problem gefunden."),
+        })
+    letzte = store.freigabe_letzte_freigegebene(course_id)
+    vergleich = _vergleichen(manifest, letzte["manifest"] if letzte else [], aufgaben)
+    eigene = {"aufgabe_ohne_fassung", "aufgabe_mit_befunden", "kurs_ohne_aufgaben"}
+    blockiert = blockierende_kursregeln or any(b["code"] in eigene for b in befunde)
+    nichts = not any(vergleich[k] for k in ("neu", "geaendert", "textkorrektur", "geloescht"))
+    angelegt = store.freigabe_anlegen(
+        course_id, manifest=manifest, vergleich=vergleich, befunde=befunde,
+        learnhouse_revision_vorher=learnhouse_revision, autor=autor,
+    )
+    return {
+        "freigabe_id": angelegt["id"], "nummer": angelegt["nummer"], "vergleich": vergleich,
+        "befunde": befunde, "blockiert": blockiert, "nichts_zu_veroeffentlichen": nichts,
+    }

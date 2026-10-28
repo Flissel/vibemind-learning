@@ -19,6 +19,7 @@ from spaces.learning.services.werkstatt.models import (
     WerkstattAuftrag,
     WerkstattAufgabe,
     WerkstattFassung,
+    WerkstattFreigabe,
     WerkstattKurs,
 )
 
@@ -59,6 +60,17 @@ def _kurs_dict(k: WerkstattKurs) -> dict[str, Any]:
         "default_kind": k.default_kind, "outcomes": list(k.outcomes),
         "source_provenance": list(k.source_provenance), "owner_ref": k.owner_ref,
         "created_at": _iso(k.created_at), "updated_at": _iso(k.updated_at),
+    }
+
+
+def _freigabe_dict(f: WerkstattFreigabe) -> dict[str, Any]:
+    return {
+        "id": f.id, "course_id": f.course_id, "nummer": f.nummer, "zustand": f.zustand,
+        "manifest": list(f.manifest), "vergleich": dict(f.vergleich), "befunde": list(f.befunde),
+        "learnhouse_revision_vorher": f.learnhouse_revision_vorher,
+        "learnhouse_revision": f.learnhouse_revision, "approval_ref": f.approval_ref,
+        "angefordert_von": f.angefordert_von, "created_at": _iso(f.created_at),
+        "freigegeben_at": _iso(f.freigegeben_at) if f.freigegeben_at else None,
     }
 
 
@@ -339,6 +351,87 @@ class WerkstattStore:
             if aufgabe is None:
                 raise LookupError("aufgabe_unbekannt")
             aufgabe.deleted = True
+
+    def aufgaben_alle(self, course_id: str) -> list[dict[str, Any]]:
+        """All tasks of a course, deleted ones included, in course order."""
+        with self._sessions() as session:
+            return [
+                _aufgabe_dict(a)
+                for a in session.scalars(
+                    select(WerkstattAufgabe)
+                    .where(WerkstattAufgabe.course_id == course_id)
+                    .order_by(WerkstattAufgabe.position, WerkstattAufgabe.created_at)
+                )
+            ]
+
+    # releases (Freigaben)
+
+    def freigabe_anlegen(
+        self, course_id: str, *, manifest: list[dict[str, Any]], vergleich: dict[str, Any],
+        befunde: list[dict[str, Any]], learnhouse_revision_vorher: int | None, autor: str,
+    ) -> dict[str, Any]:
+        """New request; an older open one of the course is discarded in the same transaction."""
+        with self._sessions.begin() as session:
+            if session.get(WerkstattKurs, course_id) is None:
+                raise LookupError("kurs_unbekannt")
+            session.execute(
+                update(WerkstattFreigabe)
+                .where(WerkstattFreigabe.course_id == course_id,
+                       WerkstattFreigabe.zustand == "angefordert")
+                .values(zustand="verworfen")
+            )
+            hoechste = session.scalar(
+                select(func.max(WerkstattFreigabe.nummer))
+                .where(WerkstattFreigabe.course_id == course_id)
+            )
+            freigabe = WerkstattFreigabe(
+                id=str(uuid4()), course_id=course_id, nummer=(hoechste or 0) + 1,
+                zustand="angefordert",
+                manifest=list(manifest),  # type: ignore[arg-type]  # the column holds a JSON list
+                vergleich=dict(vergleich), befunde=list(befunde),
+                learnhouse_revision_vorher=learnhouse_revision_vorher, angefordert_von=autor,
+            )
+            session.add(freigabe)
+            session.flush()
+            return _freigabe_dict(freigabe)
+
+    def freigabe(self, freigabe_id: str) -> dict[str, Any]:
+        with self._sessions() as session:
+            freigabe = session.get(WerkstattFreigabe, freigabe_id)
+            if freigabe is None:
+                raise LookupError("freigabe_unbekannt")
+            return _freigabe_dict(freigabe)
+
+    def freigabe_letzte_freigegebene(self, course_id: str) -> dict[str, Any] | None:
+        with self._sessions() as session:
+            freigabe = session.scalars(
+                select(WerkstattFreigabe)
+                .where(WerkstattFreigabe.course_id == course_id,
+                       WerkstattFreigabe.zustand == "freigegeben")
+                .order_by(WerkstattFreigabe.nummer.desc())
+                .limit(1)
+            ).first()
+            return _freigabe_dict(freigabe) if freigabe else None
+
+    def freigabe_offene(self, course_id: str) -> dict[str, Any] | None:
+        with self._sessions() as session:
+            freigabe = session.scalars(
+                select(WerkstattFreigabe)
+                .where(WerkstattFreigabe.course_id == course_id,
+                       WerkstattFreigabe.zustand == "angefordert")
+                .order_by(WerkstattFreigabe.nummer.desc())
+                .limit(1)
+            ).first()
+            return _freigabe_dict(freigabe) if freigabe else None
+
+    def freigabe_verwerfen(self, freigabe_id: str) -> None:
+        with self._sessions.begin() as session:
+            freigabe = session.get(WerkstattFreigabe, freigabe_id)
+            if freigabe is None:
+                raise LookupError("freigabe_unbekannt")
+            if freigabe.zustand != "angefordert":
+                raise ValueError("freigabe_nicht_offen")
+            freigabe.zustand = "verworfen"
 
     # jobs (model work that outlives one HTTP request)
 
