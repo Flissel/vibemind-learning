@@ -11,11 +11,12 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from spaces.learning.services.db.models import utc_now
 from spaces.learning.services.werkstatt.models import (
+    WerkstattAuftrag,
     WerkstattAufgabe,
     WerkstattFassung,
     WerkstattKurs,
@@ -250,3 +251,89 @@ class WerkstattStore:
             if aufgabe is None:
                 raise LookupError("aufgabe_unbekannt")
             aufgabe.deleted = True
+
+    # jobs (model work that outlives one HTTP request)
+
+    def auftrag_anlegen(
+        self, course_id: str, *, kind: str, input: dict[str, Any], task_id: str | None = None
+    ) -> dict[str, Any]:
+        with self._sessions.begin() as session:
+            auftrag = WerkstattAuftrag(
+                id=str(uuid4()), course_id=course_id, task_id=task_id, kind=kind,
+                input=dict(input), state="queued",
+            )
+            session.add(auftrag)
+            session.flush()
+            return _auftrag_dict(auftrag)
+
+    def auftrag(self, auftrag_id: str) -> dict[str, Any]:
+        with self._sessions() as session:
+            auftrag = session.get(WerkstattAuftrag, auftrag_id)
+            if auftrag is None:
+                raise LookupError("auftrag_unbekannt")
+            return _auftrag_dict(auftrag)
+
+    def naechster_auftrag(self) -> dict[str, Any] | None:
+        """Claim the oldest queued job by flipping queued -> running.
+
+        The flip is a guarded UPDATE (`WHERE state = 'queued'`); only the caller whose UPDATE
+        changed a row owns the job, so two threads or processes can never take the same one.
+        Works the same on Postgres and SQLite; a lost race just tries the next candidate.
+        """
+        while True:
+            with self._sessions.begin() as session:
+                kandidat = session.scalars(
+                    select(WerkstattAuftrag.id)
+                    .where(WerkstattAuftrag.state == "queued")
+                    .order_by(WerkstattAuftrag.created_at, WerkstattAuftrag.id)
+                    .limit(1)
+                ).first()
+                if kandidat is None:
+                    return None
+                geflippt = session.execute(
+                    update(WerkstattAuftrag)
+                    .where(WerkstattAuftrag.id == kandidat, WerkstattAuftrag.state == "queued")
+                    .values(state="running")
+                ).rowcount
+                if geflippt == 1:
+                    session.expire_all()
+                    return _auftrag_dict(session.get(WerkstattAuftrag, kandidat))
+
+    def auftrag_fertig(self, auftrag_id: str, result: dict[str, Any]) -> None:
+        self._abschliessen(auftrag_id, "fertig", result=result, error=None)
+
+    def auftrag_fehler(
+        self, auftrag_id: str, error: str, result: dict[str, Any] | None = None
+    ) -> None:
+        self._abschliessen(auftrag_id, "fehler", result=result, error=error)
+
+    def haengende_auftraege_abbrechen(self) -> int:
+        """Jobs still `running` belong to a dead process: end them as `abgebrochen`."""
+        with self._sessions.begin() as session:
+            return session.execute(
+                update(WerkstattAuftrag)
+                .where(WerkstattAuftrag.state == "running")
+                .values(state="fehler", error="abgebrochen", finished_at=utc_now())
+            ).rowcount
+
+    def _abschliessen(
+        self, auftrag_id: str, state: str, *, result: dict[str, Any] | None, error: str | None
+    ) -> None:
+        with self._sessions.begin() as session:
+            auftrag = session.get(WerkstattAuftrag, auftrag_id)
+            if auftrag is None:
+                raise LookupError("auftrag_unbekannt")
+            auftrag.state = state
+            auftrag.result = result
+            auftrag.error = error
+            auftrag.finished_at = utc_now()
+
+
+def _auftrag_dict(a: WerkstattAuftrag) -> dict[str, Any]:
+    return {
+        "id": a.id, "course_id": a.course_id, "task_id": a.task_id, "kind": a.kind,
+        "input": dict(a.input), "state": a.state,
+        "result": dict(a.result) if a.result is not None else None, "error": a.error,
+        "created_at": _iso(a.created_at),
+        "finished_at": _iso(a.finished_at) if a.finished_at else None,
+    }

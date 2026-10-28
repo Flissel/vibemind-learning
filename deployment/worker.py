@@ -37,6 +37,8 @@ from spaces.learning.services.course_factory.repository import CourseFactoryRepo
 from spaces.learning.services.course_factory.runner import CourseFactoryRunner
 from spaces.learning.services.course_factory.team import CourseAgentTeam
 from spaces.learning.deployment.evaluation_api import run as run_evaluation_api
+from spaces.learning.services.werkstatt.auftraege import WerkstattArbeiter
+from spaces.learning.services.werkstatt.store import WerkstattStore
 
 
 logger = logging.getLogger(__name__)
@@ -167,6 +169,11 @@ def run() -> None:
         daemon=True,
     )
     evaluation_api.start()
+    # Werkstatt jobs run in their own thread so a 40-minute factory job never delays them.
+    werkstatt = WerkstattArbeiter(
+        WerkstattStore(factory), build_openfang_model_gateway, SourceCatalogLoader(factory)
+    )
+    Thread(target=werkstatt.run_forever, name="learning-werkstatt", daemon=True).start()
     executor = JobExecutor(course_runner)
     start_heartbeat()
     try:
