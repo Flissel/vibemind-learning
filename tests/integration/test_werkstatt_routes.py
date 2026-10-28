@@ -681,3 +681,158 @@ def test_grobentwurf_neu_rechte_kopf_und_unbekannter_kurs(env: Env) -> None:
     assert ohne_kopf.status_code == 400 and ohne_kopf.json()["code"] == "autor_fehlt"
     ohne_rolle = _grobentwurf_neu(env, headers=env.h(AUTOR, roles="learning.reviewer"))
     assert ohne_rolle.status_code == 403
+
+
+# Freigabe (release): prepare, list, release; LearnHouse is faked, the catalog is real.
+
+
+class _FakeLearnHouse:
+    """Stands in for the LearnHouse gateway: a course revision and the Werkstatt write."""
+
+    def __init__(self, revision: int = 4) -> None:
+        self.revision = revision
+        self.geschrieben: list[dict[str, Any]] = []
+
+    async def read_course(self, *, course_id: str, correlation_id: str) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(course_id=course_id, revision=self.revision)
+
+    async def werkstatt_stand_schreiben(
+        self, course_id: str, *, expected_revision: int, freigabe_id: str, kapitel: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        self.geschrieben.append({"course_id": course_id, "expected_revision": expected_revision,
+                                 "freigabe_id": freigabe_id, "kapitel": kapitel})
+        self.revision = expected_revision + 1
+        return {"revision": self.revision, "aktualisiert": 0, "neu": 1, "unveroeffentlicht": 0}
+
+
+@pytest.fixture()
+def learnhouse(env: Env, monkeypatch) -> _FakeLearnHouse:
+    fake = _FakeLearnHouse()
+    monkeypatch.setattr(werkstatt_routes, "_learnhouse", lambda: fake)
+    return fake
+
+
+def _freigebbare_aufgabe(env: Env) -> str:
+    """A task whose newest version has no findings (written straight into the store)."""
+    task_id = env.aufgabe()
+    werkstatt_routes._runtime().store.fassung_anlegen(
+        task_id, content=quiz(), based_on=None, author_ref="kursleitung-a", reason="erste",
+        art="neu", findings=[],
+    )
+    return task_id
+
+
+def _vorbereiten(env: Env, **kwargs: Any):
+    return env.client.post(
+        f"/api/v1/werkstatt/kurse/{env.course_id}/freigabe", headers=kwargs.get("headers", env.h())
+    )
+
+
+def _freigeben(env: Env, freigabe_id: str, roles: str | None = None, ref: str = "freigabe-klick1"):
+    return env.client.post(
+        f"/api/v1/werkstatt/freigaben/{freigabe_id}/freigeben",
+        headers=env.h(None, roles=roles), json={"approval_ref": ref},
+    )
+
+
+def test_freigabe_vorbereiten_liefert_vergleich(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    env.kurs()
+    task_id = _freigebbare_aufgabe(env)
+    response = _vorbereiten(env)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["titel"] == "PowerShell Grundlagen"
+    assert body["learnhouse_revision"] == 4
+    assert body["nummer"] == 1 and body["blockiert"] is False
+    assert body["nichts_zu_veroeffentlichen"] is False
+    (neu,) = body["vergleich"]["neu"]
+    assert (neu["task_id"], neu["summary"], neu["fassung_alt"], neu["fassung_neu"]) == (
+        task_id, "Dateien pruefen", None, 1,
+    )
+    liste = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}/freigaben", headers=env.h())
+    assert liste.status_code == 200
+    (eintrag,) = liste.json()["freigaben"]
+    assert eintrag["id"] == body["freigabe_id"] and eintrag["zustand"] == "angefordert"
+    assert eintrag["learnhouse_revision_vorher"] == 4 and eintrag["blockiert"] is False
+    assert "manifest" not in eintrag
+
+
+def test_freigabe_vorbereiten_rechte_und_unbekannter_kurs(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    unbekannt = _vorbereiten(env)
+    assert unbekannt.status_code == 404 and unbekannt.json()["code"] == "kurs_unbekannt"
+    env.kurs()
+    assert _vorbereiten(env, headers=env.h(None)).json()["code"] == "autor_fehlt"
+    assert _vorbereiten(env, headers=env.h(AUTOR, roles="learning.reviewer")).status_code == 403
+
+
+def test_blockierte_freigabe_ist_422(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    env.kurs()
+    env.aufgabe()  # no version yet: blocks the release
+    vorbereitet = _vorbereiten(env).json()
+    assert vorbereitet["blockiert"] is True
+    assert any(b["code"] == "aufgabe_ohne_fassung" and b["blockierend"] for b in vorbereitet["befunde"])
+    response = _freigeben(env, vorbereitet["freigabe_id"])
+    assert response.status_code == 422
+    assert response.json()["code"] == "freigabe_blockiert"
+    assert learnhouse.geschrieben == []
+
+
+def test_freigeben_braucht_publisher_rolle(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    env.kurs()
+    _freigebbare_aufgabe(env)
+    freigabe_id = _vorbereiten(env).json()["freigabe_id"]
+    ohne = _freigeben(env, freigabe_id, roles="learning.author,learning.reviewer")
+    assert ohne.status_code == 403
+    assert learnhouse.geschrieben == []
+    nachholen = env.client.post(
+        f"/api/v1/werkstatt/kurse/{env.course_id}/katalog-nachholen",
+        headers=env.h(None, roles="learning.author"),
+    )
+    assert nachholen.status_code == 403
+
+
+def test_freigeben_schreibt_learnhouse_und_katalog(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    env.kurs()
+    _freigebbare_aufgabe(env)
+    freigabe_id = _vorbereiten(env).json()["freigabe_id"]
+    response = _freigeben(env, freigabe_id, roles="learning.publisher")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["freigabe_id"] == freigabe_id and body["learnhouse_revision"] == 5
+    assert body["katalog"]["items"] == 1 and "katalog_fehler" not in body
+    assert learnhouse.geschrieben[0]["expected_revision"] == 4
+    store = werkstatt_routes._runtime().store
+    assert store.freigabe(freigabe_id)["approval_ref"] == "freigabe-klick1"
+    # A second press of the same release is refused, nothing is written twice.
+    zweiter = _freigeben(env, freigabe_id, roles="learning.publisher")
+    assert zweiter.status_code == 409 and zweiter.json()["code"] == "freigabe_nicht_offen"
+    assert len(learnhouse.geschrieben) == 1
+    # Nothing missing: catching up the catalog finds nothing to do.
+    nachholen = env.client.post(
+        f"/api/v1/werkstatt/kurse/{env.course_id}/katalog-nachholen",
+        headers=env.h(None, roles="learning.publisher"),
+    )
+    assert nachholen.status_code == 200 and nachholen.json() == {"nachgeholt": False}
+
+
+def test_freigeben_bei_bewegter_learnhouse_revision_ist_409(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    env.kurs()
+    _freigebbare_aufgabe(env)
+    freigabe_id = _vorbereiten(env).json()["freigabe_id"]
+    learnhouse.revision = 9  # someone changed the course in LearnHouse meanwhile
+    response = _freigeben(env, freigabe_id, roles="learning.publisher")
+    assert response.status_code == 409 and response.json()["code"] == "learnhouse_stand_veraltet"
+    assert learnhouse.geschrieben == []
+
+
+def test_freigeben_unbekannt_und_ungueltige_referenz(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    unbekannt = _freigeben(env, "gibt-es-nicht", roles="learning.publisher")
+    assert unbekannt.status_code == 404 and unbekannt.json()["code"] == "freigabe_unbekannt"
+    env.kurs()
+    _freigebbare_aufgabe(env)
+    freigabe_id = _vorbereiten(env).json()["freigabe_id"]
+    kaputt = _freigeben(env, freigabe_id, roles="learning.publisher", ref="<script>")
+    assert kaputt.status_code == 400 and kaputt.json()["code"] == "invalid_request"
+    assert learnhouse.geschrieben == []

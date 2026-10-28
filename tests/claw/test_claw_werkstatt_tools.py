@@ -168,7 +168,12 @@ def test_ids_cannot_escape_the_path(fake: Fake) -> None:
 
 
 def test_kein_werkstatt_werkzeug_veroeffentlicht(fake: Fake) -> None:
-    names = [f.__name__ for f in server.WERKZEUGE if f.__name__.startswith("werkstatt_")]
+    # The release display has its own tests (test_claw_werkstatt_freigabe.py): it opens the
+    # approval page and releases nothing itself.
+    names = [
+        f.__name__ for f in server.WERKZEUGE
+        if f.__name__.startswith("werkstatt_") and f is not werkzeuge.werkstatt_freigabe_anzeigen
+    ]
     assert len(names) == 13
     assert not any("veroeffentlich" in n or "freigeb" in n or "publish" in n for n in names)
     calls: dict[str, tuple[Any, ...]] = {

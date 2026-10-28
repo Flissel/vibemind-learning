@@ -3,10 +3,17 @@
 Every route needs the author role. Writes also need `X-Werkstatt-Author`, the name that ends
 up as `author_ref` on a version. No route waits for a model: `grobentwurf` and `ausformulieren`
 only create a job that the Werkstatt worker picks up; the caller polls `/auftraege/{id}`.
+
+Release (Freigabe): an author prepares it (`POST /kurse/{id}/freigabe`, compared with the last
+release, at the LearnHouse revision read right then); only the publisher role releases it
+(`POST /freigaben/{id}/freigeben`). The claw calls that only after the owner's click on its
+approval page. No model is involved.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 from pathlib import Path
@@ -21,6 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from spaces.learning.deployment.vibemind_auth import (
     ROLE_AUTHOR,
+    ROLE_PUBLISHER,
     ApiError,
     VibeMindRequestContext,
     vibemind_context,
@@ -31,8 +39,18 @@ from spaces.learning.services.course_factory.application import (
 )
 from spaces.learning.services.course_factory.artifact_store import CourseFactoryArtifactStore
 from spaces.learning.services.course_factory.catalog import SourceCatalog, SourceCatalogLoader
+from spaces.learning.services.course_factory.learnhouse_gateway import (
+    LearnHouseGatewayError,
+    build_learnhouse_http_gateway,
+)
 from spaces.learning.services.course_factory.repository import SourceProvenance
+from spaces.learning.services.werkstatt.freigabe import (
+    freigabe_ausfuehren,
+    freigabe_vorbereiten,
+    katalog_nachholen,
+)
 from spaces.learning.services.werkstatt.inhalt import fassungs_art, inhalt_lesen
+from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
@@ -44,6 +62,8 @@ from spaces.learning.services.werkstatt.uebernahme import (
     kurs_uebernehmen,
 )
 from spaces.learning.services.werkstatt.vorschau import vorschau as vorschau_bauen
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/werkstatt")
 Context = Annotated[VibeMindRequestContext, Depends(vibemind_context)]
@@ -140,6 +160,10 @@ class AufgabeAendern(_Body):
 
 class Zurueckholen(_Body):
     number: int = Field(ge=1)
+
+
+class Freigeben(_Body):
+    approval_ref: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def _fehler(status_code: int, code: str, message: str) -> ApiError:
@@ -473,3 +497,126 @@ def auftrag_lesen(auftrag_id: str, context: Context) -> dict[str, Any]:
         "id": auftrag["id"], "kind": auftrag["kind"], "state": auftrag["state"],
         "result": auftrag["result"], "error": auftrag["error"],
     }
+
+
+# release (Freigabe)
+
+# ValueError codes of `freigabe_ausfuehren` -> HTTP status.
+_FREIGABE_FEHLER = {
+    "freigabe_nicht_offen": (status.HTTP_409_CONFLICT, "Die Freigabe ist nicht mehr offen"),
+    "learnhouse_stand_veraltet": (
+        status.HTTP_409_CONFLICT, "Der Kurs wurde in LearnHouse seit dem Vorbereiten geaendert",
+    ),
+    "nichts_zu_veroeffentlichen": (
+        status.HTTP_409_CONFLICT, "Seit der letzten Freigabe hat sich nichts geaendert",
+    ),
+    "freigabe_id_reused": (status.HTTP_409_CONFLICT, "Die Freigabe wurde schon verwendet"),
+    "manifest_fassung_fehlt": (
+        status.HTTP_409_CONFLICT, "Eine freigegebene Fassung fehlt, bitte neu vorbereiten",
+    ),
+    "freigabe_blockiert": (_UNPROCESSABLE, "Die Freigabe ist durch Befunde blockiert"),
+}
+
+
+def _learnhouse() -> Any:
+    """The LearnHouse gateway (a seam for tests); unconfigured means 503."""
+    try:
+        return build_learnhouse_http_gateway()
+    except ValueError as error:
+        raise _fehler(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "dependency_unavailable",
+            "LearnHouse is not configured",
+        ) from error
+
+
+def _gateway_fehler(error: LearnHouseGatewayError) -> ApiError:
+    if error.status == status.HTTP_404_NOT_FOUND:
+        return _fehler(status.HTTP_404_NOT_FOUND, "learnhouse_kurs_unbekannt",
+                       "Der Kurs ist in LearnHouse nicht vorhanden")
+    return _fehler(status.HTTP_502_BAD_GATEWAY, "learnhouse_fehler", "LearnHouse hat abgelehnt "
+                   "oder ist nicht erreichbar")
+
+
+def _learnhouse_revision(gateway: Any, course_id: str, context: VibeMindRequestContext) -> int:
+    # Sync routes run in a worker thread; the gateway opens a client per request, so
+    # asyncio.run() per call is safe (as in the factory publisher).
+    try:
+        kurs = asyncio.run(
+            gateway.read_course(course_id=course_id, correlation_id=str(context.correlation_id))
+        )
+    except LearnHouseGatewayError as error:
+        raise _gateway_fehler(error) from error
+    return int(kurs.revision)
+
+
+def _freigabe_sicht(freigabe: dict[str, Any]) -> dict[str, Any]:
+    sicht = {k: v for k, v in freigabe.items() if k != "manifest"}
+    sicht["blockiert"] = any(b.get("blockierend") for b in freigabe["befunde"])
+    return sicht
+
+
+@router.post("/kurse/{course_id}/freigabe", status_code=status.HTTP_201_CREATED)
+def freigabe_anfordern(course_id: str, context: Context, autor: Autor) -> dict[str, Any]:
+    """Prepare a release: comparison with the last release, findings, and whether it blocks."""
+    context.require(ROLE_AUTHOR)
+    kurs = _kurs(course_id)
+    revision = _learnhouse_revision(_learnhouse(), course_id, context)
+    vorbereitet = freigabe_vorbereiten(
+        _runtime().store, course_id, autor=autor, learnhouse_revision=revision
+    )
+    return {**vorbereitet, "titel": kurs["title"], "learnhouse_revision": revision}
+
+
+@router.get("/kurse/{course_id}/freigaben")
+def freigaben(course_id: str, context: Context) -> dict[str, Any]:
+    context.require(ROLE_AUTHOR)
+    _kurs(course_id)
+    return {"freigaben": [_freigabe_sicht(f) for f in _runtime().store.freigaben(course_id)]}
+
+
+@router.post("/freigaben/{freigabe_id}/freigeben")
+def freigeben(freigabe_id: str, body: Freigeben, context: Context) -> dict[str, Any]:
+    """Write the prepared release into LearnHouse, then the practice catalog of its revision."""
+    context.require(ROLE_PUBLISHER)
+    runtime = _runtime()
+    try:
+        freigabe = runtime.store.freigabe(freigabe_id)
+    except LookupError as error:
+        raise _fehler(
+            status.HTTP_404_NOT_FOUND, "freigabe_unbekannt", "Freigabe nicht gefunden"
+        ) from error
+    gateway = _learnhouse()
+    try:
+        # The same checks run again inside; checked here first so a refused release never
+        # waits for LearnHouse.
+        if freigabe["zustand"] != "angefordert":
+            raise ValueError("freigabe_nicht_offen")
+        if any(b.get("blockierend") for b in freigabe["befunde"]):
+            raise ValueError("freigabe_blockiert")
+        revision = _learnhouse_revision(gateway, freigabe["course_id"], context)
+        ergebnis = asyncio.run(freigabe_ausfuehren(
+            runtime.store, gateway, freigabe_id, approval_ref=body.approval_ref,
+            learnhouse_revision=revision, katalog=WerkstattKatalog(runtime.session_factory),
+        ))
+    except LearnHouseGatewayError as error:
+        raise _gateway_fehler(error) from error
+    except ValueError as error:
+        bekannt = _FREIGABE_FEHLER.get(str(error))
+        if bekannt is None:
+            raise
+        raise _fehler(bekannt[0], str(error), bekannt[1]) from error
+    logger.info(
+        "werkstatt_freigegeben",
+        extra={"freigabe_id": freigabe_id, "course_id": freigabe["course_id"],
+               "learnhouse_revision": ergebnis["learnhouse_revision"]},
+    )
+    return {"freigabe_id": freigabe_id, **ergebnis}
+
+
+@router.post("/kurse/{course_id}/katalog-nachholen")
+def katalog_nachholen_route(course_id: str, context: Context) -> dict[str, Any]:
+    """Project the practice catalog of a released revision whose projection failed."""
+    context.require(ROLE_PUBLISHER)
+    _kurs(course_id)
+    runtime = _runtime()
+    return katalog_nachholen(runtime.store, WerkstattKatalog(runtime.session_factory), course_id)

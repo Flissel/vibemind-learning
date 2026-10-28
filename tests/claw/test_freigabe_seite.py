@@ -139,3 +139,153 @@ def test_page_lists_the_non_blocking_ai_notes_escaped(store) -> None:
     page = _call("GET", f"/freigabe/{secret}")
     assert "Hinweise der KI-Pruefung" in page.text
     assert "Kapiteltitel &lt;lang&gt;" in page.text
+
+
+# Werkstatt release: comparison and findings, button only when nothing blocks; also from the
+# phone through `tailscale serve` (client stays loopback, Host/Origin are the configured base).
+
+BASIS = "https://pc.example.ts.net"
+HANDY_HOST = "pc.example.ts.net"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture(autouse=True)
+def _ohne_handy_basis(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEARNING_CLAW_FREIGABE_BASIS", raising=False)
+
+
+@pytest.fixture
+def uhr(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    clock = _Clock()
+    monkeypatch.setattr(werkzeuge, "_freigaben", FreigabeStore(clock=clock))
+    return clock
+
+
+@pytest.fixture
+def werkstatt_freigegeben(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def fake(geheimnis: str) -> dict[str, object]:
+        try:
+            anzeige = werkzeuge._freigaben.einloesen(geheimnis, art="werkstatt")
+        except FreigabeAbgelehnt as error:
+            return {"ok": False, "fehler": error.grund}
+        calls.append(anzeige.job_id)
+        return {"ok": True, "daten": {
+            "learnhouse_revision": 8,
+            "katalog": {"items": 4, "konzepte": 2, "lernstand_uebernommen": 1},
+        }}
+
+    monkeypatch.setattr(werkzeuge, "werkstatt_freigeben", fake)
+    return calls
+
+
+def _werkstatt(blockiert: bool = False, titel: str = "PowerShell Grundlagen") -> str:
+    eintrag = {"task_id": "t1", "kapitel": "K1", "summary": "Dateien <pruefen>",
+               "fassung_alt": 2, "fassung_neu": 4}
+    return werkzeuge._freigaben.merken(
+        "f-1", 3, 7,
+        {
+            "art": "werkstatt", "course_id": "kurs-1", "titel": titel, "nummer": 3,
+            "learnhouse_revision": 7, "blockiert": blockiert, "nichts_zu_veroeffentlichen": False,
+            "vergleich": {
+                "neu": [], "geaendert": [eintrag],
+                "textkorrektur": [{**eintrag, "summary": "Ordner wechseln"}],
+                "geloescht": [{**eintrag, "summary": "Alte Aufgabe", "fassung_neu": None}],
+                "unveraendert": 5,
+            },
+            "befunde": [{"code": "address_mixed", "task_id": None, "blockierend": blockiert,
+                         "text": "Der Kurs mischt Du und Sie."}],
+        },
+        art="werkstatt",
+    ).geheimnis
+
+
+def test_werkstatt_seite_zeigt_vergleich_und_befunde(uhr) -> None:
+    secret = _werkstatt()
+    page = _call("GET", f"/freigabe/{secret}")
+    assert page.status_code == 200
+    for text in ("PowerShell Grundlagen", "Geändert", "Textkorrektur", "Gelöscht",
+                 "Dateien &lt;pruefen&gt;", "Fassung 2 → 4", "Ordner wechseln", "Alte Aufgabe",
+                 "Der Kurs mischt Du und Sie.", "Unverändert: 5"):
+        assert text in page.text, text
+    assert '<button type="submit"' in page.text
+    assert 'name="viewport"' in page.text
+
+
+def test_blockierte_werkstatt_seite_hat_keinen_aktiven_knopf(uhr, werkstatt_freigegeben) -> None:
+    secret = _werkstatt(blockiert=True)
+    page = _call("GET", f"/freigabe/{secret}")
+    assert page.status_code == 200
+    assert "blockiert" in page.text and "disabled" in page.text
+    assert 'type="submit"' not in page.text
+    post = _call("POST", f"/freigabe/{secret}", headers={"Origin": ORIGIN})
+    assert post.status_code == 409
+    assert werkstatt_freigegeben == []
+
+
+def test_freigabe_seite_gilt_einmal(uhr, werkstatt_freigegeben, published) -> None:
+    secret = _werkstatt()
+    first = _call("POST", f"/freigabe/{secret}", headers={"Origin": ORIGIN})
+    again = _call("POST", f"/freigabe/{secret}", headers={"Origin": ORIGIN})
+    assert first.status_code == 200, first.text
+    assert "Freigegeben" in first.text and "LearnHouse-Revision 8" in first.text
+    assert "4 Aufgaben" in first.text
+    assert again.status_code != 200
+    assert werkstatt_freigegeben == ["f-1"] and published == []
+    # After 10 minutes a fresh page is refused as well.
+    spaet = _werkstatt()
+    uhr.now += 601
+    assert _call("GET", f"/freigabe/{spaet}").status_code == 410
+    assert _call("POST", f"/freigabe/{spaet}", headers={"Origin": ORIGIN}).status_code != 200
+    assert werkstatt_freigegeben == ["f-1"]
+
+
+def test_werkstatt_seite_zeigt_katalogfehler(uhr, monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = _werkstatt()
+
+    def fake(geheimnis: str) -> dict[str, object]:
+        werkzeuge._freigaben.einloesen(geheimnis, art="werkstatt")
+        return {"ok": True, "daten": {"learnhouse_revision": 8, "katalog_fehler": "OperationalError"}}
+
+    monkeypatch.setattr(werkzeuge, "werkstatt_freigeben", fake)
+    page = _call("POST", f"/freigabe/{secret}", headers={"Origin": ORIGIN})
+    assert page.status_code == 200
+    assert "LearnHouse-Revision 8" in page.text and "OperationalError" in page.text
+
+
+def test_freigabe_seite_akzeptiert_konfigurierten_handy_host(
+    uhr, werkstatt_freigegeben, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", BASIS)
+    secret = _werkstatt()
+    page = _call("GET", f"/freigabe/{secret}", headers={"Host": HANDY_HOST})
+    assert page.status_code == 200
+    post = _call("POST", f"/freigabe/{secret}", headers={"Host": HANDY_HOST, "Origin": BASIS})
+    assert post.status_code == 200, post.text
+    assert werkstatt_freigegeben == ["f-1"]
+
+
+def test_fremder_host_bleibt_403(uhr, werkstatt_freigegeben, monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = _werkstatt()
+    # Without the setting the phone host is just another foreign host.
+    assert _call("GET", f"/freigabe/{secret}", headers={"Host": HANDY_HOST}).status_code == 403
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", BASIS)
+    for host in ("evil.example", "other.example.ts.net", f"{HANDY_HOST}:8443", f"x{HANDY_HOST}"):
+        assert _call("GET", f"/freigabe/{secret}", headers={"Host": host}).status_code == 403, host
+    fremd = _call("POST", f"/freigabe/{secret}",
+                  headers={"Host": HANDY_HOST, "Origin": "https://evil.example"})
+    assert fremd.status_code == 403
+    unsicher = _call("POST", f"/freigabe/{secret}",
+                     headers={"Host": HANDY_HOST, "Origin": f"http://{HANDY_HOST}"})
+    assert unsicher.status_code == 403
+    entfernt = _call("GET", f"/freigabe/{secret}", client="100.64.0.9", headers={"Host": HANDY_HOST})
+    assert entfernt.status_code == 403
+    assert werkstatt_freigegeben == []

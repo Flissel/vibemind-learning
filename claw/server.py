@@ -35,6 +35,10 @@ _ENV_KEYS = (
     "LEARNING_CLAW_MCP_URL",
     "LEARNING_CLAW_MCP_HOST",
     "LEARNING_CLAW_MCP_PORT",
+    # Handy-Freigabe (optional): https-Basis hinter `tailscale serve` und das Telegram-Skript.
+    "LEARNING_CLAW_FREIGABE_BASIS",
+    "LEARNING_CLAW_TELEGRAM_SKRIPT",
+    "LEARNING_CLAW_LOG_DIR",
 )
 
 # Das Token kommt nur aus der Prozessumgebung (Startskript), nie aus einer Datei.
@@ -99,6 +103,9 @@ WERKZEUGE = (
     werkzeuge.werkstatt_zurueckholen,
     werkzeuge.werkstatt_vorschau,
     werkzeuge.werkstatt_auftrag,
+    # Freigabe der Werkstatt: nur anzeigen. Freigeben (werkzeuge.werkstatt_freigeben) ruft
+    # allein die Freigabeseite nach dem Klick der Inhaberin, nie das Modell.
+    werkzeuge.werkstatt_freigabe_anzeigen,
 )
 
 SESSION_HEADER = "mcp-session-id"

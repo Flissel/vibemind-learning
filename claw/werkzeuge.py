@@ -14,6 +14,9 @@ Every tool returns ``{"ok": True, "daten": {...}}`` or ``{"ok": False,
   without ``result`` is reported as unavailable, never passed through
 - ``veroeffentlichung_anzeigen``: ``job_id``, ``titel``, ``kapitel``, ``lektionen``,
   ``unbelegte_aussagen``, ``revision``, ``kurs_revision``
+- ``werkstatt_freigabe_anzeigen``: ``course_id``, ``titel``, ``nummer``, ``vergleich``,
+  ``befunde``, ``blockiert``, ``nichts_zu_veroeffentlichen``, ``link_geoeffnet``,
+  ``handy_link_gesendet``
 
 ``kurs_erzeugen`` and ``sitzung_starten`` reuse their idempotency key for the same
 arguments for 600 s, then mint a new one; the other write tools key deterministically.
@@ -27,16 +30,20 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import httpx
 
-from .freigabe import FreigabeAbgelehnt, FreigabeStore
+from .freigabe import WERKSTATT, FreigabeAbgelehnt, FreigabeStore, handy_basis
 from .pruefung_seite import PREFIX as PRUEFUNG_PREFIX
 from .pruefung_seite import PruefungStore
 from .zeichnung import Zeichnung, ZeichnungStore
@@ -100,6 +107,12 @@ _REASONS = {
     "not_found": "Nicht gefunden",
     "idempotency_conflict": "Gleiche Anfrage mit anderem Inhalt",
     "konflikt": "Die Aufgabe wurde inzwischen geaendert - die neueste Fassung steht in `neueste`",
+    "freigabe_nicht_offen": "Diese Freigabe ist nicht mehr offen - bitte erneut anzeigen",
+    "learnhouse_stand_veraltet": "Der Kurs wurde in LearnHouse inzwischen geaendert - bitte erneut anzeigen",
+    "nichts_zu_veroeffentlichen": "Seit der letzten Freigabe hat sich nichts geaendert",
+    "freigabe_blockiert": "Die Freigabe ist durch Befunde blockiert",
+    "freigabe_id_reused": "Diese Freigabe wurde in LearnHouse schon verwendet - bitte erneut anzeigen",
+    "kurs_unbekannt": "Kurs nicht gefunden",
 }
 
 
@@ -932,3 +945,146 @@ def werkstatt_vorschau(task_id: str, fassung: int | None = None) -> dict[str, An
 def werkstatt_auftrag(auftrag_id: str) -> dict[str, Any]:
     """Zeigt Zustand, Ergebnis und Fehler eines Hintergrund-Auftrags der Werkstatt."""
     return _ws_get(f"/auftraege/{_seg(auftrag_id)}")
+
+
+# --- Werkstatt release: shown by the model, released only by the owner on the page ---------
+
+TELEGRAM_SKRIPT_ENV = "LEARNING_CLAW_TELEGRAM_SKRIPT"
+LOG_DIR_ENV = "LEARNING_CLAW_LOG_DIR"
+_TELEGRAM_TIMEOUT_SECONDS = 20
+
+
+def _log_ordner() -> Path:
+    """Where child-process output goes: LEARNING_CLAW_LOG_DIR, else next to the claw's env file
+    (its sidecar logs live there), else the temp folder."""
+    ordner = os.environ.get(LOG_DIR_ENV, "").strip()
+    if ordner:
+        return Path(ordner)
+    env_datei = os.environ.get("LEARNING_CLAW_ENV_FILE", "").strip()
+    return Path(env_datei).parent if env_datei else Path(tempfile.gettempdir())
+
+
+def _telegram_senden(nachricht: str) -> bool:
+    """Send a message to the owner with the Telegram script, as a child process.
+
+    The message goes on stdin, never in the command line (it carries a one-time secret);
+    output goes to a log file, not a pipe. Nothing of it reaches the model."""
+    skript = os.environ.get(TELEGRAM_SKRIPT_ENV, "").strip()
+    if not skript or not Path(skript).is_file():
+        logger.warning("%s is not set or missing; no phone link sent", TELEGRAM_SKRIPT_ENV)
+        return False
+    try:
+        ordner = _log_ordner()
+        ordner.mkdir(parents=True, exist_ok=True)
+        with open(ordner / "telegram.log", "ab") as ausgabe:
+            lauf = subprocess.run(
+                [sys.executable, skript],
+                input=nachricht.encode("utf-8"),
+                stdout=ausgabe,
+                stderr=ausgabe,
+                timeout=_TELEGRAM_TIMEOUT_SECONDS,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning("Telegram phone link failed: %s", type(error).__name__)
+        return False
+    if lauf.returncode != 0:
+        logger.warning("Telegram phone link failed with exit code %s", lauf.returncode)
+    return lauf.returncode == 0
+
+
+def _handy_link_senden(geheimnis: str, titel: str, nummer: int, blockiert: bool) -> bool:
+    basis = handy_basis()
+    if basis is None:
+        return False
+    zustand = (
+        "Die Freigabe ist blockiert, die Seite zeigt die Befunde."
+        if blockiert
+        else "Sie geben dort mit einem Klick frei."
+    )
+    nachricht = (
+        f"Werkstatt-Freigabe Nr. {nummer}: „{titel}“\n{zustand}\n"
+        f"{basis[0]}/freigabe/{geheimnis}\n"
+        "Der Link gilt 10 Minuten und nur einmal."
+    )
+    return _telegram_senden(nachricht)
+
+
+def werkstatt_freigabe_anzeigen(course_id: str) -> dict[str, Any]:
+    """Bereitet die Freigabe eines Werkstatt-Kurses vor und zeigt, was sich fuer Lernende
+    aendern wuerde: `vergleich` (neu, geaendert, textkorrektur, geloescht mit Kurzfassung und
+    Fassung alt/neu; `unveraendert` als Zahl), `befunde` (mit `blockierend`), `blockiert` und
+    `nichts_zu_veroeffentlichen`. Oeffnet die Freigabeseite im Browser dieses Rechners
+    (`link_geoeffnet`) und schickt der Inhaberin, wenn eingerichtet, den Link aufs Handy
+    (`handy_link_gesendet`). Freigeben kann nur die Inhaberin dort mit einem Klick, einmal und
+    10 Minuten lang; es gibt kein Werkzeug dafuer. Nie behaupten, der Kurs sei freigegeben.
+    """
+
+    def act(client: LearningClient) -> dict[str, Any]:
+        data = client.post(
+            f"{_WERKSTATT}/kurse/{_seg(course_id)}/freigabe", {}, roles=ROLE_AUTHOR, extra=_AUTOR
+        )
+        titel = str(data.get("titel") or course_id)
+        inhalt = {
+            "art": WERKSTATT,
+            "course_id": course_id,
+            "titel": titel,
+            "freigabe_id": str(data["freigabe_id"]),
+            "nummer": int(data["nummer"]),
+            "learnhouse_revision": int(data["learnhouse_revision"]),
+            "vergleich": data["vergleich"],
+            "befunde": list(data.get("befunde") or []),
+            "blockiert": bool(data["blockiert"]),
+            "nichts_zu_veroeffentlichen": bool(data["nichts_zu_veroeffentlichen"]),
+        }
+        anzeige = _freigaben.merken(
+            inhalt["freigabe_id"], inhalt["nummer"], inhalt["learnhouse_revision"], inhalt,
+            art=WERKSTATT,
+        )
+        # Like veroeffentlichung_anzeigen: the secret goes only to the local browser and, if
+        # configured, to the owner's phone; the model gets neither the link nor the secret.
+        geoeffnet = _browser_oeffnen(freigabe_link(anzeige.geheimnis))
+        gesendet = _handy_link_senden(
+            anzeige.geheimnis, titel, inhalt["nummer"], inhalt["blockiert"]
+        )
+        return {
+            key: inhalt[key]
+            for key in ("course_id", "titel", "nummer", "vergleich", "befunde", "blockiert",
+                        "nichts_zu_veroeffentlichen")
+        } | {"link_geoeffnet": geoeffnet, "handy_link_gesendet": gesendet}
+
+    return _run(act)
+
+
+def werkstatt_freigeben(geheimnis: str) -> dict[str, Any]:
+    """Release a Werkstatt state after the owner pressed the button (not a model tool).
+
+    The approval is used up even if the release then fails; the API refuses a release whose
+    LearnHouse course moved since it was prepared."""
+
+    def act(client: LearningClient) -> dict[str, Any]:
+        try:
+            anzeige = _freigaben.einloesen(geheimnis, art=WERKSTATT)
+        except FreigabeAbgelehnt as error:
+            raise LearningRejected("freigabe_abgelehnt", error.grund, 0) from error
+        ref = anzeige.approval_ref
+        data = client.post(
+            f"{_WERKSTATT}/freigaben/{_seg(anzeige.job_id)}/freigeben",
+            {"approval_ref": ref},
+            roles=ROLE_PUBLISHER,
+            idempotency_key_value=idempotency_key(
+                "werkstatt_freigeben", {"freigabe_id": anzeige.job_id, "approval_ref": ref}
+            ),
+        )
+        ergebnis: dict[str, Any] = {
+            "freigabe_id": data.get("freigabe_id", anzeige.job_id),
+            "titel": anzeige.inhalt.get("titel"),
+            "learnhouse_revision": data["learnhouse_revision"],
+        }
+        for key in ("aktualisiert", "neu", "unveroeffentlicht", "katalog", "katalog_fehler"):
+            if key in data:
+                ergebnis[key] = data[key]
+        return ergebnis
+
+    return _run(act)

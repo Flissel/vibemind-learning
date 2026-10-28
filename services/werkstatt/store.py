@@ -447,6 +447,18 @@ class WerkstattStore:
                 )
             ]
 
+    def freigaben(self, course_id: str) -> list[dict[str, Any]]:
+        """All requests of the course in any state, newest first."""
+        with self._sessions() as session:
+            return [
+                _freigabe_dict(f)
+                for f in session.scalars(
+                    select(WerkstattFreigabe)
+                    .where(WerkstattFreigabe.course_id == course_id)
+                    .order_by(WerkstattFreigabe.nummer.desc())
+                )
+            ]
+
     def freigabe_offene(self, course_id: str) -> dict[str, Any] | None:
         with self._sessions() as session:
             freigabe = session.scalars(
