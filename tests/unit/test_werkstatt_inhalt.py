@@ -94,6 +94,7 @@ def test_reihenfolge_und_zuordnung_grenzen() -> None:
 
 def test_grobentwurf_braucht_kapitel_mit_aufgaben() -> None:
     ok = {
+        "schema_version": "werkstatt-grobentwurf-v1",
         "title": "T",
         "audience": "Einsteiger",
         "default_kind": "quiz",

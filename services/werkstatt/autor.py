@@ -5,7 +5,7 @@ At most three model calls per task: author, one repair on findings, checker."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,7 @@ from spaces.learning.services.werkstatt.pruefung import Befund, aufgabe_pruefen,
 class AufgabeAusgabe(BaseModel):
     """Wrapper: the gateway needs a BaseModel, the task is a discriminated union."""
 
+    schema_version: Literal["werkstatt-aufgabe-v1"]
     aufgabe: AufgabeInhalt
 
 
@@ -32,6 +33,7 @@ class PrueferIssue(BaseModel):
 
 
 class PrueferAusgabe(BaseModel):
+    schema_version: Literal["werkstatt-pruefer-v1"]
     issues: list[PrueferIssue] = Field(default_factory=list, max_length=50)
 
 
@@ -120,6 +122,13 @@ async def aufgabe_ausformulieren(
             await _autor(gateway, correlation_id, reparatur), source_refs, course_id=course_id
         )
         befunde = aufgabe_pruefen(inhalt, sources=sources)
+    if inhalt.kind != kind:
+        befunde.append(
+            {
+                "code": "kind_abweichend",
+                "text": "Das Modell hat einen anderen Aufgabentyp geliefert als verlangt.",
+            }
+        )
 
     zitierte = {z.chunk_id for z in zitate}
     pruefer_payload: dict[str, object] = {

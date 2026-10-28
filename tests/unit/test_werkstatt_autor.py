@@ -40,7 +40,7 @@ class _Fake:
 
 
 def _autor(**over) -> AufgabeAusgabe:
-    return AufgabeAusgabe(aufgabe=inhalt_lesen(quiz(**over)))
+    return AufgabeAusgabe(schema_version="werkstatt-aufgabe-v1", aufgabe=inhalt_lesen(quiz(**over)))
 
 
 def _schlecht() -> AufgabeAusgabe:
@@ -49,7 +49,7 @@ def _schlecht() -> AufgabeAusgabe:
 
 
 def _sauber_pruefer() -> PrueferAusgabe:
-    return PrueferAusgabe(issues=[])
+    return PrueferAusgabe(schema_version="werkstatt-pruefer-v1", issues=[])
 
 
 async def _ausformulieren(fake: _Fake, **over):
@@ -71,6 +71,7 @@ async def _ausformulieren(fake: _Fake, **over):
 async def test_grobentwurf_liefert_kapitel_mit_aufgaben() -> None:
     entwurf = Grobentwurf.model_validate(
         {
+            "schema_version": "werkstatt-grobentwurf-v1",
             "title": "Dateien",
             "audience": "Einsteiger",
             "default_kind": "quiz",
@@ -123,7 +124,7 @@ async def test_ausformulieren_meldet_restbefunde_statt_endlos() -> None:
 
 @pytest.mark.asyncio
 async def test_pruefer_befunde_werden_angehaengt() -> None:
-    pruefer = PrueferAusgabe(issues=[{"code": "widerspricht_lektion", "text": "Die Antwort widerspricht der Lektion."}])
+    pruefer = PrueferAusgabe(schema_version="werkstatt-pruefer-v1", issues=[{"code": "widerspricht_lektion", "text": "Die Antwort widerspricht der Lektion."}])
     fake = _Fake(_autor(), pruefer)
     erg = await _ausformulieren(fake)
     assert codes(erg.befunde) == ["pruefer_widerspricht_lektion"]
@@ -145,3 +146,60 @@ async def test_wunsch_und_vorherige_fassung_gehen_ins_modell() -> None:
     payload = fake.invocations[0].input_payload
     assert payload["wunsch"] == "Mehr Optionen" and payload["vorherige"] == vorherige
     assert payload["kind"] == "quiz"
+
+
+@pytest.mark.asyncio
+async def test_abweichender_typ_ist_befund() -> None:
+    fake = _Fake(_autor(), _sauber_pruefer())
+    erg = await _ausformulieren(fake, kind="open")
+    assert "kind_abweichend" in codes(erg.befunde)
+
+
+def _durch_echte_validierung(role: str, model: type, content: dict):
+    import json
+
+    from spaces.learning.services.course_factory.model_gateway import (
+        ROLE_CONTRACTS,
+        ModelInvocation,
+        _validated_result,
+    )
+
+    stage, prompt, schema = ROLE_CONTRACTS[role]
+    invocation = ModelInvocation(
+        role=role,
+        stage=stage,
+        correlation_id=str(uuid4()),
+        prompt_version=prompt,
+        output_schema_version=schema,
+        input_payload={},
+    )
+    body = json.dumps({"id": "c1", "choices": [{"message": {"content": json.dumps(content)}}]}).encode()
+    return _validated_result(body, invocation, model)
+
+
+def test_echte_validierung_nimmt_aufgabe_an() -> None:
+    inhalt = {"schema_version": "werkstatt-aufgabe-v1", "aufgabe": quiz()}
+    assert _durch_echte_validierung("werkstatt_aufgabe", AufgabeAusgabe, inhalt).output.aufgabe.kind == "quiz"
+
+
+def test_echte_validierung_nimmt_pruefer_an() -> None:
+    inhalt = {"schema_version": "werkstatt-pruefer-v1", "issues": [{"code": "x", "text": "y"}]}
+    assert _durch_echte_validierung("werkstatt_pruefer", PrueferAusgabe, inhalt).output.issues[0].code == "x"
+
+
+def test_echte_validierung_nimmt_grobentwurf_an() -> None:
+    inhalt = {
+        "schema_version": "werkstatt-grobentwurf-v1",
+        "title": "T",
+        "audience": "A",
+        "default_kind": "quiz",
+        "chapters": [{"title": "K", "tasks": [{"summary": "s"}]}],
+    }
+    assert _durch_echte_validierung("werkstatt_grobentwurf", Grobentwurf, inhalt).output.title == "T"
+
+
+def test_echte_validierung_lehnt_falsche_schema_version_ab() -> None:
+    from spaces.learning.services.course_factory.model_gateway import GatewaySchemaError
+
+    with pytest.raises(GatewaySchemaError):
+        _durch_echte_validierung("werkstatt_pruefer", PrueferAusgabe, {"schema_version": "werkstatt-pruefer-v1x", "issues": []})

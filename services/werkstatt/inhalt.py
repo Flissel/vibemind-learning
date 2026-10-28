@@ -114,6 +114,7 @@ class GrobKapitel(_StrictDraft):
 
 
 class Grobentwurf(_StrictDraft):
+    schema_version: Literal["werkstatt-grobentwurf-v1"]
     title: str = Field(min_length=1, max_length=500)
     audience: str = Field(min_length=1, max_length=1_000)
     default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching"]
