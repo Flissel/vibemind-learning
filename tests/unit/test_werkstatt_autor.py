@@ -203,3 +203,49 @@ def test_echte_validierung_lehnt_falsche_schema_version_ab() -> None:
 
     with pytest.raises(GatewaySchemaError):
         _durch_echte_validierung("werkstatt_pruefer", PrueferAusgabe, {"schema_version": "werkstatt-pruefer-v1x", "issues": []})
+
+
+_CHUNK_1 = "00000000-0000-4000-8000-0000000000b1"
+_CHUNK_2 = "00000000-0000-4000-8000-0000000000b2"
+
+
+def _katalogzitat(chunk: str, citation_id: str, *, revision: int = 1) -> dict:
+    return {
+        "citation_id": citation_id, "source_id": "00000000-0000-4000-8000-0000000000a1",
+        "source_revision": revision, "chunk_id": chunk, "content_hash": "a" * 64,
+        "locator": {"page": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_vorherige_fassung_geht_mit_quellenschluesseln_ins_modell() -> None:
+    gueltig = _katalogzitat(_CHUNK_1, "00000000-0000-4000-8000-0000000000c1")
+    veraltet = _katalogzitat(_CHUNK_2, "00000000-0000-4000-8000-0000000000c2", revision=7)
+    ids = [gueltig["citation_id"], veraltet["citation_id"]]
+    vorherige = quiz(
+        citation_ids=ids,
+        zitate=[gueltig, veraltet],
+        lektion=lektion(claims=[{"claim_id": "c1", "text": "Aussage", "citation_ids": ids}]),
+    )
+    fake = _Fake(_autor(), _sauber_pruefer())
+    await _ausformulieren(fake, vorherige=vorherige)
+    gesendet = fake.invocations[0].input_payload["vorherige"]
+    assert "zitate" not in gesendet
+    assert gesendet["citation_ids"] == ["S1"]
+    assert gesendet["lektion"]["claims"][0]["citation_ids"] == ["S1"]
+    assert vorherige["citation_ids"] == ids  # the stored version itself is untouched
+
+
+@pytest.mark.asyncio
+async def test_zitate_aus_der_modellausgabe_zaehlen_nicht() -> None:
+    cid = "00000000-0000-4000-8000-0000000000c1"
+    vom_modell = dict(
+        citation_ids=[cid],
+        zitate=[_katalogzitat(_CHUNK_1, cid)],
+        lektion=lektion(claims=[{"claim_id": "c1", "text": "Aussage", "citation_ids": [cid]}]),
+    )
+    fake = _Fake(_autor(**vom_modell), _autor(**vom_modell), _sauber_pruefer())
+    erg = await _ausformulieren(fake)
+    assert erg.inhalt["citation_ids"] == [] and erg.zitate == []
+    assert erg.inhalt["lektion"]["claims"][0]["citation_ids"] == []
+    assert "claim_uncited" in codes(erg.befunde)

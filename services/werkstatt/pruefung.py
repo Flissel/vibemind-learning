@@ -4,7 +4,7 @@ quality gate, applied to a single task, each finding with a sentence for the cha
 from __future__ import annotations
 
 import re
-from typing import TypedDict
+from typing import Any, TypedDict
 from uuid import NAMESPACE_URL, uuid5
 
 from spaces.learning.services.course_factory.chapter_verification import keyed_source_refs
@@ -113,19 +113,42 @@ def aufgabe_pruefen(inhalt: AufgabeInhalt, *, sources: tuple[SourceSnapshot, ...
     if mixes_address(texte):
         codes.append("address_mixed")
     if abschnitt is not None:
-        if any(not claim.citation_ids for claim in abschnitt.claims):
+        # A claim counts as cited only through a citation object of this task.
+        zitiert = {z.citation_id for z in inhalt.zitate}
+        if any(not zitiert.intersection(claim.citation_ids) for claim in abschnitt.claims):
             codes.append("claim_uncited")
         if subjects_with_unsourced_command([("lektion", abschnitt.body)], sources):
             codes.append("command_not_in_source")
     return [_befund(code) for code in dict.fromkeys(codes)]
 
 
+def _ref_schluessel(ref: dict[str, Any]) -> tuple[str, int, str, str]:
+    return (
+        str(ref["source_id"]), int(ref["source_revision"]), str(ref["chunk_id"]),
+        str(ref["chunk_content_hash"]),
+    )
+
+
+def _zitat_schluessel(zitat: Citation) -> tuple[str, int, str, str]:
+    return (zitat.source_id, zitat.source_revision, zitat.chunk_id, zitat.content_hash)
+
+
 def quellen_aufloesen(
     inhalt: AufgabeInhalt, source_refs: tuple[str, ...], *, course_id: str
 ) -> tuple[AufgabeInhalt, list[Citation]]:
-    """S1.. keys become exact citations (uuid5 of course_id:chunk_id); unknown keys are dropped."""
+    """S1.. keys become exact citations (uuid5 of course_id:chunk_id); unknown keys are dropped.
+
+    A citation already in `zitate` counts only if source, revision, chunk and content hash
+    match a chunk of the CURRENT catalog; any other id (made up, stale revision, changed
+    chunk) is dropped, so a claim left without one is `claim_uncited`. `zitate` is rebuilt
+    from what is still referenced."""
     keyed = {ref["key"]: ref for ref in keyed_source_refs(source_refs)}
-    bekannt = {z.citation_id: z for z in inhalt.zitate}
+    aktuell = {_ref_schluessel(ref) for ref in keyed.values()}
+    bekannt = {
+        z.citation_id: z for z in inhalt.zitate if _zitat_schluessel(z) in aktuell
+    }
+    # A key naming a chunk that is already cited reuses that citation instead of a twin.
+    je_chunk = {_zitat_schluessel(z): z.citation_id for z in bekannt.values()}
     gemacht: dict[str, Citation] = dict(bekannt)
 
     def aufloesen(ids: list[str]) -> list[str]:
@@ -136,6 +159,10 @@ def quellen_aufloesen(
                 continue
             ref = keyed.get(wert)
             if ref is None:
+                continue
+            vorhanden = je_chunk.get(_ref_schluessel(ref))
+            if vorhanden is not None:
+                out.append(vorhanden)
                 continue
             zitat = Citation(
                 citation_id=str(uuid5(NAMESPACE_URL, f"{course_id}:{ref['chunk_id']}")),
@@ -161,3 +188,38 @@ def quellen_aufloesen(
     zitate = [z for z in zitate if z.citation_id in benutzt]
     update["zitate"] = zitate
     return inhalt.model_copy(update=update), zitate
+
+
+def mit_quellenschluesseln(content: dict[str, Any], source_refs: tuple[str, ...]) -> dict[str, Any]:
+    """A stored version as the model may see it: citation ids become the S-keys of the current
+    catalog, ids that match no current chunk are dropped, and the `zitate` objects go."""
+    keyed = keyed_source_refs(source_refs)
+    schluessel = {ref["key"] for ref in keyed}
+    je_chunk = {_ref_schluessel(ref): ref["key"] for ref in keyed}
+    nach_key: dict[str, str] = {}
+    for roh in content.get("zitate") or []:
+        try:
+            zitat = Citation.model_validate(roh)
+        except ValueError:
+            continue
+        key = je_chunk.get(_zitat_schluessel(zitat))
+        if key is not None:
+            nach_key[zitat.citation_id] = key
+
+    def abbilden(ids: list[str]) -> list[str]:
+        out = [nach_key.get(i) or (i if i in schluessel else None) for i in ids]
+        return list(dict.fromkeys(i for i in out if i is not None))
+
+    ergebnis = {k: v for k, v in content.items() if k != "zitate"}
+    if "citation_ids" in ergebnis:
+        ergebnis["citation_ids"] = abbilden(list(ergebnis["citation_ids"]))
+    lektion = ergebnis.get("lektion")
+    if isinstance(lektion, dict):
+        ergebnis["lektion"] = {
+            **lektion,
+            "claims": [
+                {**c, "citation_ids": abbilden(list(c.get("citation_ids", [])))}
+                for c in lektion.get("claims", [])
+            ],
+        }
+    return ergebnis

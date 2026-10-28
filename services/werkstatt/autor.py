@@ -17,7 +17,12 @@ from spaces.learning.services.course_factory.model_gateway import (
 )
 from spaces.learning.services.course_factory.verification import SourceSnapshot
 from spaces.learning.services.werkstatt.inhalt import AufgabeInhalt, Grobentwurf
-from spaces.learning.services.werkstatt.pruefung import Befund, aufgabe_pruefen, quellen_aufloesen
+from spaces.learning.services.werkstatt.pruefung import (
+    Befund,
+    aufgabe_pruefen,
+    mit_quellenschluesseln,
+    quellen_aufloesen,
+)
 
 
 class AufgabeAusgabe(BaseModel):
@@ -84,7 +89,8 @@ async def _autor(
     gateway: ModelGateway, correlation_id: str, payload: dict[str, object]
 ) -> AufgabeInhalt:
     result = await gateway.generate(_invocation("werkstatt_aufgabe", correlation_id, payload), AufgabeAusgabe)
-    return result.output.aufgabe
+    # The model names sources only by S-key: citation objects it writes itself are ignored.
+    return result.output.aufgabe.model_copy(update={"zitate": []})
 
 
 async def aufgabe_ausformulieren(
@@ -109,7 +115,8 @@ async def aufgabe_ausformulieren(
     if wunsch:
         payload["wunsch"] = wunsch
     if vorherige is not None:
-        payload["vorherige"] = vorherige
+        # Stored citation ids mean nothing to the model: it sees the S-keys of today's catalog.
+        payload["vorherige"] = mit_quellenschluesseln(vorherige, source_refs)
     course_id = str(kurs.get("course_id", ""))
 
     inhalt, zitate = quellen_aufloesen(

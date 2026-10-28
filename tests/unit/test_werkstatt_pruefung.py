@@ -202,3 +202,74 @@ def test_jeder_befund_hat_deutschen_text() -> None:
     for b in befunde:
         assert b["code"] and len(b["text"]) > 20 and b["text"].rstrip().endswith((".", "!", "?"))
         assert b["code"] not in b["text"]
+
+
+def _refs(revision: int) -> tuple[str, ...]:
+    return tuple(
+        json.dumps(
+            {
+                "source_id": _SRC_ID,
+                "source_revision": revision,
+                "chunk_id": chunk,
+                "chunk_content_hash": _HASH,
+                "locator": {"page": number},
+            }
+        )
+        for number, chunk in enumerate((_CHUNK_1, _CHUNK_2), start=1)
+    )
+
+
+_FREMD_ID = "00000000-0000-4000-8000-0000000000c1"
+
+
+def _zitat(chunk: str, *, revision: int = 1, citation_id: str = _FREMD_ID) -> dict[str, Any]:
+    return {
+        "citation_id": citation_id, "source_id": _SRC_ID, "source_revision": revision,
+        "chunk_id": chunk, "content_hash": _HASH, "locator": {"page": 1},
+    }
+
+
+def _mit_zitat(zitat: dict[str, Any]) -> Any:
+    cid = zitat["citation_id"]
+    return inhalt_lesen(
+        quiz(
+            citation_ids=[cid],
+            zitate=[zitat],
+            lektion=lektion(claims=[{"claim_id": "c1", "text": _TEXT, "citation_ids": [cid]}]),
+        )
+    )
+
+
+def test_erfundenes_zitat_ist_unbelegt() -> None:
+    erfunden = _zitat("00000000-0000-4000-8000-0000000000f9")  # chunk not in the catalog
+    inhalt, zitate = quellen_aufloesen(_mit_zitat(erfunden), REFS_2, course_id="c1")
+    assert zitate == [] and inhalt.zitate == []
+    assert inhalt.citation_ids == [] and inhalt.lektion.claims[0].citation_ids == []
+    assert "claim_uncited" in codes(aufgabe_pruefen(inhalt, sources=SRC))
+
+
+def test_zitat_auf_alte_revision_ist_unbelegt() -> None:
+    alt = _zitat(_CHUNK_1, revision=1)
+    inhalt, zitate = quellen_aufloesen(_mit_zitat(alt), _refs(2), course_id="c1")
+    assert zitate == [] and inhalt.lektion.claims[0].citation_ids == []
+    assert "claim_uncited" in codes(aufgabe_pruefen(inhalt, sources=SRC))
+
+
+def test_zitat_mit_anderem_inhaltshash_ist_unbelegt() -> None:
+    falsch = {**_zitat(_CHUNK_1), "content_hash": "b" * 64}
+    inhalt, zitate = quellen_aufloesen(_mit_zitat(falsch), REFS_2, course_id="c1")
+    assert zitate == [] and inhalt.lektion.claims[0].citation_ids == []
+
+
+def test_bekanntes_zitat_der_aktuellen_quelle_bleibt() -> None:
+    # e.g. a takeover citation: its id is not ours, but it points at the current chunk.
+    bekannt = _zitat(_CHUNK_1)
+    inhalt, zitate = quellen_aufloesen(_mit_zitat(bekannt), REFS_2, course_id="c1")
+    assert [z.citation_id for z in zitate] == [_FREMD_ID]
+    assert inhalt.lektion.claims[0].citation_ids == [_FREMD_ID]
+    assert "claim_uncited" not in codes(aufgabe_pruefen(inhalt, sources=SRC))
+
+
+def test_aussage_mit_unaufgeloestem_schluessel_ist_unbelegt() -> None:
+    roh = inhalt_lesen(quiz())  # claims cite "S1", never resolved against the catalog
+    assert "claim_uncited" in codes(aufgabe_pruefen(roh, sources=SRC))
