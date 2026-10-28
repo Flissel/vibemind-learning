@@ -59,8 +59,14 @@ ROLE_CONTRACTS = {
         "sequence-explain-prompt-v1",
         "sequence-explain-v1",
     ),
+    "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
+    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v1", "werkstatt-aufgabe-v1"),
+    "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v1", "werkstatt-pruefer-v1"),
 }
 ROLE_PROMPTS = {
+    "werkstatt_grobentwurf": "Plan a course as chapters with a short list of tasks (one line each: what the learner must do). No lessons, no answers. Tasks make the learner apply and decide, never recall a URL or quote an English message verbatim. Use the default task kind for every task. German, address 'Sie'. Use only facts from the supplied sources; if the input contains reviewer_feedback, address every point.",
+    "werkstatt_aufgabe": "Write exactly one task of the given kind from its summary, and the lesson section the learner needs to solve it. The lesson section teaches every fact the task requires in full sentences, shows every command verbatim in a fenced code block with a language tag, cites claims by source key (S1, S2, …) and contains no tasks, options or answers. The expected answer must follow the lesson and never contradict it. If `wunsch` is given, change the previous version accordingly and keep everything else. German, 'Sie'. Only facts from the cited sources.",
+    "werkstatt_pruefer": "Check one task and its lesson section against the cited source excerpts. Report only problems: a claim the sources do not support, an expected answer that contradicts the lesson, a task that is unsolvable from the lesson. Do not rewrite. Each issue: a short code and one German sentence.",
     "sequence_explainer": "Explain the passage the learner marked (task.selection) in plain German, as a patient tutor, using only facts stated in the supplied sources; name the source keys you used in source_refs. If a short piece of general knowledge beyond the sources genuinely helps, put it in extra and set extra_is_outside_course to true; otherwise leave extra empty. If an image is given it shows the marked place. Never reveal expected answers of tasks.",
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome. Plan as few chapters as the material needs: at most one chapter per 150 words of source text and at least three. Put alternative ways of doing the same step (for example one per operating system or shell) into one chapter, keep the regular path first and put troubleshooting at the end. If the input contains reviewer_feedback, address every point of it.",
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure. Name every concept with short lowercase slugs (for example akku-laden), never free text.",
