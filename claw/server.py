@@ -237,6 +237,13 @@ def build_app(server: Any, token: str, port: int = DEFAULT_PORT) -> Any:
     )
 
 
+def uvicorn_settings(host: str, port: int) -> dict[str, object]:
+    """Server settings. proxy_headers stays off: behind `tailscale serve` the TCP peer is
+    loopback and X-Forwarded-For would otherwise rewrite scope["client"] to the phone's
+    tailnet address, which the release page (loopback only) refuses."""
+    return {"host": host, "port": port, "log_level": "warning", "proxy_headers": False}
+
+
 def main() -> None:
     _load_env_fallback()
     host, port = resolve_host_port()
@@ -260,7 +267,7 @@ def main() -> None:
             transport_security=transport_security_settings(port),
         )
     register_tools(server)
-    uvicorn.run(build_app(server, token, port), host=host, port=port, log_level="warning")
+    uvicorn.run(build_app(server, token, port), **uvicorn_settings(host, port))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-from spaces.learning.claw import werkzeuge
+from spaces.learning.claw import server as server_module, werkzeuge
 from spaces.learning.claw.freigabe import FreigabeAbgelehnt, FreigabeStore
 from spaces.learning.claw.freigabe_seite import FreigabeSeite
 from spaces.learning.claw.server import BearerAuth, FreigabeWeiche
@@ -355,3 +355,31 @@ def test_handy_basis_mit_anderem_port_behaelt_den_port(uhr, monkeypatch: pytest.
     secret = _werkstatt()
     monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", "https://pc.example.ts.net:8443")
     assert _call("GET", f"/freigabe/{secret}", headers={"Host": HANDY_HOST}).status_code == 403
+
+
+def test_produktiver_uvicorn_umschreibt_den_client_nicht_per_forwarded_for(
+    uhr, werkstatt_freigegeben, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Behind `tailscale serve` the peer is 127.0.0.1 and X-Forwarded-For names the phone."""
+    import uvicorn
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", BASIS)
+    secret = _werkstatt()
+    app = FreigabeWeiche(BearerAuth(_mcp, "t" * 40), FreigabeSeite(PORT))
+    config = uvicorn.Config(app, **server_module.uvicorn_settings("127.0.0.1", PORT))
+    config.load()
+    loaded = config.loaded_app
+    assert not isinstance(loaded, ProxyHeadersMiddleware)
+
+    transport = httpx.ASGITransport(app=loaded, client=("127.0.0.1", 50000))
+
+    async def go() -> httpx.Response:
+        async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as http:
+            return await http.get(
+                f"/freigabe/{secret}",
+                headers={"Host": HANDY_HOST, "x-forwarded-for": "100.84.127.84",
+                         "x-forwarded-proto": "https", "x-forwarded-host": HANDY_HOST},
+            )
+
+    assert asyncio.run(go()).status_code == 200

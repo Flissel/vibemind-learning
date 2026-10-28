@@ -207,3 +207,22 @@ def test_start_script_rejects_short_preset_token():
     assert "kuerzer als 32 Zeichen" in text
     assert "if ($McpToken -and $McpToken.Length -lt 32) {" in text
     assert "if (-not $McpToken) {" in text
+
+
+def test_main_starts_uvicorn_without_proxy_headers(monkeypatch) -> None:
+    """tailscale serve adds X-Forwarded-For; uvicorn must not rewrite scope["client"] from it."""
+    import uvicorn
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_env_fallback", lambda: None)
+    monkeypatch.setattr(server, "resolve_host_port", lambda: ("127.0.0.1", 8139))
+    monkeypatch.setattr(server, "require_token", lambda: "t" * 40)
+    monkeypatch.setattr(server, "require_service_key", lambda: None)
+    monkeypatch.setattr(server, "register_tools", lambda _s: None)
+    monkeypatch.setattr(server, "build_app", lambda *_a, **_k: object())
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: seen.update(kwargs))
+
+    server.main()
+
+    assert seen["proxy_headers"] is False
+    assert seen["host"] == "127.0.0.1"
