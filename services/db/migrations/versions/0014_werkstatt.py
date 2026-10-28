@@ -16,7 +16,7 @@ def upgrade() -> None:
     op.create_table(
         "learning_werkstatt_kurse",
         sa.Column("course_id", sa.String(128), primary_key=True),
-        sa.Column("title", sa.String(300), nullable=False),
+        sa.Column("title", sa.String(500), nullable=False),
         sa.Column("audience", sa.String(500), nullable=False),
         sa.Column("default_kind", sa.String(40), nullable=False),
         sa.Column("outcomes", sa.JSON(), nullable=False),

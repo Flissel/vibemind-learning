@@ -153,3 +153,39 @@ def test_kurs_quellen_setzen_ersetzt_die_provenienz(tmp_path: Path) -> None:
     assert s.kurs("c1")["source_provenance"] == neu
     with pytest.raises(LookupError):
         s.kurs_quellen_setzen("gibt-es-nicht", neu)
+
+
+def test_kurstitel_mit_500_zeichen_passt_ins_modell(tmp_path):
+    # A rough draft and a published CourseDraft both allow 500 characters of title.
+    from spaces.learning.services.werkstatt.inhalt import Grobentwurf
+    from spaces.learning.services.course_factory.schemas import CourseDraft
+    from spaces.learning.services.werkstatt.models import WerkstattKurs
+
+    erlaubt = max(
+        Grobentwurf.model_fields["title"].metadata[-1].max_length,
+        CourseDraft.model_fields["title"].metadata[-1].max_length,
+    )
+    assert WerkstattKurs.__table__.c.title.type.length >= erlaubt
+    s = _store(tmp_path); _kurs(s)
+    lang = "T" * 500
+    s.grobentwurf_anwenden("c1", title=lang, default_kind="quiz", kapitel=[])
+    assert s.kurs("c1")["title"] == lang
+
+
+def test_migration_0014_kurstitel_fasst_500_zeichen():
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect
+
+    pfad = Path(__file__).resolve().parents[2] / "services/db/migrations/versions/0014_werkstatt.py"
+    spec = importlib.util.spec_from_file_location("migration_0014_werkstatt", pfad)
+    modul = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modul)
+    engine = create_engine("sqlite://")
+    with engine.begin() as verbindung:
+        with Operations.context(MigrationContext.configure(verbindung)):
+            modul.upgrade()
+        spalten = {c["name"]: c["type"] for c in inspect(verbindung).get_columns("learning_werkstatt_kurse")}
+    assert spalten["title"].length >= 500

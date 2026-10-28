@@ -22,7 +22,7 @@ class WerkstattKurs(Base):
     __tablename__ = "learning_werkstatt_kurse"
 
     course_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
     audience: Mapped[str] = mapped_column(String(500), nullable=False)
     default_kind: Mapped[str] = mapped_column(String(40), nullable=False)
     outcomes: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
