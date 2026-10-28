@@ -377,39 +377,42 @@ class CourseFactoryApplication:
     def _current_provenance(
         self, course_id: str, requested_ids: tuple[str, ...]
     ) -> tuple[SourceProvenance, ...]:
-        with self._session_factory() as session:
-            query = (
-                select(LearningSource, LearningSourceRevision)
-                .join(
-                    LearningSourceRevision,
-                    (LearningSourceRevision.source_id == LearningSource.id)
-                    & (
-                        LearningSourceRevision.revision
-                        == LearningSource.current_revision
-                    ),
-                )
-                .where(LearningSource.course_id == course_id)
-                .where(LearningSourceRevision.status.in_(("stored", "indexed")))
-            )
-            if requested_ids:
-                query = query.where(LearningSource.id.in_(requested_ids))
-            rows = cast(
-                list[tuple[LearningSource, LearningSourceRevision]],
-                session.execute(query).all(),
-            )
-        if not rows:
-            raise SourceNotReady("course generation requires stored source revisions")
-        if requested_ids and {row[0].id for row in rows} != set(requested_ids):
-            raise SourceNotReady("one or more requested sources are unavailable")
-        return tuple(
-            SourceProvenance(
-                source_id=source.id,
-                revision=revision.revision,
-                content_hash=revision.content_hash,
-            )
-            for source, revision in sorted(rows, key=lambda row: row[0].id)
-        )
+        return current_provenance(self._session_factory, course_id, requested_ids)
 
+
+def current_provenance(
+    session_factory: SessionFactory, course_id: str, requested_ids: tuple[str, ...]
+) -> tuple[SourceProvenance, ...]:
+    """Current stored/indexed source revisions of a course; raises SourceNotReady otherwise."""
+    with session_factory() as session:
+        query = (
+            select(LearningSource, LearningSourceRevision)
+            .join(
+                LearningSourceRevision,
+                (LearningSourceRevision.source_id == LearningSource.id)
+                & (LearningSourceRevision.revision == LearningSource.current_revision),
+            )
+            .where(LearningSource.course_id == course_id)
+            .where(LearningSourceRevision.status.in_(("stored", "indexed")))
+        )
+        if requested_ids:
+            query = query.where(LearningSource.id.in_(requested_ids))
+        rows = cast(
+            list[tuple[LearningSource, LearningSourceRevision]],
+            session.execute(query).all(),
+        )
+    if not rows:
+        raise SourceNotReady("course generation requires stored source revisions")
+    if requested_ids and {row[0].id for row in rows} != set(requested_ids):
+        raise SourceNotReady("one or more requested sources are unavailable")
+    return tuple(
+        SourceProvenance(
+            source_id=source.id,
+            revision=revision.revision,
+            content_hash=revision.content_hash,
+        )
+        for source, revision in sorted(rows, key=lambda row: row[0].id)
+    )
 
 def _job_outcome(job) -> ApplicationOutcomeV1:
     return ApplicationOutcomeV1(

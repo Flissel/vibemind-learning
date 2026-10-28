@@ -26,6 +26,7 @@ from spaces.learning.deployment.lernsequenz_routes import router as lernsequenz_
 from spaces.learning.deployment.notizen_routes import router as notizen_router
 from spaces.learning.deployment.quellen_routes import router as quellen_router
 from spaces.learning.deployment.review_routes import router as review_router
+from spaces.learning.deployment.werkstatt_routes import router as werkstatt_router
 from spaces.learning.deployment.zeichnen_routes import router as zeichnen_router
 from spaces.learning.deployment.vibemind_auth import ApiError
 from spaces.learning.mcp.server import handle_message
@@ -165,6 +166,7 @@ app.include_router(lernsequenz_router)
 app.include_router(notizen_router)
 app.include_router(quellen_router)
 app.include_router(zeichnen_router)
+app.include_router(werkstatt_router)
 
 
 def _correlation(request: Request) -> UUID | None:
