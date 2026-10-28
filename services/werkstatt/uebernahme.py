@@ -226,11 +226,16 @@ def herkunft_nachtragen(
         for aid in ch.activity_ids:
             kapitel_von.setdefault(aid, ch)
     inhalte: dict[str, dict[str, Any]] = {}
+    kandidaten: set[str] = set()  # only taken-over tasks can claim a factory activity
     for aufgabe in alle:
         erste = next((f for f in store.fassungen(aufgabe["task_id"]) if f["number"] == 1), None)
         inhalte[aufgabe["task_id"]] = erste["content"] if erste else {}
+        if erste and erste["art"] == "uebernommen":
+            kandidaten.add(aufgabe["task_id"])
     # A prompt shared by several tasks cannot be told apart: none of them is assigned.
-    prompts_der_aufgaben = [i.get("prompt") for i in inhalte.values() if isinstance(i.get("prompt"), str)]
+    prompts_der_aufgaben = [
+        inhalte[t].get("prompt") for t in kandidaten if isinstance(inhalte[t].get("prompt"), str)
+    ]
     vergeben = {a["herkunft_key"] for a in alle if a["herkunft_key"]}
     zuordnung: dict[str, tuple[str | None, str | None]] = {}
     ohne: list[str] = []
@@ -249,6 +254,9 @@ def herkunft_nachtragen(
                 lektion_key = erste_lektion(aufgabe["herkunft_key"])
                 if lektion_key:
                     zuordnung[aufgabe["task_id"]] = (None, lektion_key)
+            continue
+        if aufgabe["task_id"] not in kandidaten:
+            ohne.append(aufgabe["task_id"])
             continue
         prompt = inhalt.get("prompt")
         treffer = aus_entwurf.get(prompt, []) if isinstance(prompt, str) else []

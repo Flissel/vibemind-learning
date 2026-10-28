@@ -82,7 +82,8 @@ def test_doppelter_prompt_wird_nicht_zugeordnet(tmp_path):
     assert sorted(ergebnis["ohne_zuordnung"]) == sorted(a["task_id"] for a in aufgaben[:2])
     assert [a["herkunft_key"] for a in aufgaben] == [None, None, "a3"]
 
-    # (b) two Werkstatt tasks share one version-1 prompt -> neither is assigned
+    # (b) a new (not taken-over) task copies a prompt: only taken-over tasks compete, so the
+    # taken-over one keeps its origin and the new one stays without
     store, fake, factory = _setup(tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path)
     _uebernehmen(store, fake, factory)
     _leeren(factory)
@@ -94,10 +95,10 @@ def test_doppelter_prompt_wird_nicht_zugeordnet(tmp_path):
     )
     ergebnis = herkunft_nachtragen(store, fake, factory, COURSE)
     aufgaben = {a["task_id"]: a for a in store.kurs(COURSE)["aufgaben"]}
-    assert ergebnis["zugeordnet"] == 2
-    assert len(ergebnis["ohne_zuordnung"]) == 2 and eigene["task_id"] in ergebnis["ohne_zuordnung"]
+    assert ergebnis["zugeordnet"] == 3
+    assert ergebnis["ohne_zuordnung"] == [eigene["task_id"]]
     schluessel = [a["herkunft_key"] for a in aufgaben.values() if a["herkunft_key"]]
-    assert sorted(schluessel) == ["a2", "a3"]
+    assert sorted(schluessel) == ["a1", "a2", "a3"]
 
     # (c) a key already carried by another task is never given a second time
     store, fake, factory = _setup(tmp_path / "c" if (tmp_path / "c").mkdir() is None else tmp_path)
@@ -324,3 +325,21 @@ def test_geloeschte_uebernommene_aufgabe_geht_mit_herkunft_offline(tmp_path):
         store, gw, r["freigabe_id"], approval_ref="k1", learnhouse_revision=4
     ))
     assert {"a1", "l1"} <= set(gw.aufrufe[0]["entfernen"])
+
+
+def test_neu_angelegte_gleiche_frage_blockiert_geloeschte_nicht(tmp_path):
+    store, fake, factory = _setup(tmp_path)
+    _uebernehmen(store, fake, factory, katalog=None)
+    t1 = _eine_loeschen(store, factory, leeren=True)
+    prompt = store.neueste(t1)["content"]["prompt"]
+    neu = store.aufgabe_anlegen(COURSE, chapter_title="Kapitel Eins", summary="gleiche Frage neu")
+    store.fassung_anlegen(
+        neu["task_id"], content={**store.neueste(t1)["content"], "prompt": prompt},
+        based_on=None, author_ref="kursleitung-a", reason="neu", art="neu", findings=[],
+    )
+    ergebnis = herkunft_nachtragen(store, fake, factory, COURSE)
+    assert ergebnis["ohne_zuordnung"] == [neu["task_id"]]
+    geloescht = next(a for a in store.aufgaben_alle(COURSE) if a["task_id"] == t1)
+    assert geloescht["herkunft_key"] == "a1"
+    r = _vorbereiten(store, _entwurf(fake))
+    assert [b for b in r["befunde"] if b["code"] == "herkunft_fehlt"] == []
