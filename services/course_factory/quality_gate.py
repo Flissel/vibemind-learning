@@ -188,17 +188,7 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
         for concept_id in activity.concept_ids:
             if concept_id not in concept_ids:
                 issues.append(QualityIssue("activity_concept_missing", concept_id))
-        # A structured quiz carries its solution in correct_option_ids.
-        structured_quiz = activity.type == "quiz" and _quiz_options_valid(activity)
-        if not activity.expected_answer.strip() and not structured_quiz:
-            issues.append(QualityIssue("expected_answer_missing", activity.activity_id))
-        if activity.type != "quiz" and not activity.rubric:
-            issues.append(QualityIssue("rubric_missing", activity.activity_id))
-        if activity.type == "quiz" and not _quiz_options_valid(activity):
-            issues.append(QualityIssue("quiz_options_invalid", activity.activity_id))
-        # "All but one" can be solved by spotting the odd option, not by knowing the matter.
-        if structured_quiz and len(activity.options) >= 3 and len(activity.correct_option_ids) == len(activity.options) - 1:
-            issues.append(QualityIssue("quiz_all_but_one", activity.activity_id))
+        issues.extend(activity_issues(activity))
 
     scales = {sum(criterion.points for criterion in activity.rubric) for activity in draft.activities if activity.rubric}
     if len(scales) > 1:
@@ -224,13 +214,30 @@ def _deterministic_quality_issues(draft: CourseDraft) -> list[QualityIssue]:
             issues.append(QualityIssue("task_type_distribution", draft.job_id))
 
     for lesson in draft.lessons:
-        issues.extend(_lesson_teaching_issues(lesson))
-    if _mixes_address([lesson.body for lesson in draft.lessons] + [activity.prompt for activity in draft.activities]):
+        issues.extend(lesson_teaching_issues(lesson))
+    if mixes_address([lesson.body for lesson in draft.lessons] + [activity.prompt for activity in draft.activities]):
         issues.append(QualityIssue("address_mixed", draft.job_id))
     return issues
 
 
-def _lesson_teaching_issues(lesson) -> list[QualityIssue]:
+def activity_issues(activity: ActivityDraft) -> list[QualityIssue]:
+    """The rules one activity answers to on its own (no course around it)."""
+    issues: list[QualityIssue] = []
+    # A structured quiz carries its solution in correct_option_ids.
+    structured_quiz = activity.type == "quiz" and _quiz_options_valid(activity)
+    if not activity.expected_answer.strip() and not structured_quiz:
+        issues.append(QualityIssue("expected_answer_missing", activity.activity_id))
+    if activity.type != "quiz" and not activity.rubric:
+        issues.append(QualityIssue("rubric_missing", activity.activity_id))
+    if activity.type == "quiz" and not _quiz_options_valid(activity):
+        issues.append(QualityIssue("quiz_options_invalid", activity.activity_id))
+    # "All but one" can be solved by spotting the odd option, not by knowing the matter.
+    if structured_quiz and len(activity.options) >= 3 and len(activity.correct_option_ids) == len(activity.options) - 1:
+        issues.append(QualityIssue("quiz_all_but_one", activity.activity_id))
+    return issues
+
+
+def lesson_teaching_issues(lesson) -> list[QualityIssue]:
     """The lesson text is what the learner reads: it has to carry the claims, and every
     command a claim names word for word."""
     from spaces.learning.services.lernsequenz.aus_struktur import KNOWN_COMMANDS
@@ -256,7 +263,7 @@ def _lesson_teaching_issues(lesson) -> list[QualityIssue]:
     return issues
 
 
-def _mixes_address(texts: list[str]) -> bool:
+def mixes_address(texts: list[str]) -> bool:
     """Formal "Sie" and informal "du" in the same course. Commands, code and quotes are left
     out (CMD's `dir` is not "dir"); a sentence-initial "Sie" may mean "they" and does not count."""
     from spaces.learning.services.lernsequenz.aus_struktur import command_lines
@@ -273,6 +280,10 @@ def _mixes_address(texts: list[str]) -> bool:
                 formal = True
                 break
     return informal and formal
+
+
+_lesson_teaching_issues = lesson_teaching_issues
+_mixes_address = mixes_address
 
 
 def _source_proportion_issues(draft: CourseDraft, sources: tuple[SourceSnapshot, ...]) -> list[QualityIssue]:

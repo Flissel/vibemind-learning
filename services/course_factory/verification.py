@@ -144,23 +144,30 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
-def _commands_not_in_sources(draft: CourseDraft, sources: tuple[SourceSnapshot, ...]) -> list[VerificationIssue]:
-    """A command line a learner is told to run must stand, word for word, in a source chunk.
+def subjects_with_unsourced_command(
+    subjects: list[tuple[str, str]], sources: tuple[SourceSnapshot, ...]
+) -> list[str]:
+    """Ids of the (id, text) subjects with a command line that stands in no source chunk.
     Judged only when the caller supplied chunk texts."""
     from spaces.learning.services.lernsequenz.aus_struktur import command_lines
 
     corpus = [_squash(chunk.text) for source in sources for chunk in source.chunks if chunk.text]
     if not corpus:
         return []
-    issues: list[VerificationIssue] = []
-    subjects = [(lesson.lesson_id, lesson.body) for lesson in draft.lessons]
-    subjects += [(activity.activity_id, activity.prompt + "\n" + activity.expected_answer) for activity in draft.activities]
+    found: list[str] = []
     for subject_id, text in subjects:
         for command in command_lines(text):
             if not any(_squash(command) in chunk for chunk in corpus):
-                issues.append(VerificationIssue("command_not_in_source", subject_id))
+                found.append(subject_id)
                 break
-    return issues
+    return found
+
+
+def _commands_not_in_sources(draft: CourseDraft, sources: tuple[SourceSnapshot, ...]) -> list[VerificationIssue]:
+    """A command line a learner is told to run must stand, word for word, in a source chunk."""
+    subjects = [(lesson.lesson_id, lesson.body) for lesson in draft.lessons]
+    subjects += [(activity.activity_id, activity.prompt + "\n" + activity.expected_answer) for activity in draft.activities]
+    return [VerificationIssue("command_not_in_source", subject_id) for subject_id in subjects_with_unsourced_command(subjects, sources)]
 
 
 def _deduplicate_issues(

@@ -1,0 +1,204 @@
+"""Werkstatt: deterministic checks of one task, no model."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from uuid import NAMESPACE_URL, uuid5
+
+from spaces.learning.services.course_factory.verification import ChunkEvidence, SourceSnapshot
+from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
+
+_SRC_ID = "00000000-0000-4000-8000-0000000000a1"
+_CHUNK_1 = "00000000-0000-4000-8000-0000000000b1"
+_CHUNK_2 = "00000000-0000-4000-8000-0000000000b2"
+_HASH = "a" * 64
+_KOMMANDO = "Test-Path C:/Daten/bericht.txt"
+
+SRC = (
+    SourceSnapshot(
+        source_id=_SRC_ID,
+        revision=1,
+        content_hash=_HASH,
+        chunks=(
+            ChunkEvidence(_CHUNK_1, _HASH, {"page": 1}, f"Mit {_KOMMANDO} pruefen Sie, ob eine Datei existiert."),
+            ChunkEvidence(_CHUNK_2, _HASH, {"page": 2}, "Weitere Hinweise."),
+        ),
+    ),
+)
+REFS_2 = tuple(
+    json.dumps(
+        {
+            "source_id": _SRC_ID,
+            "source_revision": 1,
+            "chunk_id": chunk,
+            "chunk_content_hash": _HASH,
+            "locator": {"page": number},
+        }
+    )
+    for number, chunk in enumerate((_CHUNK_1, _CHUNK_2), start=1)
+)
+
+_TEXT = "Der Befehl Test-Path prueft, ob eine Datei oder ein Ordner existiert."
+
+
+def lektion(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "title": "Dateien pruefen",
+        "body": f"{_TEXT}\n\n```powershell\n{_KOMMANDO}\n```\n",
+        "claims": [{"claim_id": "c1", "text": _TEXT, "citation_ids": ["S1"]}],
+        "concept_ids": ["k1"],
+    }
+    base.update(over)
+    return base
+
+
+def quiz(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "kind": "quiz",
+        "prompt": "Welcher Befehl prueft, ob eine Datei existiert?",
+        "concept_ids": ["k1"],
+        "citation_ids": ["S1"],
+        "options": [
+            {"option_id": "a", "text": "Test-Path"},
+            {"option_id": "b", "text": "Get-Date"},
+            {"option_id": "c", "text": "Get-Help"},
+        ],
+        "correct_option_ids": ["a"],
+        "lektion": lektion(),
+    }
+    base.update(over)
+    return base
+
+
+def gut() -> Any:
+    inhalt, _ = quellen_aufloesen(inhalt_lesen(quiz()), REFS_2, course_id="c1")
+    return inhalt
+
+
+def codes(befunde: list[dict[str, str]]) -> list[str]:
+    return [b["code"] for b in befunde]
+
+
+def test_quiz_alle_bis_auf_eine_ist_befund() -> None:
+    inhalt = inhalt_lesen(
+        quiz(
+            options=[{"option_id": x, "text": f"Option {x}"} for x in "abcd"],
+            correct_option_ids=["a", "b", "c"],
+        )
+    )
+    inhalt, _ = quellen_aufloesen(inhalt, REFS_2, course_id="c1")
+    assert codes(aufgabe_pruefen(inhalt, sources=SRC)) == ["quiz_all_but_one"]
+
+
+def test_lektion_mit_aufgabe_im_text_ist_befund() -> None:
+    body = f"{_TEXT}\n\nAufgabe 1: Pruefen Sie eine Datei.\n\n```powershell\n{_KOMMANDO}\n```\n"
+    inhalt, _ = quellen_aufloesen(inhalt_lesen(quiz(lektion=lektion(body=body))), REFS_2, course_id="c1")
+    assert "lesson_contains_tasks" in codes(aufgabe_pruefen(inhalt, sources=SRC))
+
+
+def test_du_anrede_ist_befund() -> None:
+    inhalt, _ = quellen_aufloesen(
+        inhalt_lesen(quiz(prompt="Wie pruefst du, ob eine Datei existiert?")),
+        REFS_2,
+        course_id="c1",
+    )
+    body = f"{_TEXT} Danach koennen Sie weiterarbeiten.\n\n```powershell\n{_KOMMANDO}\n```\n"
+    inhalt = inhalt.model_copy(update={"lektion": inhalt.lektion.model_copy(update={"body": body})})
+    assert "address_mixed" in codes(aufgabe_pruefen(inhalt, sources=SRC))
+
+
+def test_unbekannter_quellenschluessel_ist_befund() -> None:
+    mit_claim = inhalt_lesen(
+        quiz(
+            citation_ids=["S9"],
+            lektion=lektion(claims=[{"claim_id": "c1", "text": _TEXT, "citation_ids": ["S9"]}]),
+        )
+    )
+    inhalt, zitate = quellen_aufloesen(mit_claim, REFS_2, course_id="c1")
+    assert zitate == []
+    assert inhalt.citation_ids == [] and inhalt.zitate == []
+    assert "claim_uncited" in codes(aufgabe_pruefen(inhalt, sources=SRC))
+
+
+def test_befehl_nicht_in_quelle_ist_befund() -> None:
+    body = f"{_TEXT}\n\n```powershell\nTest-Path C:/Anderes/ding.txt\n```\n"
+    inhalt, _ = quellen_aufloesen(inhalt_lesen(quiz(lektion=lektion(body=body))), REFS_2, course_id="c1")
+    assert codes(aufgabe_pruefen(inhalt, sources=SRC)) == ["command_not_in_source"]
+
+
+def test_quellenschluessel_werden_zu_zitaten() -> None:
+    inhalt, zitate = quellen_aufloesen(inhalt_lesen(quiz()), REFS_2, course_id="c1")
+    erwartet = str(uuid5(NAMESPACE_URL, f"c1:{_CHUNK_1}"))
+    assert [z.citation_id for z in zitate] == [erwartet]
+    assert zitate[0].chunk_id == _CHUNK_1 and zitate[0].content_hash == _HASH
+    assert inhalt.zitate == zitate
+    assert inhalt.citation_ids == [erwartet]
+    assert inhalt.lektion.claims[0].citation_ids == [erwartet]
+
+
+def test_luecke_ohne_inhalt_und_doppelte_eintraege_sind_befunde() -> None:
+    cloze = inhalt_lesen(
+        {
+            "kind": "cloze",
+            "prompt": "Ergaenzen Sie den Befehl.",
+            "concept_ids": ["k1"],
+            "template": "{{a}} C:/x",
+            "blanks": [{"blank_id": "a", "accepted": ["  "]}],
+        }
+    )
+    assert "cloze_blank_empty" in codes(aufgabe_pruefen(cloze, sources=SRC))
+    ordering = inhalt_lesen(
+        {"kind": "ordering", "prompt": "Ordnen Sie.", "concept_ids": ["k1"], "items": ["a", "b", "a"]}
+    )
+    assert codes(aufgabe_pruefen(ordering, sources=SRC)) == ["ordering_duplicate"]
+    matching = inhalt_lesen(
+        {
+            "kind": "matching",
+            "prompt": "Ordnen Sie zu.",
+            "concept_ids": ["k1"],
+            "pairs": [
+                {"left": "x", "right": "1"},
+                {"left": "x", "right": "2"},
+                {"left": "y", "right": "3"},
+            ],
+        }
+    )
+    assert codes(aufgabe_pruefen(matching, sources=SRC)) == ["matching_duplicate"]
+
+
+def test_offene_aufgabe_ohne_musterantwort_ist_befund() -> None:
+    offen = inhalt_lesen(
+        {
+            "kind": "open",
+            "prompt": "Erklaeren Sie Test-Path.",
+            "concept_ids": ["k1"],
+            "expected_answer": " ",
+            "rubric": [{"criterion_id": "r1", "description": "Nennt den Zweck", "points": 2}],
+        }
+    )
+    assert codes(aufgabe_pruefen(offen, sources=SRC)) == ["expected_answer_missing"]
+
+
+def test_saubere_aufgabe_hat_keine_befunde() -> None:
+    assert aufgabe_pruefen(gut(), sources=SRC) == []
+
+
+def test_jeder_befund_hat_deutschen_text() -> None:
+    schlecht = inhalt_lesen(
+        quiz(
+            prompt="Wie pruefst du das?",
+            options=[{"option_id": x, "text": f"Option {x}"} for x in "abcd"],
+            correct_option_ids=["a", "b", "c"],
+            lektion=lektion(
+                body=f"Aufgabe 1: Los. Danach koennen Sie das.\n\n```powershell\nTest-Path C:/Fremd\n```\n",
+                claims=[{"claim_id": "c1", "text": _TEXT, "citation_ids": []}],
+            ),
+        )
+    )
+    befunde = aufgabe_pruefen(schlecht, sources=SRC)
+    assert len(befunde) >= 4
+    for b in befunde:
+        assert b["code"] and len(b["text"]) > 20 and b["text"].rstrip().endswith((".", "!", "?"))
+        assert b["code"] not in b["text"]
