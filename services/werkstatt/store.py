@@ -454,6 +454,24 @@ class WerkstattStore:
                 raise ValueError("freigabe_nicht_offen")
             freigabe.zustand = "verworfen"
 
+    def freigabe_markieren_freigegeben(
+        self, freigabe_id: str, *, learnhouse_revision: int, approval_ref: str
+    ) -> dict[str, Any]:
+        """`angefordert` -> `freigegeben`, once: the guarded UPDATE lets only one caller win."""
+        with self._sessions.begin() as session:
+            if session.get(WerkstattFreigabe, freigabe_id) is None:
+                raise LookupError("freigabe_unbekannt")
+            gewonnen = session.execute(
+                update(WerkstattFreigabe)
+                .where(WerkstattFreigabe.id == freigabe_id,
+                       WerkstattFreigabe.zustand == "angefordert")
+                .values(zustand="freigegeben", learnhouse_revision=learnhouse_revision,
+                        approval_ref=approval_ref, freigegeben_at=utc_now())
+            ).rowcount
+            if gewonnen != 1:
+                raise ValueError("freigabe_nicht_offen")
+        return self.freigabe(freigabe_id)
+
     # jobs (model work that outlives one HTTP request)
 
     def auftrag_anlegen(

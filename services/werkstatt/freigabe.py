@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -182,4 +182,64 @@ def freigabe_vorbereiten(
     return {
         "freigabe_id": angelegt["id"], "nummer": angelegt["nummer"], "vergleich": vergleich,
         "befunde": befunde, "blockiert": blockiert, "nichts_zu_veroeffentlichen": nichts,
+    }
+
+
+class _StandSchreiber(Protocol):
+    async def werkstatt_stand_schreiben(
+        self, course_id: str, *, expected_revision: int, freigabe_id: str,
+        kapitel: list[dict[str, Any]],
+    ) -> dict[str, Any]: ...
+
+
+def _kapitel_aus_manifest(store: WerkstattStore, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Chapters in manifest order; each task's lesson first. Reads the approved version, not the newest."""
+    kapitel: dict[str, dict[str, Any]] = {}
+    for m in sorted(manifest, key=lambda e: e["position"]):
+        fassung = next(f for f in store.fassungen(m["task_id"]) if f["number"] == m["fassung"])
+        inhalt = inhalt_lesen(fassung["content"])
+        eintraege = kapitel.setdefault(
+            m["kapitel"], {"titel": m["kapitel"], "eintraege": []}
+        )["eintraege"]
+        if inhalt.lektion is not None:
+            eintraege.append({
+                "key": m["lektion_key"], "art": "lesson", "titel": inhalt.lektion.title,
+                "markdown": inhalt.lektion.body,
+                "claims": [c.text for c in inhalt.lektion.claims],
+            })
+        eintraege.append({
+            "key": m["aufgaben_key"], "art": "task", "titel": inhalt.prompt[:120],
+            "prompt": inhalt.prompt,
+        })
+    return list(kapitel.values())
+
+
+async def freigabe_ausfuehren(
+    store: WerkstattStore, gateway: _StandSchreiber, freigabe_id: str, *,
+    approval_ref: str, learnhouse_revision: int,
+) -> dict[str, Any]:
+    """Write the approved manifest into LearnHouse. All checks run before the first write.
+
+    On a gateway error the release stays `angefordert`. No model is called."""
+    freigabe = store.freigabe(freigabe_id)
+    if freigabe["zustand"] != "angefordert":
+        raise ValueError("freigabe_nicht_offen")
+    if freigabe["learnhouse_revision_vorher"] != learnhouse_revision:
+        raise ValueError("learnhouse_stand_veraltet")
+    if any(b.get("blockierend") for b in freigabe["befunde"]):
+        raise ValueError("freigabe_blockiert")
+    vergleich = freigabe["vergleich"]
+    if not any(vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")):
+        raise ValueError("nichts_zu_veroeffentlichen")
+    antwort = await gateway.werkstatt_stand_schreiben(
+        freigabe["course_id"], expected_revision=learnhouse_revision, freigabe_id=freigabe_id,
+        kapitel=_kapitel_aus_manifest(store, freigabe["manifest"]),
+    )
+    revision = int(antwort["revision"])
+    store.freigabe_markieren_freigegeben(
+        freigabe_id, learnhouse_revision=revision, approval_ref=approval_ref
+    )
+    return {
+        "learnhouse_revision": revision, "aktualisiert": antwort["aktualisiert"],
+        "neu": antwort["neu"], "unveroeffentlicht": antwort["unveroeffentlicht"],
     }

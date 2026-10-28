@@ -196,3 +196,35 @@ def test_a_fresh_learnhouse_course_reads_as_pending() -> None:
         }
     )
     assert readback.review_status == "pending" and readback.published is False
+
+
+@pytest.mark.asyncio
+async def test_werkstatt_stand_schreiben_sendet_put() -> None:
+    course_id = str(uuid4())
+    requests: list[httpx.Request] = []
+    kapitel = [{"titel": "K1", "eintraege": [{"key": "a", "art": "task", "titel": "T", "prompt": "P"}]}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"revision": 9, "aktualisiert": 0, "neu": 1, "unveroeffentlicht": 0})
+
+    client = httpx.AsyncClient(
+        base_url="http://learnhouse-api:9000/api/v1/learning/",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = LearnHouseHttpGateway(
+        "http://learnhouse-api:9000/api/v1/learning", "s" * 32, client=client
+    )
+
+    antwort = await gateway.werkstatt_stand_schreiben(
+        course_id, expected_revision=8, freigabe_id="f-1", kapitel=kapitel
+    )
+
+    assert antwort["revision"] == 9
+    assert requests[0].method == "PUT"
+    assert requests[0].url.path.endswith(f"/api/v1/learning/courses/{course_id}/werkstatt-stand")
+    assert requests[0].headers["X-LearnHouse-Learning-Service-Key"] == "s" * 32
+    assert json.loads(requests[0].content) == {
+        "expected_revision": 8, "freigabe_id": "f-1", "kapitel": kapitel,
+    }
+    await client.aclose()

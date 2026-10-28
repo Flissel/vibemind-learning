@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError
@@ -120,6 +121,26 @@ class LearnHouseHttpGateway:
             f"courses/{course_id}/lernsequenz-einbettungen",
             correlation_id=correlation_id,
             payload={"lesson_id": lesson_id, "embeds": embeds},
+        )
+
+    async def werkstatt_stand_schreiben(
+        self,
+        course_id: str,
+        *,
+        expected_revision: int,
+        freigabe_id: str,
+        kapitel: list[dict[str, object]],
+    ) -> dict[str, object]:
+        """Write the released Werkstatt state (chapters, lessons, tasks) into the course."""
+        return await self._request_json(
+            "PUT",
+            f"courses/{course_id}/werkstatt-stand",
+            correlation_id=str(uuid4()),
+            payload={
+                "expected_revision": expected_revision,
+                "freigabe_id": freigabe_id,
+                "kapitel": kapitel,
+            },
         )
 
     async def _course_mutation(
