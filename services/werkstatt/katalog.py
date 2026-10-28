@@ -100,6 +100,15 @@ class WerkstattKatalog:
                 )
             )
 
+    def hat_revision(self, course_id: str, revision: int) -> bool:
+        with self._session_factory() as session:
+            return session.scalar(
+                select(AdaptiveConcept.id).where(
+                    AdaptiveConcept.course_id == course_id,
+                    AdaptiveConcept.course_revision == revision,
+                ).limit(1)
+            ) is not None
+
     def projizieren(
         self,
         course_id: str,

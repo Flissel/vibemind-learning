@@ -533,3 +533,84 @@ def test_gemischte_reihenfolge_ist_nie_die_loesung(tmp_path, monkeypatch):
         )
         assert _gezeigt(factory, revision, "reihenfolge")[1] != _SCHRITTE
         assert _gezeigt(factory, revision, "zuordnung")[1] != [p["right"] for p in _zuordnung()["pairs"]]
+
+
+# --- Fehlgeschlagene Projektion: Lernstand geht nicht verloren, Katalog nachholbar -------
+
+
+def _hat_katalog(factory, revision: int) -> bool:
+    with factory() as s:
+        return s.scalar(select(func.count()).select_from(AdaptiveConcept).where(
+            AdaptiveConcept.course_id == COURSE, AdaptiveConcept.course_revision == revision,
+        )) > 0
+
+
+@pytest.mark.asyncio
+async def test_fehlgeschlagene_projektion_verliert_keinen_lernstand(tmp_path):
+    # Taken-over course: catalog revision 2 with progress. Release 1 (revision 3) loses its
+    # catalog; release 2 (revision 4) must still carry over from revision 2.
+    factory = _factory(tmp_path)
+    s = _store(factory)
+    katalog = WerkstattKatalog(factory)
+    a, b = _quiz("Welcher Befehl listet Dateien auf?", "k1"), _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["b"])
+    katalog.projizieren(COURSE, 2, [_eintrag("fabrik-a", a), _eintrag("fabrik-b", b)], None)
+    _lernen(factory, 2)
+    t1, t2 = _aufgabe(s, a, art="uebernommen"), _aufgabe(s, b, art="uebernommen")
+
+    _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
+    erste = await _freigeben(s, _KaputterKatalog(), 2)
+    assert erste["katalog_fehler"] == "RuntimeError" and not _hat_katalog(factory, 3)
+
+    _fassung(s, t2, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["c"]), "neu")
+    zweite = await _freigeben(s, katalog, 3)
+
+    assert zweite["katalog"]["lernstand_uebernommen"] == 1
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 4, "k1"))
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 4, "k2")) == []
+
+
+@pytest.mark.asyncio
+async def test_vorher_ist_letzter_katalog_mit_seiner_freigabe(tmp_path):
+    # Release 1 has a catalog (revision 5), release 2 not (revision 6): release 3 compares with
+    # release 1's manifest, since revision 5 is what learners practised on.
+    factory = _factory(tmp_path)
+    s = _store(factory)
+    katalog = WerkstattKatalog(factory)
+    t1 = _aufgabe(s, _quiz("Welcher Befehl listet Dateien auf?", "k1"))
+    t2 = _aufgabe(s, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["b"]))
+    await _freigeben(s, katalog, 4)
+    _lernen(factory, 5)
+    _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
+    assert "katalog_fehler" in await _freigeben(s, _KaputterKatalog(), 5)
+
+    _fassung(s, t2, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["c"]), "neu")
+    dritte = await _freigeben(s, katalog, 6)
+
+    assert dritte["katalog"]["lernstand_uebernommen"] == 1
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 7, "k1"))
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 7, "k2")) == []
+
+
+@pytest.mark.asyncio
+async def test_katalog_nachholen_projiziert_fehlende_revision(tmp_path):
+    from spaces.learning.services.werkstatt.freigabe import katalog_nachholen
+
+    factory = _factory(tmp_path)
+    s = _store(factory)
+    katalog = WerkstattKatalog(factory)
+    t1 = _aufgabe(s, _quiz("Welcher Befehl listet Dateien auf?", "k1"))
+    _aufgabe(s, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["b"]))
+    await _freigeben(s, katalog, 4)
+    _lernen(factory, 5)
+    _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
+    zweite = await _freigeben(s, _KaputterKatalog(), 5)
+    assert "katalog_fehler" in zweite and not _hat_katalog(factory, 6)
+
+    r = katalog_nachholen(s, katalog, COURSE)
+
+    assert r["learnhouse_revision"] == 6
+    assert r["freigabe_id"] == s.freigabe_letzte_freigegebene(COURSE)["id"]
+    assert r["katalog"] == {"items": 2, "konzepte": 2, "lernstand_uebernommen": 2}
+    assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 6, "k1"))
+    # Nothing left to catch up.
+    assert katalog_nachholen(s, katalog, COURSE) == {"nachgeholt": False}

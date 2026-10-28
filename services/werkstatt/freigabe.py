@@ -199,6 +199,8 @@ class _StandSchreiber(Protocol):
 class _Katalog(Protocol):
     def letzte_revision(self, course_id: str, *, unter: int) -> int | None: ...
 
+    def hat_revision(self, course_id: str, revision: int) -> bool: ...
+
     def projizieren(
         self, course_id: str, course_revision: int, eintraege: list[dict[str, Any]],
         vorher_revision: int | None, vorher_eintraege: list[dict[str, Any]] | None = None,
@@ -253,20 +255,53 @@ def _uebernommen(store: WerkstattStore, course_id: str) -> list[dict[str, Any]]:
 def _katalog_projizieren(
     store: WerkstattStore, katalog: _Katalog, freigabe: dict[str, Any], revision: int
 ) -> dict[str, Any]:
-    """Catalog of the new LearnHouse revision; learner state from the previous release's catalog
-    (before the first release: the taken-over course's catalog, compared with Fassung 1)."""
+    """Catalog of the new LearnHouse revision; learner state from the newest catalog below it.
+
+    That catalog belongs to the earlier release with its revision (a release whose projection
+    failed has none and is skipped); with no such release it is the taken-over course's
+    catalog, compared with the taken-over Fassungen."""
     course_id = freigabe["course_id"]
-    vorige = store.freigabe_letzte_freigegebene(course_id, vor_nummer=freigabe["nummer"])
-    if vorige is not None:
-        vorher_revision = vorige["learnhouse_revision"]
-        vorher = _mit_inhalt(store, vorige["manifest"])
-    else:
-        vorher_revision = katalog.letzte_revision(course_id, unter=revision)
-        vorher = _uebernommen(store, course_id)
+    vorher_revision = katalog.letzte_revision(course_id, unter=revision)
+    vorher: list[dict[str, Any]] = []
+    if vorher_revision is not None:
+        passend = next(
+            (f for f in store.freigaben_freigegeben(course_id)
+             if f["nummer"] < freigabe["nummer"] and f["learnhouse_revision"] == vorher_revision),
+            None,
+        )
+        vorher = _mit_inhalt(store, passend["manifest"]) if passend else _uebernommen(store, course_id)
     return katalog.projizieren(
         course_id, revision, _mit_inhalt(store, freigabe["manifest"]), vorher_revision,
         vorher_eintraege=vorher,
     )
+
+
+def katalog_nachholen(store: WerkstattStore, katalog: _Katalog, course_id: str) -> dict[str, Any]:
+    """Project the newest released revision that has no catalog (its projection failed).
+
+    Same carry-over as at release time; `{"nachgeholt": False}` when nothing is missing."""
+    fehlend = next(
+        (f for f in store.freigaben_freigegeben(course_id)
+         if f["learnhouse_revision"] is not None
+         and not katalog.hat_revision(course_id, f["learnhouse_revision"])),
+        None,
+    )
+    if fehlend is None:
+        return {"nachgeholt": False}
+    revision = fehlend["learnhouse_revision"]
+    try:
+        ergebnis = _katalog_projizieren(store, katalog, fehlend, revision)
+    except Exception:
+        logger.exception(
+            "werkstatt_katalog_nachholen_fehlgeschlagen",
+            extra={"freigabe_id": fehlend["id"], "course_revision": revision},
+        )
+        raise
+    logger.info(
+        "werkstatt_katalog_nachgeholt",
+        extra={"freigabe_id": fehlend["id"], "course_revision": revision, **ergebnis},
+    )
+    return {"freigabe_id": fehlend["id"], "learnhouse_revision": revision, "katalog": ergebnis}
 
 
 async def freigabe_ausfuehren(
