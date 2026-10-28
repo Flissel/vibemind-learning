@@ -289,3 +289,69 @@ def test_fremder_host_bleibt_403(uhr, werkstatt_freigegeben, monkeypatch: pytest
     entfernt = _call("GET", f"/freigabe/{secret}", client="100.64.0.9", headers={"Host": HANDY_HOST})
     assert entfernt.status_code == 403
     assert werkstatt_freigegeben == []
+
+
+def test_werkstatt_seite_zeigt_was_offline_geht(uhr) -> None:
+    secret = werkzeuge._freigaben.merken(
+        "f-2", 4, 7,
+        {
+            "art": "werkstatt", "course_id": "kurs-1", "titel": "Kurs", "nummer": 4,
+            "learnhouse_revision": 7, "blockiert": False, "nichts_zu_veroeffentlichen": False,
+            "vergleich": {
+                "neu": [], "geaendert": [], "textkorrektur": [], "unveraendert": 1,
+                "geloescht": [{"task_id": "t1", "kapitel": "K1", "summary": "Alt",
+                               "fassung_alt": 1, "fassung_neu": None}],
+                "offline": [
+                    {"key": "l1", "art": "lesson", "titel": "Lektion <alt>"},
+                    {"key": "a1", "art": "task", "titel": "Frage alt"},
+                ],
+                "zusammengefuehrt": [{"key": "l2", "art": "lesson", "titel": "Lektion B"}],
+            },
+            "befunde": [],
+        },
+        art="werkstatt",
+    ).geheimnis
+    page = _call("GET", f"/freigabe/{secret}")
+    assert page.status_code == 200
+    assert "Geht offline: 3" in page.text
+    assert "Lektion &lt;alt&gt;" in page.text and "<alt>" not in page.text
+    assert "Frage alt" in page.text and "Lektion B" in page.text
+    assert "zusammengeführt" in page.text
+    assert '<button type="submit"' in page.text  # not blocking
+
+
+def test_werkstatt_seite_ohne_offline_hat_keinen_abschnitt(uhr) -> None:
+    page = _call("GET", f"/freigabe/{_werkstatt()}")
+    assert "Geht offline" not in page.text
+
+
+@pytest.mark.parametrize(
+    ("basis", "host", "origin"),
+    [
+        ("https://PC.Example.ts.net", "pc.example.ts.net", "https://pc.example.ts.net"),
+        ("https://pc.example.ts.net:443", "pc.example.ts.net", "https://pc.example.ts.net"),
+        ("https://pc.example.ts.net", "PC.EXAMPLE.TS.NET", "https://PC.example.ts.net"),
+        ("https://pc.example.ts.net:8443", "pc.example.ts.net:8443", "https://pc.example.ts.net:8443"),
+    ],
+)
+def test_handy_host_ohne_gross_klein_und_ohne_443(
+    uhr, werkstatt_freigegeben, monkeypatch: pytest.MonkeyPatch, basis: str, host: str, origin: str
+) -> None:
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", basis)
+    secret = _werkstatt()
+    assert _call("GET", f"/freigabe/{secret}", headers={"Host": host}).status_code == 200
+    post = _call("POST", f"/freigabe/{secret}", headers={"Host": host, "Origin": origin})
+    assert post.status_code == 200, post.text
+    assert werkstatt_freigegeben == ["f-1"]
+
+
+def test_handy_basis_mit_anderem_port_behaelt_den_port(uhr, monkeypatch: pytest.MonkeyPatch) -> None:
+    from spaces.learning.claw.freigabe import handy_basis
+
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", "https://PC.example.ts.net:8443/")
+    assert handy_basis() == ("https://pc.example.ts.net:8443", "pc.example.ts.net:8443")
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", "https://PC.example.ts.net:443")
+    assert handy_basis() == ("https://pc.example.ts.net", "pc.example.ts.net")
+    secret = _werkstatt()
+    monkeypatch.setenv("LEARNING_CLAW_FREIGABE_BASIS", "https://pc.example.ts.net:8443")
+    assert _call("GET", f"/freigabe/{secret}", headers={"Host": HANDY_HOST}).status_code == 403

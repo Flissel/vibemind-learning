@@ -54,7 +54,10 @@ class FreigabeSeite:
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
         headers = dict((k.lower(), v) for k, v in scope.get("headers", []))
         client = (scope.get("client") or ("", 0))[0]
-        if client not in _LOOPBACK_CLIENTS or headers.get(b"host") not in self._hosts:
+        # Host names and the origin's scheme and host are case-insensitive; ours are lower case.
+        host = headers.get(b"host", b"").lower()
+        origin = headers.get(b"origin", b"").lower()
+        if client not in _LOOPBACK_CLIENTS or host not in self._hosts:
             await _antwort(send, 403, "Nicht erlaubt", "Diese Seite ist nur lokal erreichbar.")
             return
         geheimnis = scope["path"][len(PREFIX):]
@@ -64,7 +67,7 @@ class FreigabeSeite:
         if scope["method"] == "GET":
             await self._zeigen(send, geheimnis)
         elif scope["method"] == "POST":
-            if headers.get(b"origin") not in self._origins:
+            if origin not in self._origins:
                 await _antwort(send, 403, "Nicht erlaubt", "Freigabe nur von dieser Seite aus.")
                 return
             await _koerper(receive)
@@ -164,6 +167,28 @@ def _fassung(eintrag: dict[str, Any]) -> str:
     return f"Fassung {int(alt)} → {int(neu)}"
 
 
+_ARTEN = {"lesson": "Lektion", "task": "Aufgabe"}
+
+
+def _offline_abschnitt(vergleich: dict[str, Any]) -> list[str]:
+    """What learners will no longer see after the release (shown, never blocking)."""
+    offline = list(vergleich.get("offline") or [])
+    zusammen = list(vergleich.get("zusammengefuehrt") or [])
+    if not offline and not zusammen:
+        return []
+    teile = [f"<h3>Geht offline: {len(offline) + len(zusammen)}</h3><ul>"]
+    for e in offline:
+        art = _ARTEN.get(str(e.get("art")), "Eintrag")
+        teile.append(f"<li>{art}: <strong>{html.escape(str(e.get('titel') or e.get('key')))}</strong></li>")
+    for e in zusammen:
+        teile.append(
+            f"<li>Lektion: <strong>{html.escape(str(e.get('titel') or e.get('key')))}</strong> "
+            "(beim Übernehmen in die erste Lektion ihres Kapitels zusammengeführt)</li>"
+        )
+    teile.append("</ul>")
+    return teile
+
+
 def _werkstatt_inhalt(inhalt: dict[str, Any]) -> str:
     teile = [
         f"<h2>{html.escape(str(inhalt.get('titel') or 'Ohne Titel'))}</h2>",
@@ -181,6 +206,7 @@ def _werkstatt_inhalt(inhalt: dict[str, Any]) -> str:
                 f"({html.escape(str(e.get('kapitel') or ''))}, {_fassung(e)})</li>"
             )
         teile.append("</ul>")
+    teile.extend(_offline_abschnitt(vergleich))
     teile.append(f"<p>Unverändert: {int(vergleich.get('unveraendert') or 0)}</p>")
     befunde = inhalt.get("befunde") or []
     if befunde:

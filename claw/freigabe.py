@@ -35,21 +35,27 @@ WERKSTATT = "werkstatt"
 def handy_basis() -> tuple[str, str] | None:
     """`(origin, host)` of the configured phone base, or None (then everything stays local).
 
-    Only a bare https origin counts: no path, query, user or fragment."""
+    Only a bare https origin counts: no path, query, user or fragment. The host is lower case
+    and without the default port 443, as browsers send it; another port is kept."""
     roh = os.environ.get(BASIS_ENV, "").strip().rstrip("/")
     if not roh:
         return None
     try:
         teile = urlsplit(roh)
+        port = teile.port
     except ValueError:
-        teile = None
+        teile, port = None, None
     if (
-        teile is None or teile.scheme != "https" or not teile.hostname or teile.path
+        teile is None or teile.scheme.lower() != "https" or not teile.hostname or teile.path
         or teile.query or teile.fragment or "@" in teile.netloc
     ):
         logger.warning("%s is not a bare https origin; the approval page stays local", BASIS_ENV)
         return None
-    return f"https://{teile.netloc}", teile.netloc
+    name = teile.hostname.lower()
+    if ":" in name:  # an IPv6 address keeps its brackets
+        name = f"[{name}]"
+    host = name if port in (None, 443) else f"{name}:{port}"
+    return f"https://{host}", host
 
 
 class FreigabeAbgelehnt(Exception):

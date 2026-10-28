@@ -81,11 +81,12 @@ class LearningClient:
         roles: str,
         idempotency_key_value: str | None = None,
         extra: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         key = idempotency_key_value or idempotency_key(path, body)
         return self._request(
             "POST", self.api_url + path, roles, json_body=body,
-            extra={"Idempotency-Key": key, **(extra or {})},
+            extra={"Idempotency-Key": key, **(extra or {})}, timeout=timeout,
         )
 
     def get(

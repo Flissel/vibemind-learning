@@ -193,6 +193,17 @@ def test_werkstatt_freigeben_gibt_einmal_mit_publisher_rolle_frei(fake: Fake, br
     assert sum(r.url.path.endswith("/freigeben") for r in fake.requests) == 1
 
 
+def test_werkstatt_freigeben_wartet_laenger_als_andere_aufrufe(fake: Fake, browser) -> None:
+    # Writing LearnHouse and the practice catalog can take longer than a normal request.
+    werkzeuge.werkstatt_freigabe_anzeigen(COURSE)
+    vorbereiten = fake.requests[-1]
+    werkzeuge.werkstatt_freigeben(_geheimnis(browser))
+    freigeben = fake.requests[-1]
+    assert freigeben.url.path.endswith("/freigeben")
+    assert freigeben.extensions["timeout"]["read"] == 120
+    assert vorbereiten.extensions["timeout"]["read"] == 30
+
+
 def test_kurs_und_werkstatt_geheimnisse_sind_getrennt(fake: Fake, browser) -> None:
     werkzeuge.werkstatt_freigabe_anzeigen(COURSE)
     geheimnis = _geheimnis(browser)

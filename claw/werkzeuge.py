@@ -952,6 +952,9 @@ def werkstatt_auftrag(auftrag_id: str) -> dict[str, Any]:
 TELEGRAM_SKRIPT_ENV = "LEARNING_CLAW_TELEGRAM_SKRIPT"
 LOG_DIR_ENV = "LEARNING_CLAW_LOG_DIR"
 _TELEGRAM_TIMEOUT_SECONDS = 20
+# The release writes LearnHouse and then the practice catalog (drawn windows included); that
+# outlasts the client's normal 30 s.
+_FREIGEBEN_TIMEOUT_SECONDS = 120.0
 
 
 def _log_ordner() -> Path:
@@ -1014,7 +1017,8 @@ def _handy_link_senden(geheimnis: str, titel: str, nummer: int, blockiert: bool)
 def werkstatt_freigabe_anzeigen(course_id: str) -> dict[str, Any]:
     """Bereitet die Freigabe eines Werkstatt-Kurses vor und zeigt, was sich fuer Lernende
     aendern wuerde: `vergleich` (neu, geaendert, textkorrektur, geloescht mit Kurzfassung und
-    Fassung alt/neu; `unveraendert` als Zahl), `befunde` (mit `blockierend`), `blockiert` und
+    Fassung alt/neu; `unveraendert` als Zahl; `offline` und `zusammengefuehrt`: Lektionen und
+    Aufgaben, die danach nicht mehr online sind), `befunde` (mit `blockierend`), `blockiert` und
     `nichts_zu_veroeffentlichen`. Oeffnet die Freigabeseite im Browser dieses Rechners
     (`link_geoeffnet`) und schickt der Inhaberin, wenn eingerichtet, den Link aufs Handy
     (`handy_link_gesendet`). Freigeben kann nur die Inhaberin dort mit einem Klick, einmal und
@@ -1076,6 +1080,7 @@ def werkstatt_freigeben(geheimnis: str) -> dict[str, Any]:
             idempotency_key_value=idempotency_key(
                 "werkstatt_freigeben", {"freigabe_id": anzeige.job_id, "approval_ref": ref}
             ),
+            timeout=_FREIGEBEN_TIMEOUT_SECONDS,
         )
         ergebnis: dict[str, Any] = {
             "freigabe_id": data.get("freigabe_id", anzeige.job_id),
