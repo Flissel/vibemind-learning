@@ -334,13 +334,9 @@ def lesson_teaching_issues(lesson) -> list[QualityIssue]:
 def mixes_address(texts: list[str]) -> bool:
     """Formal "Sie" and informal "du" in the same course. Commands, code and quotes are left
     out (CMD's `dir` is not "dir"); a sentence-initial "Sie" may mean "they" and does not count."""
-    from spaces.learning.services.lernsequenz.aus_struktur import command_lines
-
     informal = formal = False
     for text in texts:
-        prose = _QUOTED.sub(" ", _FENCED.sub(" ", text))
-        commands = set(command_lines(text))
-        prose = "\n".join(line for line in prose.splitlines() if line.strip() not in commands)
+        prose = _prose(text)
         informal = informal or bool(_INFORMAL.search(prose))
         for match in _FORMAL.finditer(prose):
             before = prose[: match.start()].rstrip()
@@ -348,6 +344,20 @@ def mixes_address(texts: list[str]) -> bool:
                 formal = True
                 break
     return informal and formal
+
+
+def uses_informal_address(texts: list[str]) -> bool:
+    """Informal "du" in any of the texts, judged on the same prose as `mixes_address`."""
+    return any(_INFORMAL.search(_prose(text)) for text in texts)
+
+
+def _prose(text: str) -> str:
+    """The text without code, quotes and command lines."""
+    from spaces.learning.services.lernsequenz.aus_struktur import command_lines
+
+    prose = _QUOTED.sub(" ", _FENCED.sub(" ", text))
+    commands = set(command_lines(text))
+    return "\n".join(line for line in prose.splitlines() if line.strip() not in commands)
 
 
 _lesson_teaching_issues = lesson_teaching_issues

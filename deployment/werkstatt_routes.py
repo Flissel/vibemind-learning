@@ -58,6 +58,7 @@ from spaces.learning.services.werkstatt.uebernahme import (
     EntwurfNichtLesbar,
     NichtVeroeffentlicht,
     SchonUebernommen,
+    _entwurf_laden,
     herkunft_nachtragen,
     kurs_uebernehmen,
 )
@@ -561,9 +562,25 @@ def freigabe_anfordern(course_id: str, context: Context, autor: Autor) -> dict[s
     context.require(ROLE_AUTHOR)
     kurs = _kurs(course_id)
     revision = _learnhouse_revision(_learnhouse(), course_id, context)
-    vorbereitet = freigabe_vorbereiten(
-        _runtime().store, course_id, autor=autor, learnhouse_revision=revision
-    )
+    runtime = _runtime()
+
+    def entwurf() -> Any:
+        # Only read for the first release of a taken-over course; failures are a hint there.
+        return _entwurf_laden(
+            _artifact_store(runtime.session_factory), runtime.session_factory, course_id
+        )
+
+    try:
+        vorbereitet = freigabe_vorbereiten(
+            runtime.store, course_id, autor=autor, learnhouse_revision=revision, entwurf=entwurf
+        )
+    except ValueError as error:
+        if str(error) != "freigabe_gleichzeitig":
+            raise
+        raise _fehler(
+            status.HTTP_409_CONFLICT, "freigabe_gleichzeitig",
+            "Gleichzeitig wurde eine andere Freigabe vorbereitet, bitte erneut versuchen",
+        ) from error
     return {**vorbereitet, "titel": kurs["title"], "learnhouse_revision": revision}
 
 

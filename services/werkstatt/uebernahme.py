@@ -211,8 +211,9 @@ def herkunft_nachtragen(
 ) -> dict[str, Any]:
     """Fill the origin keys of an already taken-over course. Each task is matched by the exact
     prompt of its Fassung 1 against the activities of the newest published draft; the task that
-    carries the chapter lesson (`lektion` in Fassung 1) gets the chapter's first lesson id.
-    Only empty columns are filled, so a second run changes nothing."""
+    carries the chapter lesson (`lektion` in Fassung 1) gets the chapter's first lesson id, also
+    when only that lesson id is missing. Only empty columns are filled, so a second run changes
+    nothing."""
     kurs = store.kurs(course_id)  # LookupError("kurs_unbekannt") for an unknown course
     draft = _entwurf_laden(artifact_store, session_factory, course_id)
     aus_entwurf: dict[str, list[Any]] = {}
@@ -233,11 +234,21 @@ def herkunft_nachtragen(
     zuordnung: dict[str, tuple[str | None, str | None]] = {}
     ohne: list[str] = []
     schon = 0
+
+    def erste_lektion(activity_id: str) -> str | None:
+        kap = kapitel_von.get(activity_id)
+        return next((i for i in (kap.lesson_ids if kap else []) if i in lektionen), None)
+
     for aufgabe in kurs["aufgaben"]:
+        inhalt = inhalte[aufgabe["task_id"]]
         if aufgabe["herkunft_key"]:
             schon += 1
+            # The task is known, its lesson key may still be empty: take it from its chapter.
+            if not aufgabe["lektion_herkunft_key"] and inhalt.get("lektion") is not None:
+                lektion_key = erste_lektion(aufgabe["herkunft_key"])
+                if lektion_key:
+                    zuordnung[aufgabe["task_id"]] = (None, lektion_key)
             continue
-        inhalt = inhalte[aufgabe["task_id"]]
         prompt = inhalt.get("prompt")
         treffer = aus_entwurf.get(prompt, []) if isinstance(prompt, str) else []
         if len(treffer) != 1 or prompts_der_aufgaben.count(prompt) != 1:
@@ -250,8 +261,7 @@ def herkunft_nachtragen(
         vergeben.add(aktivitaet.activity_id)
         lektion_key: str | None = None
         if inhalt.get("lektion") is not None:
-            kap = kapitel_von.get(aktivitaet.activity_id)
-            lektion_key = next((i for i in (kap.lesson_ids if kap else []) if i in lektionen), None)
+            lektion_key = erste_lektion(aktivitaet.activity_id)
         zuordnung[aufgabe["task_id"]] = (aktivitaet.activity_id, lektion_key)
     geschrieben = store.herkunft_setzen(zuordnung)
     return {"zugeordnet": geschrieben, "schon_zugeordnet": schon, "ohne_zuordnung": ohne}

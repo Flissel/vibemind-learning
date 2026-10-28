@@ -148,17 +148,24 @@ class LearnHouseHttpGateway:
         expected_revision: int,
         freigabe_id: str,
         kapitel: list[dict[str, object]],
+        entfernen: list[str] | None = None,
     ) -> dict[str, object]:
-        """Write the released Werkstatt state (chapters, lessons, tasks) into the course."""
+        """Write the released Werkstatt state (chapters, lessons, tasks) into the course.
+
+        `entfernen` names the activity keys to take offline besides the Werkstatt ones that
+        are missing; an empty list is left out of the body."""
+        payload: dict[str, object] = {
+            "expected_revision": expected_revision,
+            "freigabe_id": freigabe_id,
+            "kapitel": kapitel,
+        }
+        if entfernen:
+            payload["entfernen"] = list(entfernen)
         return await self._request_json(
             "PUT",
             f"courses/{course_id}/werkstatt-stand",
             correlation_id=str(uuid4()),
-            payload={
-                "expected_revision": expected_revision,
-                "freigabe_id": freigabe_id,
-                "kapitel": kapitel,
-            },
+            payload=payload,
         )
 
     async def _course_mutation(

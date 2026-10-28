@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 from collections import Counter
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -19,7 +20,9 @@ from spaces.learning.services.course_factory.quality_gate import (
     AktivitaetsSicht,
     LektionsSicht,
     kurs_regeln,
+    uses_informal_address,
 )
+from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.werkstatt.inhalt import Fall, Offen, Quiz, _loesung, inhalt_lesen
 from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion
 from spaces.learning.services.werkstatt.store import WerkstattStore
@@ -54,6 +57,21 @@ def _kurs_text(code: str, subject: str, sichten: list[AktivitaetsSicht]) -> str:
     return "Die Kursprüfung hat ein Problem gefunden."
 
 
+def _anrede_befunde(
+    texte_je_aufgabe: dict[str, list[str]], aufgaben: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Mixed address blocks the release; one finding per task that uses "du", naming it."""
+    betroffen = [t for t, texte in texte_je_aufgabe.items() if uses_informal_address(texte)]
+    if not betroffen:  # cannot happen while the rule fires, but never drop the block
+        return [{"code": "address_mixed", "task_id": None, "blockierend": True,
+                 "text": _TEXTE["address_mixed"]}]
+    return [
+        {"code": "address_mixed", "task_id": t, "blockierend": True,
+         "text": f"{_TEXTE['address_mixed']} Betroffen ist die Aufgabe „{aufgaben[t]['summary']}“."}
+        for t in betroffen
+    ]
+
+
 def werkstatt_schluessel(aufgabe: dict[str, Any]) -> tuple[str, str]:
     """`(aufgaben_key, lektion_key)`: die Herkunft aus der Fabrik, sonst ein Werkstatt-Schluessel."""
     task_id = aufgabe["task_id"]
@@ -83,6 +101,110 @@ def _eintrag(aufgabe: dict[str, Any], fassung_alt: int | None, fassung_neu: int 
     return {
         "task_id": aufgabe["task_id"], "kapitel": aufgabe["chapter_title"],
         "summary": aufgabe["summary"], "fassung_alt": fassung_alt, "fassung_neu": fassung_neu,
+    }
+
+
+def _schluessel(
+    content: dict[str, Any], aufgaben_key: str | None, lektion_key: str | None
+) -> list[dict[str, str]]:
+    """The LearnHouse entries a released task content stands for: its lesson (if it carries
+    one), then the task, as `{key, art, titel}`. A missing key contributes nothing."""
+    inhalt = inhalt_lesen(content)
+    eintraege = []
+    if inhalt.lektion is not None and lektion_key:
+        eintraege.append({"key": lektion_key, "art": "lesson", "titel": inhalt.lektion.title})
+    if aufgaben_key:
+        eintraege.append({"key": aufgaben_key, "art": "task", "titel": inhalt.prompt[:120]})
+    return eintraege
+
+
+def _vorher_freigegeben(store: WerkstattStore, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The last released manifest, each entry with the LearnHouse entries it put online."""
+    return [
+        {**m, "schluessel": _schluessel(
+            _fassungs_inhalt(store, m["task_id"], m["fassung"]), m["aufgaben_key"], m["lektion_key"]
+        )}
+        for m in manifest
+    ]
+
+
+def _vorher_uebernommen(
+    aufgaben: dict[str, dict[str, Any]], ersten: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Before the first release of a taken-over course: its Fassungen 1, keyed by their
+    origin in the published course (what LearnHouse shows right now)."""
+    vorher = []
+    for task_id, f in ersten.items():
+        a = aufgaben[task_id]
+        vorher.append({
+            "task_id": task_id, "fassung": f["number"], "loesung_hash": loesung_hash(f["content"]),
+            "inhalt_hash": inhalt_hash(f["content"]), "kapitel": a["chapter_title"],
+            "schluessel": _schluessel(f["content"], a["herkunft_key"], a["lektion_herkunft_key"]),
+        })
+    return vorher
+
+
+def _offline(vorher: list[dict[str, Any]], jetzt: set[str]) -> list[dict[str, str]]:
+    """Entries online before and missing now (deleted task, lesson removed or moved away)."""
+    offline: list[dict[str, str]] = []
+    for v in vorher:
+        for s in v["schluessel"]:
+            if s["key"] not in jetzt and all(o["key"] != s["key"] for o in offline):
+                offline.append(s)
+    return offline
+
+
+def _zusammengefuehrt(
+    entwurf: Callable[[], CourseDraft] | None, aufgaben: dict[str, dict[str, Any]],
+    ausser: set[str], befunde: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Lessons 2..n of the chapters whose lessons were joined into one section at takeover.
+
+    They are still published as factory activities until the first release removes them; an
+    unreadable draft only adds a hint (they then stay online)."""
+    try:
+        if entwurf is None:
+            raise LookupError("kein_entwurf")
+        draft = entwurf()
+    except Exception as error:  # missing/unreadable draft or artifact store: never blocks
+        logger.warning(
+            "werkstatt_freigabe_entwurf_nicht_lesbar", extra={"fehlerart": type(error).__name__}
+        )
+        befunde.append({
+            "code": "zusammengefuehrte_lektionen_unbekannt", "task_id": None, "blockierend": False,
+            "text": "Der veröffentlichte Entwurf des Kurses ließ sich nicht lesen. Lektionen, die "
+                    "beim Übernehmen mit der ersten Lektion ihres Kapitels zusammengeführt wurden, "
+                    "bleiben deshalb zusätzlich online.",
+        })
+        return []
+    titel = {e.lesson_id: e.title for e in draft.lessons}
+    raus: list[dict[str, str]] = []
+    for a in aufgaben.values():
+        traeger = a.get("lektion_herkunft_key")
+        kapitel = next((c for c in draft.chapters if traeger and traeger in c.lesson_ids), None)
+        for lesson_id in kapitel.lesson_ids if kapitel else []:
+            if (lesson_id != traeger and lesson_id in titel and lesson_id not in ausser
+                    and all(r["key"] != lesson_id for r in raus)):
+                raus.append({"key": lesson_id, "art": "lesson", "titel": titel[lesson_id]})
+    return raus
+
+
+def _herkunft_fehlt(a: dict[str, Any], erste: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A taken-over task without its LearnHouse origin would be written as a second activity."""
+    if erste is None:
+        return None
+    fehlt = []
+    if not a["herkunft_key"]:
+        fehlt.append("ihrer Aufgabe")
+    if (erste["content"].get("lektion") is not None) and not a["lektion_herkunft_key"]:
+        fehlt.append("ihrer Lektion")
+    if not fehlt:
+        return None
+    return {
+        "code": "herkunft_fehlt", "task_id": a["task_id"], "blockierend": True,
+        "text": f"Bei der übernommenen Aufgabe „{a['summary']}“ fehlt der Bezug zu "
+                f"{' und '.join(fehlt)} im veröffentlichten Kurs. Eine Freigabe würde sie dort "
+                "doppelt anlegen. Bitte zuerst die Herkunft nachtragen.",
     }
 
 
@@ -116,14 +238,27 @@ def _vergleichen(
 
 
 def freigabe_vorbereiten(
-    store: WerkstattStore, course_id: str, *, autor: str, learnhouse_revision: int
+    store: WerkstattStore, course_id: str, *, autor: str, learnhouse_revision: int,
+    entwurf: Callable[[], CourseDraft] | None = None,
 ) -> dict[str, Any]:
+    """Compare with the last release, or, before the first one, with the taken-over Fassungen.
+
+    `vergleich.offline` lists the LearnHouse entries that go offline (not blocking);
+    `vergleich.zusammengefuehrt`, on the first release of a taken-over course, the lessons
+    joined into one section at takeover, read from the published draft via `entwurf`."""
     kurs = store.kurs(course_id)
     aufgaben = {a["task_id"]: a for a in store.aufgaben_alle(course_id)}
+    ersten = {
+        task_id: f
+        for task_id in aufgaben
+        if (f := next((f for f in store.fassungen(task_id) if f["art"] == "uebernommen"), None))
+    }
     befunde: list[dict[str, Any]] = []
     manifest: list[dict[str, Any]] = []
+    jetzt: set[str] = set()
     sichten: list[AktivitaetsSicht] = []
     lektionen: list[LektionsSicht] = []
+    texte_je_aufgabe: dict[str, list[str]] = {}
     for a in kurs["aufgaben"]:
         neueste = store.neueste(a["task_id"])
         if neueste is None:
@@ -148,6 +283,12 @@ def freigabe_vorbereiten(
             "kapitel": a["chapter_title"], "position": a["position"],
             "aufgaben_key": aufgaben_key, "lektion_key": lektion_key,
         })
+        jetzt.add(aufgaben_key)
+        if inhalt.lektion is not None:
+            jetzt.add(lektion_key)
+        fehlt = _herkunft_fehlt(a, ersten.get(a["task_id"]))
+        if fehlt is not None:
+            befunde.append(fehlt)
         blockierend = [f for f in neueste["findings"] if f.get("code") not in _NICHT_BLOCKIEREND]
         if blockierend:
             texte = " ".join(str(f.get("text") or f.get("code", "")) for f in blockierend)
@@ -162,21 +303,37 @@ def freigabe_vorbereiten(
         sichten.append(
             AktivitaetsSicht(a["task_id"], inhalt.kind, tuple(inhalt.concept_ids), inhalt.prompt, punkte)
         )
+        texte_je_aufgabe[a["task_id"]] = [inhalt.prompt]
         if inhalt.lektion is not None:
             lek = _als_lektion(inhalt, inhalt.lektion)
             lektionen.append(LektionsSicht(a["task_id"], tuple(lek.concept_ids), lek.body))
+            texte_je_aufgabe[a["task_id"]].append(lek.body)
     if not kurs["aufgaben"]:
         befunde.append({
             "code": "kurs_ohne_aufgaben", "task_id": None, "blockierend": True,
             "text": "Der Kurs hat noch keine Aufgaben, es gibt nichts zu veröffentlichen.",
         })
     for issue in kurs_regeln(sichten, lektionen, kurs_id=course_id):
+        if issue.code == "address_mixed":
+            befunde.extend(_anrede_befunde(texte_je_aufgabe, aufgaben))
+            continue
         befunde.append({
             "code": issue.code, "task_id": None, "blockierend": issue.code in _KURS_SPERREN,
             "text": _kurs_text(issue.code, issue.subject_id, sichten),
         })
     letzte = store.freigabe_letzte_freigegebene(course_id)
-    vergleich = _vergleichen(manifest, letzte["manifest"] if letzte else [], aufgaben)
+    if letzte is not None:
+        vorher = _vorher_freigegeben(store, letzte["manifest"])
+    else:
+        vorher = _vorher_uebernommen(aufgaben, ersten)
+    vergleich = _vergleichen(manifest, vorher, aufgaben)
+    vergleich["offline"] = _offline(vorher, jetzt)
+    vergleich["zusammengefuehrt"] = []
+    if letzte is None and any(a["lektion_herkunft_key"] for a in aufgaben.values()):
+        # Only before the first release: afterwards those lessons are already offline.
+        vergleich["zusammengefuehrt"] = _zusammengefuehrt(
+            entwurf, aufgaben, jetzt | {o["key"] for o in vergleich["offline"]}, befunde
+        )
     blockiert = any(b["blockierend"] for b in befunde)
     nichts = not any(vergleich[k] for k in ("neu", "geaendert", "textkorrektur", "geloescht"))
     angelegt = store.freigabe_anlegen(
@@ -192,7 +349,7 @@ def freigabe_vorbereiten(
 class _StandSchreiber(Protocol):
     async def werkstatt_stand_schreiben(
         self, course_id: str, *, expected_revision: int, freigabe_id: str,
-        kapitel: list[dict[str, Any]],
+        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -310,13 +467,18 @@ async def freigabe_ausfuehren(
 ) -> dict[str, Any]:
     """Write the approved manifest into LearnHouse. All checks run before the first write.
 
-    On a gateway error the release stays `angefordert`. With `katalog`, the practice catalog of
-    the new revision is projected afterwards; a catalog failure is logged and reported as
-    `katalog_fehler`, it never undoes the release. No model is called."""
+    On a gateway error the release stays `angefordert`. If LearnHouse already stands one
+    revision further (the answer to our own write may have been lost), the very same write is
+    sent again with the old expected revision: LearnHouse answers a known `freigabe_id` with
+    the stored result, and refuses with `revision_conflict` if someone else moved the course.
+    With `katalog`, the practice catalog of the new revision is projected afterwards; a catalog
+    failure is logged and reported as `katalog_fehler`, it never undoes the release. No model
+    is called."""
     freigabe = store.freigabe(freigabe_id)
     if freigabe["zustand"] != "angefordert":
         raise ValueError("freigabe_nicht_offen")
-    if freigabe["learnhouse_revision_vorher"] != learnhouse_revision:
+    vorher = freigabe["learnhouse_revision_vorher"]
+    if vorher is None or learnhouse_revision not in (vorher, vorher + 1):
         raise ValueError("learnhouse_stand_veraltet")
     if any(b.get("blockierend") for b in freigabe["befunde"]):
         raise ValueError("freigabe_blockiert")
@@ -324,10 +486,13 @@ async def freigabe_ausfuehren(
     if not any(vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")):
         raise ValueError("nichts_zu_veroeffentlichen")
     kapitel = _kapitel_aus_manifest(store, freigabe["manifest"])
+    entfernen = list(dict.fromkeys(
+        e["key"] for k in ("offline", "zusammengefuehrt") for e in vergleich.get(k) or []
+    ))
     try:
         antwort = await gateway.werkstatt_stand_schreiben(
-            freigabe["course_id"], expected_revision=learnhouse_revision, freigabe_id=freigabe_id,
-            kapitel=kapitel,
+            freigabe["course_id"], expected_revision=vorher, freigabe_id=freigabe_id,
+            kapitel=kapitel, entfernen=entfernen,
         )
     except LearnHouseGatewayError as fehler:
         if fehler.status == 409 and fehler.code == "revision_conflict":

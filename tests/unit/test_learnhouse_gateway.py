@@ -227,6 +227,15 @@ async def test_werkstatt_stand_schreiben_sendet_put() -> None:
     assert json.loads(requests[0].content) == {
         "expected_revision": 8, "freigabe_id": "f-1", "kapitel": kapitel,
     }
+    # Keys to take offline travel as `entfernen`; an empty list is left out of the body.
+    await gateway.werkstatt_stand_schreiben(
+        course_id, expected_revision=9, freigabe_id="f-2", kapitel=kapitel, entfernen=[]
+    )
+    assert "entfernen" not in json.loads(requests[1].content)
+    await gateway.werkstatt_stand_schreiben(
+        course_id, expected_revision=9, freigabe_id="f-3", kapitel=kapitel, entfernen=["l2", "a1"]
+    )
+    assert json.loads(requests[2].content)["entfernen"] == ["l2", "a1"]
     await client.aclose()
 
 

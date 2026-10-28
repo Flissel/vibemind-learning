@@ -411,6 +411,7 @@ async def test_erste_freigabe_nach_uebernahme_behaelt_lernstand(tmp_path):
     katalog.projizieren(COURSE, 2, [_eintrag("fabrik-a", a), _eintrag("fabrik-b", b)], None)
     _lernen(factory, 2)
     t1, t2 = _aufgabe(s, a, art="uebernommen"), _aufgabe(s, b, art="uebernommen")
+    s.herkunft_setzen({t1: ("fabrik-a", None), t2: ("fabrik-b", None)})  # as the takeover keeps them
     _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
     _fassung(s, t2, _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["c"]), "neu")
 
@@ -556,6 +557,7 @@ async def test_fehlgeschlagene_projektion_verliert_keinen_lernstand(tmp_path):
     katalog.projizieren(COURSE, 2, [_eintrag("fabrik-a", a), _eintrag("fabrik-b", b)], None)
     _lernen(factory, 2)
     t1, t2 = _aufgabe(s, a, art="uebernommen"), _aufgabe(s, b, art="uebernommen")
+    s.herkunft_setzen({t1: ("fabrik-a", None), t2: ("fabrik-b", None)})  # as the takeover keeps them
 
     _fassung(s, t1, _quiz("Mit welchem Befehl listen Sie Dateien auf?", "k1"), "textkorrektur")
     erste = await _freigeben(s, _KaputterKatalog(), 2)

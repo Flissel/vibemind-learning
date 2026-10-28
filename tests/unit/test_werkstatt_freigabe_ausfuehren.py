@@ -24,11 +24,12 @@ class FakeGateway:
         self.fehler = fehler
 
     async def werkstatt_stand_schreiben(
-        self, course_id: str, *, expected_revision: int, freigabe_id: str, kapitel: list[dict[str, Any]]
+        self, course_id: str, *, expected_revision: int, freigabe_id: str,
+        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None,
     ) -> dict[str, Any]:
         self.aufrufe.append({
             "course_id": course_id, "expected_revision": expected_revision,
-            "freigabe_id": freigabe_id, "kapitel": kapitel,
+            "freigabe_id": freigabe_id, "kapitel": kapitel, "entfernen": entfernen,
         })
         if self.fehler:
             raise LearnHouseGatewayError("LearnHouse is unavailable")
@@ -91,10 +92,85 @@ async def test_veraltete_learnhouse_revision_bricht_ab(tmp_path):
     _aufgabe(s, _quiz())
     v = _vorbereiten(s, revision=3)
     gw = FakeGateway()
+    # Two steps ahead: someone else changed the course (one step ahead may be our own lost write).
     with pytest.raises(ValueError, match="learnhouse_stand_veraltet"):
-        await freigabe_ausfuehren(s, gw, v["freigabe_id"], approval_ref="k", learnhouse_revision=4)
+        await freigabe_ausfuehren(s, gw, v["freigabe_id"], approval_ref="k", learnhouse_revision=5)
     assert gw.aufrufe == []
     assert s.freigabe(v["freigabe_id"])["zustand"] == "angefordert"
+
+
+class _VerloreneAntwort:
+    """LearnHouse as the fork behaves: it commits, then the answer is lost once; a repeat with
+    the same freigabe_id returns the stored result, another body is refused."""
+
+    def __init__(self, revision: int) -> None:
+        self.revision = revision
+        self.erledigt: dict[str, tuple[Any, dict[str, Any]]] = {}
+        self.aufrufe: list[dict[str, Any]] = []
+        self.verlieren = True
+
+    async def werkstatt_stand_schreiben(self, course_id, *, expected_revision, freigabe_id,
+                                        kapitel, entfernen=None):
+        self.aufrufe.append({"expected_revision": expected_revision, "freigabe_id": freigabe_id})
+        koerper = (kapitel, entfernen)
+        if freigabe_id in self.erledigt:
+            gespeichert, ergebnis = self.erledigt[freigabe_id]
+            if gespeichert != koerper:
+                raise LearnHouseGatewayError("rejected with 409", status=409, code="freigabe_id_reused")
+            return ergebnis
+        if expected_revision != self.revision:
+            raise LearnHouseGatewayError("rejected with 409", status=409, code="revision_conflict")
+        self.revision += 1
+        ergebnis = {"revision": self.revision, "aktualisiert": 1, "neu": 0, "unveroeffentlicht": 0}
+        self.erledigt[freigabe_id] = (koerper, ergebnis)
+        if self.verlieren:
+            self.verlieren = False
+            raise LearnHouseGatewayError("LearnHouse is unavailable")
+        return ergebnis
+
+
+@pytest.mark.asyncio
+async def test_wiederaufnahme_nach_verlorener_antwort(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    v = _vorbereiten(s, revision=4)
+    lh = _VerloreneAntwort(revision=4)
+    with pytest.raises(LearnHouseGatewayError):
+        await freigabe_ausfuehren(s, lh, v["freigabe_id"], approval_ref="k1", learnhouse_revision=4)
+    assert s.freigabe(v["freigabe_id"])["zustand"] == "angefordert" and lh.revision == 5
+    # LearnHouse already stands at vorher + 1: the same write again picks up the stored result.
+    r = await freigabe_ausfuehren(s, lh, v["freigabe_id"], approval_ref="k2", learnhouse_revision=5)
+    assert r["learnhouse_revision"] == 5 and r["aktualisiert"] == 1
+    assert [a["expected_revision"] for a in lh.aufrufe] == [4, 4]
+    assert {a["freigabe_id"] for a in lh.aufrufe} == {v["freigabe_id"]}
+    fertig = s.freigabe(v["freigabe_id"])
+    assert fertig["zustand"] == "freigegeben" and fertig["learnhouse_revision"] == 5
+    assert lh.revision == 5  # nothing was written twice
+
+
+@pytest.mark.asyncio
+async def test_fremde_aenderung_um_eins_bleibt_stand_veraltet(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    v = _vorbereiten(s, revision=4)
+    lh = _VerloreneAntwort(revision=5)  # someone else moved the course one step
+    with pytest.raises(ValueError, match="learnhouse_stand_veraltet"):
+        await freigabe_ausfuehren(s, lh, v["freigabe_id"], approval_ref="k", learnhouse_revision=5)
+    assert s.freigabe(v["freigabe_id"])["zustand"] == "angefordert"
+
+
+@pytest.mark.asyncio
+async def test_freigabe_schickt_offline_schluessel_als_entfernen(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    _aufgabe(s, _quiz("Zweite Frage?"))
+    gw = FakeGateway()
+    await freigabe_ausfuehren(s, gw, _vorbereiten(s)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+    assert gw.aufrufe[0]["entfernen"] == []
+    s.aufgabe_loeschen(t1, author_ref="kursleitung-a")
+    zweite = _vorbereiten(s, revision=2)
+    await freigabe_ausfuehren(s, gw, zweite["freigabe_id"], approval_ref="k2", learnhouse_revision=2)
+    assert gw.aufrufe[1]["entfernen"] == [f"werkstatt:{t1}:lektion", f"werkstatt:{t1}"]
 
 
 @pytest.mark.asyncio

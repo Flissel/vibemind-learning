@@ -312,6 +312,53 @@ def test_nummernkollision_wird_einmal_wiederholt(tmp_path, monkeypatch):
     assert _vorbereiten(s)["nummer"] == 2 and len(aufrufe) == 2
 
 
+def test_du_anrede_nennt_die_aufgabe(tmp_path):
+    s = _store(tmp_path)
+    b = _quiz("Zweite Frage?")
+    b["lektion"]["body"] = "Dazu sagen wir, dass du cd verwenden kannst."
+    _aufgabe(s, _quiz(), kapitel="Kapitel 1")
+    t_du = _aufgabe(s, b, kapitel="Kapitel 2")
+    (befund,) = _befund(_vorbereiten(s), "address_mixed")
+    assert befund["task_id"] == t_du and befund["blockierend"] is True
+    assert "Aufgabe Kapitel 2" in befund["text"]
+
+
+def test_geloeschte_lektionstraegerin_erscheint_in_offline(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    _aufgabe(s, _quiz("Zweite Frage?"))
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    s.aufgabe_loeschen(t1, author_ref="kursleitung-a")
+    r = _vorbereiten(s)
+    assert r["vergleich"]["offline"] == [
+        {"key": f"werkstatt:{t1}:lektion", "art": "lesson", "titel": "Dateien"},
+        {"key": f"werkstatt:{t1}", "art": "task", "titel": "Welcher Befehl listet Dateien auf?"},
+    ]
+    assert r["blockiert"] is False
+
+
+def test_entfernte_lektion_geht_offline_die_aufgabe_nicht(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    ohne = _quiz()
+    ohne.pop("lektion")
+    _neue_fassung(s, t1, ohne, "textkorrektur")
+    r = _vorbereiten(s)
+    assert r["vergleich"]["offline"] == [
+        {"key": f"werkstatt:{t1}:lektion", "art": "lesson", "titel": "Dateien"},
+    ]
+
+
+def test_ohne_entfernte_schluessel_ist_offline_leer(tmp_path):
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _quiz())
+    assert _vorbereiten(s)["vergleich"]["offline"] == []
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    _neue_fassung(s, t1, _quiz(richtig="b"))
+    assert _vorbereiten(s)["vergleich"]["offline"] == []
+
+
 def test_dauerhafte_nummernkollision_meldet_freigabe_gleichzeitig(tmp_path, monkeypatch):
     import pytest
 

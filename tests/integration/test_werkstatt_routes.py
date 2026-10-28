@@ -699,10 +699,12 @@ class _FakeLearnHouse:
         return SimpleNamespace(course_id=course_id, revision=self.revision)
 
     async def werkstatt_stand_schreiben(
-        self, course_id: str, *, expected_revision: int, freigabe_id: str, kapitel: list[dict[str, Any]]
+        self, course_id: str, *, expected_revision: int, freigabe_id: str,
+        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None,
     ) -> dict[str, Any]:
         self.geschrieben.append({"course_id": course_id, "expected_revision": expected_revision,
-                                 "freigabe_id": freigabe_id, "kapitel": kapitel})
+                                 "freigabe_id": freigabe_id, "kapitel": kapitel,
+                                 "entfernen": entfernen})
         self.revision = expected_revision + 1
         return {"revision": self.revision, "aktualisiert": 0, "neu": 1, "unveroeffentlicht": 0}
 
@@ -836,3 +838,30 @@ def test_freigeben_unbekannt_und_ungueltige_referenz(env: Env, learnhouse: _Fake
     kaputt = _freigeben(env, freigabe_id, roles="learning.publisher", ref="<script>")
     assert kaputt.status_code == 400 and kaputt.json()["code"] == "invalid_request"
     assert learnhouse.geschrieben == []
+
+
+def test_gleichzeitige_freigabe_ist_409(env: Env, learnhouse: _FakeLearnHouse, monkeypatch) -> None:
+    env.kurs()
+    _freigebbare_aufgabe(env)
+
+    def gleichzeitig(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise ValueError("freigabe_gleichzeitig")
+
+    monkeypatch.setattr(werkstatt_routes, "freigabe_vorbereiten", gleichzeitig)
+    response = _vorbereiten(env)
+    assert response.status_code == 409 and response.json()["code"] == "freigabe_gleichzeitig"
+
+
+def test_vorbereiten_uebergibt_den_veroeffentlichten_entwurf(env: Env, learnhouse: _FakeLearnHouse, monkeypatch) -> None:
+    env.kurs()
+    _freigebbare_aufgabe(env)
+    gesehen: dict[str, Any] = {}
+    echt = werkstatt_routes.freigabe_vorbereiten
+
+    def mitschreiben(*a: Any, **k: Any) -> dict[str, Any]:
+        gesehen.update(k)
+        return echt(*a, **k)
+
+    monkeypatch.setattr(werkstatt_routes, "freigabe_vorbereiten", mitschreiben)
+    assert _vorbereiten(env).status_code == 201
+    assert callable(gesehen["entwurf"])
