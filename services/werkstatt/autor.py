@@ -61,6 +61,21 @@ def _invocation(role: str, correlation_id: str, payload: dict[str, object]) -> M
     )
 
 
+def _fuer_modell(keyed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the model sees of each chunk: its key, heading and text. Ids, hashes and
+    coordinates stay on the server (keys are resolved there); they were most of the payload."""
+    out = []
+    for ref in keyed:
+        eintrag: dict[str, Any] = {"key": ref["key"]}
+        locator = ref.get("locator")
+        if isinstance(locator, dict) and locator.get("heading"):
+            eintrag["heading"] = locator["heading"]
+        if ref.get("content"):
+            eintrag["content"] = ref["content"]
+        out.append(eintrag)
+    return out
+
+
 async def grobentwurf_erzeugen(
     gateway: ModelGateway,
     *,
@@ -77,7 +92,7 @@ async def grobentwurf_erzeugen(
         "audience": audience,
         "outcomes": list(outcomes),
         "default_kind": default_kind,
-        "source_refs": keyed_source_refs(source_refs),
+        "source_refs": _fuer_modell(keyed_source_refs(source_refs)),
     }
     if hinweise:
         payload["reviewer_feedback"] = list(hinweise)
@@ -110,7 +125,7 @@ async def aufgabe_ausformulieren(
         "kurs": kurs,
         "summary": summary,
         "kind": kind,
-        "source_refs": keyed,
+        "source_refs": _fuer_modell(keyed),
     }
     if wunsch:
         payload["wunsch"] = wunsch
@@ -140,7 +155,7 @@ async def aufgabe_ausformulieren(
     zitierte = {z.chunk_id for z in zitate}
     pruefer_payload: dict[str, object] = {
         "aufgabe": mit_quellenschluesseln(inhalt.model_dump(mode="json"), source_refs),
-        "source_refs": [ref for ref in keyed if ref["chunk_id"] in zitierte],
+        "source_refs": _fuer_modell([ref for ref in keyed if ref["chunk_id"] in zitierte]),
     }
     pruefung = await gateway.generate(
         _invocation("werkstatt_pruefer", correlation_id, pruefer_payload), PrueferAusgabe

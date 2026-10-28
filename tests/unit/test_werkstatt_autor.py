@@ -135,7 +135,7 @@ async def test_pruefer_bekommt_nur_zitierte_quellen() -> None:
     fake = _Fake(_autor(), _sauber_pruefer())
     await _ausformulieren(fake)
     refs = fake.invocations[1].input_payload["source_refs"]
-    assert [r["chunk_id"] for r in refs] == ["00000000-0000-4000-8000-0000000000b1"]
+    assert [r["key"] for r in refs] == ["S1"]
 
 
 @pytest.mark.asyncio
@@ -267,3 +267,35 @@ async def test_zitate_aus_der_modellausgabe_zaehlen_nicht() -> None:
     assert erg.inhalt["citation_ids"] == [] and erg.zitate == []
     assert erg.inhalt["lektion"]["claims"][0]["citation_ids"] == []
     assert "claim_uncited" in codes(erg.befunde)
+
+
+_NUR_FUER_DEN_SERVER = {"chunk_id", "chunk_content_hash", "source_content_hash", "source_id", "source_revision", "locator"}
+
+
+@pytest.mark.asyncio
+async def test_das_modell_bekommt_je_quellstueck_nur_schluessel_ueberschrift_und_text() -> None:
+    # Live 28.10.: 59 KB je Autor-Aufruf, davon 7,6 KB Quelltext; der Rest waren Hashes und IDs,
+    # die das Modell nie braucht (es zitiert nur per S-Schluessel, der Server loest auf).
+    import json
+
+    refs = tuple(
+        json.dumps({**json.loads(r), "content": f"Text {n}", "locator": {"heading": "Dateien", "line_start": n,
+                                                                      "normalized_block_hash": "b" * 64}})
+        for n, r in enumerate(REFS_2, start=1)
+    )
+    fake = _Fake(_autor(), _sauber_pruefer())
+    erg = await _ausformulieren(fake, source_refs=refs)
+    assert erg.zitate  # citations still resolve through the full catalog on the server
+    for invocation in fake.invocations:
+        for ref in invocation.input_payload["source_refs"]:
+            assert not set(ref) & _NUR_FUER_DEN_SERVER, invocation.role
+    autor = fake.invocations[0].input_payload["source_refs"]
+    assert autor[0] == {"key": "S1", "heading": "Dateien", "content": "Text 1"}
+
+    plan = _Fake(Grobentwurf.model_validate({
+        "schema_version": "werkstatt-grobentwurf-v1", "title": "D", "audience": "E", "default_kind": "quiz",
+        "chapters": [{"title": "K", "tasks": [{"summary": "s"}]}],
+    }))
+    await grobentwurf_erzeugen(plan, correlation_id=str(uuid4()), title="D", audience="E", outcomes=["o"],
+                               default_kind="quiz", hinweise=[], source_refs=refs)
+    assert plan.invocations[0].input_payload["source_refs"][1] == {"key": "S2", "heading": "Dateien", "content": "Text 2"}
