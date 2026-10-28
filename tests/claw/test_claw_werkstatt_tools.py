@@ -99,6 +99,20 @@ def test_kurs_uebernehmen(fake: Fake) -> None:
     _check(fake, "POST", f"/kurse/{COURSE}/uebernehmen", write=True)
 
 
+def test_grobentwurf_neu(fake: Fake) -> None:
+    fake.answer = lambda r: httpx.Response(202, json={"auftrag_id": "a3"})
+    result = werkzeuge.werkstatt_grobentwurf_neu(COURSE, hinweise=["kuerzer"])
+    assert result == {"ok": True, "daten": {"auftrag_id": "a3"}}
+    _check(fake, "POST", f"/kurse/{COURSE}/grobentwurf", write=True)
+    assert fake.body() == {"hinweise": ["kuerzer"]}
+
+
+def test_grobentwurf_neu_ohne_hinweise(fake: Fake) -> None:
+    werkzeuge.werkstatt_grobentwurf_neu(COURSE)
+    _check(fake, "POST", f"/kurse/{COURSE}/grobentwurf", write=True)
+    assert fake.body() == {}
+
+
 def test_aufgabe_neu(fake: Fake) -> None:
     werkzeuge.werkstatt_aufgabe_neu(COURSE, "Kapitel 1", "Kurz", position=2)
     _check(fake, "POST", f"/kurse/{COURSE}/aufgaben", write=True)
@@ -155,13 +169,14 @@ def test_ids_cannot_escape_the_path(fake: Fake) -> None:
 
 def test_kein_werkstatt_werkzeug_veroeffentlicht(fake: Fake) -> None:
     names = [f.__name__ for f in server.WERKZEUGE if f.__name__.startswith("werkstatt_")]
-    assert len(names) == 12
+    assert len(names) == 13
     assert not any("veroeffentlich" in n or "freigeb" in n or "publish" in n for n in names)
     calls: dict[str, tuple[Any, ...]] = {
         "werkstatt_kurs_neu": (COURSE, "T", "Z", ["x"], []),
         "werkstatt_kurs_zeigen": (COURSE,),
         "werkstatt_kurs_aendern": (COURSE, "T"),
         "werkstatt_kurs_uebernehmen": (COURSE,),
+        "werkstatt_grobentwurf_neu": (COURSE,),
         "werkstatt_aufgabe_neu": (COURSE, "K", "S"),
         "werkstatt_aufgabe_ausformulieren": (TASK, 1),
         "werkstatt_aufgabe_aendern": (TASK, 1, {}, "g"),

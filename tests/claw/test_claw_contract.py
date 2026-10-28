@@ -42,6 +42,7 @@ SPEC_TOOLS = {
     "werkstatt_kurs_zeigen",
     "werkstatt_kurs_aendern",
     "werkstatt_kurs_uebernehmen",
+    "werkstatt_grobentwurf_neu",
     "werkstatt_aufgabe_neu",
     "werkstatt_aufgabe_ausformulieren",
     "werkstatt_aufgabe_aendern",
@@ -66,6 +67,16 @@ def test_allowed_tools_match_server_tools() -> None:
     assert entry["url"] == "http://127.0.0.1:8139/mcp"
     assert entry["timeout"] == 900000
     assert entry["headers"] == {"Authorization": "Bearer ${LEARNING_CLAW_MCP_TOKEN}"}
+
+
+def test_gateway_check_and_rules_name_every_tool() -> None:
+    anbinden = (CLAW_DIR / "gateway" / "anbinden.sh").read_text(encoding="utf-8")
+    erwartet = re.search(r'ERWARTET="([^"]*)"', anbinden)
+    assert erwartet is not None
+    assert set(erwartet.group(1).replace("\\", " ").split()) == SPEC_TOOLS
+    regeln = AGENTS.read_text(encoding="utf-8")
+    for name in SPEC_TOOLS:
+        assert f"`{name}`" in regeln, name
 
 
 def test_no_forbidden_tool_names() -> None:

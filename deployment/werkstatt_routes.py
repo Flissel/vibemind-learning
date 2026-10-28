@@ -109,6 +109,10 @@ class KursAnlegen(_Body):
     hinweise: list[str] = Field(default_factory=list, max_length=50)
 
 
+class GrobentwurfNeu(_Body):
+    hinweise: list[str] = Field(default_factory=list, max_length=50)
+
+
 class KursAendern(_Body):
     title: str | None = Field(default=None, min_length=1, max_length=300)
     default_kind: Kind | None = None
@@ -215,6 +219,27 @@ def kurs_anlegen(body: KursAnlegen, context: Context, autor: Autor) -> dict[str,
     auftrag = runtime.store.auftrag_anlegen(
         body.course_id, kind="grobentwurf", input={"hinweise": list(body.hinweise)}
     )
+    return {"auftrag_id": auftrag["id"]}
+
+
+@router.post("/kurse/{course_id}/grobentwurf", status_code=status.HTTP_202_ACCEPTED)
+def grobentwurf_neu(
+    course_id: str, context: Context, autor: Autor, body: GrobentwurfNeu | None = None
+) -> dict[str, str]:
+    """Queue the rough draft again, e.g. after a failed job; only while the course has no
+    tasks and no rough draft is waiting or running."""
+    context.require(ROLE_AUTHOR)
+    try:
+        auftrag = _runtime().store.grobentwurf_neu(
+            course_id, hinweise=list(body.hinweise) if body else []
+        )
+    except LookupError as error:
+        raise _fehler(status.HTTP_404_NOT_FOUND, "kurs_unbekannt", "Kurs nicht gefunden") from error
+    except ValueError as error:
+        raise _fehler(
+            status.HTTP_409_CONFLICT, "grobentwurf_nicht_moeglich",
+            "Ein Grobentwurf geht nur ohne Aufgaben und ohne laufenden Grobentwurf",
+        ) from error
     return {"auftrag_id": auftrag["id"]}
 
 

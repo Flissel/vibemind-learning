@@ -330,6 +330,40 @@ class WerkstattStore:
             session.flush()
             return _auftrag_dict(auftrag)
 
+    def grobentwurf_neu(self, course_id: str, *, hinweise: list[str]) -> dict[str, Any]:
+        """Queue a fresh rough draft, e.g. after a failed one.
+
+        Allowed only while the course has no (non-deleted) task and no rough draft is queued or
+        running; otherwise ValueError("grobentwurf_nicht_moeglich"). Check and insert share one
+        transaction; the course row is locked so two requests cannot both queue one."""
+        with self._sessions.begin() as session:
+            kurs = session.get(WerkstattKurs, course_id, with_for_update=True)
+            if kurs is None:
+                raise LookupError("kurs_unbekannt")
+            aufgabe = session.scalars(
+                select(WerkstattAufgabe.task_id)
+                .where(WerkstattAufgabe.course_id == course_id, WerkstattAufgabe.deleted.is_(False))
+                .limit(1)
+            ).first()
+            offen = session.scalars(
+                select(WerkstattAuftrag.id)
+                .where(
+                    WerkstattAuftrag.course_id == course_id,
+                    WerkstattAuftrag.kind == "grobentwurf",
+                    WerkstattAuftrag.state.in_(("queued", "running")),
+                )
+                .limit(1)
+            ).first()
+            if aufgabe is not None or offen is not None:
+                raise ValueError("grobentwurf_nicht_moeglich")
+            auftrag = WerkstattAuftrag(
+                id=str(uuid4()), course_id=course_id, task_id=None, kind="grobentwurf",
+                input={"hinweise": list(hinweise)}, state="queued",
+            )
+            session.add(auftrag)
+            session.flush()
+            return _auftrag_dict(auftrag)
+
     def auftrag(self, auftrag_id: str) -> dict[str, Any]:
         with self._sessions() as session:
             auftrag = session.get(WerkstattAuftrag, auftrag_id)

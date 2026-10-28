@@ -608,3 +608,76 @@ def test_uebernahme_dann_textkorrektur_behaelt_lektionszitate(env: Env, monkeypa
     assert claim_ids == [artefakte.zitat["citation_id"]]
     assert [z["citation_id"] for z in fassung["content"]["zitate"]] == claim_ids
     assert "claim_uncited" not in [f["code"] for f in fassung["findings"]]
+
+
+def _grobentwurf_neu(env: Env, body: dict[str, Any] | None = None, **kwargs: Any):
+    return env.client.post(
+        f"/api/v1/werkstatt/kurse/{env.course_id}/grobentwurf",
+        headers=kwargs.get("headers", env.h()), json=body if body is not None else {},
+    )
+
+
+def test_grobentwurf_neu_nach_fehlgeschlagenem_auftrag(env: Env) -> None:
+    erster = env.kurs()["auftrag_id"]
+    store = werkstatt_routes._runtime().store
+    assert store.naechster_auftrag()["id"] == erster
+    store.auftrag_fehler(erster, "modell_nicht_erreichbar")
+    response = _grobentwurf_neu(env, {"hinweise": ["kuerzer"]})
+    assert response.status_code == 202, response.text
+    neu = store.auftrag(response.json()["auftrag_id"])
+    assert neu["id"] != erster
+    assert (neu["kind"], neu["state"], neu["input"]) == ("grobentwurf", "queued", {"hinweise": ["kuerzer"]})
+
+
+def test_grobentwurf_neu_ohne_body_geht(env: Env) -> None:
+    erster = env.kurs()["auftrag_id"]
+    store = werkstatt_routes._runtime().store
+    store.naechster_auftrag()
+    store.auftrag_fehler(erster, "quellen_nicht_bereit")
+    response = env.client.post(
+        f"/api/v1/werkstatt/kurse/{env.course_id}/grobentwurf", headers=env.h()
+    )
+    assert response.status_code == 202, response.text
+    assert store.auftrag(response.json()["auftrag_id"])["input"] == {"hinweise": []}
+
+
+def test_grobentwurf_neu_mit_aufgaben_ist_409(env: Env) -> None:
+    erster = env.kurs()["auftrag_id"]
+    store = werkstatt_routes._runtime().store
+    store.naechster_auftrag()
+    store.auftrag_fehler(erster, "modell_nicht_erreichbar")
+    env.aufgabe()
+    response = _grobentwurf_neu(env)
+    assert response.status_code == 409
+    assert response.json()["code"] == "grobentwurf_nicht_moeglich"
+
+
+def test_grobentwurf_neu_nach_geloeschten_aufgaben_geht(env: Env) -> None:
+    erster = env.kurs()["auftrag_id"]
+    store = werkstatt_routes._runtime().store
+    store.naechster_auftrag()
+    store.auftrag_fehler(erster, "modell_nicht_erreichbar")
+    task_id = env.aufgabe()
+    assert env.client.delete(f"/api/v1/werkstatt/aufgaben/{task_id}", headers=env.h()).status_code == 200
+    assert _grobentwurf_neu(env).status_code == 202
+
+
+def test_grobentwurf_neu_waehrend_auftrag_laeuft_ist_409(env: Env) -> None:
+    env.kurs()  # its rough-draft job is still queued
+    wartend = _grobentwurf_neu(env)
+    assert wartend.status_code == 409
+    assert wartend.json()["code"] == "grobentwurf_nicht_moeglich"
+    werkstatt_routes._runtime().store.naechster_auftrag()  # now running
+    laufend = _grobentwurf_neu(env)
+    assert laufend.status_code == 409
+    assert laufend.json()["code"] == "grobentwurf_nicht_moeglich"
+
+
+def test_grobentwurf_neu_rechte_kopf_und_unbekannter_kurs(env: Env) -> None:
+    unbekannt = _grobentwurf_neu(env)
+    assert unbekannt.status_code == 404 and unbekannt.json()["code"] == "kurs_unbekannt"
+    env.kurs()
+    ohne_kopf = _grobentwurf_neu(env, headers=env.h(None))
+    assert ohne_kopf.status_code == 400 and ohne_kopf.json()["code"] == "autor_fehlt"
+    ohne_rolle = _grobentwurf_neu(env, headers=env.h(AUTOR, roles="learning.reviewer"))
+    assert ohne_rolle.status_code == 403

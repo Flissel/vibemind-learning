@@ -32,6 +32,7 @@
     "mcp__learning__werkstatt_kurs_zeigen",
     "mcp__learning__werkstatt_kurs_aendern",
     "mcp__learning__werkstatt_kurs_uebernehmen",
+    "mcp__learning__werkstatt_grobentwurf_neu",
     "mcp__learning__werkstatt_aufgabe_neu",
     "mcp__learning__werkstatt_aufgabe_ausformulieren",
     "mcp__learning__werkstatt_aufgabe_aendern",

@@ -821,6 +821,18 @@ def werkstatt_kurs_neu(
     return _ws_post("/kurse", body)
 
 
+def werkstatt_grobentwurf_neu(course_id: str, hinweise: list[str] | None = None) -> dict[str, Any]:
+    """Startet den Grobentwurf eines Werkstatt-Kurses neu, etwa nachdem der erste Auftrag
+    fehlgeschlagen ist. Geht nur, solange der Kurs keine Aufgaben hat und kein Grobentwurf
+    wartet oder laeuft. Gibt `auftrag_id` zurueck. Auftraege laufen im Hintergrund; mit
+    werkstatt_auftrag nachsehen.
+    """
+    body: dict[str, Any] = {}
+    if hinweise:
+        body["hinweise"] = list(hinweise)
+    return _ws_post(f"/kurse/{_seg(course_id)}/grobentwurf", body)
+
+
 def werkstatt_kurs_zeigen(course_id: str) -> dict[str, Any]:
     """Zeigt einen Werkstatt-Kurs mit seinen Aufgaben, Reihenfolge und der Zahl offener Befunde."""
     return _ws_get(f"/kurse/{_seg(course_id)}")

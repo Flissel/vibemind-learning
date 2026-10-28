@@ -90,6 +90,7 @@ WERKZEUGE = (
     werkzeuge.werkstatt_kurs_zeigen,
     werkzeuge.werkstatt_kurs_aendern,
     werkzeuge.werkstatt_kurs_uebernehmen,
+    werkzeuge.werkstatt_grobentwurf_neu,
     werkzeuge.werkstatt_aufgabe_neu,
     werkzeuge.werkstatt_aufgabe_ausformulieren,
     werkzeuge.werkstatt_aufgabe_aendern,
