@@ -37,6 +37,15 @@ from spaces.learning.services.evaluation.schemas import (
 NOW = datetime(2026, 8, 25, 12, tzinfo=timezone.utc)
 
 
+def _richtig(turn) -> str:
+    """The correct option by its id: the shown order is shuffled when served."""
+    return next(o.id for o in turn.task.options if o.id.startswith("correct-"))
+
+
+def _falsch(turn) -> str:
+    return next(o.id for o in turn.task.options if not o.id.startswith("correct-"))
+
+
 @pytest.fixture()
 def adaptive_session_store(tmp_path: Path):
     engine = create_engine(f"sqlite:///{tmp_path / 'session.db'}")
@@ -250,7 +259,7 @@ def test_training_session_resumes_and_persists_audited_feedback(
             session_id=turn.session_id,
             actor_id="student-1",
             expected_session_revision=turn.session_revision,
-            answer={"choice_id": turn.task.options[0].id},
+            answer={"choice_id": _richtig(turn)},
         )
     )
 
@@ -318,7 +327,7 @@ def test_exam_uses_frozen_blueprint_and_withholds_feedback_until_summary(
                 session_id=turn.session_id,
                 actor_id="student-exam",
                 expected_session_revision=turn.session_revision,
-                answer={"choice_id": turn.task.options[0].id},
+                answer={"choice_id": _richtig(turn)},
             )
         )
         if index < 2:
@@ -354,7 +363,7 @@ def test_synthetic_learner_progresses_and_failure_schedules_remediation(
         assert turn.task is not None
         difficulties.append(turn.task.difficulty)
         correct = index != 8
-        answer_id = turn.task.options[0 if correct else 1].id
+        answer_id = _richtig(turn) if correct else _falsch(turn)
         turn = service.answer(
             AnswerCommand(
                 session_id=turn.session_id,
@@ -402,7 +411,7 @@ def test_postgres_session_transaction_has_terminal_readback_and_audit(
             session_id=turn.session_id,
             actor_id="postgres-student",
             expected_session_revision=turn.session_revision,
-            answer={"choice_id": turn.task.options[0].id},
+            answer={"choice_id": _richtig(turn)},
         )
     )
     assert completed.state == "completed"

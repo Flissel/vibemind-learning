@@ -49,6 +49,7 @@ from spaces.learning.services.evaluation.schemas import (
     RubricDecision,
     RubricEvaluationRequest,
 )
+from spaces.learning.services import zufall
 
 
 _DETERMINISTIC_TYPES = frozenset(
@@ -956,7 +957,7 @@ class AdaptiveSessionService:
         if row.state == "active":
             attempt = self._current_attempt(db, row.id)
             item = db.get(AdaptiveItem, attempt.item_id) if attempt else None
-            task = self._public_task(item) if item is not None else None
+            task = self._public_task(item, row.id) if item is not None else None
         summary = self._summary(db, row) if row.state == "completed" else None
         return SessionTurn(
             session_id=row.id,
@@ -1148,16 +1149,36 @@ class AdaptiveSessionService:
             .limit(1)
         )
 
-    def _public_task(self, item: AdaptiveItem) -> PublicTask:
+    @classmethod
+    def _public_task(cls, item: AdaptiveItem, session_id: str) -> PublicTask:
+        # Stored orders of old rows were recomputable from public ids and the table is
+        # append-only, so the shown order is decided here: keyed, stable within a session.
+        salz = f"{session_id}:{item.id}"
+        expected = item.expected_answer if isinstance(item.expected_answer, dict) else {}
+        order = expected.get("order") if item.item_type == "ordering" else None
+        options = zufall.verdeckt_sortiert(
+            list(cls._options(item)), salz, lambda o: o.id, order if isinstance(order, list) else None,
+        )
+        presentation = cls._presentation(item)
+        right = presentation.get("right")
+        if item.item_type == "matching" and isinstance(right, list):
+            pairs = expected.get("pairs")
+            left = presentation.get("left")
+            aligned = None
+            if isinstance(pairs, dict) and isinstance(left, list):
+                aligned = [pairs.get(e.get("id")) for e in left if isinstance(e, dict)]
+            presentation = {**presentation, "right": zufall.verdeckt_sortiert(
+                right, salz, lambda r: r.get("id") if isinstance(r, dict) else r, aligned,
+            )}
         return PublicTask(
             id=item.id,
             type=item.item_type,
-            prompt=self._string_config(item, "prompt"),
-            options=self._options(item),
+            prompt=cls._string_config(item, "prompt"),
+            options=tuple(options),
             difficulty=item.difficulty,
-            representation=self._representation(item),
-            source_refs=self._string_list(item.scoring_config.get("source_refs", [])),
-            presentation=self._presentation(item),
+            representation=cls._representation(item),
+            source_refs=cls._string_list(item.scoring_config.get("source_refs", [])),
+            presentation=presentation,
         )
 
     @staticmethod
@@ -1180,7 +1201,8 @@ class AdaptiveSessionService:
             raise ValueError("adaptive item string list is invalid")
         return tuple(value)
 
-    def _representation(self, item: AdaptiveItem) -> str:
+    @staticmethod
+    def _representation(item: AdaptiveItem) -> str:
         value = item.scoring_config.get("representation", item.item_type)
         if not isinstance(value, str) or not value:
             raise ValueError("adaptive item representation is invalid")

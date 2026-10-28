@@ -7,6 +7,8 @@ randomness. Answers reference ids, never positions, so the shown order is free t
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -15,6 +17,9 @@ T = TypeVar("T")
 
 # Looked up at call time (tests replace it with a scripted stand-in).
 ZUFALL = secrets.SystemRandom()
+# Drawn per process, never stored or sent: orders keyed with it cannot be recomputed from
+# the public code. Looked up at call time, like ZUFALL.
+SCHLUESSEL = secrets.token_bytes(32)
 
 
 def _id(eintrag: Any) -> Any:
@@ -47,3 +52,21 @@ def gemischt(eintraege: list[T], zufall: Any = None) -> list[T]:
     kopie = list(eintraege)
     rng.shuffle(kopie)
     return kopie
+
+
+def verdeckt_sortiert(
+    eintraege: list[T], salz: str, schluessel: Callable[[T], Any] = _id, loesung: list[Any] | None = None,
+) -> list[T]:
+    """``eintraege`` in an order stable for ``salz`` (within this process), keyed with the
+    process secret.
+
+    With ``loesung`` (the ids in solution order) and three or more distinct entries the result
+    differs from it, as in ``anders_gemischt``."""
+    def rang(eintrag: T) -> bytes:
+        return hmac.new(SCHLUESSEL, f"{salz}:{schluessel(eintrag)}".encode(), hashlib.sha256).digest()
+
+    ordnung = sorted(eintraege, key=rang)
+    ids = [schluessel(e) for e in ordnung]
+    if loesung is not None and len(set(ids)) >= 3 and ids == list(loesung):
+        ordnung = ordnung[1:] + ordnung[:1]
+    return ordnung
