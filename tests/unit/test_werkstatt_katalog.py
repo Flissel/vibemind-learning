@@ -442,3 +442,94 @@ async def test_katalog_fehler_haelt_freigabe_nicht_auf(tmp_path, caplog):
     assert r["learnhouse_revision"] == 2
     assert s.freigabe_letzte_freigegebene(COURSE)["zustand"] == "freigegeben"
     assert any(rec.message == "werkstatt_katalog_projektion_fehlgeschlagen" for rec in caplog.records)
+
+
+# --- Mischen: die gezeigte Reihenfolge verraet die Loesung nicht -----------------------
+
+_SCHRITTE = ["Terminal öffnen", "Ordner wechseln", "Befehl tippen", "Enter drücken"]
+
+
+def _reihenfolge() -> dict[str, Any]:
+    return {
+        "kind": "ordering", "prompt": "Bringen Sie die Schritte in die richtige Reihenfolge.",
+        "concept_ids": ["k4"], "items": list(_SCHRITTE),
+    }
+
+
+def _zuordnung() -> dict[str, Any]:
+    return {
+        "kind": "matching", "prompt": "Ordnen Sie jedem Befehl seine Wirkung zu.", "concept_ids": ["k4"],
+        "pairs": [
+            {"left": "ls", "right": "listet Dateien"}, {"left": "cd", "right": "wechselt den Ordner"},
+            {"left": "pwd", "right": "zeigt den Ordner"}, {"left": "mkdir", "right": "legt einen Ordner an"},
+        ],
+    }
+
+
+class _Zufall:
+    """Stands in for the secure RNG: the first `identisch` shuffles keep the order, then it reverses."""
+
+    def __init__(self, identisch: int = 0) -> None:
+        self.aufrufe = 0
+        self.identisch = identisch
+
+    def shuffle(self, liste: list[Any]) -> None:
+        self.aufrufe += 1
+        if self.aufrufe > self.identisch:
+            liste.reverse()
+
+
+def _gezeigt(factory, revision: int, key: str) -> tuple[AdaptiveItem, list[str]]:
+    with factory() as s:
+        item = s.scalar(select(AdaptiveItem).where(
+            AdaptiveItem.course_revision == revision, AdaptiveItem.activity_id == key,
+        ))
+    if item.item_type == "ordering":
+        return item, [o["label"] for o in item.scoring_config["options"]]
+    return item, [e["label"] for e in item.scoring_config["presentation"]["right"]]
+
+
+def test_reihenfolge_nicht_aus_item_id_ableitbar(tmp_path, monkeypatch):
+    import random
+
+    from spaces.learning.services.werkstatt import katalog as katalog_modul
+
+    zufall = _Zufall()
+    monkeypatch.setattr(katalog_modul, "_ZUFALL", zufall)
+    factory = _factory(tmp_path)
+    WerkstattKatalog(factory).projizieren(
+        COURSE, 1, [_eintrag("reihenfolge", _reihenfolge()), _eintrag("zuordnung", _zuordnung())], None
+    )
+
+    for key, autor in (("reihenfolge", _SCHRITTE), ("zuordnung", [p["right"] for p in _zuordnung()["pairs"]])):
+        item, gezeigt = _gezeigt(factory, 1, key)
+        # The shown order comes from the secure RNG, not from a seed anyone can recompute.
+        assert gezeigt == list(reversed(autor))
+        aus_id = list(autor)
+        random.Random(item.id).shuffle(aus_id)
+        assert aus_id != gezeigt
+    assert zufall.aufrufe == 2
+
+
+def test_gemischte_reihenfolge_ist_nie_die_loesung(tmp_path, monkeypatch):
+    from spaces.learning.services.werkstatt import katalog as katalog_modul
+
+    # The RNG happens to keep the authored order twice: it is shuffled again until it differs.
+    zufall = _Zufall(identisch=2)
+    monkeypatch.setattr(katalog_modul, "_ZUFALL", zufall)
+    factory = _factory(tmp_path)
+    WerkstattKatalog(factory).projizieren(COURSE, 1, [_eintrag("reihenfolge", _reihenfolge())], None)
+
+    item, gezeigt = _gezeigt(factory, 1, "reihenfolge")
+    loesung = {o["id"]: o["label"] for o in item.scoring_config["options"]}
+    assert gezeigt != [loesung[i] for i in item.expected_answer["order"]]
+    assert zufall.aufrufe == 3
+
+    # With the real RNG, never the solution either (matching: right side in authored order).
+    monkeypatch.undo()
+    for revision in range(2, 12):
+        WerkstattKatalog(factory).projizieren(
+            COURSE, revision, [_eintrag("reihenfolge", _reihenfolge()), _eintrag("zuordnung", _zuordnung())], None
+        )
+        assert _gezeigt(factory, revision, "reihenfolge")[1] != _SCHRITTE
+        assert _gezeigt(factory, revision, "zuordnung")[1] != [p["right"] for p in _zuordnung()["pairs"]]

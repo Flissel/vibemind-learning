@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+import secrets
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -59,6 +60,22 @@ logger = logging.getLogger(__name__)
 SessionFactory = Callable[[], Session]
 
 _PLATZHALTER = re.compile(r"\{\{([^{}]+)\}\}")
+
+# Shown order of ordering steps and matching answers. Not seeded from anything public: a
+# permutation recomputable from the item id (this code is public) would hand out the solution.
+_ZUFALL = secrets.SystemRandom()
+
+
+def _gemischt(eintraege: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A shuffled copy that never shows the authored (= solution) order while it can differ."""
+    gemischt = list(eintraege)
+    if len({e["label"] for e in eintraege}) < 2:
+        _ZUFALL.shuffle(gemischt)
+        return gemischt
+    while True:
+        _ZUFALL.shuffle(gemischt)
+        if [e["label"] for e in gemischt] != [e["label"] for e in eintraege]:
+            return gemischt
 
 
 def _hashes_je_konzept(eintraege: list[dict[str, Any]]) -> dict[str, frozenset[str]]:
@@ -259,14 +276,12 @@ def _item_felder(
         return _luecke(inhalt)
     if isinstance(inhalt, Reihenfolge):
         ids = _random_ids("s", len(inhalt.items))
-        optionen = [{"id": i, "label": text} for i, text in zip(ids, inhalt.items)]
-        random.Random(item_id).shuffle(optionen)
+        optionen = _gemischt([{"id": i, "label": text} for i, text in zip(ids, inhalt.items)])
         return "ordering", {"order": ids}, {"prompt": inhalt.prompt, "options": optionen, "partial_credit": True}, []
     if isinstance(inhalt, Zuordnung):
         links = [{"id": f"b{n}", "label": p.left} for n, p in enumerate(inhalt.pairs, start=1)]
         rechts_ids = _random_ids("e", len(inhalt.pairs))
-        rechts = [{"id": i, "label": p.right} for i, p in zip(rechts_ids, inhalt.pairs)]
-        random.Random(item_id).shuffle(rechts)
+        rechts = _gemischt([{"id": i, "label": p.right} for i, p in zip(rechts_ids, inhalt.pairs)])
         return (
             "matching", {"pairs": {f"b{n}": i for n, i in enumerate(rechts_ids, start=1)}},
             {"prompt": inhalt.prompt, "partial_credit": True, "presentation": {"left": links, "right": rechts}},
