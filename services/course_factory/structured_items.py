@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from spaces.learning.contracts.lernsequenz import Cloze, ImageCloze, Matching, Ordering
-from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services import zufall
+from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
 
 ItemType = Literal["ordering", "matching", "fill_in"]
@@ -29,7 +29,7 @@ class AdaptiveItemSpec:
     chapter_id: str
 
 
-def _options(items, seed: str) -> list[dict[str, str]]:
+def _options(items) -> list[dict[str, str]]:
     """Fixed per item, so the authored order (the solution) is not what the learner sees."""
     options = [{"id": item.item_id, "label": item.text} for item in items]
     return zufall.anders_gemischt(options)
@@ -55,7 +55,7 @@ def structured_items(draft: CourseDraft) -> list[AdaptiveItemSpec]:
                 spec = AdaptiveItemSpec(
                     activity_id, "ordering",
                     {"order": list(checkpoint.correct)},
-                    {"prompt": checkpoint.task, "options": _options(checkpoint.items, activity_id), "partial_credit": True},
+                    {"prompt": checkpoint.task, "options": _options(checkpoint.items), "partial_credit": True},
                     list(lesson.concept_ids), lesson.chapter_id,
                 )
             elif isinstance(checkpoint, Matching):

@@ -31,6 +31,12 @@ class SequenceStore:
         temporary.replace(path)
         return path
 
+    def sequence_ids(self) -> list[str]:
+        """Ids of the stored sequences (not sketches or media), for maintenance runs."""
+        if not self._root.is_dir():
+            return []
+        return sorted(p.stem for p in self._root.glob("*.json") if _ID.fullmatch(p.stem))
+
     def load(self, sequence_id: str) -> LernsequenzV1:
         path = self._path(sequence_id)
         if not path.is_file():

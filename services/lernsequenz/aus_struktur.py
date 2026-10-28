@@ -205,7 +205,7 @@ def _image_cloze(cloze: Cloze) -> ImageCloze:
     )
 
 
-def _window_matching(lines: dict[str, str], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
+def _window_matching(lines: dict[str, str], checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
     """One window per shell (its prompt and this lesson's command, no title bar) to the shell's name."""
     shells = list(lines)
     zufall.ZUFALL.shuffle(shells)
@@ -224,7 +224,7 @@ def _window_matching(lines: dict[str, str], seed: str, checkpoint_id: str, after
     )
 
 
-def _matching(pairs: list[tuple[str, str]], seed: str, checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
+def _matching(pairs: list[tuple[str, str]], checkpoint_id: str, after: str, refs: tuple[str, ...]) -> Matching:
     left = tuple(MatchItem(item_id=f"b{i}", text=cut(term, 300)) for i, (term, _text) in enumerate(pairs, start=1))
     right_ids = _random_ids("e", len(pairs))
     right = [MatchItem(item_id=right_ids[i], text=cut(text, 300)) for i, (_term, text) in enumerate(pairs)]
@@ -301,8 +301,8 @@ def structured_checkpoints(lesson: LessonDraft, *, after: str, refs: tuple[str, 
                 else:
                     out.append(cloze)
         else:
-            out.append(_matching(block[1], lesson.lesson_id, next_id("mt"), after, refs))
+            out.append(_matching(block[1], next_id("mt"), after, refs))
     # Three shells or more in one lesson: which window is which shell?
     if images and len(first_lines) >= 3:
-        out.append(_window_matching(first_lines, lesson.lesson_id, next_id("mt"), after, refs))
+        out.append(_window_matching(first_lines, next_id("mt"), after, refs))
     return out

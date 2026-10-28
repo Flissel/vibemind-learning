@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from spaces.learning.services import zufall as zufall_modul
 from spaces.learning.services.adaptive_engine.models import AdaptiveItem
-from spaces.learning.services.course_factory.neu_mischen import reihenfolgen_neu_mischen
+from spaces.learning.services.course_factory.neu_mischen import lernsequenzen_neu_mischen, reihenfolgen_neu_mischen
 from spaces.learning.services.course_factory.structured_items import structured_items
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.lernsequenz.aus_struktur import structured_checkpoints
@@ -45,7 +45,7 @@ def media(tmp_path, monkeypatch):
 
 
 def test_helper_never_returns_the_given_order_and_keeps_all_entries() -> None:
-    for n in range(2, 6):
+    for n in range(3, 6):
         eintraege = [{"id": f"x{i}", "label": f"l{i}"} for i in range(n)]
         for _ in range(40):
             gezeigt = zufall_modul.anders_gemischt(eintraege)
@@ -53,6 +53,18 @@ def test_helper_never_returns_the_given_order_and_keeps_all_entries() -> None:
             assert sorted(e["id"] for e in gezeigt) == sorted(e["id"] for e in eintraege)
     assert zufall_modul.anders_gemischt([{"id": "a"}]) == [{"id": "a"}]
     assert zufall_modul.anders_gemischt([]) == []
+
+
+def test_zwei_eintraege_werden_gleichverteilt_gemischt(monkeypatch) -> None:
+    # "Never the solution" with two entries would name the answer: the other order.
+    eintraege = [{"id": "a"}, {"id": "b"}]
+    rng = _Umkehr(identisch=5)  # leaves the order unchanged: must be accepted
+    monkeypatch.setattr(zufall_modul, "ZUFALL", rng)
+    assert [e["id"] for e in zufall_modul.anders_gemischt(eintraege)] == ["a", "b"]
+    assert rng.aufrufe == 1
+    monkeypatch.undo()
+    seen = {tuple(e["id"] for e in zufall_modul.anders_gemischt(eintraege)) for _ in range(60)}
+    assert seen == {("a", "b"), ("b", "a")}
 
 
 def test_helper_reshuffles_while_the_rng_keeps_the_order(monkeypatch) -> None:
@@ -176,7 +188,7 @@ def test_reshuffle_changes_shown_order_but_not_answers(tmp_path) -> None:
     o, m, q = (_lesen(factory, i) for i in ("o1", "m1", "q1"))
     assert o.expected_answer == expected_before["o1"] and m.expected_answer == expected_before["m1"]
     assert q.expected_answer == expected_before["q1"]
-    assert q.scoring_config == before["q1"].scoring_config  # choice items untouched
+    assert sorted(x["id"] for x in q.scoring_config["options"]) == ["a", "b"] and q.scoring_config["prompt"] == "p"
     shown_o = [x["id"] for x in o.scoring_config["options"]]
     assert sorted(shown_o) == ["s1", "s2", "s3", "s4"] and shown_o != o.expected_answer["order"]
     assert o.scoring_config["prompt"] == "p" and o.scoring_config["partial_credit"] is True
@@ -206,3 +218,112 @@ def test_reshuffle_skips_items_that_have_no_distinct_entries(tmp_path) -> None:
         s.add(_item("o2", "ordering", {"order": ["s1"]}, {"prompt": "p", "options": [{"id": "s1", "label": "A"}]}))
     result = reihenfolgen_neu_mischen(factory)
     assert result["ordering"] == 0 and result["uebersprungen"] == 1
+
+
+def test_reshuffle_skips_matching_with_non_injective_pairs(tmp_path) -> None:
+    factory = _factory(tmp_path)
+    links = [{"id": f"b{n}", "label": f"L{n}"} for n in (1, 2, 3)]
+    rechts = [{"id": f"e{n}", "label": f"R{n}"} for n in (3, 1, 2)]
+    with factory() as s, s.begin():
+        # b1 and b2 both point at e1: aligned ids would duplicate e1 and drop e2.
+        s.add(_item("m2", "matching", {"pairs": {"b1": "e1", "b2": "e1", "b3": "e3"}},
+                    {"prompt": "p", "presentation": {"left": links, "right": rechts}}))
+    result = reihenfolgen_neu_mischen(factory)
+    assert result["matching"] == 0 and result["uebersprungen"] == 1
+    assert [x["id"] for x in _lesen(factory, "m2").scoring_config["presentation"]["right"]] == ["e3", "e1", "e2"]
+
+
+def test_reshuffle_counts_malformed_rows_as_skipped_and_goes_on(tmp_path) -> None:
+    factory = _factory(tmp_path)
+    _bestand(factory)
+    with factory() as s, s.begin():
+        s.add(_item("bad1", "ordering", {"order": ["s1", "s2", "s3"]}, {"options": [{"label": "no id"}] * 3}))
+        s.add(_item("bad2", "matching", {"pairs": "kaputt"}, {"presentation": {"left": 1, "right": None}}))
+        s.add(_item("bad3", "single_choice", {"choice_id": "a"}, {"options": ["a", "b", "c"]}))
+        s.add(_item("bad4", "ordering", {"order": ["s1", "s2", "s3"]}, {"options": [{"id": ["x"]}] * 3}))
+    result = reihenfolgen_neu_mischen(factory)
+    assert result["ordering"] == 1 and result["matching"] == 1
+    assert result["uebersprungen"] == 4
+
+
+def _wahl(item_id: str, item_type: str, expected: dict) -> AdaptiveItem:
+    optionen = [{"id": o, "label": o.upper()} for o in "abcd"]
+    return _item(item_id, item_type, expected, {"prompt": "p", "options": optionen})
+
+
+def test_reshuffle_also_reshuffles_choice_options_and_keeps_answers(tmp_path, monkeypatch) -> None:
+    factory = _factory(tmp_path)
+    with factory() as s, s.begin():
+        s.add_all([_wahl("c1", "single_choice", {"choice_id": "a"}),
+                   _wahl("c2", "multiple_choice", {"choice_ids": ["a", "c"]})])
+    rng = _Umkehr()
+    monkeypatch.setattr(zufall_modul, "ZUFALL", rng)
+    result = reihenfolgen_neu_mischen(factory)
+    assert result["choice"] == 2
+    for item_id, expected in (("c1", {"choice_id": "a"}), ("c2", {"choice_ids": ["a", "c"]})):
+        item = _lesen(factory, item_id)
+        assert item.expected_answer == expected
+        assert [o["id"] for o in item.scoring_config["options"]] == ["d", "c", "b", "a"]
+        assert item.scoring_config["prompt"] == "p"
+
+
+def test_quiz_options_use_the_secure_rng_in_both_catalogs(monkeypatch) -> None:
+    from spaces.learning.services.course_factory.practice_catalog import _shuffled_options
+    from spaces.learning.services.course_factory.schemas import ActivityDraft, QuizOptionDraft
+    from spaces.learning.services.werkstatt import katalog
+    from spaces.learning.services.werkstatt.inhalt import Quiz
+
+    monkeypatch.setattr(zufall_modul, "ZUFALL", _Umkehr())
+    activity = ActivityDraft.model_construct(options=[QuizOptionDraft(option_id=o, text=o) for o in "abcd"])
+    assert [o["id"] for o in _shuffled_options(activity)] == ["d", "c", "b", "a"]
+    quiz = Quiz.model_validate({
+        "kind": "quiz", "prompt": "Frage?", "concept_ids": ["k"],
+        "options": [{"option_id": o, "text": o} for o in "abcd"], "correct_option_ids": ["a"],
+    })
+    _typ, _erwartet, scoring, _rubrik = katalog._item_felder("item-1", quiz)
+    assert [o["id"] for o in scoring["options"]] == ["d", "c", "b", "a"]
+
+
+# --- stored Lernsequenz presentations ------------------------------------------------------
+
+
+def _gespeichert(tmp_path):
+    from pathlib import Path
+
+    from spaces.learning.services.course_factory.schemas import CourseDraft
+    from spaces.learning.services.lernsequenz.aus_kurs import build_presentation
+    from spaces.learning.services.lernsequenz.store import SequenceStore
+    from spaces.learning.tests.unit.test_lernsequenz_aus_kurs import COURSE, draft
+
+    data = draft().model_dump(mode="json")
+    data["lessons"][0]["body"] = BODY
+    sequence = build_presentation(CourseDraft.model_validate(data), course_id=COURSE)
+    store = SequenceStore(Path(tmp_path))
+    store.save(sequence)
+    return store, sequence
+
+
+def test_stored_sequences_get_a_fresh_right_column_and_keep_pairs(tmp_path) -> None:
+    store, sequence = _gespeichert(tmp_path)
+    alt = next(c for c in sequence.checkpoints if c.kind == "matching")
+    result = lernsequenzen_neu_mischen(store)
+    assert result["sequenzen"] == 1 and result["matching"] == 1
+    neu_seq = store.load(sequence.sequence_id)
+    neu = next(c for c in neu_seq.checkpoints if c.kind == "matching")
+    assert neu.pairs == alt.pairs and neu.left == alt.left
+    assert sorted(r.item_id for r in neu.right) == sorted(r.item_id for r in alt.right)
+    assert [r.item_id for r in neu.right] != [neu.pairs[l.item_id] for l in neu.left]
+    assert [c for c in neu_seq.checkpoints if c.kind != "matching"] == [
+        c for c in sequence.checkpoints if c.kind != "matching"
+    ]
+    assert not list((tmp_path / "lernsequenzen").glob("*.tmp"))
+
+
+def test_stored_sequences_secure_rng_and_unreadable_files_are_skipped(tmp_path, monkeypatch) -> None:
+    store, sequence = _gespeichert(tmp_path)
+    (tmp_path / "lernsequenzen" / "kaputt.json").write_text("{nicht json", encoding="utf-8")
+    monkeypatch.setattr(zufall_modul, "ZUFALL", _Umkehr())
+    result = lernsequenzen_neu_mischen(tmp_path)  # a root path works too
+    assert result["sequenzen"] == 1 and result["matching"] == 1 and result["uebersprungen"] == 1
+    neu = next(c for c in store.load(sequence.sequence_id).checkpoints if c.kind == "matching")
+    assert [r.item_id for r in neu.right] == list(reversed([neu.pairs[l.item_id] for l in neu.left]))

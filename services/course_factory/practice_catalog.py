@@ -8,13 +8,13 @@ projection is deterministic and idempotent per course revision.
 from __future__ import annotations
 
 import json
-import random
 from collections.abc import Callable
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from spaces.learning.services import zufall
 from spaces.learning.services.adaptive_engine.models import (
     AdaptiveConcept,
     AdaptiveItem,
@@ -133,11 +133,10 @@ def _choice(activity: ActivityDraft) -> tuple[str, dict[str, object]] | None:
     return "multiple_choice", {"choice_ids": list(activity.correct_option_ids)}
 
 
-def _shuffled_options(item_id: str, activity: ActivityDraft) -> list[dict[str, str]]:
-    """Fixed per item, so the correct option is not always where the model put it."""
+def _shuffled_options(activity: ActivityDraft) -> list[dict[str, str]]:
+    """Unpredictable order (the item id is public), so the correct option is not where the model put it."""
     options = [{"id": o.option_id, "label": o.text} for o in activity.options]
-    random.Random(item_id).shuffle(options)
-    return options
+    return zufall.gemischt(options)
 
 
 def _item(
@@ -164,7 +163,7 @@ def _item(
             "prompt": activity.prompt,
             "source_refs": cited,
             "hints": _section_hints(cited),
-            "options": _shuffled_options(item_id, activity) if choice else [],
+            "options": _shuffled_options(activity) if choice else [],
             "presentation": {},
         },
         # Choice items are scored deterministically and carry no rubric.

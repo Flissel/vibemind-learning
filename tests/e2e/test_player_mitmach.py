@@ -177,7 +177,7 @@ def _image_sequence(player_server) -> str:
                   blanks=(Blank(blank_id="wert", accepted=("install.ps1",)),), shell="powershell", refs=())
     windows = _window_matching({"powershell": "irm https://claude.ai/install.ps1 | iex",
                                 "cmd": "curl -fsSL https://claude.ai/install.cmd -o install.cmd",
-                                "unix": "curl -fsSL https://claude.ai/install.sh | bash"}, "seed", "fm", "f2", ())
+                                "unix": "curl -fsSL https://claude.ai/install.sh | bash"}, "fm", "f2", ())
     data = sequence_data()
     data["sequence_id"] = "seq-bild"
     data["checkpoints"] = [_image_cloze(cloze).model_dump(mode="json"), windows.model_dump(mode="json")]

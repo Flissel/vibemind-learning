@@ -24,11 +24,14 @@ def _id(eintrag: Any) -> Any:
 def anders_gemischt(
     eintraege: list[T], schluessel: Callable[[T], Any] = _id, zufall: Any = None,
 ) -> list[T]:
-    """A shuffled copy whose order differs from ``eintraege`` (the solution order) whenever
-    at least two distinct entries (by ``schluessel``) exist; otherwise any order."""
+    """A shuffled copy of ``eintraege`` (given in solution order).
+
+    With three or more distinct entries (by ``schluessel``) the result differs from the
+    solution order. With exactly two it is a plain uniform shuffle: "never the solution" would
+    leave one possible order, i.e. name the answer. With fewer, any order."""
     rng = zufall if zufall is not None else ZUFALL
     gemischt = list(eintraege)
-    if len({schluessel(e) for e in eintraege}) < 2:
+    if len({schluessel(e) for e in eintraege}) < 3:
         rng.shuffle(gemischt)
         return gemischt
     vorgabe = [schluessel(e) for e in eintraege]
@@ -36,3 +39,11 @@ def anders_gemischt(
         rng.shuffle(gemischt)
         if [schluessel(e) for e in gemischt] != vorgabe:
             return gemischt
+
+
+def gemischt(eintraege: list[T], zufall: Any = None) -> list[T]:
+    """A uniformly shuffled copy, for choice options: their order carries no solution order."""
+    rng = zufall if zufall is not None else ZUFALL
+    kopie = list(eintraege)
+    rng.shuffle(kopie)
+    return kopie

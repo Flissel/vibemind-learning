@@ -13,7 +13,6 @@ running on the old revision). Nothing here calls a model.
 from __future__ import annotations
 
 import logging
-import random
 import re
 import secrets
 from collections.abc import Callable
@@ -41,7 +40,6 @@ from spaces.learning.services.course_factory.practice_catalog import (
     _stable_id,
 )
 from spaces.learning.services.lernsequenz.aus_struktur import _media_available, _random_ids
-from spaces.learning.services.zufall import anders_gemischt
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
 from spaces.learning.services.werkstatt.inhalt import (
@@ -55,6 +53,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     inhalt_lesen,
 )
 from spaces.learning.services.werkstatt.models import WerkstattKurs
+from spaces.learning.services.zufall import anders_gemischt, gemischt
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +263,7 @@ def _item_felder(
     """``(item_type, expected_answer, scoring_config, rubric)`` for one released task."""
     if isinstance(inhalt, Quiz):
         optionen = [{"id": o.option_id, "label": o.text} for o in inhalt.options]
-        random.Random(item_id).shuffle(optionen)
+        optionen = gemischt(optionen)
         richtig = list(inhalt.correct_option_ids)
         if len(richtig) == 1:
             return "single_choice", {"choice_id": richtig[0]}, {"prompt": inhalt.prompt, "options": optionen}, []
