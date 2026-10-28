@@ -21,8 +21,8 @@ from spaces.learning.services.ingestion.models import (
 
 from spaces.learning.tests.integration.course_factory_api_support import SERVICE_KEY, ApiHarness, headers, sha256
 
-AUTOR = {"X-Werkstatt-Author": "anna"}
-BEN = {"X-Werkstatt-Author": "ben"}
+AUTOR = {"X-Werkstatt-Author": "kursleitung-a"}
+ZWEITE = {"X-Werkstatt-Author": "kursleitung-b"}
 TEXT = "Der Befehl Test-Path prueft, ob eine Datei oder ein Ordner existiert."
 BEFEHL = "Test-Path C:/Daten/bericht.txt"
 
@@ -235,7 +235,7 @@ def test_patch_erste_fassung_ist_neu_ohne_basis(env: Env) -> None:
     env.kurs()
     fassung = env.erste_fassung(env.aufgabe())
     assert (fassung["number"], fassung["based_on"], fassung["art"]) == (1, None, "neu")
-    assert fassung["author_ref"] == "anna"
+    assert fassung["author_ref"] == "kursleitung-a"
     assert fassung["reason"] == "Aenderung"
 
 
@@ -262,13 +262,13 @@ def test_patch_auf_alter_basis_gibt_409_mit_neuester(env: Env) -> None:
     env.kurs()
     task_id = env.aufgabe()
     env.erste_fassung(task_id)
-    assert env.patch(task_id, 1, {"prompt": "Von Anna geaendert?"}).status_code == 200
-    response = env.patch(task_id, 1, {"prompt": "Von Ben geaendert?"}, who=BEN)
+    assert env.patch(task_id, 1, {"prompt": "Von Kursleitung A geaendert?"}).status_code == 200
+    response = env.patch(task_id, 1, {"prompt": "Von Kursleitung B geaendert?"}, who=ZWEITE)
     assert response.status_code == 409
     body = response.json()
     assert body["code"] == "konflikt"
     assert body["neueste"]["number"] == 2
-    assert body["neueste"]["author_ref"] == "anna"
+    assert body["neueste"]["author_ref"] == "kursleitung-a"
     assert len(env.client.get(f"/api/v1/werkstatt/aufgaben/{task_id}/fassungen", headers=env.h()).json()["fassungen"]) == 2
 
 

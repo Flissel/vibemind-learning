@@ -34,7 +34,7 @@ def _store(tmp_path: Path) -> WerkstattStore:
 def _kurs(s: WerkstattStore) -> None:
     s.kurs_anlegen(
         "c1", title="Neu", audience="Einsteiger", default_kind="quiz",
-        outcomes=["Dateien pruefen"], source_provenance=_PROV, owner_ref="felix",
+        outcomes=["Dateien pruefen"], source_provenance=_PROV, owner_ref="kursleitung-a",
     )
 
 
@@ -188,7 +188,7 @@ async def test_konflikt_wird_als_fehler_mit_neuester_gemeldet(tmp_path: Path) ->
     _kurs(s)
     t = s.aufgabe_anlegen("c1", chapter_title="K", summary="x")["task_id"]
     s.fassung_anlegen(
-        t, content=quiz(), based_on=None, author_ref="felix", reason="von Hand", art="neu",
+        t, content=quiz(), based_on=None, author_ref="kursleitung-a", reason="von Hand", art="neu",
         findings=[],
     )
     a = s.auftrag_anlegen("c1", kind="ausformulieren", task_id=t, input={"based_on": None})["id"]

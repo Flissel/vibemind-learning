@@ -104,7 +104,7 @@ def _setup(tmp_path: Path, draft: dict[str, Any] | None = None, publiziert: bool
 
 
 def _uebernehmen(store, fake, factory):
-    return kurs_uebernehmen(store, fake, factory, COURSE, author_ref="anna")
+    return kurs_uebernehmen(store, fake, factory, COURSE, author_ref="kursleitung-a")
 
 
 def test_uebernahme_legt_je_aktivitaet_eine_aufgabe_mit_fassung_1_an(tmp_path):
@@ -117,14 +117,14 @@ def test_uebernahme_legt_je_aktivitaet_eine_aufgabe_mit_fassung_1_an(tmp_path):
     assert fake.calls == [(JOB, 1, "verifying")]
     kurs = store.kurs(COURSE)
     assert kurs["title"] == "Beispielkurs" and kurs["outcomes"] == ["Ziel 1"]
-    assert kurs["owner_ref"] == "anna" and kurs["default_kind"] == "quiz" and kurs["audience"] == ""
+    assert kurs["owner_ref"] == "kursleitung-a" and kurs["default_kind"] == "quiz" and kurs["audience"] == ""
     assert kurs["source_provenance"] == [{"source_id": SRC, "revision": 1, "content_hash": HASH}]
     assert [a["chapter_title"] for a in kurs["aufgaben"]] == ["Kapitel Eins"] * 2 + ["Kapitel Zwei"]
     assert all(len(a["summary"]) == 120 for a in kurs["aufgaben"])
     for a in kurs["aufgaben"]:
         fassungen = store.fassungen(a["task_id"])
         assert [(f["number"], f["based_on"], f["art"], f["author_ref"]) for f in fassungen] == [
-            (1, None, "uebernommen", "anna")
+            (1, None, "uebernommen", "kursleitung-a")
         ]
     erste = store.neueste(kurs["aufgaben"][0]["task_id"])["content"]
     assert erste["kind"] == "quiz" and erste["correct_option_ids"] == ["a"]
@@ -238,7 +238,7 @@ def test_fehlerklassen_sind_getrennt(tmp_path):
 
     s2, _, f2 = _setup(tmp_path / "c" if (tmp_path / "c").mkdir() is None else tmp_path)
     with pytest.raises(EntwurfNichtLesbar):
-        kurs_uebernehmen(s2, Kaputt(), f2, COURSE, author_ref="anna")
+        kurs_uebernehmen(s2, Kaputt(), f2, COURSE, author_ref="kursleitung-a")
     with pytest.raises(LookupError):
         s2.kurs(COURSE)
 

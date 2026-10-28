@@ -22,7 +22,7 @@ def _kurs(s: WerkstattStore, course_id: str = "c1") -> dict:
     return s.kurs_anlegen(
         course_id, title="Terminal", audience="Einsteiger", default_kind="exercise",
         outcomes=["Befehle eingeben"], source_provenance=[{"url": "https://example.org"}],
-        owner_ref="felix",
+        owner_ref="kursleitung-a",
     )
 
 
@@ -32,7 +32,7 @@ def _inhalt(text: str = "Tippe ls") -> dict:
 
 def _fassung(s: WerkstattStore, tid: str, based_on, text: str = "x", art: str = "neu") -> dict:
     return s.fassung_anlegen(
-        tid, content=_inhalt(text), based_on=based_on, author_ref="felix",
+        tid, content=_inhalt(text), based_on=based_on, author_ref="kursleitung-a",
         reason="r", art=art, findings=[],
     )
 
@@ -93,7 +93,7 @@ def test_zurueckholen_legt_neue_fassung_mit_altem_inhalt_an(tmp_path):
     t = _aufgabe(s)
     f1 = _fassung(s, t["task_id"], None, "eins")
     _fassung(s, t["task_id"], 1, "zwei")
-    neu = s.zurueckholen(t["task_id"], 1, author_ref="felix")
+    neu = s.zurueckholen(t["task_id"], 1, author_ref="kursleitung-a")
     assert neu["number"] == 3 and neu["content"] == f1["content"] and neu["art"] == "zurueckgeholt"
     assert neu["based_on"] == 2
 
@@ -103,11 +103,11 @@ def test_geloeschte_aufgabe_ist_schreibgeschuetzt(tmp_path):
     t = _aufgabe(s)
     tid = t["task_id"]
     _fassung(s, tid, None)
-    s.aufgabe_loeschen(tid, author_ref="felix")
+    s.aufgabe_loeschen(tid, author_ref="kursleitung-a")
     assert tid not in [a["task_id"] for a in s.kurs("c1")["aufgaben"]]
     with pytest.raises(ValueError, match="aufgabe_geloescht"):
         _fassung(s, tid, 1)
-    s.zurueckholen(tid, 1, author_ref="felix")
+    s.zurueckholen(tid, 1, author_ref="kursleitung-a")
     assert tid in [a["task_id"] for a in s.kurs("c1")["aufgaben"]]
 
 
@@ -115,7 +115,7 @@ def test_kurs_listet_aufgaben_in_reihenfolge_ohne_geloeschte(tmp_path):
     s = _store(tmp_path); _kurs(s)
     a = _aufgabe(s, "K1", "a"); b = _aufgabe(s, "K1", "b"); c = _aufgabe(s, "K1", "c")
     _fassung(s, b["task_id"], None); _fassung(s, b["task_id"], 1)
-    s.aufgabe_loeschen(a["task_id"], author_ref="felix")
+    s.aufgabe_loeschen(a["task_id"], author_ref="kursleitung-a")
     aufgaben = s.kurs("c1")["aufgaben"]
     assert [x["task_id"] for x in aufgaben] == [b["task_id"], c["task_id"]]
     assert aufgaben[0]["neueste_fassung"] == 2 and aufgaben[1]["neueste_fassung"] is None
