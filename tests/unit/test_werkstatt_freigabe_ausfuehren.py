@@ -130,3 +130,56 @@ async def test_blockierte_freigabe_wird_nicht_geschrieben(tmp_path):
     with pytest.raises(ValueError, match="freigabe_blockiert"):
         await freigabe_ausfuehren(s, gw, v["freigabe_id"], approval_ref="k", learnhouse_revision=1)
     assert gw.aufrufe == []
+
+
+class _KonfliktGateway:
+    def __init__(self, status: int, code: str | None) -> None:
+        self.status, self.code = status, code
+
+    async def werkstatt_stand_schreiben(self, course_id, **_kw):
+        raise LearnHouseGatewayError(
+            f"LearnHouse request was rejected with {self.status}", status=self.status, code=self.code
+        )
+
+
+@pytest.mark.asyncio
+async def test_learnhouse_revisionskonflikt_wird_stand_veraltet(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    v = _vorbereiten(s)
+    with pytest.raises(ValueError, match="learnhouse_stand_veraltet"):
+        await freigabe_ausfuehren(
+            s, _KonfliktGateway(409, "revision_conflict"), v["freigabe_id"],
+            approval_ref="k", learnhouse_revision=1,
+        )
+    assert s.freigabe(v["freigabe_id"])["zustand"] == "angefordert"
+
+
+@pytest.mark.asyncio
+async def test_wiederverwendete_freigabe_id_wird_gemeldet(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    v = _vorbereiten(s)
+    with pytest.raises(ValueError, match="freigabe_id_reused"):
+        await freigabe_ausfuehren(
+            s, _KonfliktGateway(409, "freigabe_id_reused"), v["freigabe_id"],
+            approval_ref="k", learnhouse_revision=1,
+        )
+    assert s.freigabe(v["freigabe_id"])["zustand"] == "angefordert"
+    with pytest.raises(LearnHouseGatewayError):
+        await freigabe_ausfuehren(
+            s, _KonfliktGateway(500, None), v["freigabe_id"], approval_ref="k", learnhouse_revision=1
+        )
+
+
+@pytest.mark.asyncio
+async def test_fehlende_manifest_fassung_wird_gemeldet(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    v = _vorbereiten(s)
+    with s._sessions.begin() as session:
+        from spaces.learning.services.werkstatt.models import WerkstattFreigabe
+        row = session.get(WerkstattFreigabe, v["freigabe_id"])
+        row.manifest = [dict(row.manifest[0], fassung=99)]
+    with pytest.raises(ValueError, match="manifest_fassung_fehlt"):
+        await freigabe_ausfuehren(s, FakeGateway(), v["freigabe_id"], approval_ref="k", learnhouse_revision=1)

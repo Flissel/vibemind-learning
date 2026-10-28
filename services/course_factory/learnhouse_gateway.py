@@ -23,7 +23,25 @@ _ALLOWED_SERVICE_HOSTS = frozenset({"localhost", "learnhouse-api"})
 
 
 class LearnHouseGatewayError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status: int | None = None, code: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def _fehler_code(body: bytes) -> str | None:
+    """The error code of a rejected response, if its (small) JSON body carries one."""
+    try:
+        value = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    detail = value.get("detail")
+    kandidat = detail.get("code") if isinstance(detail, dict) else detail
+    if not isinstance(kandidat, str):
+        kandidat = value.get("code")
+    return kandidat if isinstance(kandidat, str) else None
 
 
 class LearnHouseHttpGateway:
@@ -177,8 +195,15 @@ class LearnHouseHttpGateway:
             json=payload,
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > 64 * 1024:
+                        break
                 raise LearnHouseGatewayError(
-                    f"LearnHouse request was rejected with {response.status_code}"
+                    f"LearnHouse request was rejected with {response.status_code}",
+                    status=response.status_code,
+                    code=_fehler_code(bytes(body)),
                 )
             content = bytearray()
             async for chunk in response.aiter_bytes():

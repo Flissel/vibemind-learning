@@ -228,3 +228,42 @@ async def test_werkstatt_stand_schreiben_sendet_put() -> None:
         "expected_revision": 8, "freigabe_id": "f-1", "kapitel": kapitel,
     }
     await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"detail": {"code": "revision_conflict"}},
+        {"detail": "revision_conflict"},
+        {"code": "revision_conflict"},
+    ],
+)
+async def test_gateway_fehler_traegt_status_und_code(body) -> None:
+    client = httpx.AsyncClient(
+        base_url="http://learnhouse-api:9000/api/v1/learning/",
+        transport=httpx.MockTransport(lambda request: httpx.Response(409, json=body)),
+    )
+    gateway = LearnHouseHttpGateway(
+        "http://learnhouse-api:9000/api/v1/learning", "s" * 32, client=client
+    )
+    with pytest.raises(LearnHouseGatewayError, match="rejected with 409") as info:
+        await gateway.werkstatt_stand_schreiben(
+            str(uuid4()), expected_revision=1, freigabe_id="f", kapitel=[]
+        )
+    assert info.value.status == 409 and info.value.code == "revision_conflict"
+
+    ohne = httpx.AsyncClient(
+        base_url="http://learnhouse-api:9000/api/v1/learning/",
+        transport=httpx.MockTransport(lambda request: httpx.Response(500, content=b"boom")),
+    )
+    gateway = LearnHouseHttpGateway(
+        "http://learnhouse-api:9000/api/v1/learning", "s" * 32, client=ohne
+    )
+    with pytest.raises(LearnHouseGatewayError) as info:
+        await gateway.werkstatt_stand_schreiben(
+            str(uuid4()), expected_revision=1, freigabe_id="f", kapitel=[]
+        )
+    assert info.value.status == 500 and info.value.code is None
+    await client.aclose()
+    await ohne.aclose()

@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from spaces.learning.services.course_factory.learnhouse_gateway import LearnHouseGatewayError
 from spaces.learning.services.course_factory.quality_gate import (
     AktivitaetsSicht,
     LektionsSicht,
@@ -196,7 +197,11 @@ def _kapitel_aus_manifest(store: WerkstattStore, manifest: list[dict[str, Any]])
     """Chapters in manifest order; each task's lesson first. Reads the approved version, not the newest."""
     kapitel: dict[str, dict[str, Any]] = {}
     for m in sorted(manifest, key=lambda e: e["position"]):
-        fassung = next(f for f in store.fassungen(m["task_id"]) if f["number"] == m["fassung"])
+        fassung = next(
+            (f for f in store.fassungen(m["task_id"]) if f["number"] == m["fassung"]), None
+        )
+        if fassung is None:
+            raise ValueError("manifest_fassung_fehlt")
         inhalt = inhalt_lesen(fassung["content"])
         eintraege = kapitel.setdefault(
             m["kapitel"], {"titel": m["kapitel"], "eintraege": []}
@@ -231,10 +236,18 @@ async def freigabe_ausfuehren(
     vergleich = freigabe["vergleich"]
     if not any(vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")):
         raise ValueError("nichts_zu_veroeffentlichen")
-    antwort = await gateway.werkstatt_stand_schreiben(
-        freigabe["course_id"], expected_revision=learnhouse_revision, freigabe_id=freigabe_id,
-        kapitel=_kapitel_aus_manifest(store, freigabe["manifest"]),
-    )
+    kapitel = _kapitel_aus_manifest(store, freigabe["manifest"])
+    try:
+        antwort = await gateway.werkstatt_stand_schreiben(
+            freigabe["course_id"], expected_revision=learnhouse_revision, freigabe_id=freigabe_id,
+            kapitel=kapitel,
+        )
+    except LearnHouseGatewayError as fehler:
+        if fehler.status == 409 and fehler.code == "revision_conflict":
+            raise ValueError("learnhouse_stand_veraltet") from fehler
+        if fehler.status == 409 and fehler.code == "freigabe_id_reused":
+            raise ValueError("freigabe_id_reused") from fehler
+        raise
     revision = int(antwort["revision"])
     store.freigabe_markieren_freigegeben(
         freigabe_id, learnhouse_revision=revision, approval_ref=approval_ref
