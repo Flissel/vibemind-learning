@@ -273,3 +273,43 @@ def test_bekanntes_zitat_der_aktuellen_quelle_bleibt() -> None:
 def test_aussage_mit_unaufgeloestem_schluessel_ist_unbelegt() -> None:
     roh = inhalt_lesen(quiz())  # claims cite "S1", never resolved against the catalog
     assert "claim_uncited" in codes(aufgabe_pruefen(roh, sources=SRC))
+
+
+def _mit_body(body: str) -> Any:
+    inhalt, _ = quellen_aufloesen(inhalt_lesen(quiz(lektion=lektion(body=body))), REFS_2, course_id="c1")
+    return inhalt
+
+
+def test_quellenschluessel_im_text_ist_befund() -> None:
+    body = f"Geben Sie den folgenden Befehl ein (S37):\n\n```powershell\n{_KOMMANDO}\n```\n{_TEXT}"
+    assert "quellenschluessel_im_text" in codes(aufgabe_pruefen(_mit_body(body), sources=SRC))
+    prompt = inhalt_lesen(quiz(prompt="Welcher Befehl prueft eine Datei [S2]?"))
+    prompt, _ = quellen_aufloesen(prompt, REFS_2, course_id="c1")
+    assert "quellenschluessel_im_text" in codes(aufgabe_pruefen(prompt, sources=SRC))
+
+
+def test_schluesselmuster_in_woertern_und_code_ist_kein_befund() -> None:
+    body = f"{_TEXT} Die Zeile S3 steht im Wort BuS3 und in Seite (S. 3).\n\n```powershell\n{_KOMMANDO} # (S1)\n```\n"
+    assert "quellenschluessel_im_text" not in codes(aufgabe_pruefen(_mit_body(body), sources=SRC))
+
+
+def test_codeblock_ohne_shell_ist_befund() -> None:
+    for tag in ("text", ""):
+        body = f"{_TEXT}\n\n```{tag}\n{_KOMMANDO}\n```\n"
+        assert "codeblock_ohne_shell" in codes(aufgabe_pruefen(_mit_body(body), sources=SRC))
+    for tag in ("cmd", "bash", "PowerShell"):
+        body = f"{_TEXT}\n\n```{tag}\n{_KOMMANDO}\n```\n"
+        assert "codeblock_ohne_shell" not in codes(aufgabe_pruefen(_mit_body(body), sources=SRC))
+
+
+def test_lektion_kuendigt_an_ist_befund() -> None:
+    for satz in ("In diesem Abschnitt lernen Sie den Befehl kennen.", "Im Folgenden sehen Sie ihn."):
+        body = f"{satz} {_TEXT}\n\n```powershell\n{_KOMMANDO}\n```\n"
+        assert "lektion_kuendigt_an" in codes(aufgabe_pruefen(_mit_body(body), sources=SRC))
+    body = f"{_TEXT} In diesem Abschnitt lernen Sie mehr.\n\n```powershell\n{_KOMMANDO}\n```\n"
+    assert "lektion_kuendigt_an" in codes(aufgabe_pruefen(_mit_body(body), sources=SRC))
+
+
+def test_saubere_lektion_hat_keinen_der_neuen_befunde() -> None:
+    neu = {"quellenschluessel_im_text", "codeblock_ohne_shell", "lektion_kuendigt_an"}
+    assert not neu & set(codes(aufgabe_pruefen(gut(), sources=SRC)))

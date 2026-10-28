@@ -44,6 +44,9 @@ _TEXTE = {
     "lesson_body_thin": "Der Lektionstext kündigt den Inhalt nur an und vermittelt die Aussagen nicht selbst.",
     "lesson_command_missing": "Ein Befehl, den eine Aussage nennt, steht nicht wörtlich im Lektionstext.",
     "address_mixed": "Die Anrede ist uneinheitlich, denn „du“ und „Sie“ kommen gemischt vor; bitte durchgehend „Sie“ verwenden.",
+    "quellenschluessel_im_text": "Im Text, in der Aufgabenstellung oder in der Antwort stehen Quellenschlüssel wie „(S12)“; sie gehören nur in die Quellenangaben, nicht in den Text.",
+    "codeblock_ohne_shell": "Ein Codeblock hat keine Sprachangabe oder eine andere als powershell, cmd oder bash.",
+    "lektion_kuendigt_an": "Der Lektionstext kündigt an, was er oder die Aufgaben tun werden (etwa „In diesem Abschnitt lernen Sie …“), statt die Inhalte direkt zu vermitteln.",
     "claim_uncited": "Eine Aussage der Lektion hat keine Quelle, die sie belegt.",
     "command_not_in_source": "Ein Befehl im Codeblock steht nirgends wörtlich in den Quellen.",
     "cloze_blank_missing": "Im Lückentext fehlt zu einem Platzhalter die passende Lücke.",
@@ -51,6 +54,59 @@ _TEXTE = {
     "ordering_duplicate": "In der Reihenfolge kommt ein Schritt doppelt vor.",
     "matching_duplicate": "In der Zuordnung kommt ein Begriff doppelt vor.",
 }
+
+
+# A source key used as a citation in running text: S<n> inside round or square brackets,
+# alone or in a list ("(S12)", "[S2, S3]"). Bare "S3" elsewhere (words, "Seite (S. 3)") is not
+# matched; fenced code is cut out first.
+_SCHLUESSEL_IM_TEXT = re.compile(r"[(\[]\s*S\d+(?:\s*[,;/]\s*S\d+)*\s*[)\]]")
+_FENCE = re.compile(r"```.*?(?:```|\Z)", re.S)
+_ERLAUBTE_SHELLS = {"powershell", "cmd", "bash"}
+# An announcement at a sentence start (text start, line start after optional heading marks, or
+# after . ! ? :). The course factory has no wording rule for it (its quality gate only measures
+# body coverage of the claims), so the common German openings are listed here.
+_ANKUENDIGUNG = re.compile(
+    r"(?:^|(?<=[.!?:])[ \t]+|(?<=\n))[ \t]*(?:#+[ \t]*)?"
+    r"(?:in\s+diesem\s+(?:abschnitt|kapitel|teil)\b|in\s+dieser\s+(?:lektion|einheit)\b"
+    r"|im\s+folgenden\b|in\s+den\s+folgenden\s+aufgaben\b|dieser\s+abschnitt\b)",
+    re.I | re.M,
+)
+
+
+def _ohne_code(text: str) -> str:
+    return _FENCE.sub(" ", text)
+
+
+def _codeblock_tags(text: str) -> list[str]:
+    tags: list[str] = []
+    offen = False
+    for zeile in text.splitlines():
+        s = zeile.strip()
+        if not s.startswith("```"):
+            continue
+        if offen:
+            offen = False
+        else:
+            offen = True
+            teile = s[3:].strip().split()
+            tags.append(teile[0].lower() if teile else "")
+    return tags
+
+
+def _text_codes(inhalt: AufgabeInhalt) -> list[str]:
+    texte = [inhalt.prompt, getattr(inhalt, "expected_answer", "") or ""]
+    if isinstance(inhalt, Quiz):
+        texte += [o.text for o in inhalt.options]
+    body = inhalt.lektion.body if inhalt.lektion is not None else ""
+    texte.append(body)
+    codes: list[str] = []
+    if any(_SCHLUESSEL_IM_TEXT.search(_ohne_code(t)) for t in texte):
+        codes.append("quellenschluessel_im_text")
+    if any(tag not in _ERLAUBTE_SHELLS for t in texte for tag in _codeblock_tags(t)):
+        codes.append("codeblock_ohne_shell")
+    if _ANKUENDIGUNG.search(_ohne_code(body)):
+        codes.append("lektion_kuendigt_an")
+    return codes
 
 
 def _befund(code: str) -> Befund:
@@ -119,6 +175,7 @@ def aufgabe_pruefen(inhalt: AufgabeInhalt, *, sources: tuple[SourceSnapshot, ...
             codes.append("claim_uncited")
         if subjects_with_unsourced_command([("lektion", abschnitt.body)], sources):
             codes.append("command_not_in_source")
+    codes += _text_codes(inhalt)
     return [_befund(code) for code in dict.fromkeys(codes)]
 
 

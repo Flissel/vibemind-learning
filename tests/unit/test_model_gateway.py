@@ -751,3 +751,14 @@ def test_the_lesson_author_keeps_tasks_out_of_the_lesson_text() -> None:
 
     assert "no tasks, options or answers" in ROLE_PROMPTS["lesson_author"]
     assert ROLE_CONTRACTS["lesson_author"][1] >= "lesson-prompt-v5"
+
+
+def test_werkstatt_aufgabe_prompt_v2_verbietet_schluessel_im_text() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    assert ROLE_CONTRACTS["werkstatt_aufgabe"] == (
+        "werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"
+    )
+    text = ROLE_PROMPTS["werkstatt_aufgabe"]
+    for teil in ("powershell, cmd or bash", "never write source keys", "at least one source key", "never announces"):
+        assert teil in text
