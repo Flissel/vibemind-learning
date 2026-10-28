@@ -542,3 +542,69 @@ def test_kaputtes_artefakt_ist_502_nicht_409(env: Env, monkeypatch) -> None:
         assert antwort.status_code == 502, (fehler, antwort.text)
         assert antwort.json()["code"] == "entwurf_nicht_lesbar"
     assert env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).status_code == 404
+
+
+class _ZitierteArtefakte:
+    """A published draft whose lesson claim cites the env's real chunk; the activity cites nothing."""
+
+    def __init__(self, quelle: str, chunk_id: str, chunk_hash: str, quellen_hash: str) -> None:
+        self.zitat = {"citation_id": "1" * 36, "source_id": quelle, "source_revision": 1,
+                      "chunk_id": chunk_id, "content_hash": chunk_hash, "locator": {"page": 1}}
+        self.provenienz = {"source_id": quelle, "revision": 1, "content_hash": quellen_hash}
+
+    def read_stage_output(self, job_id: str, *, attempt_number: int, stage: Any) -> dict[str, Any]:
+        aktivitaet = {
+            "activity_id": "a1", "chapter_id": "ch1", "type": "quiz", "concept_ids": ["k1"],
+            "prompt": "Welcher Befehl prueft eine Datei?", "expected_answer": "", "citation_ids": [],
+            "rubric": [], "options": [{"option_id": "a", "text": "A"}, {"option_id": "b", "text": "B"}],
+            "correct_option_ids": ["a"],
+        }
+        lektion = {
+            "lesson_id": "l1", "chapter_id": "ch1", "title": "Dateien pruefen",
+            "body": f"{TEXT}\n\n```powershell\n{BEFEHL}\n```\n", "concept_ids": ["k1"],
+            "claims": [{"claim_id": "c1", "text": TEXT, "citation_ids": [self.zitat["citation_id"]]}],
+        }
+        entwurf = {
+            "schema_version": "course-draft-v1", "job_id": job_id, "attempt_number": attempt_number,
+            "title": "Veroeffentlicht", "outcomes": ["Ziel"],
+            "source_provenance": [self.provenienz], "citations": [self.zitat],
+            "concepts": [{"concept_id": "k1", "title": "K"}],
+            "chapters": [{"chapter_id": "ch1", "title": "Kapitel", "lesson_ids": ["l1"],
+                          "activity_ids": ["a1"]}],
+            "lessons": [lektion], "activities": [aktivitaet],
+        }
+        return {"source_verifier": {"schema_version": "x", "draft": entwurf,
+                                    "unsupported_claim_ids": []}}
+
+
+def test_uebernahme_dann_textkorrektur_behaelt_lektionszitate(env: Env, monkeypatch) -> None:
+    from spaces.learning.services.course_factory.models import CourseFactoryPublication
+
+    quelle = env.harness.ready_source
+    with env.harness.session_factory() as session:
+        chunk = session.query(LearningSourceChunk).filter_by(source_id=quelle).one()
+        quellen_hash = session.get(LearningSourceRevision, (quelle, 1)).content_hash
+        chunk_id, chunk_hash = chunk.id, chunk.content_hash
+    artefakte = _ZitierteArtefakte(quelle, chunk_id, chunk_hash, quellen_hash)
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", "unused")
+    monkeypatch.setattr(werkstatt_routes, "_artifact_store", lambda factory: artefakte)
+    with env.harness.session_factory() as session, session.begin():
+        session.add(CourseFactoryPublication(
+            id=str(uuid4()), job_id=str(uuid4()), attempt_id=str(uuid4()), attempt_number=1,
+            course_id=env.course_id, draft_hash="a" * 64, learnhouse_revision=1,
+            confirmation_ref="c", readback_evidence_ref="r",
+        ))
+    antwort = env.client.post(f"/api/v1/werkstatt/kurse/{env.course_id}/uebernehmen", headers=env.h())
+    assert antwort.status_code == 201, antwort.text
+    task_id = env.client.get(
+        f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()
+    ).json()["aufgaben"][0]["task_id"]
+
+    nur_text = env.patch(task_id, 1, {"prompt": "Mit welchem Befehl pruefen Sie eine Datei?"})
+    assert nur_text.status_code == 200, nur_text.text
+    fassung = nur_text.json()
+    assert fassung["art"] == "textkorrektur"
+    claim_ids = fassung["content"]["lektion"]["claims"][0]["citation_ids"]
+    assert claim_ids == [artefakte.zitat["citation_id"]]
+    assert [z["citation_id"] for z in fassung["content"]["zitate"]] == claim_ids
+    assert "claim_uncited" not in [f["code"] for f in fassung["findings"]]

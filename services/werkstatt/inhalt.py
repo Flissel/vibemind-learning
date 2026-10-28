@@ -29,7 +29,8 @@ class _AufgabeBasis(_StrictDraft):
     prompt: str = Field(min_length=1, max_length=20_000)
     concept_ids: list[str] = Field(min_length=1, max_length=200)
     citation_ids: list[str] = Field(default_factory=list, max_length=100)
-    zitate: list[Citation] = Field(default_factory=list, max_length=100)
+    # Activity plus lesson claims: a merged chapter lesson can cite many chunks.
+    zitate: list[Citation] = Field(default_factory=list, max_length=2_000)
     lektion: Lektionsabschnitt | None = None
 
 

@@ -51,12 +51,21 @@ def _lektion(lektionen: list[LessonDraft]) -> dict[str, Any]:
     }
 
 
-def _inhalt(a: ActivityDraft, draft: CourseDraft) -> dict[str, Any]:
-    zitate = [c.model_dump(mode="json") for c in draft.citations if c.citation_id in a.citation_ids]
+def _inhalt(
+    a: ActivityDraft, draft: CourseDraft, lektion: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The task content; `zitate` holds every citation the activity OR the attached lesson's
+    claims refer to, so the first edit does not strip the lesson's sources."""
+    zitiert = set(a.citation_ids)
+    if lektion is not None:
+        zitiert |= {i for c in lektion["claims"] for i in c["citation_ids"]}
+    zitate = [c.model_dump(mode="json") for c in draft.citations if c.citation_id in zitiert]
     inhalt: dict[str, Any] = {
         "kind": a.type, "prompt": a.prompt, "concept_ids": list(a.concept_ids),
         "citation_ids": list(a.citation_ids), "zitate": zitate,
     }
+    if lektion is not None:
+        inhalt["lektion"] = lektion
     if a.type == "quiz":
         inhalt["options"] = [o.model_dump(mode="json") for o in a.options]
         inhalt["correct_option_ids"] = list(a.correct_option_ids)
@@ -123,9 +132,7 @@ def kurs_uebernehmen(
             if a.type not in _UEBERNEHMBAR:
                 details.append({"activity_id": aid, "grund": "typ_nicht_uebernehmbar"})
                 continue
-            inhalt = _inhalt(a, draft)
-            if erste and gehoerig:
-                inhalt["lektion"] = _lektion(gehoerig)
+            inhalt = _inhalt(a, draft, _lektion(gehoerig) if erste and gehoerig else None)
             try:
                 inhalt = inhalt_lesen(inhalt).model_dump(mode="json")
             except ValidationError as error:

@@ -241,3 +241,32 @@ def test_fehlerklassen_sind_getrennt(tmp_path):
         kurs_uebernehmen(s2, Kaputt(), f2, COURSE, author_ref="anna")
     with pytest.raises(LookupError):
         s2.kurs(COURSE)
+
+
+def test_lektions_zitate_werden_mit_uebernommen(tmp_path):
+    entwurf = _draft()
+    entwurf["citations"].append(_citation(3))
+    # the chapter-1 lesson claim cites citation 3, its first activity cites citation 1
+    entwurf["lessons"][0]["claims"][0]["citation_ids"] = [f"{3:036d}"]
+    store, fake, factory = _setup(tmp_path, entwurf)
+    _uebernehmen(store, fake, factory)
+    a1 = store.neueste(store.kurs(COURSE)["aufgaben"][0]["task_id"])["content"]
+    assert a1["citation_ids"] == [f"{1:036d}"]
+    assert a1["lektion"]["claims"][0]["citation_ids"] == [f"{3:036d}"]
+    assert sorted(z["citation_id"] for z in a1["zitate"]) == [f"{1:036d}", f"{3:036d}"]
+
+
+def test_viele_lektionszitate_sprengen_die_uebernahme_nicht(tmp_path):
+    # Several lessons of one chapter may cite far more chunks than one activity does.
+    entwurf = _draft()
+    extra = [_citation(n) for n in range(10, 130)]
+    entwurf["citations"].extend(extra)
+    entwurf["lessons"][0]["claims"] = [
+        {"claim_id": f"c{n}", "text": f"Aussage {n}", "citation_ids": [z["citation_id"]]}
+        for n, z in enumerate(extra)
+    ]
+    store, fake, factory = _setup(tmp_path, entwurf)
+    ergebnis = _uebernehmen(store, fake, factory)
+    assert ergebnis["uebersprungen"] == 0, ergebnis["uebersprungen_details"]
+    a1 = store.neueste(store.kurs(COURSE)["aufgaben"][0]["task_id"])["content"]
+    assert len(a1["zitate"]) == 121
