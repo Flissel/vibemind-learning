@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from spaces.learning.services.werkstatt.inhalt import (
     Grobentwurf,
     Quiz,
+    Zahl,
     fassungs_art,
     inhalt_lesen,
 )
@@ -163,3 +164,45 @@ def test_fassungs_art_neu_bei_geaendertem_lueckentext() -> None:
 def test_fassungs_art_neu_bei_anderer_shell() -> None:
     assert fassungs_art(luecke(), luecke(shell="cmd")) == "neu"
     assert fassungs_art(luecke(), luecke(shell=None)) == "neu"
+
+
+def zahl(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "kind": "number",
+        "prompt": "Berechnen Sie die Stelle $x$, an der $f(x)=x^3-3x$ ein Minimum hat.",
+        "concept_ids": ["k1"],
+        "value": 1.0,
+        "rechnung": "solve(diff(x**3-3*x, x), x)[1]",
+        "label": "x =",
+    }
+    base.update(over)
+    return base
+
+
+def test_zahl_wird_gelesen_mit_vorgaben() -> None:
+    inhalt = inhalt_lesen(zahl())
+    assert isinstance(inhalt, Zahl)
+    assert (inhalt.value, inhalt.tolerance, inhalt.label) == (1.0, 0.01, "x =")
+    with pytest.raises(ValidationError):
+        inhalt_lesen(zahl(rechnung=""))
+    with pytest.raises(ValidationError):
+        inhalt_lesen(zahl(tolerance=-1))
+    with pytest.raises(ValidationError):
+        inhalt_lesen(zahl(label="x" * 41))
+    with pytest.raises(ValidationError):
+        inhalt_lesen(zahl(value=float("nan")))
+
+
+def test_grobentwurf_kennt_zahl() -> None:
+    entwurf = {
+        "schema_version": "werkstatt-grobentwurf-v1", "title": "T", "audience": "A",
+        "default_kind": "number", "chapters": [{"title": "K1", "tasks": [{"summary": "s"}]}],
+    }
+    assert Grobentwurf.model_validate(entwurf).default_kind == "number"
+
+
+def test_fassungs_art_zahl() -> None:
+    assert fassungs_art(zahl(), zahl(value=2.0)) == "neu"
+    assert fassungs_art(zahl(), zahl(tolerance=0.5)) == "neu"
+    assert fassungs_art(zahl(), zahl(label="y =")) == "neu"
+    assert fassungs_art(zahl(), zahl(prompt="Wo hat $f$ ein Minimum?")) == "textkorrektur"

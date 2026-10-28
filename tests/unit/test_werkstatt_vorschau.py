@@ -125,3 +125,12 @@ def test_bildfehler_laesst_textvorschau_stehen(tmp_path: Path, monkeypatch: pyte
     ergebnis = vorschau(inhalt)
     assert ergebnis["bild"] is None
     assert "____" in ergebnis["text"] and ergebnis["loesung"] and ergebnis["lektion"] == "T\n\nB"
+
+
+def test_zahl_vorschau_zeigt_eingabefeld_und_loesung_mit_rechnung() -> None:
+    ergebnis = vorschau({
+        "kind": "number", "prompt": "Berechnen Sie die Minimalstelle.", "concept_ids": ["k1"],
+        "value": 1, "tolerance": 0.05, "label": "x =", "rechnung": "solve(diff(x**3-3*x, x), x)[1]",
+    })
+    assert ergebnis["text"] == "Berechnen Sie die Minimalstelle.\n\nx = ____"
+    assert ergebnis["loesung"] == "Lösung: 1 (± 0.05); Rechnung: solve(diff(x**3-3*x, x), x)[1]"

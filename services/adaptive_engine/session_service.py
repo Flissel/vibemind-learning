@@ -1219,7 +1219,8 @@ class AdaptiveSessionService:
             "numeric": frozenset({"unit"}),
             "penecho_canvas": frozenset({"canvas_href"}),
         }
-        allowed = allowed_by_type.get(item.item_type, frozenset())
+        # `math`: the Werkstatt switches formula typesetting on for math courses, any type.
+        allowed = allowed_by_type.get(item.item_type, frozenset()) | {"math"}
         raw = item.scoring_config.get("presentation", {})
         if not isinstance(raw, dict):
             raise ValueError("adaptive item presentation is invalid")

@@ -17,6 +17,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     Offen,
     Quiz,
     Reihenfolge,
+    Zahl,
     Zuordnung,
     inhalt_lesen,
 )
@@ -83,6 +84,10 @@ def vorschau(content: dict[str, Any]) -> dict[str, Any]:
         rechte = [f"{_BUCHSTABEN[i]}) {r}" for i, r in enumerate(rechts)]
         text = "\n".join([inhalt.prompt, "", *links, "", *rechte])
         loesung = "Paare: " + "; ".join(f"{p.left} -> {p.right}" for p in inhalt.pairs)
+    elif isinstance(inhalt, Zahl):
+        feld = f"{inhalt.label} ____" if inhalt.label else "____"
+        text = "\n".join([inhalt.prompt, "", feld])
+        loesung = f"Lösung: {inhalt.value:g} (± {inhalt.tolerance:g}); Rechnung: {inhalt.rechnung}"
     else:  # pragma: no cover - the union is closed
         raise TypeError(type(inhalt).__name__)
     lektion = f"{inhalt.lektion.title}\n\n{inhalt.lektion.body}" if inhalt.lektion else None

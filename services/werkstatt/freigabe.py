@@ -369,6 +369,7 @@ class _Katalog(Protocol):
     def projizieren(
         self, course_id: str, course_revision: int, eintraege: list[dict[str, Any]],
         vorher_revision: int | None, vorher_eintraege: list[dict[str, Any]] | None = None,
+        *, fach: str = "terminal",
     ) -> dict[str, Any]: ...
 
 
@@ -435,9 +436,10 @@ def _katalog_projizieren(
             None,
         )
         vorher = _mit_inhalt(store, passend["manifest"]) if passend else _uebernommen(store, course_id)
+    fach = "mathe" if store.kurs(course_id).get("fach") == "mathe" else "terminal"
     return katalog.projizieren(
         course_id, revision, _mit_inhalt(store, freigabe["manifest"]), vorher_revision,
-        vorher_eintraege=vorher,
+        vorher_eintraege=vorher, fach=fach,
     )
 
 

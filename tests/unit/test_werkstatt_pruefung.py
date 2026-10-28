@@ -377,3 +377,25 @@ def test_terminal_befunde_unveraendert() -> None:
         assert codes(aufgabe_pruefen(f, sources=SRC)) == soll
         assert codes(aufgabe_pruefen(f, sources=SRC, fach="terminal")) == soll
     assert "formel_ungueltig" not in codes(aufgabe_pruefen(faelle[2], sources=SRC))
+
+
+def _zahl(**over: Any) -> Any:
+    base: dict[str, Any] = {
+        "kind": "number", "prompt": "Berechnen Sie $1+1$.", "value": 2, "rechnung": "1+1",
+        "concept_ids": ["k1"], "citation_ids": [],
+    }
+    base.update(over)
+    return inhalt_lesen(base)
+
+
+def test_zahl_wird_nachgerechnet() -> None:
+    for fach in ("terminal", "mathe"):
+        assert codes(aufgabe_pruefen(_zahl(), sources=SRC, fach=fach)) == []
+        assert codes(aufgabe_pruefen(_zahl(value=3), sources=SRC, fach=fach)) == ["zahl_falsch"]
+        assert codes(aufgabe_pruefen(_zahl(rechnung="open(1)"), sources=SRC, fach=fach)) == ["zahl_unpruefbar"]
+    # Within the tolerance is no finding.
+    assert codes(aufgabe_pruefen(_zahl(value=2.005), sources=SRC)) == []
+    assert codes(aufgabe_pruefen(_zahl(value=2.4, tolerance=0.5), sources=SRC)) == []
+    assert codes(aufgabe_pruefen(_zahl(value=2.02), sources=SRC)) == ["zahl_falsch"]
+    befund = aufgabe_pruefen(_zahl(rechnung="__import__('os')"), sources=SRC)
+    assert befund[0]["code"] == "zahl_unpruefbar" and "nachrechnen" in befund[0]["text"]

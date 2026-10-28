@@ -616,3 +616,84 @@ async def test_katalog_nachholen_projiziert_fehlende_revision(tmp_path):
     assert _zeilen(factory, ConceptMastery, _konzept_id(factory, 6, "k1"))
     # Nothing left to catch up.
     assert katalog_nachholen(s, katalog, COURSE) == {"nachgeholt": False}
+
+
+# --- Zahl-Aufgabe und Formelsatz im Mathe-Kurs ----------------------------------------
+
+
+def _zahl(label: str | None = "x =") -> dict[str, Any]:
+    inhalt: dict[str, Any] = {
+        "kind": "number", "prompt": "Berechnen Sie die Minimalstelle von $f(x)=x^3-3x$.",
+        "concept_ids": ["k5"], "value": 1.0, "tolerance": 0.05,
+        "rechnung": "solve(diff(x**3-3*x, x), x)[1]",
+    }
+    if label is not None:
+        inhalt["label"] = label
+    return inhalt
+
+
+def test_zahl_wird_numeric_item() -> None:
+    from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+    from spaces.learning.services.werkstatt.katalog import _item_felder
+
+    typ, erwartet, config, rubrik = _item_felder("item-1", inhalt_lesen(_zahl()))
+    assert (typ, erwartet, rubrik) == ("numeric", {"value": 1.0}, [])
+    assert config == {
+        "prompt": "Berechnen Sie die Minimalstelle von $f(x)=x^3-3x$.",
+        "absolute_tolerance": 0.05, "presentation": {"unit": "x ="},
+    }
+    _typ, _erwartet, ohne, _rubrik = _item_felder("item-1", inhalt_lesen(_zahl(label=None)))
+    assert ohne["presentation"] == {}
+
+
+def _items(factory, revision: int) -> dict[str, AdaptiveItem]:
+    with factory() as s:
+        return {
+            i.activity_id: i
+            for i in s.scalars(select(AdaptiveItem).where(AdaptiveItem.course_revision == revision))
+        }
+
+
+def test_mathe_kurs_setzt_formelsatz_auf_jedem_item(tmp_path):
+    factory = _factory(tmp_path)
+    eintraege = [_eintrag("quiz", _quiz("Welcher Wert ist $f(1)$?", "k1")), _eintrag("zahl", _zahl())]
+
+    WerkstattKatalog(factory).projizieren(COURSE, 3, eintraege, None, fach="mathe")
+    WerkstattKatalog(factory).projizieren(COURSE, 4, eintraege, None)
+
+    mathe, terminal = _items(factory, 3), _items(factory, 4)
+    assert mathe["quiz"].scoring_config["presentation"] == {"math": True}
+    assert mathe["zahl"].scoring_config["presentation"] == {"unit": "x =", "math": True}
+    assert mathe["zahl"].item_type == "numeric" and mathe["zahl"].expected_answer == {"value": 1.0}
+    assert "math" not in terminal["quiz"].scoring_config["presentation"]
+    assert terminal["zahl"].scoring_config["presentation"] == {"unit": "x ="}
+
+    # The served task carries the switch (and the unit), never the solution.
+    service = AdaptiveSessionService(factory)
+    turn = _start(service, 3)
+    gesehen = {}
+    while turn.task is not None and turn.task.id not in gesehen:
+        gesehen[turn.task.id] = dict(turn.task.presentation)
+        turn = _antworten(factory, service, turn)
+    nach_typ = {mathe[k].id: k for k in mathe}
+    assert {nach_typ[i]: p for i, p in gesehen.items()} == {
+        "quiz": {"math": True}, "zahl": {"unit": "x =", "math": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_freigabe_reicht_fach_des_kurses_durch(tmp_path):
+    factory = _factory(tmp_path)
+    s = WerkstattStore(factory)
+    s.kurs_anlegen(
+        COURSE, title="Kurvendiskussion", audience="Oberstufe", default_kind="number",
+        outcomes=["Extrema bestimmen"], source_provenance=[], owner_ref="kursleitung-a", fach="mathe",
+    )
+    t = _aufgabe(s, _zahl())
+
+    r = await _freigeben(s, WerkstattKatalog(factory), 1)
+
+    assert r["katalog"]["items"] == 1
+    (item,) = _items(factory, 2).values()
+    assert item.activity_id == f"werkstatt:{t}"
+    assert item.scoring_config["presentation"] == {"unit": "x =", "math": True}

@@ -49,6 +49,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     Offen,
     Quiz,
     Reihenfolge,
+    Zahl,
     Zuordnung,
     inhalt_lesen,
 )
@@ -109,6 +110,8 @@ class WerkstattKatalog:
         eintraege: list[dict[str, Any]],
         vorher_revision: int | None,
         vorher_eintraege: list[dict[str, Any]] | None = None,
+        *,
+        fach: str = "terminal",
     ) -> dict[str, int]:
         """Write the catalog of ``course_revision`` and carry learner state over.
 
@@ -116,7 +119,8 @@ class WerkstattKatalog:
         and the released ``content``. ``vorher_eintraege``: the same for the release that
         ``vorher_revision``'s catalog was projected from; without it nothing carries over.
         Idempotent: a revision that already has a catalog is not written again, and learner
-        state is only copied where the new concept has none yet."""
+        state is only copied where the new concept has none yet. ``fach="mathe"`` switches on
+        formula typesetting (``presentation.math``) on every item; other courses get no key."""
         inhalte = [(e, inhalt_lesen(e["content"])) for e in eintraege]
         with self._session_factory() as session, session.begin():
             vorhanden = session.scalar(
@@ -128,7 +132,8 @@ class WerkstattKatalog:
             items = konzepte = 0
             if vorhanden is None:
                 items, konzepte = self._katalog_schreiben(
-                    session, course_id, course_revision, inhalte, vorher_revision
+                    session, course_id, course_revision, inhalte, vorher_revision,
+                    mathe=fach == "mathe",
                 )
             uebernommen = 0
             if vorher_revision is not None and vorher_eintraege is not None:
@@ -143,6 +148,7 @@ class WerkstattKatalog:
     def _katalog_schreiben(
         self, session: Session, course_id: str, course_revision: int,
         inhalte: list[tuple[dict[str, Any], AufgabeInhalt]], vorher_revision: int | None,
+        *, mathe: bool = False,
     ) -> tuple[int, int]:
         titel_vorher: dict[str, str] = {}
         if vorher_revision is not None:
@@ -166,15 +172,19 @@ class WerkstattKatalog:
             item_id = _stable_id(course_id, course_revision, "item", key)
             cited = list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
             item_type, erwartet, config, rubrik = _item_felder(item_id, inhalt)
+            scoring_config: dict[str, Any] = {
+                "source_refs": cited, "hints": _section_hints(cited), "options": [],
+                "presentation": {}, **config,
+            }
+            if mathe:
+                # Opt-in: the practice window typesets $…$ only for math courses.
+                scoring_config["presentation"] = {**scoring_config["presentation"], "math": True}
             session.add(AdaptiveItem(
                 id=item_id, course_id=course_id, course_revision=course_revision,
                 activity_id=key, item_type=item_type, difficulty=STARTING_DIFFICULTY,
                 # The release passed the Werkstatt checks; blocking findings stop it earlier.
                 quality_status="approved", expected_answer=erwartet,
-                scoring_config={
-                    "source_refs": cited, "hints": _section_hints(cited), "options": [],
-                    "presentation": {}, **config,
-                },
+                scoring_config=scoring_config,
                 rubric=rubrik,
             ))
             session.flush()
@@ -287,6 +297,13 @@ def _item_felder(
         return (
             "matching", {"pairs": {f"b{n}": i for n, i in enumerate(rechts_ids, start=1)}},
             {"prompt": inhalt.prompt, "partial_credit": True, "presentation": {"left": links, "right": rechts}},
+            [],
+        )
+    if isinstance(inhalt, Zahl):
+        darstellung = {"unit": inhalt.label} if inhalt.label else {}
+        return (
+            "numeric", {"value": inhalt.value},
+            {"prompt": inhalt.prompt, "absolute_tolerance": inhalt.tolerance, "presentation": darstellung},
             [],
         )
     raise TypeError(type(inhalt).__name__)

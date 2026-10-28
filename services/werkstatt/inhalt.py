@@ -99,8 +99,18 @@ class Zuordnung(_AufgabeBasis):
     pairs: list[Paar] = Field(min_length=3, max_length=6)
 
 
+class Zahl(_AufgabeBasis):
+    """A number to compute. ``rechnung`` is the SymPy calculation the check recomputes."""
+
+    kind: Literal["number"]
+    value: float = Field(allow_inf_nan=False)
+    tolerance: float = Field(0.01, ge=0, le=1_000)
+    label: str | None = Field(None, max_length=40)
+    rechnung: str = Field(min_length=1, max_length=2_000)
+
+
 AufgabeInhalt = Annotated[
-    Quiz | Offen | Fall | Luecke | Reihenfolge | Zuordnung,
+    Quiz | Offen | Fall | Luecke | Reihenfolge | Zuordnung | Zahl,
     Field(discriminator="kind"),
 ]
 
@@ -120,7 +130,7 @@ class Grobentwurf(_StrictDraft):
     schema_version: Literal["werkstatt-grobentwurf-v1"]
     title: str = Field(min_length=1, max_length=500)
     audience: str = Field(min_length=1, max_length=1_000)
-    default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching"]
+    default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number"]
     chapters: list[GrobKapitel] = Field(min_length=1, max_length=500)
 
 
@@ -150,6 +160,8 @@ def _loesung(inhalt: BaseModel) -> object:
         return list(inhalt.items)
     if isinstance(inhalt, Zuordnung):
         return sorted((p.left, p.right) for p in inhalt.pairs)
+    if isinstance(inhalt, Zahl):
+        return (inhalt.value, inhalt.tolerance, inhalt.label)
     raise TypeError(type(inhalt).__name__)
 
 

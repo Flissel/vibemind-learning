@@ -28,8 +28,10 @@ from spaces.learning.services.werkstatt.inhalt import (
     Offen,
     Quiz,
     Reihenfolge,
+    Zahl,
     Zuordnung,
 )
+from spaces.learning.services.werkstatt.nachrechnen import NachrechnenFehler, nachrechnen
 
 
 class Befund(TypedDict):
@@ -57,6 +59,8 @@ _TEXTE = {
     "matching_duplicate": "In der Zuordnung kommt ein Begriff doppelt vor.",
     "formel_ungueltig": "Eine Formel ist nicht schreibbar: ein „$“ wird nicht geschlossen, Klammern sind nicht ausgeglichen oder ein Formelbefehl ist unbekannt.",
     "luecke_mit_term": "Eine Lücke erwartet einen Term; Lücken sind nur für Zahlen oder einzelne Wörter, Terme gehören in eine offene Aufgabe.",
+    "zahl_falsch": "Die angegebene Lösung stimmt nicht mit dem Ergebnis der Rechnung überein; bitte Lösung oder Rechnung berichtigen.",
+    "zahl_unpruefbar": "Die Rechnung zur Lösung lässt sich nicht nachrechnen: Sie enthält nicht erlaubte Zeichen oder Namen, liefert keine endliche reelle Zahl oder dauert zu lange.",
 }
 
 
@@ -158,7 +162,18 @@ def _aufgabe_codes(inhalt: AufgabeInhalt) -> list[str]:
         rechts = [p.right.strip().lower() for p in inhalt.pairs]
         if len(set(links)) != len(links) or len(set(rechts)) != len(rechts):
             return ["matching_duplicate"]
+    if isinstance(inhalt, Zahl):
+        return _zahl_codes(inhalt)
     return []
+
+
+def _zahl_codes(inhalt: Zahl) -> list[str]:
+    """Recompute the calculation (child process, time limit); the stated value must match it."""
+    try:
+        ergebnis = nachrechnen(inhalt.rechnung)
+    except NachrechnenFehler:
+        return ["zahl_unpruefbar"]
+    return [] if abs(ergebnis - inhalt.value) <= inhalt.tolerance else ["zahl_falsch"]
 
 
 def _platzhalter_ok(inhalt: Luecke) -> bool:
