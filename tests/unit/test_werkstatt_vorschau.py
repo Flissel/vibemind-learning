@@ -93,3 +93,35 @@ def test_zuordnung_rechts_gemischt_und_loesung_mit_paaren() -> None:
 def test_vorschau_zeigt_lektionsabschnitt() -> None:
     inhalt = {**_quiz(), "lektion": {"title": "Dateien pruefen", "body": "Mit Test-Path pruefen Sie."}}
     assert vorschau(inhalt)["lektion"] == "Dateien pruefen\n\nMit Test-Path pruefen Sie."
+
+
+def test_reihenfolge_vorschau_weicht_immer_von_loesung_ab() -> None:
+    for i in range(60):
+        items = [f"a{i}", f"b{i}", f"c{i}"]
+        inhalt = {"kind": "ordering", "prompt": f"P{i}", "concept_ids": ["k1"], "items": items}
+        zeilen = [z.split(". ", 1)[1] for z in vorschau(inhalt)["text"].splitlines() if z[:1].isdigit()]
+        assert sorted(zeilen) == sorted(items)
+        assert zeilen != items
+
+
+def test_zuordnung_rechts_nie_in_loesungsreihenfolge() -> None:
+    for i in range(60):
+        paare = [{"left": f"L{j}-{i}", "right": f"R{j}-{i}"} for j in range(3)]
+        inhalt = {"kind": "matching", "prompt": f"P{i}", "concept_ids": ["k1"], "pairs": paare}
+        rechts = [z.split(") ", 1)[1] for z in vorschau(inhalt)["text"].splitlines() if z[:2] in ("A)", "B)", "C)")]
+        assert sorted(rechts) == sorted(p["right"] for p in paare)
+        assert rechts != [p["right"] for p in paare]
+
+
+def test_bildfehler_laesst_textvorschau_stehen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from spaces.learning.services.werkstatt import vorschau as modul
+
+    def kaputt(*_a: object, **_k: object) -> None:
+        raise RuntimeError("kein Font")
+
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setattr(modul, "render_terminal", kaputt)
+    inhalt = {**_luecke("powershell"), "lektion": {"title": "T", "body": "B"}}
+    ergebnis = vorschau(inhalt)
+    assert ergebnis["bild"] is None
+    assert "____" in ergebnis["text"] and ergebnis["loesung"] and ergebnis["lektion"] == "T\n\nB"
