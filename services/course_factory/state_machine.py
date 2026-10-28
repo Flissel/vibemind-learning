@@ -46,7 +46,7 @@ def require_transition(current: FactoryState, target: FactoryState) -> None:
         allowed.update({FactoryState.FAILED, FactoryState.CANCELLED})
         position = FACTORY_PIPELINE.index(current)
         allowed.add(FACTORY_PIPELINE[position + 1])
-    if current is FactoryState.REVIEW_READY:
+    if current in {FactoryState.QUALITY_GATE, FactoryState.REVIEW_READY}:
         allowed.add(FactoryState.REJECTED)
     if target not in allowed:
         raise InvalidFactoryTransition(

@@ -73,6 +73,14 @@ def test_only_review_ready_attempts_can_be_rejected() -> None:
         require_transition(FactoryState.AUTHORING, FactoryState.REJECTED)
 
 
+def test_quality_gate_darf_abgelehnt_werden() -> None:
+    require_transition(FactoryState.QUALITY_GATE, FactoryState.REJECTED)
+
+    for earlier in (FactoryState.VERIFYING, FactoryState.QUEUED):
+        with pytest.raises(InvalidFactoryTransition):
+            require_transition(earlier, FactoryState.REJECTED)
+
+
 @pytest.mark.parametrize(
     "state",
     [FactoryState.FAILED, FactoryState.CANCELLED, FactoryState.REJECTED],

@@ -5,9 +5,12 @@ from uuid import uuid4
 
 import pytest
 
+from spaces.learning.services.course_factory.models import CourseFactoryJob
+from spaces.learning.services.course_factory.repository import StageArtifactInput
 from spaces.learning.services.course_factory.state_machine import FactoryState
 from spaces.learning.tests.integration.course_factory_api_support import (
     ApiHarness,
+    sha256,
     clear_overrides,
     headers,
 )
@@ -156,6 +159,72 @@ def test_review_cannot_reject_a_job_that_is_not_review_ready(client, harness) ->
     assert response.status_code == 422
     assert response.json()["code"] == "invalid_transition"
     assert harness.repository.get(created["job_id"]).state is FactoryState.QUEUED
+
+
+def _set_state(harness: ApiHarness, job_id: str, state: FactoryState) -> int:
+    with harness.session_factory() as session, session.begin():
+        job = session.get(CourseFactoryJob, job_id)
+        job.state = state.value
+        job.revision += 1
+        return job.revision
+
+
+def _hold_in_quality_gate(harness: ApiHarness, job_id: str) -> int:
+    """Put a job where the runner leaves a draft that failed the fixed rules."""
+    _set_state(harness, job_id, FactoryState.VERIFYING)
+    job = harness.repository.get(job_id)
+    store = harness.application._artifact_store
+    output = store.write_stage_output(
+        job, stage=FactoryState.VERIFYING, payload={"source_verifier": {}}
+    )
+    harness.repository.record_stage_artifact(
+        job.id,
+        expected_revision=job.revision,
+        artifact=StageArtifactInput(
+            stage=FactoryState.VERIFYING,
+            input_hash=sha256(b"in"),
+            output_hash=output.content_hash,
+            evidence_refs=(f"learning-artifact://{output.artifact_id}",),
+            output_artifact=output,
+        ),
+    )
+    return _set_state(harness, job_id, FactoryState.QUALITY_GATE)
+
+
+def test_festgehaltener_job_wird_ueber_review_abgelehnt(client, harness) -> None:
+    created = _create(client, harness).json()
+    revision = _hold_in_quality_gate(harness, created["job_id"])
+    response = client.post(
+        f"/api/v1/course-factory/jobs/{created['job_id']}/review",
+        headers=headers("learning.reviewer", "reject-qg"),
+        json={"expected_revision": revision, "decision": "reject"},
+    )
+
+    assert response.status_code == 200
+    assert harness.repository.get(created["job_id"]).state is FactoryState.REJECTED
+
+
+def test_approve_bleibt_nur_aus_review_ready(client, harness) -> None:
+    created = _create(client, harness).json()
+    revision = _hold_in_quality_gate(harness, created["job_id"])
+    job_url = f"/api/v1/course-factory/jobs/{created['job_id']}"
+    approved = client.post(
+        f"{job_url}/review",
+        headers=headers("learning.reviewer", "approve-qg"),
+        json={"expected_revision": revision, "decision": "approve"},
+    )
+    published = client.post(
+        f"{job_url}/publish",
+        headers=headers("learning.publisher", "publish-qg"),
+        json={"expected_revision": revision, "confirmed": True, "approval_ref": "ok-qg"},
+    )
+
+    # approve never advances a job (it only asks for publish confirmation) ...
+    assert approved.status_code == 200 and approved.json()["outcome"] == "approval_required"
+    # ... and publication stays closed to a held draft
+    assert published.status_code == 422 and published.json()["code"] == "not_review_ready"
+    assert harness.repository.get(created["job_id"]).state is FactoryState.QUALITY_GATE
+    assert harness.publisher.calls == 0
 
 
 def test_publish_requires_publisher_confirmation_and_review_ready(client, harness) -> None:

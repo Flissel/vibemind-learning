@@ -636,6 +636,7 @@ def _requires_stage_artifact(current: FactoryState, target: FactoryState) -> boo
     return current in _ARTIFACT_STAGES and target not in {
         FactoryState.FAILED,
         FactoryState.CANCELLED,
+        FactoryState.REJECTED,  # a held draft may be ended without further evidence
     }
 
 
