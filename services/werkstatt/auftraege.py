@@ -205,5 +205,5 @@ def kurs_fuer_modell(kurs: dict[str, Any]) -> dict[str, Any]:
     """The course facts the author prompt needs; no task list, no owner, no provenance."""
     return {
         "course_id": kurs["course_id"], "title": kurs["title"], "audience": kurs["audience"],
-        "outcomes": list(kurs["outcomes"]),
+        "outcomes": list(kurs["outcomes"]), "fach": kurs["fach"],
     }

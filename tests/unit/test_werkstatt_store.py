@@ -189,3 +189,19 @@ def test_migration_0014_kurstitel_fasst_500_zeichen():
             modul.upgrade()
         spalten = {c["name"]: c["type"] for c in inspect(verbindung).get_columns("learning_werkstatt_kurse")}
     assert spalten["title"].length >= 500
+
+
+def test_kurs_ohne_fach_ist_terminal(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    _kurs(s)
+    assert s.kurs("c1")["fach"] == "terminal"
+
+
+def test_kurs_mit_fach_mathe(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.kurs_anlegen(
+        "m1", title="Algebra", audience="Schueler", default_kind="quiz",
+        outcomes=["Gleichungen loesen"], source_provenance=[], owner_ref="kursleitung-a",
+        fach="mathe",
+    )
+    assert s.kurs("m1")["fach"] == "mathe"

@@ -28,6 +28,7 @@ class WerkstattKurs(Base):
     outcomes: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
     source_provenance: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
     owner_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    fach: Mapped[str] = mapped_column(String(20), nullable=False, default="terminal", server_default="terminal")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

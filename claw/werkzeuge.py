@@ -818,9 +818,11 @@ def werkstatt_kurs_neu(
     source_ids: list[str],
     standard_typ: str | None = None,
     hinweise: list[str] | None = None,
+    fach: str = "terminal",
 ) -> dict[str, Any]:
     """Legt einen Werkstatt-Kurs an und startet den Grobentwurf aus den Quellen
-    (`standard_typ`: quiz, open, case, cloze, ordering oder matching). Gibt `auftrag_id`
+    (`standard_typ`: quiz, open, case, cloze, ordering oder matching; `fach`: "terminal"
+    ist die Vorgabe, "mathe" fuer Mathe-Kurse). Gibt `auftrag_id`
     zurueck. Auftraege laufen im Hintergrund; mit werkstatt_auftrag nachsehen.
     """
     body: dict[str, Any] = {
@@ -829,6 +831,8 @@ def werkstatt_kurs_neu(
     }
     if standard_typ is not None:
         body["default_kind"] = standard_typ
+    if fach != "terminal":
+        body["fach"] = fach
     if hinweise:
         body["hinweise"] = list(hinweise)
     return _ws_post("/kurse", body)

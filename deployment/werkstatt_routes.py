@@ -49,7 +49,7 @@ from spaces.learning.services.werkstatt.freigabe import (
     freigabe_vorbereiten,
     katalog_nachholen,
 )
-from spaces.learning.services.werkstatt.inhalt import fassungs_art, inhalt_lesen
+from spaces.learning.services.werkstatt.inhalt import Fach, fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
@@ -128,6 +128,7 @@ class KursAnlegen(_Body):
     outcomes: list[str] = Field(min_length=1, max_length=50)
     source_ids: list[str] = Field(default_factory=list, max_length=100)
     default_kind: Kind = "quiz"
+    fach: Fach = "terminal"
     hinweise: list[str] = Field(default_factory=list, max_length=50)
 
 
@@ -238,7 +239,7 @@ def kurs_anlegen(body: KursAnlegen, context: Context, autor: Autor) -> dict[str,
                 {"source_id": p.source_id, "revision": p.revision, "content_hash": p.content_hash}
                 for p in provenance
             ],
-            owner_ref=autor,
+            owner_ref=autor, fach=body.fach,
         )
     except ValueError as error:
         raise _fehler(status.HTTP_409_CONFLICT, "kurs_existiert", "Der Kurs existiert schon") from error

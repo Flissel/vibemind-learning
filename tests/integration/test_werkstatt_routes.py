@@ -865,3 +865,25 @@ def test_vorbereiten_uebergibt_den_veroeffentlichten_entwurf(env: Env, learnhous
     monkeypatch.setattr(werkstatt_routes, "freigabe_vorbereiten", mitschreiben)
     assert _vorbereiten(env).status_code == 201
     assert callable(gesehen["entwurf"])
+
+
+def test_kurs_mit_fach_mathe_und_unbekanntes_fach(env: Env) -> None:
+    body = {
+        "course_id": env.course_id, "title": "Algebra", "audience": "Schueler",
+        "outcomes": ["Gleichungen loesen"], "source_ids": [env.harness.ready_source],
+    }
+    falsch = env.client.post(
+        "/api/v1/werkstatt/kurse", headers=env.h(), json={**body, "fach": "kochen"}
+    )
+    assert falsch.status_code == 400  # app-wide handler maps body validation errors to 400
+    assert env.client.post(
+        "/api/v1/werkstatt/kurse", headers=env.h(), json={**body, "fach": "mathe"}
+    ).status_code == 202
+    kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
+    assert kurs["fach"] == "mathe"
+
+
+def test_kurs_ohne_fach_angabe_ist_terminal(env: Env) -> None:
+    env.kurs()
+    kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
+    assert kurs["fach"] == "terminal"

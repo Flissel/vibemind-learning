@@ -60,6 +60,7 @@ def _kurs_dict(k: WerkstattKurs) -> dict[str, Any]:
         "course_id": k.course_id, "title": k.title, "audience": k.audience,
         "default_kind": k.default_kind, "outcomes": list(k.outcomes),
         "source_provenance": list(k.source_provenance), "owner_ref": k.owner_ref,
+        "fach": k.fach,
         "created_at": _iso(k.created_at), "updated_at": _iso(k.updated_at),
     }
 
@@ -93,6 +94,7 @@ class WerkstattStore:
     def kurs_anlegen(
         self, course_id: str, *, title: str, audience: str, default_kind: str,
         outcomes: list[str], source_provenance: list[dict[str, Any]], owner_ref: str,
+        fach: str = "terminal",
     ) -> dict[str, Any]:
         with self._sessions.begin() as session:
             if session.get(WerkstattKurs, course_id) is not None:
@@ -100,7 +102,7 @@ class WerkstattStore:
             kurs = WerkstattKurs(
                 course_id=course_id, title=title, audience=audience, default_kind=default_kind,
                 outcomes=list(outcomes), source_provenance=list(source_provenance),
-                owner_ref=owner_ref,
+                owner_ref=owner_ref, fach=fach,
             )
             session.add(kurs)
             session.flush()

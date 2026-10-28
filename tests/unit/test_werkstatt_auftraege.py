@@ -243,3 +243,11 @@ async def test_grobentwurf_fehler_laesst_kurs_unveraendert(tmp_path: Path, monke
     kurs = s.kurs("c1")
     assert kurs["title"] == "Neu" and kurs["default_kind"] == "quiz"
     assert [x["task_id"] for x in kurs["aufgaben"]] == [vorher["task_id"]]
+
+
+def test_kurs_fuer_modell_traegt_fach(tmp_path: Path) -> None:
+    from spaces.learning.services.werkstatt.auftraege import kurs_fuer_modell
+
+    s = _store(tmp_path)
+    _kurs(s)
+    assert kurs_fuer_modell(s.kurs("c1"))["fach"] == "terminal"

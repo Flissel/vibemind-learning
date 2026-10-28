@@ -15,6 +15,8 @@ from spaces.learning.services.course_factory.schemas import (
     _StrictDraft,
 )
 
+Fach = Literal["terminal", "mathe"]
+
 _PLATZHALTER = re.compile(r"\{\{([^{}]+)\}\}")
 
 

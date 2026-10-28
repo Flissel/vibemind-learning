@@ -73,9 +73,15 @@ def test_kurs_neu(fake: Fake) -> None:
     }
 
 
+def test_kurs_neu_sendet_fach_mathe(fake: Fake) -> None:
+    werkzeuge.werkstatt_kurs_neu(COURSE, "T", "Z", ["x"], [], fach="mathe")
+    assert fake.body()["fach"] == "mathe"
+
+
 def test_kurs_neu_omits_unset_options(fake: Fake) -> None:
     werkzeuge.werkstatt_kurs_neu(COURSE, "T", "Z", ["x"], [])
     assert "default_kind" not in fake.body() and "hinweise" not in fake.body()
+    assert "fach" not in fake.body()
 
 
 def test_kurs_zeigen(fake: Fake) -> None:
