@@ -697,3 +697,92 @@ async def test_freigabe_reicht_fach_des_kurses_durch(tmp_path):
     (item,) = _items(factory, 2).values()
     assert item.activity_id == f"werkstatt:{t}"
     assert item.scoring_config["presentation"] == {"unit": "x =", "math": True}
+
+
+# --- Graph-Bilder in Zuordnungen ------------------------------------------------------
+
+
+def _graph_zuordnung() -> dict[str, Any]:
+    return {
+        "kind": "matching", "prompt": "Ordnen Sie jedem Graphen den Graphen seiner Ableitung zu.",
+        "concept_ids": ["k6"], "beziehung": "ableitung_von",
+        "pairs": [
+            {"left": "f(x)=x^3", "right": "3x^2", "left_graph": {"term": "x**3"}, "right_graph": {"term": "3*x**2"}},
+            {"left": "g", "right": "g'", "left_graph": {"term": "sin(x)"}, "right_graph": {"term": "cos(x)"}},
+            {"left": "h", "right": "h'", "left_graph": {"term": "x**2-1", "y_min": -2}, "right_graph": {"term": "2*x"}},
+        ],
+    }
+
+
+def test_zuordnung_mit_graphen_zeigt_bilder_statt_terme(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path / "artefakte"))
+    factory = _factory(tmp_path)
+    inhalt = _graph_zuordnung()
+
+    WerkstattKatalog(factory).projizieren(COURSE, 5, [_eintrag("graphen", inhalt)], None, fach="mathe")
+
+    (item,) = _items(factory, 5).values()
+    darstellung = item.scoring_config["presentation"]
+    assert item.item_type == "matching" and darstellung["math"] is True
+    assert [e["label"] for e in darstellung["left"]] == ["Graph A", "Graph B", "Graph C"]
+    assert sorted(e["label"] for e in darstellung["right"]) == ["Graph 1", "Graph 2", "Graph 3"]
+    medien = tmp_path / "artefakte" / "lernsequenzen" / "medien"
+    for e in darstellung["left"] + darstellung["right"]:
+        assert set(e) == {"id", "label", "image", "width", "height"}
+        assert e["image"].startswith("/lernsequenz-medien/term-") and (e["width"], e["height"]) == (480, 360)
+        assert (medien / e["image"].rsplit("/", 1)[1]).is_file()
+    assert len({e["image"] for e in darstellung["left"] + darstellung["right"]}) == 6
+    # The solution still pairs the drawn graphs as authored.
+    bild = {e["id"]: e["image"] for e in darstellung["left"] + darstellung["right"]}
+    from spaces.learning.services.werkstatt.graph import graph_zeichnen
+    from spaces.learning.services.werkstatt.inhalt import GraphAngabe
+    from spaces.learning.services.lernsequenz.medien import save_media
+
+    erwartet = {
+        save_media(graph_zeichnen(GraphAngabe(**p["left_graph"])).png):
+            save_media(graph_zeichnen(GraphAngabe(**p["right_graph"])).png)
+        for p in inhalt["pairs"]
+    }
+    assert {bild[l]: bild[r] for l, r in item.expected_answer["pairs"].items()} == erwartet
+
+    # No term (nor the author's side texts) anywhere in what is stored for the learner.
+    gespeichert = json.dumps([item.scoring_config, item.expected_answer], ensure_ascii=False)
+    for text in ("x**3", "3*x**2", "sin", "cos", "x^3", "3x^2", "f(x)", "g'"):
+        assert text not in gespeichert
+
+    turn = _start(AdaptiveSessionService(factory), 5)
+    gezeigt = json.dumps(turn.task.presentation, ensure_ascii=False)
+    assert "x**3" not in gezeigt and "Graph A" in gezeigt and "/lernsequenz-medien/term-" in gezeigt
+
+
+def test_zuordnung_mit_graphen_ohne_medienordner_nur_etikett(tmp_path, monkeypatch):
+    monkeypatch.delenv("LEARNING_ARTIFACT_ROOT", raising=False)
+    from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+    from spaces.learning.services.werkstatt.katalog import _item_felder
+
+    _typ, _erwartet, config, _rubrik = _item_felder("item-1", inhalt_lesen(_graph_zuordnung()))
+    seiten = config["presentation"]["left"] + config["presentation"]["right"]
+    assert all(set(e) == {"id", "label"} for e in seiten)
+    assert "x**3" not in str(config)
+
+
+def test_zuordnung_gemischt_text_und_graph(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path / "artefakte"))
+    from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+    from spaces.learning.services.werkstatt.katalog import _item_felder
+
+    inhalt = _graph_zuordnung()
+    del inhalt["beziehung"]
+    for p in inhalt["pairs"]:
+        del p["right_graph"]
+    _typ, erwartet, config, _rubrik = _item_felder("item-1", inhalt_lesen(inhalt))
+    links, rechts = config["presentation"]["left"], config["presentation"]["right"]
+    assert [e["label"] for e in links] == ["Graph A", "Graph B", "Graph C"]
+    assert sorted(e["label"] for e in rechts) == ["3x^2", "g'", "h'"]
+    assert all("image" not in e for e in rechts)
+    beschriftung = {e["id"]: e["label"] for e in links + rechts}
+    assert {beschriftung[l]: beschriftung[r] for l, r in erwartet["pairs"].items()} == {
+        "Graph A": "3x^2", "Graph B": "g'", "Graph C": "h'",
+    }

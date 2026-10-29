@@ -89,14 +89,53 @@ class Reihenfolge(_AufgabeBasis):
     items: list[str] = Field(min_length=3, max_length=8)
 
 
+_GRAPH_GRENZE = 1_000.0
+
+
+class GraphAngabe(_StrictDraft):
+    """A function graph the server draws. ``term`` is model text: it is checked against the
+    name list and parsed only in the capped child process (``graph.py``), never here."""
+
+    term: str = Field(min_length=1, max_length=300)
+    x_min: float = Field(-5.0, ge=-_GRAPH_GRENZE, le=_GRAPH_GRENZE, allow_inf_nan=False)
+    x_max: float = Field(5.0, ge=-_GRAPH_GRENZE, le=_GRAPH_GRENZE, allow_inf_nan=False)
+    y_min: float = Field(-5.0, ge=-_GRAPH_GRENZE, le=_GRAPH_GRENZE, allow_inf_nan=False)
+    y_max: float = Field(5.0, ge=-_GRAPH_GRENZE, le=_GRAPH_GRENZE, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _bereich_nicht_leer(self) -> GraphAngabe:
+        if not (self.x_min < self.x_max and self.y_min < self.y_max):
+            raise ValueError("x_min < x_max und y_min < y_max")
+        return self
+
+
 class Paar(_StrictDraft):
+    """With a graph on a side, learners see "Graph A"/"Graph 1" and the picture there;
+    ``left``/``right`` stay the author's note and never reach them."""
+
     left: str = Field(min_length=1, max_length=2_000)
     right: str = Field(min_length=1, max_length=2_000)
+    left_graph: GraphAngabe | None = None
+    right_graph: GraphAngabe | None = None
 
 
 class Zuordnung(_AufgabeBasis):
     kind: Literal["matching"]
     pairs: list[Paar] = Field(min_length=3, max_length=6)
+    # Checked per pair on the graph terms: right is the derivative of left, or equal to it.
+    beziehung: Literal["ableitung_von", "gleich"] | None = None
+
+    @model_validator(mode="after")
+    def _beziehung_braucht_graphen(self) -> Zuordnung:
+        if self.beziehung is not None and any(
+            p.left_graph is None or p.right_graph is None for p in self.pairs
+        ):
+            raise ValueError("beziehung braucht auf beiden Seiten jedes Paars einen Graphen")
+        return self
+
+    @property
+    def hat_graphen(self) -> bool:
+        return any(p.left_graph is not None or p.right_graph is not None for p in self.pairs)
 
 
 class Zahl(_AufgabeBasis):
@@ -138,6 +177,12 @@ def inhalt_lesen(content: dict[str, Any]) -> AufgabeInhalt:
     return _ADAPTER.validate_python(content)
 
 
+def _graph_teil(angabe: GraphAngabe | None) -> tuple[object, ...]:
+    if angabe is None:
+        return ()
+    return (angabe.term, angabe.x_min, angabe.x_max, angabe.y_min, angabe.y_max)
+
+
 def _loesung(inhalt: BaseModel) -> object:
     """Everything that makes an answer right or wrong, order-insensitive where order is free."""
     if isinstance(inhalt, Quiz):
@@ -159,7 +204,16 @@ def _loesung(inhalt: BaseModel) -> object:
     if isinstance(inhalt, Reihenfolge):
         return list(inhalt.items)
     if isinstance(inhalt, Zuordnung):
-        return sorted((p.left, p.right) for p in inhalt.pairs)
+        if not inhalt.hat_graphen and inhalt.beziehung is None:
+            # Unchanged for plain matching tasks: released ones keep their solution hash.
+            return sorted((p.left, p.right) for p in inhalt.pairs)
+        return (
+            sorted(
+                (p.left, p.right, _graph_teil(p.left_graph), _graph_teil(p.right_graph))
+                for p in inhalt.pairs
+            ),
+            inhalt.beziehung,
+        )
     if isinstance(inhalt, Zahl):
         return (inhalt.value, inhalt.tolerance, inhalt.label)
     raise TypeError(type(inhalt).__name__)

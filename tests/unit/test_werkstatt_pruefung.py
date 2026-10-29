@@ -401,3 +401,40 @@ def test_zahl_wird_nachgerechnet() -> None:
     assert befund[0]["code"] == "zahl_unpruefbar" and "nachrechnen" in befund[0]["text"]
     # The repair round needs to know what is allowed.
     assert all(n in befund[0]["text"] for n in ("solve", "diff", "subs", "N(", "30 Stellen"))
+
+
+def _graph_zuordnung(rechts_erstes: str = "3*x**2", links_erstes: str = "x**3", **over: Any) -> Any:
+    base: dict[str, Any] = {
+        "kind": "matching", "prompt": "Ordnen Sie jedem Graphen den Graphen seiner Ableitung zu.",
+        "concept_ids": ["k1"], "citation_ids": [], "beziehung": "ableitung_von",
+        "pairs": [
+            {"left": "f", "right": "f'", "left_graph": {"term": links_erstes}, "right_graph": {"term": rechts_erstes}},
+            {"left": "g", "right": "g'", "left_graph": {"term": "sin(x)"}, "right_graph": {"term": "cos(x)"}},
+            {"left": "h", "right": "h'", "left_graph": {"term": "exp(x)"}, "right_graph": {"term": "exp(x)"}},
+        ],
+    }
+    base.update(over)
+    return inhalt_lesen(base)
+
+
+def test_graph_beziehung_wird_geprueft() -> None:
+    for fach in ("terminal", "mathe"):
+        assert codes(aufgabe_pruefen(_graph_zuordnung(), sources=SRC, fach=fach)) == []
+        assert codes(aufgabe_pruefen(_graph_zuordnung("2*x"), sources=SRC, fach=fach)) == ["graph_beziehung_falsch"]
+    gleich = _graph_zuordnung("(x-1)*(x+1)", "x^2-1", beziehung="gleich")
+    assert codes(aufgabe_pruefen(gleich, sources=SRC)) == ["graph_beziehung_falsch"]
+    ohne = _graph_zuordnung("2*x", beziehung=None)
+    assert codes(aufgabe_pruefen(ohne, sources=SRC)) == []
+
+
+def test_graph_ungueltig_ist_befund() -> None:
+    befunde = aufgabe_pruefen(_graph_zuordnung(links_erstes="__import__('os')"), sources=SRC, fach="mathe")
+    assert codes(befunde) == ["graph_ungueltig"]
+    assert all(n in befunde[0]["text"] for n in ("sqrt", "sin", "Abs")) and befunde[0]["text"].endswith(".")
+    nichts = _graph_zuordnung(links_erstes="sqrt(x-10)", beziehung=None)
+    assert codes(aufgabe_pruefen(nichts, sources=SRC)) == ["graph_ungueltig"]
+
+
+def test_gleiche_graphen_auf_einer_seite_sind_doppelt() -> None:
+    doppelt = _graph_zuordnung("cos(x)", "sin(x)", beziehung=None)
+    assert codes(aufgabe_pruefen(doppelt, sources=SRC)) == ["matching_duplicate"]

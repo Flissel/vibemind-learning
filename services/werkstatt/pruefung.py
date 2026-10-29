@@ -19,10 +19,17 @@ from spaces.learning.services.course_factory.verification import (
     subjects_with_unsourced_command,
 )
 from spaces.learning.services.werkstatt.formeln import formel_fehler
+from spaces.learning.services.werkstatt.graph import (
+    GRAPH_NAMEN,
+    GraphFehler,
+    beziehung_pruefen,
+    graphen_zeichnen,
+)
 from spaces.learning.services.werkstatt.inhalt import (
     AufgabeInhalt,
     Fach,
     Fall,
+    GraphAngabe,
     Lektionsabschnitt,
     Luecke,
     Offen,
@@ -72,6 +79,16 @@ _TEXTE = {
         "Ausdruck.subs(x, Wert), N(…) nur als Funktion und "
         + ", ".join(sorted(ERLAUBTE_NAMEN - {"x", "subs", "N"}, key=str.lower))
         + ", und das Ergebnis muss schnell eine endliche reelle Zahl ergeben."
+    ),
+    "graph_ungueltig": (
+        "Ein Graph lässt sich nicht zeichnen oder zeigt im gewählten Bereich nichts; erlaubt sind "
+        f"im Term nur Zahlen bis {MAX_ZIFFERN} Stellen, x, + - * / ^ ohne Potenztürme, runde Klammern und "
+        + ", ".join(sorted(GRAPH_NAMEN - {"x"}, key=str.lower))
+        + ", und der Graph muss zwischen y_min und y_max sichtbar sein."
+    ),
+    "graph_beziehung_falsch": (
+        "Bei mindestens einem Paar passt der rechte Graph nicht zur angegebenen Beziehung, "
+        "er ist also nicht die Ableitung des linken beziehungsweise nicht gleich; bitte Terme oder Paare berichtigen."
     ),
 }
 
@@ -170,10 +187,13 @@ def _aufgabe_codes(inhalt: AufgabeInhalt) -> list[str]:
         gesehen = [i.strip().lower() for i in inhalt.items]
         return ["ordering_duplicate"] if len(set(gesehen)) != len(gesehen) else []
     if isinstance(inhalt, Zuordnung):
-        links = [p.left.strip().lower() for p in inhalt.pairs]
-        rechts = [p.right.strip().lower() for p in inhalt.pairs]
+        codes = []
+        # A side with a graph is told apart by its graph (learners only see "Graph A" there).
+        links = [_seite(p.left, p.left_graph) for p in inhalt.pairs]
+        rechts = [_seite(p.right, p.right_graph) for p in inhalt.pairs]
         if len(set(links)) != len(links) or len(set(rechts)) != len(rechts):
-            return ["matching_duplicate"]
+            codes.append("matching_duplicate")
+        return codes + _graph_codes(inhalt)
     if isinstance(inhalt, Zahl):
         return _zahl_codes(inhalt)
     return []
@@ -186,6 +206,29 @@ def _zahl_codes(inhalt: Zahl) -> list[str]:
     except NachrechnenFehler:
         return ["zahl_unpruefbar"]
     return [] if abs(ergebnis - inhalt.value) <= inhalt.tolerance else ["zahl_falsch"]
+
+
+def _seite(text: str, graph: GraphAngabe | None) -> object:
+    if graph is None:
+        return text.strip().lower()
+    return ("graph", graph.term.replace(" ", ""), graph.x_min, graph.x_max, graph.y_min, graph.y_max)
+
+
+def _graph_codes(inhalt: Zuordnung) -> list[str]:
+    """Every graph must be drawable (checked term, child process); with ``beziehung`` every
+    pair must stand in it (SymPy in the child process)."""
+    angaben = [g for p in inhalt.pairs for g in (p.left_graph, p.right_graph) if g is not None]
+    if not angaben:
+        return []
+    try:
+        graphen_zeichnen(angaben)
+        if inhalt.beziehung is None:
+            return []
+        paare = [(p.left_graph.term, p.right_graph.term) for p in inhalt.pairs]  # type: ignore[union-attr]
+        stimmt = beziehung_pruefen(paare, inhalt.beziehung)
+    except GraphFehler:
+        return ["graph_ungueltig"]
+    return [] if all(stimmt) else ["graph_beziehung_falsch"]
 
 
 def _platzhalter_ok(inhalt: Luecke) -> bool:

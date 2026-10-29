@@ -134,3 +134,44 @@ def test_zahl_vorschau_zeigt_eingabefeld_und_loesung_mit_rechnung() -> None:
     })
     assert ergebnis["text"] == "Berechnen Sie die Minimalstelle.\n\nx = ____"
     assert ergebnis["loesung"] == "Lösung: 1 (± 0.05); Rechnung: solve(diff(x**3-3*x, x), x)[1]"
+
+
+def _graph_zuordnung() -> dict[str, Any]:
+    return {
+        "kind": "matching", "prompt": "Ordnen Sie jedem Graphen seine Ableitung zu.", "concept_ids": ["k1"],
+        "beziehung": "ableitung_von",
+        "pairs": [
+            {"left": "f", "right": "f'", "left_graph": {"term": "x**3"}, "right_graph": {"term": "3*x**2"}},
+            {"left": "g", "right": "g'", "left_graph": {"term": "sin(x)"}, "right_graph": {"term": "cos(x)"}},
+            {"left": "h", "right": "h'", "left_graph": {"term": "x**2"}, "right_graph": {"term": "2*x"}},
+        ],
+    }
+
+
+def test_zuordnung_mit_graphen_zeigt_bild_statt_term(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path))
+    ergebnis = vorschau(_graph_zuordnung())
+    assert "Graph A" in ergebnis["text"] and "Graph 1" in ergebnis["text"]
+    assert "x**3" not in ergebnis["text"] and "sin" not in ergebnis["text"]
+    assert [b["label"] for b in ergebnis["bilder"][:3]] == ["Graph A", "Graph B", "Graph C"]
+    assert sorted(b["label"] for b in ergebnis["bilder"][3:]) == ["Graph 1", "Graph 2", "Graph 3"]
+    assert all(b["bild"].startswith("/lernsequenz-medien/term-") for b in ergebnis["bilder"])
+    # Author-facing: the solution names the terms and the relation.
+    assert "x**3" in ergebnis["loesung"] and "3*x**2" in ergebnis["loesung"]
+    assert "Ableitung" in ergebnis["loesung"]
+    assert vorschau(_graph_zuordnung()) == ergebnis
+
+
+def test_zuordnung_mit_graphen_ohne_medienordner_platzhalter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEARNING_ARTIFACT_ROOT", raising=False)
+    ergebnis = vorschau(_graph_zuordnung())
+    assert all(b["bild"] is None for b in ergebnis["bilder"]) and len(ergebnis["bilder"]) == 6
+    assert "x**3" not in ergebnis["text"]
+
+
+def test_zuordnung_ohne_graphen_hat_keine_bilderliste() -> None:
+    inhalt = {
+        "kind": "matching", "prompt": "Ordnen Sie zu.", "concept_ids": ["k1"],
+        "pairs": [{"left": f"L{i}", "right": f"R{i}"} for i in range(1, 4)],
+    }
+    assert "bilder" not in vorschau(inhalt)

@@ -39,8 +39,9 @@ _LEXEM = re.compile(rf"{_ZAHL}|{_NAME}|\*\*|[-+*/().,\[\]]")
 # `parse_expr` gets only the allowed names plus the three constructors its own number/symbol
 # transformations emit (`Integer`, `Float`, `Symbol`; not reachable by name, since the name
 # list has rejected them), and an empty `__builtins__` so `eval` cannot fall back to the real
-# ones. The answer is one JSON line on stdout.
-_KIND = r"""
+# ones. The answer is one JSON line on stdout. `_KIND_KOPF` is shared by every task the child
+# runs (here: a number; `graph.py`: drawing and relating graphs); each task appends its body.
+_KIND_KOPF = r"""
 import json, math, sys
 
 def antwort(**werte):
@@ -108,18 +109,23 @@ try:
 except Exception:
     antwort(fehler="speichergrenze_fehlt")
 
-try:
-    text = sys.stdin.read()
+def lesen(text):
     import sympy
     from sympy.parsing.sympy_parser import parse_expr, standard_transformations
-    x = sympy.Symbol("x")
     erlaubt = {n: getattr(sympy, n) for n in auftrag["namen"] if n not in ("x", "subs")}
     erlaubt.update(Integer=sympy.Integer, Float=sympy.Float, Symbol=sympy.Symbol)
     erlaubt["__builtins__"] = {}
-    ergebnis = parse_expr(
-        text, local_dict={"x": x}, global_dict=erlaubt,
+    return parse_expr(
+        text, local_dict={"x": sympy.Symbol("x")}, global_dict=erlaubt,
         transformations=standard_transformations, evaluate=True,
     )
+"""
+
+_KIND_WERT = r"""
+try:
+    text = sys.stdin.read()
+    import sympy
+    ergebnis = lesen(text)
     # Type first: a list or anything else is never converted (sympify of a huge list is slow).
     if not isinstance(ergebnis, sympy.Expr) or ergebnis.free_symbols:
         antwort(fehler="kein_zahlwert")
@@ -209,9 +215,9 @@ def _ohne_potenzturm(ausdruck: str) -> None:
             raise NachrechnenFehler("potenzturm")
 
 
-def ausdruck_pruefen(text: str) -> str:
-    """The expression with ``^`` as ``**``, if it uses only allowed characters and names, no
-    number longer than ``MAX_ZIFFERN`` digits and no power tower."""
+def ausdruck_pruefen(text: str, *, namen: frozenset[str] = ERLAUBTE_NAMEN) -> str:
+    """The expression with ``^`` as ``**``, if it uses only allowed characters and names (out
+    of ``namen``), no number longer than ``MAX_ZIFFERN`` digits and no power tower."""
     if not text.strip():
         raise NachrechnenFehler("leer")
     if len(text) > _MAX_LAENGE:
@@ -224,7 +230,7 @@ def ausdruck_pruefen(text: str) -> str:
         raise NachrechnenFehler("zahl_zu_lang")
     for treffer in _TOKEN.finditer(text):
         name = treffer.group("name")
-        if name is not None and name not in ERLAUBTE_NAMEN:
+        if name is not None and name not in namen:
             raise NachrechnenFehler(f"name_unerlaubt:{name}")
     ausdruck = text.replace("^", "**")
     _ohne_potenzturm(ausdruck)
@@ -236,14 +242,19 @@ def _umgebung() -> dict[str, str]:
     return {k: os.environ[k] for k in ("SYSTEMROOT", "SystemRoot") if k in os.environ}
 
 
-def _im_kind(ausdruck: str, *, timeout_s: float, speicher_grenze: int) -> float:
-    """Evaluate an already checked expression in the capped child process."""
-    auftrag = json.dumps({"namen": sorted(ERLAUBTE_NAMEN), "grenze": speicher_grenze})
+def im_kind_ausfuehren(
+    rumpf: str, eingabe: str, *, namen: frozenset[str], timeout_s: float, speicher_grenze: int,
+    umgebung: dict[str, str] | None = None,
+) -> tuple[dict[str, object], int]:
+    """Run ``_KIND_KOPF`` + ``rumpf`` (fixed code of this package) in the capped child with
+    ``eingabe`` (checked model text, as JSON or plain) on stdin; returns the child's JSON answer
+    (``{}`` if it gave none) and its exit code. ``namen``: what ``lesen`` may parse."""
+    auftrag = json.dumps({"namen": sorted(namen), "grenze": speicher_grenze})
     try:
-        lauf = subprocess.run(  # noqa: S603 - fixed argv, the expression goes via stdin
-            [sys.executable, "-I", "-c", _KIND, auftrag],
-            input=ausdruck, capture_output=True, text=True, timeout=timeout_s,
-            env=_umgebung(),
+        lauf = subprocess.run(  # noqa: S603 - fixed argv, the model text goes via stdin
+            [sys.executable, "-I", "-c", _KIND_KOPF + rumpf, auftrag],
+            input=eingabe, capture_output=True, text=True, timeout=timeout_s,
+            env={**_umgebung(), **(umgebung or {})},
         )
     except subprocess.TimeoutExpired as fehler:
         # subprocess.run has killed the child before raising.
@@ -255,9 +266,17 @@ def _im_kind(ausdruck: str, *, timeout_s: float, speicher_grenze: int) -> float:
         antwort = {}
     if not isinstance(antwort, dict):
         antwort = {}
+    return antwort, lauf.returncode
+
+
+def _im_kind(ausdruck: str, *, timeout_s: float, speicher_grenze: int) -> float:
+    """Evaluate an already checked expression in the capped child process."""
+    antwort, returncode = im_kind_ausfuehren(
+        _KIND_WERT, ausdruck, namen=ERLAUBTE_NAMEN, timeout_s=timeout_s, speicher_grenze=speicher_grenze,
+    )
     wert = antwort.get("wert")
     if isinstance(wert, bool) or not isinstance(wert, (int, float)) or not math.isfinite(wert):
-        raise NachrechnenFehler(str(antwort.get("fehler") or f"kind_exit_{lauf.returncode}"))
+        raise NachrechnenFehler(str(antwort.get("fehler") or f"kind_exit_{returncode}"))
     return float(wert)
 
 

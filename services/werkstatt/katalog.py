@@ -12,9 +12,12 @@ running on the old revision). Nothing here calls a model.
 
 from __future__ import annotations
 
+import itertools
+import json
 import logging
 import re
 import secrets
+import string
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -42,9 +45,11 @@ from spaces.learning.services.course_factory.practice_catalog import (
 from spaces.learning.services.lernsequenz.aus_struktur import _media_available, _random_ids
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
+from spaces.learning.services.werkstatt.graph import GraphFehler, graphen_zeichnen
 from spaces.learning.services.werkstatt.inhalt import (
     AufgabeInhalt,
     Fall,
+    GraphAngabe,
     Luecke,
     Offen,
     Quiz,
@@ -67,9 +72,9 @@ _PLATZHALTER = re.compile(r"\{\{([^{}]+)\}\}")
 _ZUFALL = secrets.SystemRandom()
 
 
-def _gemischt(eintraege: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _gemischt(eintraege: list[Any], schluessel: Callable[[Any], Any] = lambda e: e["label"]) -> list[Any]:
     """A shuffled copy that never shows the authored (= solution) order while it can differ."""
-    return anders_gemischt(eintraege, lambda e: e["label"], _ZUFALL)
+    return anders_gemischt(eintraege, schluessel, _ZUFALL)
 
 
 def _hashes_je_konzept(eintraege: list[dict[str, Any]]) -> dict[str, frozenset[str]]:
@@ -291,6 +296,8 @@ def _item_felder(
         optionen = _gemischt([{"id": i, "label": text} for i, text in zip(ids, inhalt.items)])
         return "ordering", {"order": ids}, {"prompt": inhalt.prompt, "options": optionen, "partial_credit": True}, []
     if isinstance(inhalt, Zuordnung):
+        if inhalt.hat_graphen:
+            return _zuordnung_mit_graphen(inhalt)
         links = [{"id": f"b{n}", "label": p.left} for n, p in enumerate(inhalt.pairs, start=1)]
         rechts_ids = _random_ids("e", len(inhalt.pairs))
         rechts = _gemischt([{"id": i, "label": p.right} for i, p in zip(rechts_ids, inhalt.pairs)])
@@ -307,6 +314,54 @@ def _item_felder(
             [],
         )
     raise TypeError(type(inhalt).__name__)
+
+
+def _graph_bilder(angaben: list[GraphAngabe]) -> list[dict[str, Any]]:
+    """``image``/``width``/``height`` per graph; empty (label only) without the media folder or
+    when drawing fails. Never the term: it stays on the server."""
+    if not angaben or not _media_available():
+        return [{} for _ in angaben]
+    try:
+        graphen = graphen_zeichnen(angaben)
+        return [{"image": save_media(g.png), "width": g.width, "height": g.height} for g in graphen]
+    except (GraphFehler, OSError):
+        logger.exception("werkstatt_katalog_graph_fehlgeschlagen")
+        return [{} for _ in angaben]
+
+
+def _zuordnung_mit_graphen(
+    inhalt: Zuordnung,
+) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """A side with a graph shows its picture and a neutral label: "Graph A", "Graph B" … on the
+    left (authored order, which is no secret), "Graph 1", "Graph 2" … on the right, numbered
+    after the shuffle so the number says nothing about the partner."""
+    angaben = [g for p in inhalt.pairs for g in (p.left_graph, p.right_graph) if g is not None]
+    bilder = iter(_graph_bilder(angaben))
+    links: list[dict[str, Any]] = []
+    # (entry, shuffle key, has a graph): a graph is told apart by its drawing, not by a label.
+    rechts_roh: list[tuple[dict[str, Any], str, bool]] = []
+    buchstaben = iter(string.ascii_uppercase)
+    rechts_ids = _random_ids("e", len(inhalt.pairs))
+    for n, (p, rechts_id) in enumerate(zip(inhalt.pairs, rechts_ids), start=1):
+        if p.left_graph is None:
+            links.append({"id": f"b{n}", "label": p.left})
+        else:
+            links.append({"id": f"b{n}", "label": f"Graph {next(buchstaben)}", **next(bilder)})
+        if p.right_graph is None:
+            rechts_roh.append(({"id": rechts_id, "label": p.right}, p.right, False))
+        else:
+            schluessel = "\x00graph:" + json.dumps(p.right_graph.model_dump(mode="json"), sort_keys=True)
+            rechts_roh.append(({"id": rechts_id, **next(bilder)}, schluessel, True))
+    nummern = itertools.count(1)
+    rechts = [
+        {**e, "label": f"Graph {next(nummern)}"} if graph else e
+        for e, _schluessel, graph in _gemischt(rechts_roh, lambda r: r[1])
+    ]
+    return (
+        "matching", {"pairs": {f"b{n}": i for n, i in enumerate(rechts_ids, start=1)}},
+        {"prompt": inhalt.prompt, "partial_credit": True, "presentation": {"left": links, "right": rechts}},
+        [],
+    )
 
 
 def _luecke(inhalt: Luecke) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
