@@ -681,6 +681,46 @@ def test_mathe_kurs_setzt_formelsatz_auf_jedem_item(tmp_path):
     }
 
 
+def _mathe_luecke() -> dict[str, Any]:
+    return {
+        "kind": "cloze", "prompt": "Bestimmen Sie die Nullstelle von $f(x)=2x+3$.",
+        "concept_ids": ["k3"], "template": "Die Nullstelle liegt bei x = {{x}}.",
+        "blanks": [{"blank_id": "x", "accepted": ["-1,5", "-1.5"]}], "shell": None,
+    }
+
+
+def test_mathe_luecke_zaehlt_vorzeichen_und_komma(tmp_path):
+    # Ruling 8: the default normalisation keeps only letters and digits ("-1,5" == "15").
+    from spaces.learning.services.evaluation.deterministic import score_response
+    from spaces.learning.services.evaluation.schemas import DeterministicItem
+
+    factory = _factory(tmp_path)
+    WerkstattKatalog(factory).projizieren(COURSE, 3, [_eintrag("luecke", _mathe_luecke())], None, fach="mathe")
+    (item,) = _items(factory, 3).values()
+    assert item.item_type == "fill_in" and item.scoring_config["normalize"] == "command"
+    bewertbar = DeterministicItem(
+        item_id=item.id, item_type="fill_in", prompt=item.scoring_config["prompt"], options=[],
+        expected_answer=item.expected_answer, scoring_config=item.scoring_config,
+    )
+
+    def punkte(text: str) -> float:
+        return score_response(bewertbar, {"text": text}).score
+
+    assert punkte("-1,5") == 1.0 and punkte(" -1.5 ") == 1.0
+    assert punkte("15") == 0.0 and punkte("1,5") == 0.0 and punkte("-15") == 0.0
+
+
+def test_terminal_luecke_bleibt_unveraendert(tmp_path):
+    factory = _factory(tmp_path)
+    WerkstattKatalog(factory).projizieren(COURSE, 3, [_eintrag("luecke", _luecke(shell=None))], None)
+    (item,) = _items(factory, 3).values()
+    assert item.scoring_config == {
+        "source_refs": [], "hints": [], "options": [],
+        "prompt": "Ergänzen Sie den Befehl, der den Ordner wechselt.",
+        "presentation": {"template": "{{befehl}} Dokumente", "shell": None},
+    }
+
+
 @pytest.mark.asyncio
 async def test_freigabe_reicht_fach_des_kurses_durch(tmp_path):
     factory = _factory(tmp_path)

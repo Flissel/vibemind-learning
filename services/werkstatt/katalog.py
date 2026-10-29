@@ -187,7 +187,9 @@ class WerkstattKatalog:
             key = eintrag["aufgaben_key"]
             item_id = _stable_id(course_id, course_revision, "item", key)
             cited = list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
-            item_type, erwartet, config, rubrik = _item_felder(item_id, inhalt, (graph_bilder or {}).get(i))
+            item_type, erwartet, config, rubrik = _item_felder(
+                item_id, inhalt, (graph_bilder or {}).get(i), mathe=mathe
+            )
             scoring_config: dict[str, Any] = {
                 "source_refs": cited, "hints": _section_hints(cited), "options": [],
                 "presentation": {}, **config,
@@ -285,9 +287,11 @@ class WerkstattKatalog:
 
 def _item_felder(
     item_id: str, inhalt: AufgabeInhalt, graph_bilder: list[dict[str, Any]] | None = None,
+    *, mathe: bool = False,
 ) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """``(item_type, expected_answer, scoring_config, rubric)`` for one released task.
-    ``graph_bilder``: the drawn graphs of a matching task, if already made."""
+    ``graph_bilder``: the drawn graphs of a matching task, if already made; ``mathe``: the
+    task belongs to a math course."""
     if isinstance(inhalt, Quiz):
         optionen = [{"id": o.option_id, "label": o.text} for o in inhalt.options]
         optionen = gemischt(optionen)
@@ -302,7 +306,7 @@ def _item_felder(
             rubrik or [dict(_FALLBACK_CRITERION)],
         )
     if isinstance(inhalt, Luecke):
-        return _luecke(inhalt)
+        return _luecke(inhalt, mathe=mathe)
     if isinstance(inhalt, Reihenfolge):
         ids = _random_ids("s", len(inhalt.items))
         optionen = _gemischt([{"id": i, "label": text} for i, text in zip(ids, inhalt.items)])
@@ -395,7 +399,9 @@ def _zuordnung_mit_graphen(
     )
 
 
-def _luecke(inhalt: Luecke) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+def _luecke(
+    inhalt: Luecke, *, mathe: bool = False
+) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     if len(inhalt.blanks) > 1:
         # The engine scores one text per fill_in; several blanks are answered as one text.
         loesung = {b.blank_id: b.accepted[0] for b in inhalt.blanks}
@@ -409,8 +415,10 @@ def _luecke(inhalt: Luecke) -> tuple[str, dict[str, Any], dict[str, Any], list[d
     antworten = [a for a in blank.accepted if a.strip()]
     darstellung: dict[str, Any] = {"template": inhalt.template, "shell": inhalt.shell}
     config: dict[str, Any] = {"prompt": inhalt.prompt}
-    if inhalt.shell is not None:
+    if inhalt.shell is not None or mathe:
+        # Commands and math answers: sign, comma and point count ("-1,5" is not "15").
         config["normalize"] = "command"
+    if inhalt.shell is not None:
         darstellung.update(_fenster(inhalt, blank.blank_id, antworten[0]))
     config["presentation"] = darstellung
     return "fill_in", {"answers": antworten}, config, []
