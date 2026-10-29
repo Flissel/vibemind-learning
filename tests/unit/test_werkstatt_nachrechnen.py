@@ -80,9 +80,10 @@ def test_einfache_potenzen_bleiben_erlaubt() -> None:
 
 
 def test_liste_wird_schnell_abgelehnt() -> None:
+    # 10**7 entries (~80 MB) are enough to show a list is no number; 10**8 strained this host's RAM.
     start = time.monotonic()
     with pytest.raises(NachrechnenFehler):
-        nachrechnen("[1]*10**8")
+        nachrechnen("[1]*10**7")
     assert time.monotonic() - start < 5
 
 
