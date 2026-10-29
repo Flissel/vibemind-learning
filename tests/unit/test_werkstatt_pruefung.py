@@ -438,3 +438,28 @@ def test_graph_ungueltig_ist_befund() -> None:
 def test_gleiche_graphen_auf_einer_seite_sind_doppelt() -> None:
     doppelt = _graph_zuordnung("cos(x)", "sin(x)", beziehung=None)
     assert codes(aufgabe_pruefen(doppelt, sources=SRC)) == ["matching_duplicate"]
+
+
+def test_gleich_aussehende_graphen_sind_doppelt() -> None:
+    # Learners see pictures: `2*x` and `x+x` are the same image, so the task is ambiguous.
+    gleich_bild = inhalt_lesen({
+        "kind": "matching", "prompt": "Ordnen Sie jedem Graphen den Graphen seiner Ableitung zu.",
+        "concept_ids": ["k1"], "citation_ids": [], "beziehung": "ableitung_von",
+        "pairs": [
+            {"left": "f", "right": "f'", "left_graph": {"term": "x**2"}, "right_graph": {"term": "2*x"}},
+            {"left": "g", "right": "g'", "left_graph": {"term": "x**2+1"}, "right_graph": {"term": "x+x"}},
+            {"left": "h", "right": "h'", "left_graph": {"term": "sin(x)"}, "right_graph": {"term": "cos(x)"}},
+        ],
+    })
+    assert codes(aufgabe_pruefen(gleich_bild, sources=SRC, fach="mathe")) == ["matching_duplicate"]
+    # Other spellings of the same term, and terms that differ only outside the shown window.
+    for links_a, links_b in (({"term": "x^3"}, {"term": "x**3"}), ({"term": "x", "x_min": 0}, {"term": "Abs(x)", "x_min": 0})):
+        inhalt = inhalt_lesen({
+            "kind": "matching", "prompt": "Ordnen Sie zu.", "concept_ids": ["k1"], "citation_ids": [],
+            "pairs": [
+                {"left": "f", "right": "eins", "left_graph": links_a},
+                {"left": "g", "right": "zwei", "left_graph": links_b},
+                {"left": "h", "right": "drei", "left_graph": {"term": "sin(x)"}},
+            ],
+        })
+        assert codes(aufgabe_pruefen(inhalt, sources=SRC)) == ["matching_duplicate"]

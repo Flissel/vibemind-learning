@@ -215,20 +215,30 @@ def _seite(text: str, graph: GraphAngabe | None) -> object:
 
 
 def _graph_codes(inhalt: Zuordnung) -> list[str]:
-    """Every graph must be drawable (checked term, child process); with ``beziehung`` every
-    pair must stand in it (SymPy in the child process)."""
-    angaben = [g for p in inhalt.pairs for g in (p.left_graph, p.right_graph) if g is not None]
-    if not angaben:
+    """Every graph must be drawable (checked term, child process) and differ as a picture from
+    the other graphs on its side (learners only see pictures: `2*x` and `x+x` look the same);
+    with ``beziehung`` every pair must stand in it (SymPy in the child process)."""
+    links = [p.left_graph for p in inhalt.pairs if p.left_graph is not None]
+    rechts = [p.right_graph for p in inhalt.pairs if p.right_graph is not None]
+    if not links and not rechts:
         return []
+    codes: list[str] = []
     try:
-        graphen_zeichnen(angaben)
+        bilder = [g.png for g in graphen_zeichnen(links + rechts)]
+        links_png, rechts_png = bilder[: len(links)], bilder[len(links):]
+        if len(set(links_png)) != len(links_png) or len(set(rechts_png)) != len(rechts_png):
+            codes.append("matching_duplicate")
         if inhalt.beziehung is None:
-            return []
-        paare = [(p.left_graph.term, p.right_graph.term) for p in inhalt.pairs]  # type: ignore[union-attr]
+            return codes
+        paare = [
+            (p.left_graph.term, p.right_graph.term)
+            for p in inhalt.pairs
+            if p.left_graph is not None and p.right_graph is not None
+        ]
         stimmt = beziehung_pruefen(paare, inhalt.beziehung)
     except GraphFehler:
-        return ["graph_ungueltig"]
-    return [] if all(stimmt) else ["graph_beziehung_falsch"]
+        return codes + ["graph_ungueltig"]
+    return codes if all(stimmt) else codes + ["graph_beziehung_falsch"]
 
 
 def _platzhalter_ok(inhalt: Luecke) -> bool:

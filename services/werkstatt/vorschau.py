@@ -9,6 +9,7 @@ import random
 import re
 from typing import Any
 
+from spaces.learning.services.lernsequenz.aus_struktur import _media_available
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
 from spaces.learning.services.werkstatt.graph import graphen_zeichnen
@@ -61,7 +62,7 @@ _BEZIEHUNG = {"ableitung_von": "rechts ist die Ableitung von links", "gleich": "
 
 
 def _graph_bilder(angaben: list[GraphAngabe]) -> list[str | None]:
-    if not angaben or not os.environ.get("LEARNING_ARTIFACT_ROOT", "").strip():
+    if not angaben or not _media_available():
         return [None for _ in angaben]
     try:
         return [save_media(g.png) for g in graphen_zeichnen(angaben)]

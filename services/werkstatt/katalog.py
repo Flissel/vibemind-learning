@@ -127,6 +127,16 @@ class WerkstattKatalog:
         state is only copied where the new concept has none yet. ``fach="mathe"`` switches on
         formula typesetting (``presentation.math``) on every item; other courses get no key."""
         inhalte = [(e, inhalt_lesen(e["content"])) for e in eintraege]
+        # Graphs are drawn before the transaction (child processes take about a second each run).
+        # Fail closed: a graph that cannot be drawn and stored raises, nothing of this revision is
+        # written, and the release's catch-up retries the projection.
+        mit_graphen = {
+            i: inhalt for i, (_e, inhalt) in enumerate(inhalte)
+            if isinstance(inhalt, Zuordnung) and inhalt.hat_graphen
+        }
+        graph_bilder: dict[int, list[dict[str, Any]]] = {}
+        if mit_graphen and not self.hat_revision(course_id, course_revision):
+            graph_bilder = {i: _graph_bilder(_graph_angaben(z)) for i, z in mit_graphen.items()}
         with self._session_factory() as session, session.begin():
             vorhanden = session.scalar(
                 select(AdaptiveConcept.id).where(
@@ -138,7 +148,7 @@ class WerkstattKatalog:
             if vorhanden is None:
                 items, konzepte = self._katalog_schreiben(
                     session, course_id, course_revision, inhalte, vorher_revision,
-                    mathe=fach == "mathe",
+                    mathe=fach == "mathe", graph_bilder=graph_bilder,
                 )
             uebernommen = 0
             if vorher_revision is not None and vorher_eintraege is not None:
@@ -153,7 +163,7 @@ class WerkstattKatalog:
     def _katalog_schreiben(
         self, session: Session, course_id: str, course_revision: int,
         inhalte: list[tuple[dict[str, Any], AufgabeInhalt]], vorher_revision: int | None,
-        *, mathe: bool = False,
+        *, mathe: bool = False, graph_bilder: dict[int, list[dict[str, Any]]] | None = None,
     ) -> tuple[int, int]:
         titel_vorher: dict[str, str] = {}
         if vorher_revision is not None:
@@ -172,11 +182,11 @@ class WerkstattKatalog:
             ))
         session.flush()
         refs = self._quellen(session, course_id, [inhalt for _e, inhalt in inhalte])
-        for eintrag, inhalt in inhalte:
+        for i, (eintrag, inhalt) in enumerate(inhalte):
             key = eintrag["aufgaben_key"]
             item_id = _stable_id(course_id, course_revision, "item", key)
             cited = list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
-            item_type, erwartet, config, rubrik = _item_felder(item_id, inhalt)
+            item_type, erwartet, config, rubrik = _item_felder(item_id, inhalt, (graph_bilder or {}).get(i))
             scoring_config: dict[str, Any] = {
                 "source_refs": cited, "hints": _section_hints(cited), "options": [],
                 "presentation": {}, **config,
@@ -273,9 +283,10 @@ class WerkstattKatalog:
 
 
 def _item_felder(
-    item_id: str, inhalt: AufgabeInhalt
+    item_id: str, inhalt: AufgabeInhalt, graph_bilder: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
-    """``(item_type, expected_answer, scoring_config, rubric)`` for one released task."""
+    """``(item_type, expected_answer, scoring_config, rubric)`` for one released task.
+    ``graph_bilder``: the drawn graphs of a matching task, if already made."""
     if isinstance(inhalt, Quiz):
         optionen = [{"id": o.option_id, "label": o.text} for o in inhalt.options]
         optionen = gemischt(optionen)
@@ -297,7 +308,7 @@ def _item_felder(
         return "ordering", {"order": ids}, {"prompt": inhalt.prompt, "options": optionen, "partial_credit": True}, []
     if isinstance(inhalt, Zuordnung):
         if inhalt.hat_graphen:
-            return _zuordnung_mit_graphen(inhalt)
+            return _zuordnung_mit_graphen(inhalt, graph_bilder)
         links = [{"id": f"b{n}", "label": p.left} for n, p in enumerate(inhalt.pairs, start=1)]
         rechts_ids = _random_ids("e", len(inhalt.pairs))
         rechts = _gemischt([{"id": i, "label": p.right} for i, p in zip(rechts_ids, inhalt.pairs)])
@@ -316,27 +327,41 @@ def _item_felder(
     raise TypeError(type(inhalt).__name__)
 
 
+class GraphBildFehlt(RuntimeError):
+    """A graph of a matching task could not be drawn or stored; the task would be unsolvable."""
+
+
+def _graph_angaben(inhalt: Zuordnung) -> list[GraphAngabe]:
+    """All graphs of the task, pair by pair, left before right."""
+    return [g for p in inhalt.pairs for g in (p.left_graph, p.right_graph) if g is not None]
+
+
 def _graph_bilder(angaben: list[GraphAngabe]) -> list[dict[str, Any]]:
-    """``image``/``width``/``height`` per graph; empty (label only) without the media folder or
-    when drawing fails. Never the term: it stays on the server."""
-    if not angaben or not _media_available():
-        return [{} for _ in angaben]
+    """``image``/``width``/``height`` per graph. Raises ``GraphBildFehlt`` without the media
+    folder or when drawing/storing fails: a graph is never released as a bare label, and the
+    term never goes anywhere but the server."""
+    if not angaben:
+        return []
+    if not _media_available():
+        raise GraphBildFehlt("medienordner_fehlt")
     try:
         graphen = graphen_zeichnen(angaben)
         return [{"image": save_media(g.png), "width": g.width, "height": g.height} for g in graphen]
-    except (GraphFehler, OSError):
-        logger.exception("werkstatt_katalog_graph_fehlgeschlagen")
-        return [{} for _ in angaben]
+    except (GraphFehler, OSError) as fehler:
+        raise GraphBildFehlt(type(fehler).__name__) from fehler
 
 
 def _zuordnung_mit_graphen(
-    inhalt: Zuordnung,
+    inhalt: Zuordnung, graph_bilder: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """A side with a graph shows its picture and a neutral label: "Graph A", "Graph B" … on the
     left (authored order, which is no secret), "Graph 1", "Graph 2" … on the right, numbered
-    after the shuffle so the number says nothing about the partner."""
-    angaben = [g for p in inhalt.pairs for g in (p.left_graph, p.right_graph) if g is not None]
-    bilder = iter(_graph_bilder(angaben))
+    after the shuffle so the number says nothing about the partner. ``graph_bilder``: drawn
+    beforehand (in ``_graph_angaben`` order); drawn here otherwise."""
+    angaben = _graph_angaben(inhalt)
+    if graph_bilder is None or len(graph_bilder) != len(angaben):
+        graph_bilder = _graph_bilder(angaben)
+    bilder = iter(graph_bilder)
     links: list[dict[str, Any]] = []
     # (entry, shuffle key, has a graph): a graph is told apart by its drawing, not by a label.
     rechts_roh: list[tuple[dict[str, Any], str, bool]] = []

@@ -757,15 +757,38 @@ def test_zuordnung_mit_graphen_zeigt_bilder_statt_terme(tmp_path, monkeypatch):
     assert "x**3" not in gezeigt and "Graph A" in gezeigt and "/lernsequenz-medien/term-" in gezeigt
 
 
-def test_zuordnung_mit_graphen_ohne_medienordner_nur_etikett(tmp_path, monkeypatch):
-    monkeypatch.delenv("LEARNING_ARTIFACT_ROOT", raising=False)
-    from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
-    from spaces.learning.services.werkstatt.katalog import _item_felder
+def test_zuordnung_mit_graphen_ohne_medienordner_schlaegt_fehl(tmp_path, monkeypatch):
+    # Fail closed: never a bare "Graph A" label (unsolvable); nothing of the revision is written,
+    # so the release's catch-up projects it again later.
+    from spaces.learning.services.werkstatt.katalog import GraphBildFehlt
 
-    _typ, _erwartet, config, _rubrik = _item_felder("item-1", inhalt_lesen(_graph_zuordnung()))
-    seiten = config["presentation"]["left"] + config["presentation"]["right"]
-    assert all(set(e) == {"id", "label"} for e in seiten)
-    assert "x**3" not in str(config)
+    monkeypatch.delenv("LEARNING_ARTIFACT_ROOT", raising=False)
+    factory = _factory(tmp_path)
+    eintraege = [_eintrag("quiz", _quiz("Welcher Wert ist $f(1)$?", "k1")), _eintrag("graphen", _graph_zuordnung())]
+    katalog = WerkstattKatalog(factory)
+
+    with pytest.raises(GraphBildFehlt):
+        katalog.projizieren(COURSE, 6, eintraege, None, fach="mathe")
+    assert _items(factory, 6) == {} and not katalog.hat_revision(COURSE, 6)
+
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path / "artefakte"))
+    assert katalog.projizieren(COURSE, 6, eintraege, None, fach="mathe")["items"] == 2
+    assert all("image" in e for e in _items(factory, 6)["graphen"].scoring_config["presentation"]["left"])
+
+
+def test_zuordnung_mit_graphen_zeichenfehler_schlaegt_fehl(tmp_path, monkeypatch):
+    from spaces.learning.services.werkstatt import katalog as katalog_modul
+    from spaces.learning.services.werkstatt.graph import GraphFehler
+
+    def kaputt(_angaben):
+        raise GraphFehler("zeitlimit")
+
+    monkeypatch.setenv("LEARNING_ARTIFACT_ROOT", str(tmp_path / "artefakte"))
+    monkeypatch.setattr(katalog_modul, "graphen_zeichnen", kaputt)
+    factory = _factory(tmp_path)
+    with pytest.raises(katalog_modul.GraphBildFehlt):
+        WerkstattKatalog(factory).projizieren(COURSE, 7, [_eintrag("graphen", _graph_zuordnung())], None)
+    assert _items(factory, 7) == {}
 
 
 def test_zuordnung_gemischt_text_und_graph(tmp_path, monkeypatch):
