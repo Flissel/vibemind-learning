@@ -847,3 +847,33 @@ def test_skizze_im_katalog_wie_factory_canvas_item(tmp_path):
         assert sum(r["points"] for r in item.rubric) == 100
     assert mathe.scoring_config["presentation"] == {"math": True}
     assert terminal.scoring_config["presentation"] == {}
+
+
+def test_skizze_mit_aufgeloester_quelle_bekommt_source_refs(tmp_path):
+    from uuid import uuid4
+
+    from spaces.learning.services.ingestion.models import LearningSourceChunk
+    from spaces.learning.services.werkstatt.models import WerkstattKurs
+
+    # No foreign keys here: only the chunk the citation points to matters.
+    engine = create_engine(f"sqlite:///{tmp_path / 'quelle.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    quelle, chunk, zitat = str(uuid4()), str(uuid4()), str(uuid4())
+    with factory() as s, s.begin():
+        s.add(WerkstattKurs(
+            course_id=COURSE, title="T", audience="A", default_kind="sketch", outcomes=[],
+            source_provenance=[{"source_id": quelle, "content_hash": "a" * 64}], owner_ref="o",
+        ))
+        s.add(LearningSourceChunk(
+            id=chunk, source_id=quelle, source_revision=1, ordinal=0, content="Die Parabel $x^2$.",
+            content_hash="b" * 64, locator={"page": 1}, locator_hash="c" * 64, metadata_json={},
+        ))
+    inhalt = {
+        **_skizze(), "citation_ids": [zitat],
+        "zitate": [{"citation_id": zitat, "source_id": quelle, "source_revision": 1, "chunk_id": chunk,
+                    "content_hash": "b" * 64, "locator": {"page": 1}}],
+    }
+    WerkstattKatalog(factory).projizieren(COURSE, 1, [_eintrag("skizze", inhalt)], None, fach="mathe")
+    refs = _items(factory, 1)["skizze"].scoring_config["source_refs"]
+    assert len(refs) == 1 and chunk in refs[0]

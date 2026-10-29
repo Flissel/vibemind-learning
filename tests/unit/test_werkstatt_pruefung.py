@@ -464,9 +464,11 @@ def test_gleich_aussehende_graphen_sind_doppelt() -> None:
         })
         assert codes(aufgabe_pruefen(inhalt, sources=SRC)) == ["matching_duplicate"]
 
+
 def _skizze(**over: Any) -> Any:
     base: dict[str, Any] = {
-        "kind": "sketch", "prompt": "Skizzieren Sie $f(x)=x^2$.", "concept_ids": ["k1"], "citation_ids": ["c1"],
+        "kind": "sketch", "prompt": "Skizzieren Sie $f(x)=x^2$.", "concept_ids": ["k1"], "citation_ids": [_FREMD_ID],
+        "zitate": [_zitat("00000000-0000-4000-8000-0000000000b1")],
         "expected_answer": "Nach oben offene Parabel.",
         "rubric": [
             {"criterion_id": "r1", "description": "Parabel nach oben offen", "points": 2},
@@ -489,3 +491,6 @@ def test_skizze_pruefung() -> None:
     assert _aufgabe_codes(_skizze()) == []
     # The canvas evaluator needs a source reference: without a citation the task could not open.
     assert "skizze_ohne_quelle" in _aufgabe_codes(_skizze(citation_ids=[]))
+    # A cited id without a matching entry in zitate yields no source reference either.
+    assert "skizze_ohne_quelle" in _aufgabe_codes(_skizze(zitate=[]))
+    assert "skizze_ohne_quelle" in _aufgabe_codes(_skizze(citation_ids=["unbekannt"]))

@@ -175,3 +175,18 @@ def test_zuordnung_ohne_graphen_hat_keine_bilderliste() -> None:
         "pairs": [{"left": f"L{i}", "right": f"R{i}"} for i in range(1, 4)],
     }
     assert "bilder" not in vorschau(inhalt)
+
+
+def test_skizze_vorschau_zeigt_aufgabe_und_kriterien() -> None:
+    ergebnis = vorschau({
+        "kind": "sketch", "prompt": "Skizzieren Sie $f(x)=x^2$.", "concept_ids": ["k1"],
+        "expected_answer": "Nach oben offene Parabel.",
+        "rubric": [
+            {"criterion_id": "r1", "description": "Parabel nach oben offen", "points": 2},
+            {"criterion_id": "r2", "description": "Scheitel im Ursprung", "points": 2},
+            {"criterion_id": "r3", "description": "Achsen beschriftet", "points": 1},
+        ],
+    })
+    assert ergebnis["text"] == "Skizzieren Sie $f(x)=x^2$."
+    assert "Nach oben offene Parabel." in ergebnis["loesung"]
+    assert "Scheitel im Ursprung (2)" in ergebnis["loesung"]

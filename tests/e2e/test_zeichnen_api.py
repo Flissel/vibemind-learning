@@ -86,8 +86,8 @@ def world(tmp_path: Path, monkeypatch):
     with factory() as db, db.begin():
         row = db.scalars(select(AdaptiveItem).where(AdaptiveItem.course_id == werkstatt_course)).one()
         werkstatt_item = UUID(row.id)
-        # A cited task (the check demands a citation for sketches); the projection of citations
-        # into source_refs is the catalog's own, tested in test_werkstatt_katalog.
+        # Stands in for a resolved citation: resolving needs source/chunk rows with foreign keys
+        # here; that projection is tested in test_werkstatt_katalog.
         row.scoring_config = {**row.scoring_config, "source_refs": [REF]}
     sessions = AdaptiveSessionService(factory, external_rubric_types=frozenset({"penecho_canvas"}))
     werkstatt_started = sessions.start(SessionInput(
@@ -117,8 +117,7 @@ def world(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(zeichnen_routes.httpx, "post", post)
     client = TestClient(runtime_api.app, raise_server_exceptions=False)
-    client.werkstatt = (werkstatt_started, werkstatt_item)  # type: ignore[attr-defined]
-    yield client, started, item, post
+    yield client, started, item, post, werkstatt_started, werkstatt_item
     engine.dispose()
 
 
@@ -146,7 +145,7 @@ def test_token_is_bound_signed_and_expires() -> None:
 
 
 def test_the_person_draws_gets_a_hint_and_submits_in_the_player(world) -> None:
-    client, started, item, post = world
+    client, started, item, post, *_ = world
     opened = _open(post, started, item)
     assert opened["is_error"] is False
     url = opened["result"]["page_url"]
@@ -169,14 +168,13 @@ def test_the_person_draws_gets_a_hint_and_submits_in_the_player(world) -> None:
 
 
 def test_a_forged_link_and_another_person_get_nothing(world) -> None:
-    client, started, item, post = world
+    client, started, item, post, *_ = world
     assert client.get("/zeichnen/abc.def").status_code == 404
     assert _open(post, started, item, actor="lh-3-mallory")["is_error"] is True
 
 
 def test_a_werkstatt_sketch_item_opens_the_drawing_page_like_a_factory_item(world) -> None:
-    client, _started, _item, post = world
-    started, item = client.werkstatt  # type: ignore[attr-defined]
+    client, _started, _item, post, started, item = world
     opened = _open(post, started, item)
     assert opened["is_error"] is False, opened
     url = opened["result"]["page_url"]
