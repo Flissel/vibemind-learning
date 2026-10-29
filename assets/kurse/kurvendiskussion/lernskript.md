@@ -14,7 +14,7 @@ Der Definitionsbereich enthält alle $x$-Werte, die Sie in den Funktionsterm ein
 
 ### Achsensymmetrie zur y-Achse
 
-Der Graph von $f$ ist achsensymmetrisch zur $y$-Achse, wenn für alle $x$ gilt: $f(-x)=f(x)$. Bei einer ganzrationalen Funktion ist das genau dann der Fall, wenn im ausmultiplizierten Term nur gerade Exponenten vorkommen; ein konstantes Glied zählt dabei als $x^0$, also als gerade. So ist $(x-1)^2=x^2-2x+1$ nicht achsensymmetrisch, obwohl in der Klammerform nur ein gerader Exponent steht.
+Der Graph von $f$ ist achsensymmetrisch zur $y$-Achse, wenn für alle $x$ gilt: $f(-x)=f(x)$. Bei einer ganzrationalen Funktion ist das genau dann der Fall, wenn im ausmultiplizierten Term nur gerade Exponenten vorkommen; ein konstantes Glied zählt dabei als $x^0$, also als gerade. So ist $(x-1)^2=x^2-2x+1$ nicht achsensymmetrisch: In $(x-1)^2$ steht zwar nur ein gerader Exponent, ausmultipliziert enthält $x^2-2x+1$ mit $-2x$ aber auch einen ungeraden.
 
 ### Punktsymmetrie zum Ursprung
 
@@ -228,7 +228,7 @@ Ist $x_0$ eine Nullstelle des Nenners, aber nicht des Zählers, ist $x_0$ eine P
 
 ### Hebbare Definitionslücke
 
-Sind Zähler und Nenner an der Stelle $x_0$ beide null, kürzen Sie den Faktor $(x-x_0)$ so oft wie möglich. Ist der Nenner des vollständig gekürzten Terms bei $x_0$ ungleich null, ist die Lücke hebbar und der Graph hat dort nur ein Loch; ist er dort null, ist $x_0$ eine Polstelle. So gilt $\frac{x^2-1}{x-1}=x+1$ für $x \ne 1$, und der Graph ist die Gerade $y=x+1$ ohne den Punkt $(1|2)$. Dagegen bleibt bei $\frac{x-1}{(x-1)^2}=\frac{1}{x-1}$ der Nenner bei $x=1$ null, dort liegt also eine Polstelle.
+Sind Zähler und Nenner an der Stelle $x_0$ beide null, kürzen Sie den Faktor $(x-x_0)$ so oft wie möglich. Ist der Nenner des vollständig gekürzten Terms bei $x_0$ ungleich null, ist die Lücke hebbar und der Graph hat dort nur ein Loch; ist er dort null, ist $x_0$ eine Polstelle. So gilt $\frac{x^2-1}{x-1}=x+1$ für $x \ne 1$, und der Graph ist die Gerade $y=x+1$ ohne den Punkt $(1|2)$. Dagegen gilt $\frac{x-1}{(x-1)^2}=\frac{1}{x-1}$ für $x \ne 1$, und der Nenner des gekürzten Terms bleibt bei $x=1$ null; dort liegt also eine Polstelle.
 
 ### Waagerechte Asymptote
 
