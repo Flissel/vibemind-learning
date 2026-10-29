@@ -64,24 +64,51 @@ def _formel_fehler(formel: str) -> list[str]:
     return fehler
 
 
+def _allein_auf_zeile(text: str, start: int, ende: int) -> bool:
+    """Only blanks between the line start and `start`, and between `ende` and the line end."""
+    zeilenanfang = text.rfind("\n", 0, start) + 1
+    zeilenende = text.find("\n", ende)
+    return not text[zeilenanfang:start].strip() and not text[ende:zeilenende if zeilenende >= 0 else None].strip()
+
+
 def formel_fehler(text: str) -> list[str]:
-    """Short German reasons why the formulas of `text` would not render; empty list = fine."""
+    """Short German reasons why the formulas of `text` would not render; empty list = fine.
+
+    The rules are those LearnHouse typesets (Ruling 7): `$$...$$` stands alone on its line(s),
+    a sentence formula `$...$` has no blank right inside its dollars and no digit right after."""
     rest = _ohne_code(text).replace("\\$", " ")
     formeln: list[str] = []
+    fehler: list[str] = []
 
     def block(treffer: re.Match[str]) -> str:
         formeln.append(treffer.group(1))
+        if not _allein_auf_zeile(treffer.string, treffer.start(), treffer.end()):
+            fehler.append(
+                "Eine Anzeigeformel „$$…$$“ steht mitten im Satz; stellen Sie sie auf eine eigene "
+                "Zeile oder schreiben Sie sie als „$…$“."
+            )
         return " "
 
     rest = _BLOCK.sub(block, rest)
-    fehler: list[str] = []
     if "$$" in rest:
         fehler.append("Ein „$$“ wird nicht geschlossen.")
         rest = rest.replace("$$", " ")
     if rest.count("$") % 2:
         fehler.append("Ein „$“ wird nicht geschlossen; ein Dollarzeichen als Währung bitte als „\\$“ schreiben.")
     else:
-        formeln += _INLINE.findall(rest)
+        for treffer in _INLINE.finditer(rest):
+            formel = treffer.group(1)
+            formeln.append(formel)
+            if formel != formel.strip():
+                fehler.append(
+                    f"Die Formel „${formel}$“ hat ein Leerzeichen direkt innerhalb der Dollarzeichen; "
+                    f"schreiben Sie „${formel.strip()}$“."
+                )
+            if rest[treffer.end():treffer.end() + 1].isdigit():
+                fehler.append(
+                    f"Direkt nach der Formel „${formel.strip()}$“ steht eine Ziffer; setzen Sie ein "
+                    "Leerzeichen dazwischen."
+                )
     for formel in formeln:
         fehler += _formel_fehler(formel)
     return list(dict.fromkeys(fehler))
