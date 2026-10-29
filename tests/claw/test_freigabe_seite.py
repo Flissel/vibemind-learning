@@ -395,8 +395,11 @@ def _katex_pruefen(page) -> None:
     assert "throwOnError:false" in page.text
     assert "left:'$$'" in page.text and "left:'$'" in page.text
     csp = page.headers["content-security-policy"]
-    assert "script-src https://cdn.jsdelivr.net 'sha256-" in csp
-    assert "font-src https://cdn.jsdelivr.net" in csp
+    # Only the pinned KaTeX path, not all of jsDelivr.
+    katex = "https://cdn.jsdelivr.net/npm/katex@0.16.11/"
+    assert f"script-src {katex} 'sha256-" in csp
+    assert f"style-src 'unsafe-inline' {katex};" in csp and f"font-src {katex};" in csp
+    assert "https://cdn.jsdelivr.net " not in csp and "https://cdn.jsdelivr.net;" not in csp
     assert "'unsafe-inline'" not in csp.split("style-src")[0]
 
 

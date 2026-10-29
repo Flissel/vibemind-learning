@@ -156,4 +156,5 @@ def test_the_page_loads_katex_with_sri(store, api, opened) -> None:
         tag = next(t for t in page.text.split("<") if f"{base}{datei}" in t)
         assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag
     csp = page.headers["content-security-policy"]
-    assert "img-src data:" in csp and "font-src https://cdn.jsdelivr.net" in csp
+    assert "img-src data:" in csp and "font-src https://cdn.jsdelivr.net/npm/katex@0.16.11/;" in csp
+    assert "script-src https://cdn.jsdelivr.net/npm/katex@0.16.11/ 'sha256-" in csp
