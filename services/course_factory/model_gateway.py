@@ -62,8 +62,110 @@ ROLE_CONTRACTS = {
     "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
     "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"),
     "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v1", "werkstatt-pruefer-v1"),
+    # Same output schemas as the terminal roles; only the instructions differ (course `fach`).
+    "werkstatt_grobentwurf_mathe": (
+        "werkstatt", "werkstatt-grobentwurf-mathe-prompt-v1", "werkstatt-grobentwurf-v1"
+    ),
+    "werkstatt_aufgabe_mathe": ("werkstatt", "werkstatt-aufgabe-mathe-prompt-v1", "werkstatt-aufgabe-v1"),
+    "werkstatt_pruefer_mathe": ("werkstatt", "werkstatt-pruefer-mathe-prompt-v1", "werkstatt-pruefer-v1"),
 }
+# Every name and command these texts allow is pinned against the checks' own lists in
+# tests/unit/test_werkstatt_autor.py (ERLAUBTE_NAMEN, GRAPH_NAMEN, ERLAUBTE_BEFEHLE).
+_WERKSTATT_GROBENTWURF_MATHE = (
+    "Plan a mathematics course as chapters with a short list of tasks (one line each: what the "
+    "learner must do). No lessons, no answers. Tasks make the learner calculate, read off a graph, "
+    "decide or find the mistake in a given solution, never recite a rule, definition or procedure. "
+    "Use polynomial functions of degree 2 to 4; for asymptotes use simple rational functions. No two "
+    "tasks test the same fact. Write a formula in a task line as $…$ in LaTeX as KaTeX reads it. "
+    "Use the default task kind for every task. German, address 'Sie'. Use only rules, definitions "
+    "and procedures from the supplied sources; if the input contains reviewer_feedback, address "
+    "every point."
+)
+_WERKSTATT_AUFGABE_MATHE = (
+    "Write exactly one mathematics task of the given kind from its summary, and the lesson section "
+    "the learner needs to solve it. Write in German and address the learner with 'Sie' throughout, "
+    "never with 'du'. If `wunsch` is given, change the previous version accordingly and keep "
+    "everything else. If the input contains reviewer_feedback, fix every point. "
+    # Formulas (formel_ungueltig).
+    "Formulas: write every formula in LaTeX as KaTeX reads it, inline as $…$ and as a display "
+    "formula as $$…$$ on its own line, for example $f'(x) = 3x^2 - 3$ or "
+    r"$\frac{2x+1}{x-1}$. Close every $ and every $$, balance braces and round brackets inside "
+    r"each formula, and use no LaTeX commands except \frac, \dfrac, \sqrt, \cdot, \pm, \le, \ge, "
+    r"\ne, \approx, \infty, \lim, \to, \Rightarrow, \Leftrightarrow, \left, \right, \text, "
+    r"\mathbb, \in, \quad and the environments cases and aligned; write a dollar sign that is not "
+    r"part of a formula as \$. No code blocks. "
+    # The task.
+    "The task makes the learner calculate, read off a graph, decide or find the mistake in a given "
+    "solution; never ask the learner to recite a rule, definition or procedure. Use polynomial "
+    "functions of degree 2 to 4; for asymptotes use simple rational functions. The prompt never "
+    "contains the answer; the solution follows the lesson and never contradicts it. Calculate "
+    "every number yourself before you write it. "
+    # The lesson section (lesson_contains_tasks, lektion_kuendigt_an, claim_uncited, lesson_body_thin).
+    "The lesson section teaches every rule, definition and procedure the task needs in full "
+    "sentences and may show a worked example with another function than the task; it contains no "
+    "tasks, options or answers, and no line starts with \"Aufgabe\", \"Lösung:\", \"Richtig ist\" or "
+    "\"Erwartete Antwort\". It states the facts directly and never announces what it, the chapter "
+    "or the tasks will do: no sentence starts with \"In diesem Abschnitt\", \"In dieser Lektion\", "
+    "\"Im Folgenden\" or \"Dieser Abschnitt\". List as claims only the rules, definitions and "
+    "procedures, each with at least one source key and worded as a sentence of the lesson text; "
+    "a worked example "
+    "calculation is no claim and needs no source key. Use only rules, definitions and procedures "
+    "from the cited sources. "
+    # Sources (quellenschluessel_im_text).
+    "Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of "
+    "each claim of the lesson section; never write source keys or \"(S…)\" into the body, the "
+    "prompt or any answer text; use only keys that appear in `source_refs`. "
+    # Per kind.
+    "Per kind. number: exactly one value in `value` (a point with x and y needs two tasks); "
+    "`label` names it, such as \"x =\"; keep `tolerance` at 0.01 unless the prompt asks for "
+    "rounding; `rechnung` is a SymPy expression in the variable x that yields exactly that value "
+    "as one finite real number, such as `solve(diff(x**3-3*x, x), x)[1]` (the index picks one "
+    "solution of the list solve returns, counted from 0) or `(x**2-4).subs(x, 3)`. In "
+    "`rechnung` use only numbers with at most 30 digits (decimal point, never a comma), x, "
+    "+ - * / and ** or ^, round brackets, [index] after solve, .subs(x, value), N(…) only as a "
+    "function, and the calculation names; no other names, no =, "
+    "no f(2) (write the term itself) and no power of a power such as 2^3^2. Calculation names: "
+    "diff, solve, sqrt, exp, log, ln, pi, E, Rational, limit, oo, Abs, sin, cos, tan, simplify, "
+    "factor, expand. "
+    "quiz: 2 to 6 options with `correct_option_ids`, never all options but one correct; the "
+    "prompt holds only the question. open and case: `expected_answer` and a rubric. "
+    "cloze: blanks accept only numbers (such as 3 or -1,5) or single words (such as Hochpunkt; a "
+    "hyphenated word such as x-Achse is fine), never a term, an equation or a point such as "
+    "(1|2); a term or a point as result belongs in a quiz, matching or number task. Each "
+    "{{id}} placeholder in `template` has exactly one blank with that `blank_id`; leave "
+    "`shell` out. ordering: 3 to 8 different steps. "
+    "matching: 3 to 6 pairs with different left texts and different right texts. A side can show "
+    "a function graph instead of text: put it into `left_graph` or `right_graph` with `term` in x "
+    "and a window x_min, x_max, y_min, y_max (between -1000 and 1000) chosen so the characteristic "
+    "part (zeros, extreme points, poles) is visible inside the window; all graphs on one side must "
+    "look different in their windows. A graph term uses only numbers, x, + - * / ^, round brackets "
+    "and the graph term names, never a power of a power. Graph term names: sqrt, exp, ln, log, "
+    "sin, cos, tan, Abs, pi, E. On a side with a graph, `left` or `right` holds only a neutral "
+    "label such as \"Graph A\" that never names the term; learners see only the picture. If the "
+    "task asks which graph is the derivative of which, set `beziehung` to \"ableitung_von\" with "
+    "the function on the left and its derivative on the right, and give both sides of every pair "
+    "a graph; set \"gleich\" when both sides of each pair show the same function; otherwise leave "
+    "`beziehung` out. "
+    "sketch: the prompt says exactly what to sketch (function, window, points to mark); "
+    "`expected_answer` describes what a correct sketch visibly shows; give 3 to 5 rubric "
+    "criteria, each one visible feature with approximate coordinates, such as \"Hochpunkt bei "
+    "etwa (-1|2) eingezeichnet\" and \"Tiefpunkt bei etwa (1|-2) eingezeichnet\" for "
+    "$f(x) = x^3 - 3x$; the `citation_ids` of a sketch task name at least one source key."
+)
+_WERKSTATT_PRUEFER_MATHE = (
+    "Check one mathematics task and its lesson section against the cited source excerpts. "
+    "Recompute every calculation step and every result yourself: the worked examples of the "
+    "lesson, the expected answer, the `value` of a number task with its `rechnung`, the correct "
+    "quiz options, the matching pairs with their graph terms and the coordinates in a sketch "
+    "rubric. Report only problems: a wrong step or result, a lesson and solution that contradict "
+    "each other, a rule, definition or procedure the sources do not support, a task that is "
+    "unsolvable from the lesson or has a second correct answer. Worked example calculations need "
+    "no source. Do not rewrite. Each issue: a short code and one German sentence."
+)
 ROLE_PROMPTS = {
+    "werkstatt_grobentwurf_mathe": _WERKSTATT_GROBENTWURF_MATHE,
+    "werkstatt_aufgabe_mathe": _WERKSTATT_AUFGABE_MATHE,
+    "werkstatt_pruefer_mathe": _WERKSTATT_PRUEFER_MATHE,
     "werkstatt_grobentwurf": "Plan a course as chapters with a short list of tasks (one line each: what the learner must do). No lessons, no answers. Tasks make the learner apply and decide, never recall a URL or quote an English message verbatim. Use the default task kind for every task. German, address 'Sie'. Use only facts from the supplied sources; if the input contains reviewer_feedback, address every point.",
     "werkstatt_aufgabe": "Write exactly one task of the given kind from its summary, and the lesson section the learner needs to solve it. The lesson section teaches every fact the task requires in full sentences, shows every command verbatim in a fenced code block with a language tag, cites claims by source key (S1, S2, …) and contains no tasks, options or answers. The expected answer must follow the lesson and never contradict it. If `wunsch` is given, change the previous version accordingly and keep everything else. German, 'Sie'. Only facts from the cited sources. Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of each claim of the lesson section; never write source keys or \"(S…)\" into the body, the prompt or any answer text. Every claim of the lesson section has at least one source key. Code fences use exactly one of the language tags powershell, cmd or bash. The lesson section never announces what it, the chapter or the tasks will do (no \"In diesem Abschnitt lernen Sie …\"); it states the facts directly.",
     "werkstatt_pruefer": "Check one task and its lesson section against the cited source excerpts. Report only problems: a claim the sources do not support, an expected answer that contradicts the lesson, a task that is unsolvable from the lesson. Do not rewrite. Each issue: a short code and one German sentence.",

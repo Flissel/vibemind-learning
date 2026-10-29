@@ -62,6 +62,11 @@ def _invocation(role: str, correlation_id: str, payload: dict[str, object]) -> M
     )
 
 
+def _rolle(basis: str, fach: Fach) -> str:
+    """A mathe course gets the mathe variant of a role; every other course the terminal one."""
+    return f"{basis}_mathe" if fach == "mathe" else basis
+
+
 def _fuer_modell(keyed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What the model sees of each chunk: its key, heading and text. Ids, hashes and
     coordinates stay on the server (keys are resolved there); they were most of the payload."""
@@ -87,6 +92,7 @@ async def grobentwurf_erzeugen(
     default_kind: str | None,
     hinweise: list[str],
     source_refs: tuple[str, ...],
+    fach: Fach = "terminal",
 ) -> Grobentwurf:
     payload: dict[str, object] = {
         "title": title,
@@ -97,14 +103,18 @@ async def grobentwurf_erzeugen(
     }
     if hinweise:
         payload["reviewer_feedback"] = list(hinweise)
-    result = await gateway.generate(_invocation("werkstatt_grobentwurf", correlation_id, payload), Grobentwurf)
+    result = await gateway.generate(
+        _invocation(_rolle("werkstatt_grobentwurf", fach), correlation_id, payload), Grobentwurf
+    )
     return result.output
 
 
 async def _autor(
-    gateway: ModelGateway, correlation_id: str, payload: dict[str, object]
+    gateway: ModelGateway, correlation_id: str, payload: dict[str, object], fach: Fach
 ) -> AufgabeInhalt:
-    result = await gateway.generate(_invocation("werkstatt_aufgabe", correlation_id, payload), AufgabeAusgabe)
+    result = await gateway.generate(
+        _invocation(_rolle("werkstatt_aufgabe", fach), correlation_id, payload), AufgabeAusgabe
+    )
     # The model names sources only by S-key: citation objects it writes itself are ignored.
     return result.output.aufgabe.model_copy(update={"zitate": []})
 
@@ -137,14 +147,14 @@ async def aufgabe_ausformulieren(
     fach: Fach = "mathe" if kurs.get("fach") == "mathe" else "terminal"
 
     inhalt, zitate = quellen_aufloesen(
-        await _autor(gateway, correlation_id, payload), source_refs, course_id=course_id
+        await _autor(gateway, correlation_id, payload, fach), source_refs, course_id=course_id
     )
     # In a thread: a number task's check runs a child process (up to its time limit).
     befunde = await asyncio.to_thread(aufgabe_pruefen, inhalt, sources=sources, fach=fach)
     if befunde:
         reparatur = {**payload, "reviewer_feedback": [b["text"] for b in befunde]}
         inhalt, zitate = quellen_aufloesen(
-            await _autor(gateway, correlation_id, reparatur), source_refs, course_id=course_id
+            await _autor(gateway, correlation_id, reparatur, fach), source_refs, course_id=course_id
         )
         befunde = await asyncio.to_thread(aufgabe_pruefen, inhalt, sources=sources, fach=fach)
     if inhalt.kind != kind:
@@ -161,7 +171,7 @@ async def aufgabe_ausformulieren(
         "source_refs": _fuer_modell([ref for ref in keyed if ref["chunk_id"] in zitierte]),
     }
     pruefung = await gateway.generate(
-        _invocation("werkstatt_pruefer", correlation_id, pruefer_payload), PrueferAusgabe
+        _invocation(_rolle("werkstatt_pruefer", fach), correlation_id, pruefer_payload), PrueferAusgabe
     )
     for issue in pruefung.output.issues:
         code = issue.code if issue.code.startswith("pruefer_") else f"pruefer_{issue.code}"

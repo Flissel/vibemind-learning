@@ -318,3 +318,200 @@ async def test_pruefung_laeuft_neben_der_event_loop(monkeypatch) -> None:
     monkeypatch.setattr(autor, "aufgabe_pruefen", merken)
     await _ausformulieren(_Fake(_autor(), _sauber_pruefer()))
     assert threads and all(t is not threading.main_thread() for t in threads)
+
+
+# Mathe roles (Task 6): own role texts for `fach == "mathe"`, terminal texts byte-identical.
+
+# sha256 of the three terminal role texts as they were before the mathe roles (28.10.).
+_TERMINAL_TEXT_SHA256 = {
+    "werkstatt_grobentwurf": "9d32489556d92a95087a97a6ce1fdfe4c788e61dae3aeb547135b1891afc4bff",
+    "werkstatt_aufgabe": "04397d992124034a18f7bfe4c97992bdbbdca1cc74e215f084f0c2c67cae89ed",
+    "werkstatt_pruefer": "43e26cd016e41119add118618c42fdd7ce7ce825179d9887509eeec514e92641",
+}
+_TERMINAL_VERTRAEGE = {
+    "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
+    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"),
+    "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v1", "werkstatt-pruefer-v1"),
+}
+_MATHE_KURS = {"course_id": "c1", "title": "Kurvendiskussion", "audience": "Oberstufe", "fach": "mathe"}
+
+
+def _mathe_text(role: str) -> str:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_PROMPTS
+
+    return ROLE_PROMPTS[role]
+
+
+def test_terminal_rollentexte_sind_byte_gleich() -> None:
+    import hashlib
+
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    for role, sha in _TERMINAL_TEXT_SHA256.items():
+        assert hashlib.sha256(ROLE_PROMPTS[role].encode("utf-8")).hexdigest() == sha, role
+        assert ROLE_CONTRACTS[role] == _TERMINAL_VERTRAEGE[role], role
+
+
+def test_mathe_rollen_haben_eigene_prompt_version_und_dasselbe_schema() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    for basis, (stage, _prompt, schema) in _TERMINAL_VERTRAEGE.items():
+        mathe = f"{basis}_mathe"
+        name = basis.replace("_", "-")
+        assert ROLE_CONTRACTS[mathe] == (stage, f"{name}-mathe-prompt-v1", schema), mathe
+        assert ROLE_PROMPTS[mathe] and ROLE_PROMPTS[mathe] != ROLE_PROMPTS[basis]
+
+
+@pytest.mark.asyncio
+async def test_mathe_kurs_nutzt_mathe_rollen() -> None:
+    fake = _Fake(_autor(), _sauber_pruefer())
+    await _ausformulieren(fake, kurs=_MATHE_KURS)
+    assert fake.calls == ["werkstatt_aufgabe_mathe", "werkstatt_pruefer_mathe"]
+    assert [i.prompt_version for i in fake.invocations] == [
+        "werkstatt-aufgabe-mathe-prompt-v1", "werkstatt-pruefer-mathe-prompt-v1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mathe_reparatur_bleibt_in_der_mathe_rolle() -> None:
+    fake = _Fake(_schlecht(), _autor(), _sauber_pruefer())
+    await _ausformulieren(fake, kurs=_MATHE_KURS)
+    assert fake.calls == ["werkstatt_aufgabe_mathe", "werkstatt_aufgabe_mathe", "werkstatt_pruefer_mathe"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_kurs_nutzt_die_bisherigen_rollen() -> None:
+    fake = _Fake(_autor(), _sauber_pruefer())
+    await _ausformulieren(fake, kurs={**_MATHE_KURS, "fach": "terminal"})
+    assert fake.calls == ["werkstatt_aufgabe", "werkstatt_pruefer"]
+
+
+@pytest.mark.asyncio
+async def test_grobentwurf_waehlt_die_rolle_nach_fach() -> None:
+    def entwurf() -> Grobentwurf:
+        return Grobentwurf.model_validate({
+            "schema_version": "werkstatt-grobentwurf-v1", "title": "K", "audience": "O", "default_kind": "number",
+            "chapters": [{"title": "K", "tasks": [{"summary": "s"}]}],
+        })
+
+    args = dict(correlation_id=str(uuid4()), title="K", audience="O", outcomes=["o"], default_kind="number",
+                hinweise=[], source_refs=REFS_2)
+    mathe, terminal, ohne = _Fake(entwurf()), _Fake(entwurf()), _Fake(entwurf())
+    await grobentwurf_erzeugen(mathe, fach="mathe", **args)
+    await grobentwurf_erzeugen(terminal, fach="terminal", **args)
+    await grobentwurf_erzeugen(ohne, **args)
+    assert mathe.calls == ["werkstatt_grobentwurf_mathe"]
+    assert mathe.invocations[0].prompt_version == "werkstatt-grobentwurf-mathe-prompt-v1"
+    assert terminal.calls == ohne.calls == ["werkstatt_grobentwurf"]
+
+
+def _formel_kaputt() -> AufgabeAusgabe:
+    return _autor(prompt="Welcher Wert ergibt sich fuer $f(2)?")
+
+
+@pytest.mark.asyncio
+async def test_mathe_pruefung_meldet_formel_ungueltig() -> None:
+    # aufgabe_pruefen runs with the course's fach: the mathe rule finds the open "$".
+    fake = _Fake(_formel_kaputt(), _formel_kaputt(), _sauber_pruefer())
+    erg = await _ausformulieren(fake, kurs=_MATHE_KURS)
+    assert "formel_ungueltig" in codes(erg.befunde)
+    assert any("Formel" in t for t in fake.invocations[1].input_payload["reviewer_feedback"])
+
+    terminal = _Fake(_formel_kaputt(), _sauber_pruefer())
+    erg = await _ausformulieren(terminal, kurs={**_MATHE_KURS, "fach": "terminal"})
+    assert "formel_ungueltig" not in codes(erg.befunde)
+
+
+@pytest.mark.parametrize(
+    ("role", "model", "content"),
+    [
+        ("werkstatt_aufgabe_mathe", "AufgabeAusgabe", {"schema_version": "werkstatt-aufgabe-v1"}),
+        ("werkstatt_pruefer_mathe", "PrueferAusgabe", {"schema_version": "werkstatt-pruefer-v1", "issues": []}),
+    ],
+)
+def test_echte_validierung_nimmt_mathe_rollen_an(role: str, model: str, content: dict) -> None:
+    from spaces.learning.services.werkstatt import autor
+
+    if model == "AufgabeAusgabe":
+        content = {**content, "aufgabe": quiz()}
+    ergebnis = _durch_echte_validierung(role, getattr(autor, model), content)
+    assert ergebnis.output.schema_version == content["schema_version"]
+
+
+# Every blocking check must be avoidable from the author text alone: phrases per check.
+_STEUERUNG = {
+    "formel_ungueltig": ["$…$", "$$…$$", "KaTeX", "Close every $ and every $$", "no LaTeX commands except"],
+    "luecke_mit_term": ["only numbers", "single words", "never a term", "a point such as"],
+    "zahl_falsch": ["exactly one value", "`rechnung`", "exactly that value"],
+    "zahl_unpruefbar": ["SymPy", "variable x", "power of a power", "at most 30 digits", "N(…) only as a function", "never a comma"],
+    "graph_beziehung_falsch": ["`beziehung`", "ableitung_von", "derivative on the right"],
+    "graph_ungueltig": ["`left_graph`", "`right_graph`", "visible inside the window"],
+    "matching_duplicate": ["look different"],
+    "skizze_rubrik": ["3 to 5 rubric criteria", "approximate coordinates"],
+    "skizze_ohne_quelle": ["at least one source key"],
+    "claim_uncited": ["each with at least one source key", "worked example", "keys that appear in `source_refs`"],
+    "quellenschluessel_im_text": ["never write source keys"],
+    "lesson_contains_tasks": ["Lösung:", "no tasks, options or answers"],
+    "lektion_kuendigt_an": ["Im Folgenden", "In diesem Abschnitt", "In dieser Lektion"],
+    "cloze_blank_missing": ["{{id}} placeholder", "exactly one blank"],
+    "address_mixed": ["'Sie'"],
+    "kind_abweichend": ["of the given kind"],
+}
+
+
+@pytest.mark.parametrize("code", sorted(_STEUERUNG))
+def test_mathe_autortext_steuert_jede_sperrende_pruefung(code: str) -> None:
+    text = _mathe_text("werkstatt_aufgabe_mathe")
+    fehlt = [p for p in _STEUERUNG[code] if p not in text]
+    assert not fehlt, (code, fehlt)
+
+
+def test_mathe_autortext_hat_die_pflichtinhalte() -> None:
+    text = _mathe_text("werkstatt_aufgabe_mathe")
+    for pflicht in (
+        "calculate", "read off a graph", "decide", "find the mistake", "never ask the learner to recite",
+        '"x ="', "neutral label", "polynomial functions of degree 2 to 4", "simple rational functions",
+        "German",
+    ):
+        assert pflicht in text, pflicht
+
+
+def test_mathe_texte_nennen_nur_erlaubte_namen_und_befehle() -> None:
+    import re
+
+    from spaces.learning.services.werkstatt.formeln import ERLAUBTE_BEFEHLE
+    from spaces.learning.services.werkstatt.graph import GRAPH_NAMEN
+    from spaces.learning.services.werkstatt.nachrechnen import ERLAUBTE_NAMEN
+
+    text = _mathe_text("werkstatt_aufgabe_mathe")
+    befehle = set(re.findall(r"\\([A-Za-z]+)", text))
+    assert befehle and befehle <= ERLAUBTE_BEFEHLE, befehle - ERLAUBTE_BEFEHLE
+    rechnung = re.search(r"Calculation names: ([^.]+)\.", text).group(1)
+    assert set(rechnung.replace(" ", "").split(",")) == ERLAUBTE_NAMEN - {"x", "subs", "N"}
+    graph = re.search(r"Graph term names: ([^.]+)\.", text).group(1)
+    assert set(graph.replace(" ", "").split(",")) == GRAPH_NAMEN - {"x"}
+
+
+def test_mathe_beispielrechnungen_im_autortext_rechnen_nach() -> None:
+    from spaces.learning.services.werkstatt.formeln import formel_fehler
+    from spaces.learning.services.werkstatt.nachrechnen import nachrechnen
+
+    text = _mathe_text("werkstatt_aufgabe_mathe")
+    # The sketch example belongs to the same f(x) = x^3 - 3x: high point (-1|2), low point (1|-2).
+    assert "Hochpunkt bei etwa (-1|2)" in text and "Tiefpunkt bei etwa (1|-2)" in text
+    for rechnung, wert in (("solve(diff(x**3-3*x, x), x)[1]", 1.0), ("(x**2-4).subs(x, 3)", 5.0)):
+        assert f"`{rechnung}`" in text
+        assert nachrechnen(rechnung) == pytest.approx(wert)
+    # The text's own formula examples must pass the formula check it steers towards.
+    for beispiel in (r"$f'(x) = 3x^2 - 3$", r"$\frac{2x+1}{x-1}$"):
+        assert beispiel in text and formel_fehler(beispiel) == [], beispiel
+
+
+def test_mathe_grobentwurf_und_pruefer_texte() -> None:
+    plan = _mathe_text("werkstatt_grobentwurf_mathe")
+    for pflicht in ("calculate", "never recite", "degree 2 to 4", "simple rational functions", "'Sie'",
+                    "reviewer_feedback", "$…$"):
+        assert pflicht in plan, pflicht
+    pruefer = _mathe_text("werkstatt_pruefer_mathe")
+    for pflicht in ("Recompute", "every result", "contradict", "Do not rewrite", "German sentence"):
+        assert pflicht in pruefer, pflicht

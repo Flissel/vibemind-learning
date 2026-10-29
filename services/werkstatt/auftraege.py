@@ -150,6 +150,7 @@ class WerkstattArbeiter:
                 default_kind=kurs["default_kind"],
                 hinweise=list(eingabe.get("hinweise", [])),
                 source_refs=katalog.model_refs,
+                fach=kurs["fach"],
             )
             # Validated model output is applied in one transaction: all of it or nothing.
             task_ids = self._store.grobentwurf_anwenden(

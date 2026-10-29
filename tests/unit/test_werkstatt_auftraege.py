@@ -251,3 +251,42 @@ def test_kurs_fuer_modell_traegt_fach(tmp_path: Path) -> None:
     s = _store(tmp_path)
     _kurs(s)
     assert kurs_fuer_modell(s.kurs("c1"))["fach"] == "terminal"
+
+
+class _MerkenderFake(_Fake):
+    def __init__(self, *outputs: object) -> None:
+        super().__init__(*outputs)
+        self.rollen: list[str] = []
+
+    async def generate(self, invocation, output_model):
+        self.rollen.append(invocation.role)
+        return await super().generate(invocation, output_model)
+
+
+@pytest.mark.asyncio
+async def test_mathe_kurs_laeuft_ueber_die_mathe_rollen(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.kurs_anlegen(
+        "c1", title="Kurvendiskussion", audience="Oberstufe", default_kind="number",
+        outcomes=["Extrempunkte berechnen"], source_provenance=_PROV, owner_ref="kursleitung-a", fach="mathe",
+    )
+    s.auftrag_anlegen("c1", kind="grobentwurf", input={})
+    plan = _MerkenderFake(_grob())
+    await _arbeiter(s, plan).einen_ausfuehren()
+    assert plan.rollen == ["werkstatt_grobentwurf_mathe"]
+
+    t = s.aufgabe_anlegen("c1", chapter_title="K", summary="x")["task_id"]
+    s.auftrag_anlegen("c1", kind="ausformulieren", task_id=t, input={"based_on": None, "kind": "quiz"})
+    aufgabe = _MerkenderFake(_aufgabe(), _pruefer())
+    await _arbeiter(s, aufgabe).einen_ausfuehren()
+    assert aufgabe.rollen == ["werkstatt_aufgabe_mathe", "werkstatt_pruefer_mathe"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_kurs_grobentwurf_bleibt_bei_der_terminal_rolle(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    _kurs(s)
+    s.auftrag_anlegen("c1", kind="grobentwurf", input={})
+    plan = _MerkenderFake(_grob())
+    await _arbeiter(s, plan).einen_ausfuehren()
+    assert plan.rollen == ["werkstatt_grobentwurf"]
