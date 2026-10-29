@@ -463,3 +463,29 @@ def test_gleich_aussehende_graphen_sind_doppelt() -> None:
             ],
         })
         assert codes(aufgabe_pruefen(inhalt, sources=SRC)) == ["matching_duplicate"]
+
+def _skizze(**over: Any) -> Any:
+    base: dict[str, Any] = {
+        "kind": "sketch", "prompt": "Skizzieren Sie $f(x)=x^2$.", "concept_ids": ["k1"], "citation_ids": ["c1"],
+        "expected_answer": "Nach oben offene Parabel.",
+        "rubric": [
+            {"criterion_id": "r1", "description": "Parabel nach oben offen", "points": 2},
+            {"criterion_id": "r2", "description": "Scheitel im Ursprung", "points": 2},
+            {"criterion_id": "r3", "description": "Achsen beschriftet", "points": 1},
+        ],
+    }
+    base.update(over)
+    return inhalt_lesen(base)
+
+
+def test_skizze_pruefung() -> None:
+    from spaces.learning.services.werkstatt.pruefung import _aufgabe_codes
+
+    assert codes(aufgabe_pruefen(_skizze(), sources=SRC, fach="mathe")) == []
+    assert "formel_ungueltig" in codes(aufgabe_pruefen(_skizze(prompt="Skizzieren Sie $f(2$"), sources=SRC, fach="mathe"))
+    # The schema already demands 3; the finding guards a task built around it.
+    zu_wenig = _skizze().model_copy(update={"rubric": _skizze().rubric[:2]})
+    assert "skizze_rubrik" in _aufgabe_codes(zu_wenig)
+    assert _aufgabe_codes(_skizze()) == []
+    # The canvas evaluator needs a source reference: without a citation the task could not open.
+    assert "skizze_ohne_quelle" in _aufgabe_codes(_skizze(citation_ids=[]))

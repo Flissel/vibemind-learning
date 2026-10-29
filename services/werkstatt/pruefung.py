@@ -35,6 +35,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     Offen,
     Quiz,
     Reihenfolge,
+    Skizze,
     Zahl,
     Zuordnung,
 )
@@ -71,6 +72,8 @@ _TEXTE = {
     "matching_duplicate": "In der Zuordnung kommt ein Begriff doppelt vor.",
     "formel_ungueltig": "Eine Formel ist nicht schreibbar: ein „$“ wird nicht geschlossen, Klammern sind nicht ausgeglichen oder ein Formelbefehl ist unbekannt.",
     "luecke_mit_term": "Eine Lücke erwartet einen Term; Lücken sind nur für Zahlen oder einzelne Wörter, Terme gehören in eine offene Aufgabe.",
+    "skizze_rubrik": "Eine Skizzen-Aufgabe braucht mindestens drei Bewertungskriterien, damit sich die Zeichnung beurteilen lässt.",
+    "skizze_ohne_quelle": "Eine Skizzen-Aufgabe braucht mindestens eine Quelle (citation_ids), sonst lässt sich die Zeichnung nicht bewerten und die Aufgabe nicht öffnen.",
     "zahl_falsch": "Die angegebene Lösung stimmt nicht mit dem Ergebnis der Rechnung überein; bitte Lösung oder Rechnung berichtigen.",
     # Tells the author model what is allowed, so the repair round can succeed.
     "zahl_unpruefbar": (
@@ -152,7 +155,7 @@ def _befund(code: str) -> Befund:
     return {"code": code, "text": _TEXTE.get(code, "Die Prüfung hat ein Problem gefunden.")}
 
 
-def _als_aktivitaet(inhalt: Quiz | Offen | Fall) -> ActivityDraft:
+def _als_aktivitaet(inhalt: Quiz | Offen | Fall | Skizze) -> ActivityDraft:
     if isinstance(inhalt, Quiz):
         return ActivityDraft(
             activity_id="aufgabe", chapter_id="kapitel", type="quiz", concept_ids=inhalt.concept_ids,
@@ -160,7 +163,8 @@ def _als_aktivitaet(inhalt: Quiz | Offen | Fall) -> ActivityDraft:
             options=inhalt.options, correct_option_ids=inhalt.correct_option_ids,
         )
     return ActivityDraft(
-        activity_id="aufgabe", chapter_id="kapitel", type=inhalt.kind, concept_ids=inhalt.concept_ids,
+        activity_id="aufgabe", chapter_id="kapitel",
+        type="penecho_canvas" if isinstance(inhalt, Skizze) else inhalt.kind, concept_ids=inhalt.concept_ids,
         prompt=inhalt.prompt, expected_answer=inhalt.expected_answer, citation_ids=inhalt.citation_ids,
         rubric=inhalt.rubric,
     )
@@ -196,6 +200,14 @@ def _aufgabe_codes(inhalt: AufgabeInhalt) -> list[str]:
         return codes + _graph_codes(inhalt)
     if isinstance(inhalt, Zahl):
         return _zahl_codes(inhalt)
+    if isinstance(inhalt, Skizze):
+        codes = [i.code for i in activity_issues(_als_aktivitaet(inhalt))]
+        if len(inhalt.rubric) < 3:
+            codes.append("skizze_rubrik")
+        # The canvas evaluator refuses a request without a source reference.
+        if not inhalt.citation_ids:
+            codes.append("skizze_ohne_quelle")
+        return codes
     return []
 
 

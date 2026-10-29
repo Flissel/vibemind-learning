@@ -206,3 +206,45 @@ def test_fassungs_art_zahl() -> None:
     assert fassungs_art(zahl(), zahl(tolerance=0.5)) == "neu"
     assert fassungs_art(zahl(), zahl(label="y =")) == "neu"
     assert fassungs_art(zahl(), zahl(prompt="Wo hat $f$ ein Minimum?")) == "textkorrektur"
+
+
+def skizze(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "kind": "sketch", "prompt": "Skizzieren Sie $f(x)=x^2$.", "concept_ids": ["k1"],
+        "expected_answer": "Nach oben offene Parabel mit Scheitel im Ursprung.",
+        "rubric": [
+            {"criterion_id": "r1", "description": "Parabel nach oben offen", "points": 2},
+            {"criterion_id": "r2", "description": "Scheitel im Ursprung", "points": 2},
+            {"criterion_id": "r3", "description": "Achsen beschriftet", "points": 1},
+        ],
+    }
+    base.update(over)
+    return base
+
+
+def test_skizze_braucht_drei_bis_fuenf_kriterien() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Skizze
+
+    assert isinstance(inhalt_lesen(skizze()), Skizze)
+    with pytest.raises(ValidationError):
+        inhalt_lesen(skizze(rubric=skizze()["rubric"][:2]))
+    with pytest.raises(ValidationError):
+        inhalt_lesen(skizze(rubric=skizze()["rubric"] * 2))
+    with pytest.raises(ValidationError):
+        inhalt_lesen(skizze(expected_answer=""))
+
+
+def test_grobentwurf_kennt_skizze() -> None:
+    entwurf = {
+        "schema_version": "werkstatt-grobentwurf-v1", "title": "T", "audience": "A",
+        "default_kind": "sketch", "chapters": [{"title": "K1", "tasks": [{"summary": "s"}]}],
+    }
+    assert Grobentwurf.model_validate(entwurf).default_kind == "sketch"
+
+
+def test_fassungs_art_skizze() -> None:
+    kriterien = skizze()["rubric"]
+    assert fassungs_art(skizze(), skizze(expected_answer="Andere Musterskizze")) == "neu"
+    assert fassungs_art(skizze(), skizze(rubric=[*kriterien[:2], {**kriterien[2], "points": 3}])) == "neu"
+    assert fassungs_art(skizze(), skizze(rubric=list(reversed(kriterien)))) == "textkorrektur"
+    assert fassungs_art(skizze(), skizze(prompt="Zeichnen Sie $f(x)=x^2$.")) == "textkorrektur"

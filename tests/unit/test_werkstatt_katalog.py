@@ -809,3 +809,41 @@ def test_zuordnung_gemischt_text_und_graph(tmp_path, monkeypatch):
     assert {beschriftung[l]: beschriftung[r] for l, r in erwartet["pairs"].items()} == {
         "Graph A": "3x^2", "Graph B": "g'", "Graph C": "h'",
     }
+
+
+def _skizze() -> dict[str, Any]:
+    return {
+        "kind": "sketch", "prompt": "Skizzieren Sie $f(x)=x^2$.", "concept_ids": ["k1"],
+        "expected_answer": "Nach oben offene Parabel.",
+        "rubric": [
+            {"criterion_id": "r1", "description": "Parabel nach oben offen", "points": 2},
+            {"criterion_id": "r2", "description": "Scheitel im Ursprung", "points": 2},
+            {"criterion_id": "r3", "description": "Achsen beschriftet", "points": 1},
+        ],
+    }
+
+
+def test_skizze_wird_penecho_canvas_item() -> None:
+    from spaces.learning.services.werkstatt.inhalt import inhalt_lesen
+    from spaces.learning.services.werkstatt.katalog import _item_felder
+
+    typ, erwartet, config, rubrik = _item_felder("item-1", inhalt_lesen(_skizze()))
+    assert (typ, erwartet) == ("penecho_canvas", {"text": "Nach oben offene Parabel."})
+    assert config == {"prompt": "Skizzieren Sie $f(x)=x^2$."}
+    assert sum(r["points"] for r in rubrik) == 100
+    assert [r["criterion_id"] for r in rubrik] == ["r1", "r2", "r3"]
+
+
+def test_skizze_im_katalog_wie_factory_canvas_item(tmp_path):
+    factory = _factory(tmp_path)
+    WerkstattKatalog(factory).projizieren(COURSE, 3, [_eintrag("skizze", _skizze())], None, fach="mathe")
+    WerkstattKatalog(factory).projizieren(COURSE, 4, [_eintrag("skizze", _skizze())], None)
+    mathe, terminal = _items(factory, 3)["skizze"], _items(factory, 4)["skizze"]
+    for item in (mathe, terminal):
+        assert item.item_type == "penecho_canvas"
+        assert item.expected_answer == {"text": "Nach oben offene Parabel."}
+        assert item.scoring_config["options"] == [] and "hints" in item.scoring_config
+        assert "source_refs" in item.scoring_config
+        assert sum(r["points"] for r in item.rubric) == 100
+    assert mathe.scoring_config["presentation"] == {"math": True}
+    assert terminal.scoring_config["presentation"] == {}

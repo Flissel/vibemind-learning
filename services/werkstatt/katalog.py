@@ -54,6 +54,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     Offen,
     Quiz,
     Reihenfolge,
+    Skizze,
     Zahl,
     Zuordnung,
     inhalt_lesen,
@@ -316,6 +317,11 @@ def _item_felder(
             "matching", {"pairs": {f"b{n}": i for n, i in enumerate(rechts_ids, start=1)}},
             {"prompt": inhalt.prompt, "partial_credit": True, "presentation": {"left": links, "right": rechts}},
             [],
+        )
+    if isinstance(inhalt, Skizze):
+        return (
+            "penecho_canvas", {"text": inhalt.expected_answer}, {"prompt": inhalt.prompt},
+            _scaled([c.model_dump(mode="json") for c in inhalt.rubric]),
         )
     if isinstance(inhalt, Zahl):
         darstellung = {"unit": inhalt.label} if inhalt.label else {}

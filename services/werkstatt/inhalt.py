@@ -148,8 +148,16 @@ class Zahl(_AufgabeBasis):
     rechnung: str = Field(min_length=1, max_length=2_000)
 
 
+class Skizze(_AufgabeBasis):
+    """A drawing task: released as the engine type ``penecho_canvas``, graded by rubric."""
+
+    kind: Literal["sketch"]
+    expected_answer: str = Field(min_length=1, max_length=50_000)
+    rubric: list[RubricCriterion] = Field(min_length=3, max_length=5)
+
+
 AufgabeInhalt = Annotated[
-    Quiz | Offen | Fall | Luecke | Reihenfolge | Zuordnung | Zahl,
+    Quiz | Offen | Fall | Luecke | Reihenfolge | Zuordnung | Zahl | Skizze,
     Field(discriminator="kind"),
 ]
 
@@ -169,7 +177,7 @@ class Grobentwurf(_StrictDraft):
     schema_version: Literal["werkstatt-grobentwurf-v1"]
     title: str = Field(min_length=1, max_length=500)
     audience: str = Field(min_length=1, max_length=1_000)
-    default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number"]
+    default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number", "sketch"]
     chapters: list[GrobKapitel] = Field(min_length=1, max_length=500)
 
 
@@ -216,6 +224,9 @@ def _loesung(inhalt: BaseModel) -> object:
         )
     if isinstance(inhalt, Zahl):
         return (inhalt.value, inhalt.tolerance, inhalt.label)
+    if isinstance(inhalt, Skizze):
+        rubrik = sorted((r.criterion_id, r.description, r.points) for r in inhalt.rubric)
+        return (inhalt.expected_answer, rubrik)
     raise TypeError(type(inhalt).__name__)
 
 

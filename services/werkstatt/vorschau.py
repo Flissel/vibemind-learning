@@ -20,6 +20,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     Offen,
     Quiz,
     Reihenfolge,
+    Skizze,
     Zahl,
     Zuordnung,
     inhalt_lesen,
@@ -153,6 +154,11 @@ def vorschau(content: dict[str, Any]) -> dict[str, Any]:
         feld = f"{inhalt.label} ____" if inhalt.label else "____"
         text = "\n".join([inhalt.prompt, "", feld])
         loesung = f"Lösung: {inhalt.value:g} (± {inhalt.tolerance:g}); Rechnung: {inhalt.rechnung}"
+    elif isinstance(inhalt, Skizze):
+        text = inhalt.prompt
+        loesung = f"Musterskizze: {inhalt.expected_answer}\nKriterien: " + "; ".join(
+            f"{r.description} ({r.points})" for r in inhalt.rubric
+        )
     else:  # pragma: no cover - the union is closed
         raise TypeError(type(inhalt).__name__)
     lektion = f"{inhalt.lektion.title}\n\n{inhalt.lektion.body}" if inhalt.lektion else None

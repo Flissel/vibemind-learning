@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
 from spaces.learning.bridge.dispatcher import InMemoryReceiptStore, LearningDispatcher
@@ -30,11 +30,14 @@ from spaces.learning.services.adaptive_engine.session_service import AdaptiveSes
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.evaluation.canvas_artifacts import CanvasArtifactStore
 from spaces.learning.services.zeichnen.link import DrawingGrant, drawing_token, drawing_url, read_drawing_token
+from spaces.learning.services.werkstatt.freigabe import loesung_hash
+from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
 from spaces.learning.tests.e2e.test_local_canvas import REF, _Gateway, _Tutor
 
 KEY = "z" * 32
 PUBLIC = "http://100.67.177.45:8090"
 PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\nzeichnung").decode()
+WERKSTATT_PROMPT = "Skizzieren Sie $f(x)=x^2$ und markieren Sie den Scheitel."
 STRICHE = [{"punkte": [[10, 10], [200, 90]], "farbe": "#111111", "breite": 5}]
 
 
@@ -65,7 +68,32 @@ def world(tmp_path: Path, monkeypatch):
         ))
         db.add(ItemConcept(item_id=str(item), concept_id=str(concept_id), course_id=str(course_id),
                            course_revision=1))
+    # A task from the Werkstatt (sketch), released into its own course the way a release does it.
+    werkstatt_course = str(uuid4())
+    werkstatt_inhalt = {
+        "kind": "sketch", "prompt": WERKSTATT_PROMPT, "concept_ids": ["k1"],
+        "expected_answer": "Nach oben offene Parabel.",
+        "rubric": [
+            {"criterion_id": "r1", "description": "Parabel nach oben offen", "points": 2},
+            {"criterion_id": "r2", "description": "Scheitel im Ursprung", "points": 2},
+            {"criterion_id": "r3", "description": "Achsen beschriftet", "points": 1},
+        ],
+    }
+    WerkstattKatalog(factory).projizieren(werkstatt_course, 1, [{
+        "task_id": "t1", "fassung": 1, "aufgaben_key": "skizze-1",
+        "loesung_hash": loesung_hash(werkstatt_inhalt), "content": werkstatt_inhalt,
+    }], None, fach="mathe")
+    with factory() as db, db.begin():
+        row = db.scalars(select(AdaptiveItem).where(AdaptiveItem.course_id == werkstatt_course)).one()
+        werkstatt_item = UUID(row.id)
+        # A cited task (the check demands a citation for sketches); the projection of citations
+        # into source_refs is the catalog's own, tested in test_werkstatt_katalog.
+        row.scoring_config = {**row.scoring_config, "source_refs": [REF]}
     sessions = AdaptiveSessionService(factory, external_rubric_types=frozenset({"penecho_canvas"}))
+    werkstatt_started = sessions.start(SessionInput(
+        course_id=werkstatt_course, course_revision=1, actor_id="lh-3-lernende", mode="training",
+        blueprint={"max_attempts": 1},
+    ))
     started = sessions.start(SessionInput(course_id=str(course_id), course_revision=1, actor_id="lh-3-lernende",
                                           mode="training", blueprint={"max_attempts": 1}))
     backend = LocalCanvasBackend(root=tmp_path / "canvas", origin="http://127.0.0.1:8139")
@@ -89,6 +117,7 @@ def world(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(zeichnen_routes.httpx, "post", post)
     client = TestClient(runtime_api.app, raise_server_exceptions=False)
+    client.werkstatt = (werkstatt_started, werkstatt_item)  # type: ignore[attr-defined]
     yield client, started, item, post
     engine.dispose()
 
@@ -143,3 +172,17 @@ def test_a_forged_link_and_another_person_get_nothing(world) -> None:
     client, started, item, post = world
     assert client.get("/zeichnen/abc.def").status_code == 404
     assert _open(post, started, item, actor="lh-3-mallory")["is_error"] is True
+
+
+def test_a_werkstatt_sketch_item_opens_the_drawing_page_like_a_factory_item(world) -> None:
+    client, _started, _item, post = world
+    started, item = client.werkstatt  # type: ignore[attr-defined]
+    opened = _open(post, started, item)
+    assert opened["is_error"] is False, opened
+    url = opened["result"]["page_url"]
+    assert url.startswith(PUBLIC + "/zeichnen/")  # same path as a factory item
+    path = url.removeprefix(PUBLIC)
+
+    page = client.get(path)
+    assert page.status_code == 200 and "Skizzieren Sie" in page.text and "markieren Sie den Scheitel" in page.text
+    assert "frame-ancestors 'self'" in page.headers["content-security-policy"]

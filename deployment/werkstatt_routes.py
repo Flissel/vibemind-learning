@@ -73,7 +73,7 @@ AUTHOR_HEADER = "X-Werkstatt-Author"
 _AUTHOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _UNPROCESSABLE = 422  # the Starlette constant was renamed between releases
 
-Kind = Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number"]
+Kind = Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number", "sketch"]
 
 
 @dataclass(frozen=True)
