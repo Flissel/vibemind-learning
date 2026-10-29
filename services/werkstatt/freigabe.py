@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections import Counter
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -357,7 +358,7 @@ def freigabe_vorbereiten(
 class _StandSchreiber(Protocol):
     async def werkstatt_stand_schreiben(
         self, course_id: str, *, expected_revision: int, freigabe_id: str,
-        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None,
+        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None, math: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -373,6 +374,10 @@ class _Katalog(Protocol):
     ) -> dict[str, Any]: ...
 
 
+def _ist_mathe(store: WerkstattStore, course_id: str) -> bool:
+    return store.kurs(course_id).get("fach") == "mathe"
+
+
 def _fassungs_inhalt(store: WerkstattStore, task_id: str, number: int) -> dict[str, Any]:
     fassung = next((f for f in store.fassungen(task_id) if f["number"] == number), None)
     if fassung is None:
@@ -380,7 +385,32 @@ def _fassungs_inhalt(store: WerkstattStore, task_id: str, number: int) -> dict[s
     return fassung["content"]
 
 
-def _kapitel_aus_manifest(store: WerkstattStore, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
+_TITEL_LAENGE = 120
+_TITEL_FORMEL = re.compile(r"\$\$(.+?)\$\$|(?<!\\)\$([^$]+?)(?<!\\)\$", re.S)
+
+
+def aktivitaetstitel(prompt: str, *, mathe: bool) -> str:
+    """The LearnHouse activity name of a task: its prompt, cut to 120 characters.
+
+    In a math course the formulas lose their dollars (a name is plain text) and the cut never
+    falls inside a formula: a formula that does not fit is left out whole. Terminal courses keep
+    the plain cut, `$env:...` included."""
+    if not mathe:
+        return prompt[:_TITEL_LAENGE]
+    titel, position = "", 0
+    for treffer in _TITEL_FORMEL.finditer(prompt):
+        text = prompt[position:treffer.start()].replace("\\$", "$")
+        formel = " ".join((treffer.group(1) or treffer.group(2)).split())
+        if len(titel) + len(text) + len(formel) > _TITEL_LAENGE:
+            return (titel + text)[:_TITEL_LAENGE].rstrip()
+        titel += text + formel
+        position = treffer.end()
+    return (titel + prompt[position:].replace("\\$", "$"))[:_TITEL_LAENGE]
+
+
+def _kapitel_aus_manifest(
+    store: WerkstattStore, manifest: list[dict[str, Any]], *, mathe: bool = False
+) -> list[dict[str, Any]]:
     """Chapters in manifest order; each task's lesson first. Reads the approved version, not the newest."""
     kapitel: dict[str, dict[str, Any]] = {}
     for m in sorted(manifest, key=lambda e: e["position"]):
@@ -395,8 +425,8 @@ def _kapitel_aus_manifest(store: WerkstattStore, manifest: list[dict[str, Any]])
                 "claims": [c.text for c in inhalt.lektion.claims],
             })
         eintraege.append({
-            "key": m["aufgaben_key"], "art": "task", "titel": inhalt.prompt[:120],
-            "prompt": inhalt.prompt,
+            "key": m["aufgaben_key"], "art": "task",
+            "titel": aktivitaetstitel(inhalt.prompt, mathe=mathe), "prompt": inhalt.prompt,
         })
     return list(kapitel.values())
 
@@ -436,7 +466,7 @@ def _katalog_projizieren(
             None,
         )
         vorher = _mit_inhalt(store, passend["manifest"]) if passend else _uebernommen(store, course_id)
-    fach = "mathe" if store.kurs(course_id).get("fach") == "mathe" else "terminal"
+    fach = "mathe" if _ist_mathe(store, course_id) else "terminal"
     return katalog.projizieren(
         course_id, revision, _mit_inhalt(store, freigabe["manifest"]), vorher_revision,
         vorher_eintraege=vorher, fach=fach,
@@ -495,14 +525,18 @@ async def freigabe_ausfuehren(
     vergleich = freigabe["vergleich"]
     if not any(vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")):
         raise ValueError("nichts_zu_veroeffentlichen")
-    kapitel = _kapitel_aus_manifest(store, freigabe["manifest"])
+    mathe = _ist_mathe(store, freigabe["course_id"])
+    kapitel = _kapitel_aus_manifest(store, freigabe["manifest"], mathe=mathe)
     entfernen = list(dict.fromkeys(
         e["key"] for k in ("offline", "zusammengefuehrt") for e in vergleich.get(k) or []
     ))
+    # Formula typesetting in the lesson pages is opt-in (Ruling 6): terminal lessons carry
+    # `$env:...` and `$HOME`, so only math courses send the switch.
+    extra: dict[str, Any] = {"math": True} if mathe else {}
     try:
         antwort = await gateway.werkstatt_stand_schreiben(
             freigabe["course_id"], expected_revision=vorher, freigabe_id=freigabe_id,
-            kapitel=kapitel, entfernen=entfernen,
+            kapitel=kapitel, entfernen=entfernen, **extra,
         )
     except LearnHouseGatewayError as fehler:
         if fehler.status == 409 and fehler.code == "revision_conflict":

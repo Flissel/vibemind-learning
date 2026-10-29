@@ -25,11 +25,11 @@ class FakeGateway:
 
     async def werkstatt_stand_schreiben(
         self, course_id: str, *, expected_revision: int, freigabe_id: str,
-        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None,
+        kapitel: list[dict[str, Any]], entfernen: list[str] | None = None, **extra: Any,
     ) -> dict[str, Any]:
         self.aufrufe.append({
             "course_id": course_id, "expected_revision": expected_revision,
-            "freigabe_id": freigabe_id, "kapitel": kapitel, "entfernen": entfernen,
+            "freigabe_id": freigabe_id, "kapitel": kapitel, "entfernen": entfernen, **extra,
         })
         if self.fehler:
             raise LearnHouseGatewayError("LearnHouse is unavailable")
@@ -67,9 +67,57 @@ async def test_freigabe_schreibt_manifest_nach_learnhouse(tmp_path):
     assert aufgabe["prompt"] == "Welcher Befehl listet Dateien auf?"
     assert aufgabe["titel"] == aufgabe["prompt"][:120]
     assert [(e["key"], e["art"]) for e in k2["eintraege"]] == [(f"werkstatt:{t3}", "task")]
+    # A course without fach is a terminal course: no formula typesetting switch (Ruling 6).
+    assert "math" not in aufruf
     fertig = s.freigabe(v["freigabe_id"])
     assert fertig["zustand"] == "freigegeben" and fertig["learnhouse_revision"] == 5
     assert fertig["approval_ref"] == "klick-1" and fertig["freigegeben_at"]
+
+
+def _mathe_store(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from spaces.learning.services.db.models import Base
+    from spaces.learning.services.werkstatt.store import WerkstattStore
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'mathe.db'}")
+    Base.metadata.create_all(engine)
+    s = WerkstattStore(sessionmaker(bind=engine, expire_on_commit=False))
+    s.kurs_anlegen(
+        COURSE, title="Kurvendiskussion", audience="Oberstufe", default_kind="quiz",
+        outcomes=["Extrema bestimmen"], source_provenance=[], owner_ref="kursleitung-a", fach="mathe",
+    )
+    return s
+
+
+@pytest.mark.asyncio
+async def test_mathe_kurs_schickt_formelsatz_fuer_lektionen(tmp_path):
+    s = _mathe_store(tmp_path)
+    _aufgabe(s, _quiz("Welchen Wert hat $f(1)$ für $f(x)=x^2$?"))
+    gw = FakeGateway()
+
+    await freigabe_ausfuehren(s, gw, _vorbereiten(s)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+
+    (aufruf,) = gw.aufrufe
+    assert aufruf["math"] is True
+    aufgabe = aufruf["kapitel"][0]["eintraege"][1]
+    # The LearnHouse activity name shows the formula text without its dollars.
+    assert aufgabe["titel"] == "Welchen Wert hat f(1) für f(x)=x^2?"
+    assert aufgabe["prompt"] == "Welchen Wert hat $f(1)$ für $f(x)=x^2$?"
+
+
+def test_aktivitaetstitel_schneidet_nie_in_einer_formel():
+    from spaces.learning.services.werkstatt.freigabe import aktivitaetstitel
+
+    lang = "Bestimmen Sie " + "x" * 100 + " zu $\\frac{x^2-1}{x-1}$ genau."
+    titel = aktivitaetstitel(lang, mathe=True)
+    assert titel == "Bestimmen Sie " + "x" * 100 + " zu"
+    assert len(aktivitaetstitel("a" * 300, mathe=True)) == 120
+    assert aktivitaetstitel("Mit $$x^2$$ und \\$5", mathe=True) == "Mit x^2 und $5"
+    # Terminal courses keep the plain cut, dollars included.
+    terminal = "Was zeigt $env:Path an? " + "y" * 200
+    assert aktivitaetstitel(terminal, mathe=False) == terminal[:120]
 
 
 @pytest.mark.asyncio

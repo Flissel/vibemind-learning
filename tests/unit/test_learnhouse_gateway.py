@@ -236,6 +236,15 @@ async def test_werkstatt_stand_schreiben_sendet_put() -> None:
         course_id, expected_revision=9, freigabe_id="f-3", kapitel=kapitel, entfernen=["l2", "a1"]
     )
     assert json.loads(requests[2].content)["entfernen"] == ["l2", "a1"]
+    # Formula typesetting in lessons is opt-in (Ruling 6): `math` only for math courses.
+    await gateway.werkstatt_stand_schreiben(
+        course_id, expected_revision=9, freigabe_id="f-4", kapitel=kapitel, math=True
+    )
+    assert json.loads(requests[3].content)["math"] is True
+    await gateway.werkstatt_stand_schreiben(
+        course_id, expected_revision=9, freigabe_id="f-5", kapitel=kapitel, math=False
+    )
+    assert "math" not in json.loads(requests[4].content)
     await client.aclose()
 
 

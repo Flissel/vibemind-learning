@@ -149,11 +149,13 @@ class LearnHouseHttpGateway:
         freigabe_id: str,
         kapitel: list[dict[str, object]],
         entfernen: list[str] | None = None,
+        math: bool = False,
     ) -> dict[str, object]:
         """Write the released Werkstatt state (chapters, lessons, tasks) into the course.
 
         `entfernen` names the activity keys to take offline besides the Werkstatt ones that
-        are missing; an empty list is left out of the body."""
+        are missing; an empty list is left out of the body. `math` switches on formula
+        typesetting in the lesson pages (math courses only); it is sent only when true."""
         payload: dict[str, object] = {
             "expected_revision": expected_revision,
             "freigabe_id": freigabe_id,
@@ -161,6 +163,8 @@ class LearnHouseHttpGateway:
         }
         if entfernen:
             payload["entfernen"] = list(entfernen)
+        if math:
+            payload["math"] = True
         return await self._request_json(
             "PUT",
             f"courses/{course_id}/werkstatt-stand",
