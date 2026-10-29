@@ -302,6 +302,46 @@ async def test_das_modell_bekommt_je_quellstueck_nur_schluessel_ueberschrift_und
 
 
 @pytest.mark.asyncio
+async def test_reine_ueberschrift_stuecke_werden_nicht_als_beleg_angeboten() -> None:
+    # Live 28.10.: Chunks mit content == Ueberschrift (z.B. S23) wurden zitiert, der Pruefer
+    # meldete "Quelle enthaelt nur die Ueberschrift" und blockierte die Freigabe.
+    import json
+
+    from spaces.learning.services.werkstatt.autor import _fuer_modell
+    from spaces.learning.services.course_factory.chapter_verification import keyed_source_refs
+
+    vorlage = json.loads(REFS_2[0])
+
+    def ref(content: str, heading: str) -> str:
+        return json.dumps({**vorlage, "content": content, "locator": {"heading": heading, "line_start": 1}})
+
+    refs = (
+        ref("Ableitungen", "Ableitungen"),            # S1: content == heading
+        ref("Echter Text zu B", "B"),                 # S2
+        ref("## Bedeutung", "Bedeutung"),             # S3: Markdown form
+        ref("", "Leer"),                              # S4: empty
+        ref("  bedeutung   der  Regel ", "Bedeutung der Regel"),  # S5: case/whitespace-insensitive
+        ref("Ableitungen sind wichtig", "Ableitungen"),  # S6: starts with heading, kept
+    )
+    assert [e["key"] for e in _fuer_modell(keyed_source_refs(refs))] == ["S2", "S6"]
+
+    fake = _Fake(_autor(), _sauber_pruefer())
+    await _ausformulieren(fake, source_refs=refs)
+    for invocation in fake.invocations:
+        keys = [r["key"] for r in invocation.input_payload["source_refs"]]
+        assert not {"S1", "S3", "S4", "S5"} & set(keys), invocation.role
+    assert [r["key"] for r in fake.invocations[0].input_payload["source_refs"]] == ["S2", "S6"]
+
+    plan = _Fake(Grobentwurf.model_validate({
+        "schema_version": "werkstatt-grobentwurf-v1", "title": "D", "audience": "E", "default_kind": "quiz",
+        "chapters": [{"title": "K", "tasks": [{"summary": "s"}]}],
+    }))
+    await grobentwurf_erzeugen(plan, correlation_id=str(uuid4()), title="D", audience="E", outcomes=["o"],
+                               default_kind="quiz", hinweise=[], source_refs=refs)
+    assert [r["key"] for r in plan.invocations[0].input_payload["source_refs"]] == ["S2", "S6"]
+
+
+@pytest.mark.asyncio
 async def test_pruefung_laeuft_neben_der_event_loop(monkeypatch) -> None:
     # A number task's check starts a child process; it must not block the loop.
     import threading
