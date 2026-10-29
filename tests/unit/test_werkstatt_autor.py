@@ -442,10 +442,14 @@ def test_echte_validierung_nimmt_mathe_rollen_an(role: str, model: str, content:
 _STEUERUNG = {
     "formel_ungueltig": ["$…$", "$$…$$", "KaTeX", "Close every $ and every $$", "no LaTeX commands except"],
     "luecke_mit_term": ["only numbers", "single words", "never a term", "a point such as"],
-    "zahl_falsch": ["exactly one value", "`rechnung`", "exactly that value"],
-    "zahl_unpruefbar": ["SymPy", "variable x", "power of a power", "at most 30 digits", "N(…) only as a function", "never a comma"],
+    "zahl_falsch": ["exactly one value", "`rechnung`", "exactly that value",
+                    "ascending order only when all of them are rational", "at a solution you know"],
+    "zahl_unpruefbar": ["SymPy", "variable x", "power of a power", "at most 30 digits", "N(…) only as a function",
+                        "In `rechnung` write every product with * (2*x, never 2x) and decimals with a point "
+                        "(0.5, never 0,5)", "not predictable"],
     "graph_beziehung_falsch": ["`beziehung`", "ableitung_von", "derivative on the right"],
-    "graph_ungueltig": ["`left_graph`", "`right_graph`", "visible inside the window"],
+    "graph_ungueltig": ["`left_graph`", "`right_graph`", "visible inside the window",
+                        "A graph term writes every product with * (2*x, never 2x) and decimals with a point"],
     "matching_duplicate": ["look different"],
     "skizze_rubrik": ["3 to 5 rubric criteria", "approximate coordinates"],
     "skizze_ohne_quelle": ["at least one source key"],
@@ -471,9 +475,12 @@ def test_mathe_autortext_hat_die_pflichtinhalte() -> None:
     for pflicht in (
         "calculate", "read off a graph", "decide", "find the mistake", "never ask the learner to recite",
         '"x ="', "neutral label", "polynomial functions of degree 2 to 4", "simple rational functions",
-        "German",
+        "German", "(learner input", "write a fraction as a decimal such as 0,5",
+        r"\begin{cases}…\end{cases}", r"\begin{aligned}…\end{aligned}",
     ):
         assert pflicht in text, pflicht
+    for befehl in ("ln", "log", "exp", "sin", "cos", "pi", "times"):
+        assert f"\\{befehl}," in text or f"\\{befehl} " in text, befehl
 
 
 def test_mathe_texte_nennen_nur_erlaubte_namen_und_befehle() -> None:
@@ -499,7 +506,7 @@ def test_mathe_beispielrechnungen_im_autortext_rechnen_nach() -> None:
     text = _mathe_text("werkstatt_aufgabe_mathe")
     # The sketch example belongs to the same f(x) = x^3 - 3x: high point (-1|2), low point (1|-2).
     assert "Hochpunkt bei etwa (-1|2)" in text and "Tiefpunkt bei etwa (1|-2)" in text
-    for rechnung, wert in (("solve(diff(x**3-3*x, x), x)[1]", 1.0), ("(x**2-4).subs(x, 3)", 5.0)):
+    for rechnung, wert in (("solve(diff(x**3-3*x, x), x)[1]", 1.0), ("(x**3-3*x).subs(x, -1)", 2.0)):
         assert f"`{rechnung}`" in text
         assert nachrechnen(rechnung) == pytest.approx(wert)
     # The text's own formula examples must pass the formula check it steers towards.
@@ -507,11 +514,28 @@ def test_mathe_beispielrechnungen_im_autortext_rechnen_nach() -> None:
         assert beispiel in text and formel_fehler(beispiel) == [], beispiel
 
 
+def test_solve_reihenfolge_wie_der_autortext_sie_beschreibt() -> None:
+    # Review 29.10.: the text claims ascending order only for all-rational solutions. Pinned on the
+    # real check: rational roots come sorted; a complex root at the index fails the check.
+    from spaces.learning.services.werkstatt.nachrechnen import NachrechnenFehler, nachrechnen
+
+    assert [nachrechnen(f"solve(x**3-6*x**2+11*x-6, x)[{i}]") for i in range(3)] == pytest.approx([1, 2, 3])
+    assert nachrechnen("solve(2*x**2-x-1, x)[0]") == pytest.approx(-0.5)
+    with pytest.raises(NachrechnenFehler):
+        nachrechnen("solve(x**3-x**2+x-1, x)[1]")  # [1, -I, I]
+    with pytest.raises(NachrechnenFehler):
+        nachrechnen("2x")  # implicit product: the text demands 2*x
+
+
 def test_mathe_grobentwurf_und_pruefer_texte() -> None:
     plan = _mathe_text("werkstatt_grobentwurf_mathe")
     for pflicht in ("calculate", "never recite", "degree 2 to 4", "simple rational functions", "'Sie'",
-                    "reviewer_feedback", "$…$"):
+                    "reviewer_feedback", "$…$", "every task kind at least once", "with function graphs",
+                    "Begin every task line with its kind and a colon", '"number: '):
         assert pflicht in plan, pflicht
+    for art in ("quiz", "open", "case", "cloze", "ordering", "matching", "number", "sketch"):
+        assert art in plan, art
+    assert "Use the default task kind for every task" not in plan
     pruefer = _mathe_text("werkstatt_pruefer_mathe")
     for pflicht in ("Recompute", "every result", "contradict", "Do not rewrite", "German sentence"):
         assert pflicht in pruefer, pflicht

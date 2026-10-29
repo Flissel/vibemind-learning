@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, get_args
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -27,7 +27,7 @@ from spaces.learning.services.werkstatt.autor import (
     aufgabe_ausformulieren,
     grobentwurf_erzeugen,
 )
-from spaces.learning.services.werkstatt.inhalt import fassungs_art
+from spaces.learning.services.werkstatt.inhalt import Grobentwurf, fassungs_art
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
 
 logger = logging.getLogger(__name__)
@@ -180,7 +180,11 @@ class WerkstattArbeiter:
             correlation_id=correlation_id,
             kurs=kurs_fuer_modell(kurs),
             summary=aufgabe["summary"],
-            kind=eingabe.get("kind") or kurs["default_kind"],
+            kind=(
+                eingabe.get("kind")
+                or _art_aus_kurzfassung(kurs, aufgabe["summary"])
+                or kurs["default_kind"]
+            ),
             wunsch=eingabe.get("wunsch"),
             vorherige=vorherige["content"] if vorherige else None,
             source_refs=katalog.model_refs,
@@ -200,6 +204,19 @@ class WerkstattArbeiter:
         except WerkstattKonflikt as konflikt:
             raise _Fehler("konflikt", {"neueste": konflikt.neueste}) from konflikt
         return {"fassung": fassung}
+
+
+_ARTEN: frozenset[str] = frozenset(get_args(Grobentwurf.model_fields["default_kind"].annotation))
+
+
+def _art_aus_kurzfassung(kurs: dict[str, Any], summary: str) -> str | None:
+    """The mathe plan begins every task line with its kind ("number: ..."); without an explicit
+    kind from the chat that prefix picks it. Terminal courses keep the course's default kind."""
+    if kurs.get("fach") != "mathe":
+        return None
+    kopf, trenner, _ = summary.partition(":")
+    art = kopf.strip().lower()
+    return art if trenner and art in _ARTEN else None
 
 
 def kurs_fuer_modell(kurs: dict[str, Any]) -> dict[str, Any]:

@@ -403,6 +403,14 @@ def test_zahl_wird_nachgerechnet() -> None:
     assert all(n in befund[0]["text"] for n in ("solve", "diff", "subs", "N(", "30 Stellen"))
 
 
+def test_rechen_und_graph_befunde_nennen_stern_und_dezimalpunkt() -> None:
+    # Review 29.10.: `2x` and `0,5` are the likely model errors; the repair round must be told.
+    from spaces.learning.services.werkstatt.pruefung import _TEXTE
+
+    for code in ("zahl_unpruefbar", "graph_ungueltig"):
+        assert "2*x, nicht 2x" in _TEXTE[code] and "Dezimalpunkt (0.5, nicht 0,5)" in _TEXTE[code], code
+
+
 def _graph_zuordnung(rechts_erstes: str = "3*x**2", links_erstes: str = "x**3", **over: Any) -> Any:
     base: dict[str, Any] = {
         "kind": "matching", "prompt": "Ordnen Sie jedem Graphen den Graphen seiner Ableitung zu.",

@@ -260,7 +260,42 @@ class _MerkenderFake(_Fake):
 
     async def generate(self, invocation, output_model):
         self.rollen.append(invocation.role)
+        self.eingaben = [*getattr(self, "eingaben", []), invocation.input_payload]
         return await super().generate(invocation, output_model)
+
+
+def _mathe_kurs(s: WerkstattStore, fach: str = "mathe") -> None:
+    s.kurs_anlegen(
+        "c1", title="Kurvendiskussion", audience="Oberstufe", default_kind="open",
+        outcomes=["Extrempunkte berechnen"], source_provenance=_PROV, owner_ref="kursleitung-a", fach=fach,
+    )
+
+
+async def _gesendete_art(tmp_path: Path, summary: str, *, fach: str = "mathe", kind: str | None = None) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    s = _store(tmp_path)
+    _mathe_kurs(s, fach)
+    t = s.aufgabe_anlegen("c1", chapter_title="K", summary=summary)["task_id"]
+    s.auftrag_anlegen("c1", kind="ausformulieren", task_id=t, input={"based_on": None, "kind": kind})
+    fake = _MerkenderFake(_aufgabe(), _pruefer())
+    await _arbeiter(s, fake).einen_ausfuehren()
+    return fake.eingaben[0]["kind"]
+
+
+@pytest.mark.asyncio
+async def test_mathe_kurzfassung_mit_art_bestimmt_die_art(tmp_path: Path) -> None:
+    # The mathe plan begins every task line with its kind ("number: ..."); without an explicit
+    # kind from the chat, that prefix picks it instead of the course's default kind.
+    assert await _gesendete_art(tmp_path / "a", "number: Berechnen Sie die Stelle des Hochpunkts.") == "number"
+    assert await _gesendete_art(tmp_path / "b", " Sketch : Skizzieren Sie den Graphen.") == "sketch"
+    assert await _gesendete_art(tmp_path / "c", "number: x", kind="quiz") == "quiz"  # explicit kind wins
+    assert await _gesendete_art(tmp_path / "d", "Zahl: Berechnen Sie f(2).") == "open"  # unknown prefix
+    assert await _gesendete_art(tmp_path / "e", "Berechnen Sie f(2).") == "open"
+
+
+@pytest.mark.asyncio
+async def test_terminal_kurzfassung_bestimmt_die_art_nicht(tmp_path: Path) -> None:
+    assert await _gesendete_art(tmp_path, "number: x", fach="terminal") == "open"
 
 
 @pytest.mark.asyncio

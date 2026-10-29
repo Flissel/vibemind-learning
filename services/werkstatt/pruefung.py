@@ -78,14 +78,16 @@ _TEXTE = {
     # Tells the author model what is allowed, so the repair round can succeed.
     "zahl_unpruefbar": (
         "Die Rechnung zur Lösung lässt sich nicht nachrechnen; erlaubt sind nur Zahlen bis "
-        f"{MAX_ZIFFERN} Stellen, x, + - * / ^ ohne Potenztürme wie 2^3^4, runde Klammern, "
+        f"{MAX_ZIFFERN} Stellen mit Dezimalpunkt (0.5, nicht 0,5), x, + - * / ^ ohne Potenztürme "
+        "wie 2^3^4, jedes Produkt mit * (2*x, nicht 2x), runde Klammern, "
         "Ausdruck.subs(x, Wert), N(…) nur als Funktion und "
         + ", ".join(sorted(ERLAUBTE_NAMEN - {"x", "subs", "N"}, key=str.lower))
         + ", und das Ergebnis muss schnell eine endliche reelle Zahl ergeben."
     ),
     "graph_ungueltig": (
         "Ein Graph lässt sich nicht zeichnen oder zeigt im gewählten Bereich nichts; erlaubt sind "
-        f"im Term nur Zahlen bis {MAX_ZIFFERN} Stellen, x, + - * / ^ ohne Potenztürme, runde Klammern und "
+        f"im Term nur Zahlen bis {MAX_ZIFFERN} Stellen mit Dezimalpunkt (0.5, nicht 0,5), x, "
+        "+ - * / ^ ohne Potenztürme, jedes Produkt mit * (2*x, nicht 2x), runde Klammern und "
         + ", ".join(sorted(GRAPH_NAMEN - {"x"}, key=str.lower))
         + ", und der Graph muss zwischen y_min und y_max sichtbar sein."
     ),
