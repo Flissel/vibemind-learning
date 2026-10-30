@@ -130,6 +130,7 @@ class BewertungStore:
             return [
                 {
                     "id": z.id,
+                    "aktualisiert": _iso(z.aktualisiert),
                     "course_id": z.course_id,
                     "kurs_titel": z.kurs_titel,
                     "smiley": z.smiley,
@@ -140,14 +141,18 @@ class BewertungStore:
                 for z in zeilen
             ]
 
-    def gemeldet_markieren(self, ids: list[str]) -> int:
-        if not ids:
-            return 0
+    def gemeldet_markieren(self, eintraege: list[dict[str, str]]) -> int:
+        """Markiert nur Zeilen, deren ``aktualisiert`` noch dem gemeldeten Stand entspricht."""
+        markiert = 0
         with Session(self._engine) as session, session.begin():
-            ergebnis = session.execute(
-                update(KursBewertung).where(KursBewertung.id.in_(ids)).values(gemeldet=utc_now())
-            )
-            return ergebnis.rowcount
+            for eintrag in eintraege:
+                zeile = session.scalars(
+                    select(KursBewertung).where(KursBewertung.id == eintrag["id"]).with_for_update()
+                ).first()
+                if zeile is not None and _iso(zeile.aktualisiert) == eintrag["aktualisiert"]:
+                    zeile.gemeldet = utc_now()
+                    markiert += 1
+        return markiert
 
     def uebersicht(self) -> list[dict[str, Any]]:
         with Session(self._engine) as session:

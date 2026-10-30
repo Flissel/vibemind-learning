@@ -90,13 +90,23 @@ def test_inhaber_routen(client: TestClient) -> None:
     for text in (neu.text, uebersicht.text):
         assert "anna" not in text and "lh-3" not in text and "actor" not in text
 
-    ids = [b["id"] for b in neu.json()["bewertungen"]]
-    assert client.post("/api/v1/kursbewertungen/gemeldet", json={"ids": ids}).status_code == 401
-    erledigt = client.post("/api/v1/kursbewertungen/gemeldet", headers=headers(), json={"ids": ids})
+    eintraege = [{"id": b["id"], "aktualisiert": b["aktualisiert"]} for b in neu.json()["bewertungen"]]
+    assert client.post("/api/v1/kursbewertungen/gemeldet", json={"eintraege": eintraege}).status_code == 401
+    erledigt = client.post(
+        "/api/v1/kursbewertungen/gemeldet", headers=headers(), json={"eintraege": eintraege}
+    )
     assert erledigt.status_code == 200 and erledigt.json() == {"markiert": 2}
     assert client.get("/api/v1/kursbewertungen/neu", headers=headers()).json() == {"bewertungen": []}
-    assert client.post("/api/v1/kursbewertungen/gemeldet", headers=headers(), json={"ids": "x"}).status_code == 400
+    assert client.post("/api/v1/kursbewertungen/gemeldet", headers=headers(), json={"eintraege": "x"}).status_code == 400
 
 
 def KEYLESS_LEARNER(key: str) -> dict:
     return {SERVICE: key, ACTOR: "lh-3-anna-geheim"}
+
+
+def test_inhaber_routen_brauchen_autorenrolle(client: TestClient) -> None:
+    ohne = headers(roles="learning.reviewer")
+    assert client.get("/api/v1/kursbewertungen/neu", headers=ohne).status_code == 403
+    assert client.get("/api/v1/kursbewertungen/uebersicht", headers=ohne).status_code == 403
+    antwort = client.post("/api/v1/kursbewertungen/gemeldet", headers=ohne, json={"eintraege": []})
+    assert antwort.status_code == 403

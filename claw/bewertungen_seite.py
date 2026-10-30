@@ -8,6 +8,7 @@ Keine actor_id und keine Namen: Learning liefert sie nicht aus.
 from __future__ import annotations
 
 import html
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -63,6 +64,23 @@ class BewertungenSeite:
         await _antwort(send, 200, "Kursbewertungen", _kurse(kurse))
 
 
+def _datum(wert: Any) -> str:
+    """ISO-Zeitstempel (UTC) als ``TT.MM.JJJJ HH:MM`` in Ortszeit Europe/Berlin."""
+    try:
+        moment = datetime.fromisoformat(str(wert))
+    except ValueError:
+        return str(wert)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+
+        moment = moment.astimezone(ZoneInfo("Europe/Berlin"))
+    except Exception:  # noqa: BLE001 - ohne tzdata bleibt UTC
+        moment = moment.astimezone(timezone.utc)
+    return moment.strftime("%d.%m.%Y %H:%M")
+
+
 def _e(wert: Any) -> str:
     return html.escape(str(wert))
 
@@ -94,7 +112,7 @@ def _kurs(k: dict[str, Any]) -> str:
         worte = ", ".join(_e(w) for w in z.get("stichworte") or []) or "ohne Stichworte"
         teile.append(
             f"<li>{_EMOJI.get(z.get('smiley'), '')} {worte} "
-            f"<small>({_e(str(z.get('datum'))[:10])})</small></li>"
+            f"<small>({_e(_datum(z.get('datum')))})</small></li>"
         )
     teile.append("</ul></section>")
     return "".join(teile)

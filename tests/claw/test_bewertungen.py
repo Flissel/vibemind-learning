@@ -27,7 +27,7 @@ def schluessel(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _b(**extra) -> dict:
-    return {"id": "b1", "course_id": "c1", "kurs_titel": "Zwingen", "smiley": "gut",
+    return {"id": "b1", "aktualisiert": "t1", "course_id": "c1", "kurs_titel": "Zwingen", "smiley": "gut",
             "stichworte": ["klar", "kurz"], "geaendert": False, "verteilung": VERTEILUNG, **extra}
 
 
@@ -50,7 +50,7 @@ def test_nachricht_format() -> None:
 class _Client:
     def __init__(self, neu=None, kurse=None, fehler=False) -> None:
         self.neu, self.kurse, self.fehler = neu or [], kurse or [], fehler
-        self.gemeldet: list[list[str]] = []
+        self.gemeldet: list[list[dict]] = []
 
     def get(self, path: str, *, roles: str) -> dict:
         if self.fehler:
@@ -62,8 +62,8 @@ class _Client:
 
     def post(self, path: str, body: dict, *, roles: str) -> dict:
         assert path == "/kursbewertungen/gemeldet"
-        self.gemeldet.append(body["ids"])
-        return {"markiert": len(body["ids"])}
+        self.gemeldet.append(body["eintraege"])
+        return {"markiert": len(body["eintraege"])}
 
 
 def test_melde_runde_markiert_nur_gesendete() -> None:
@@ -75,7 +75,7 @@ def test_melde_runde_markiert_nur_gesendete() -> None:
         return len(gesendet) == 1
 
     assert melde_runde(client, senden) == 1
-    assert client.gemeldet == [["b1"]]
+    assert client.gemeldet == [[{"id": "b1", "aktualisiert": "t1"}]]
     assert len(gesendet) == 2
 
 
@@ -146,7 +146,16 @@ def test_link_token_gueltig_abgelaufen_manipuliert(api) -> None:
 def test_seite_escaped_stichworte(api) -> None:
     seite = _seite(f"/bewertungen/{token_erzeugen()}")
     assert "&lt;script&gt;" in seite.text and "<script>x" not in seite.text
-    assert "Zwingen" in seite.text and "2026-10-30" in seite.text
+    assert "Zwingen" in seite.text and "30.10.2026 11:00" in seite.text
+
+
+def test_datum_deutsch_lokal() -> None:
+    from spaces.learning.claw.bewertungen_seite import _datum
+
+    assert _datum("2026-10-30T10:00:00+00:00") == "30.10.2026 11:00"  # MEZ
+    assert _datum("2026-07-01T10:00:00+00:00") == "01.07.2026 12:00"  # MESZ
+    assert _datum("2026-10-30T10:00:00") == "30.10.2026 11:00"  # naiv = UTC
+    assert _datum("kaputt") == "kaputt"
 
 
 def test_build_app_startet_keinen_thread() -> None:

@@ -16,7 +16,12 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from spaces.learning.deployment.lernende_auth import lernende_person
-from spaces.learning.deployment.vibemind_auth import ApiError, VibeMindRequestContext, vibemind_context
+from spaces.learning.deployment.vibemind_auth import (
+    ROLE_AUTHOR,
+    ApiError,
+    VibeMindRequestContext,
+    vibemind_context,
+)
 from spaces.learning.services.bewertungen.store import BewertungFehler, BewertungStore
 
 router = APIRouter()
@@ -76,17 +81,26 @@ def eigene(request: Request, course_id: str) -> JSONResponse:
 
 @router.get("/api/v1/kursbewertungen/neu")
 def neue(context: Context) -> JSONResponse:
+    context.require(ROLE_AUTHOR)
     return JSONResponse({"bewertungen": _store().neue()})
 
 
 @router.post("/api/v1/kursbewertungen/gemeldet")
 def gemeldet(context: Context, payload: Annotated[dict[str, Any], Body()]) -> JSONResponse:
-    ids = payload.get("ids")
-    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "ids must be a list of strings")
-    return JSONResponse({"markiert": _store().gemeldet_markieren(ids)})
+    context.require(ROLE_AUTHOR)
+    eintraege = payload.get("eintraege")
+    if not isinstance(eintraege, list) or not all(
+        isinstance(e, dict) and isinstance(e.get("id"), str) and isinstance(e.get("aktualisiert"), str)
+        for e in eintraege
+    ):
+        raise ApiError(
+            status.HTTP_400_BAD_REQUEST, "invalid_request", "eintraege must be a list of {id, aktualisiert}"
+        )
+    paare = [{"id": e["id"], "aktualisiert": e["aktualisiert"]} for e in eintraege]
+    return JSONResponse({"markiert": _store().gemeldet_markieren(paare)})
 
 
 @router.get("/api/v1/kursbewertungen/uebersicht")
 def uebersicht(context: Context) -> JSONResponse:
+    context.require(ROLE_AUTHOR)
     return JSONResponse({"kurse": _store().uebersicht()})

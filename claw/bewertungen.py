@@ -73,10 +73,12 @@ def nachricht(b: dict[str, Any], link: str) -> str:
     v = b.get("verteilung") or {}
     gut, mittel, schlecht = (int(v.get(k) or 0) for k in ("gut", "mittel", "schlecht"))
     zusatz = " (geändert)" if b.get("geaendert") else ""
+    summe = gut + mittel + schlecht
+    bisher = "Bisher 1 Bewertung:" if summe == 1 else f"Bisher {summe} Bewertungen:"
     return (
         f"Kursbewertung · {b.get('kurs_titel') or ''}{zusatz}\n"
         f"{emoji} – {teil}\n"
-        f"Bisher {gut + mittel + schlecht} Bewertungen: {gut} 😃 · {mittel} 🙂 · {schlecht} 😕\n"
+        f"{bisher} {gut} 😃 · {mittel} 🙂 · {schlecht} 😕\n"
         f"Übersicht: {link}"
     )
 
@@ -90,15 +92,15 @@ def melde_runde(
         if not neu:
             return 0
         adresse = f"{_ursprung()}{PREFIX}{token_erzeugen(jetzt)}"
-        erledigt: list[str] = []
+        erledigt: list[dict[str, str]] = []
         for b in neu:
             try:
                 if senden(nachricht(b, adresse)):
-                    erledigt.append(str(b["id"]))
+                    erledigt.append({"id": str(b["id"]), "aktualisiert": str(b["aktualisiert"])})
             except Exception as error:  # noqa: BLE001 - one broken send must not stop the round
                 logger.warning("Bewertung konnte nicht gemeldet werden: %s", type(error).__name__)
         if erledigt:
-            client.post("/kursbewertungen/gemeldet", {"ids": erledigt}, roles=ROLE_AUTHOR)
+            client.post("/kursbewertungen/gemeldet", {"eintraege": erledigt}, roles=ROLE_AUTHOR)
         return len(erledigt)
     except Exception as error:  # noqa: BLE001 - the reporter never takes the sidecar down
         logger.warning("Bewertungs-Melder-Runde fehlgeschlagen: %s", type(error).__name__)

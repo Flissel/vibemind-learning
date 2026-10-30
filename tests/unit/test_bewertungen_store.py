@@ -90,7 +90,7 @@ def test_neue_und_gemeldet(tmp_path: Path) -> None:
     assert all("actor_id" not in n for n in neue)
     assert neue[0]["verteilung"] == {"gut": 1, "mittel": 0, "schlecht": 1}
     assert neue[0]["geaendert"] is False
-    assert store.gemeldet_markieren([n["id"] for n in neue]) == 2
+    assert store.gemeldet_markieren([{"id": n["id"], "aktualisiert": n["aktualisiert"]} for n in neue]) == 2
     assert store.neue() == []
     store.abgeben("c1", "p1", "Kurs", "mittel", [])
     nochmal = store.neue()
@@ -134,3 +134,16 @@ def test_migration_0018_legt_tabelle_an() -> None:
         with Operations.context(MigrationContext.configure(verbindung)):
             modul.downgrade()
         assert "learning_course_ratings" not in inspect(verbindung).get_table_names()
+
+
+def test_neu_abgegebene_aenderung_bleibt_ungemeldet(tmp_path: Path) -> None:
+    store = BewertungStore(_engine(tmp_path))
+    store.abgeben("c1", "p1", "Kurs", "gut", [])
+    geholt = store.neue()
+    assert geholt[0]["aktualisiert"]
+    store.abgeben("c1", "p1", "Kurs", "schlecht", [])  # Re-Submit waehrend der Runde
+    paare = [{"id": g["id"], "aktualisiert": g["aktualisiert"]} for g in geholt]
+    assert store.gemeldet_markieren(paare) == 0
+    assert len(store.neue()) == 1
+    assert store.gemeldet_markieren([{"id": g["id"], "aktualisiert": g["aktualisiert"]} for g in store.neue()]) == 1
+    assert store.neue() == []
