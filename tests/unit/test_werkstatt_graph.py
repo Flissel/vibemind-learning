@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from spaces.learning.services.werkstatt.freigabe import loesung_hash
 from spaces.learning.services.werkstatt.graph import (
     BREITE,
+    FLAECHE,
     GRAPH_NAMEN,
     HOEHE,
     GraphFehler,
@@ -57,6 +58,34 @@ def test_polstelle_ohne_senkrechte_linie() -> None:
     # The graph itself is drawn (left and right of the pole), so the check above is not vacuous.
     assert any(_graphfarbe(bild.getpixel((spalte_von(angabe, 3.0), y))) for y in range(360))
     assert any(_graphfarbe(bild.getpixel((spalte_von(angabe, -2.0), y))) for y in range(360))
+
+
+def _luecke_probe(term: str) -> tuple[tuple[int, ...], bool]:
+    angabe = GraphAngabe(term=term)
+    bild = _bild(graph_zeichnen(angabe).png)
+    # x=2 -> y=4 for (x^2-4)/(x-2); pixel row of y=4 in the plot area
+    links, unten, breite, hoehe = FLAECHE
+    zeile = int((1 - (unten + hoehe * (4 - angabe.y_min) / (angabe.y_max - angabe.y_min))) * HOEHE)
+    mitte = bild.getpixel((spalte_von(angabe, 2.0), zeile))
+    ring = any(
+        _graphfarbe(bild.getpixel((spalte_von(angabe, 2.0) + dx, zeile + dy)))
+        for dx in range(-8, 9) for dy in range(-8, 9) if 4 <= (dx * dx + dy * dy) ** 0.5 <= 8
+    )
+    return mitte, ring
+
+
+def test_hebbare_luecke_ist_hohler_kreis() -> None:
+    mitte, ring = _luecke_probe("(x^2-4)/(x-2)")
+    assert mitte[:3] == (255, 255, 255)
+    assert ring
+
+
+def test_ohne_luecke_kein_kreis() -> None:
+    for term in ("x+2", "1/(x-1)"):
+        mitte, _ring = _luecke_probe(term)
+        # the line (x+2) passes through; no white centre. For the pole the spot is empty background.
+        assert not (term == "x+2" and mitte[:3] == (255, 255, 255))
+    assert graph_zeichnen(GraphAngabe(term="(x^2-4)/(x-2)")).png == graph_zeichnen(GraphAngabe(term="(x^2-4)/(x-2)")).png
 
 
 def test_tangens_und_wurzel_zeichnen_ohne_absturz() -> None:

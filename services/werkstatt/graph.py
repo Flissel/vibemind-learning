@@ -73,6 +73,34 @@ try:
                 return s
         return 1000
 
+    def luecken(ausdruck, a):
+        # Removable gaps: real x0 in the window where the denominator is 0 but the cancelled
+        # term is finite there. Returns [(x0, y0)] sorted; any trouble means no gaps.
+        try:
+            nenner = sympy.fraction(sympy.together(ausdruck))[1]
+            if X not in nenner.free_symbols:
+                return []
+            poly = sympy.Poly(nenner, X)
+            if poly.degree() > 8:
+                return []
+            gekuerzt = sympy.cancel(ausdruck)
+            rest = sympy.fraction(gekuerzt)[1]
+            gefunden = []
+            for wurzel in sympy.real_roots(poly):
+                x0 = float(wurzel)
+                if not (a["x_min"] <= x0 <= a["x_max"]):
+                    continue
+                if rest.subs(X, wurzel) == 0:
+                    continue
+                y0 = complex(sympy.N(gekuerzt.subs(X, wurzel)))
+                if abs(y0.imag) > 1e-9 or not np.isfinite(y0.real):
+                    continue
+                if a["y_min"] <= y0.real <= a["y_max"]:
+                    gefunden.append((x0, float(y0.real)))
+            return sorted(set(gefunden))[:20]
+        except Exception:
+            return []
+
     def werte(a):
         ausdruck = lesen(a["term"])
         if not isinstance(ausdruck, sympy.Expr) or not ausdruck.free_symbols <= {X}:
@@ -96,9 +124,9 @@ try:
             if not sichtbar.any():
                 antwort(fehler="nicht_sichtbar")
             ys = np.clip(ys, a["y_min"] - spanne, a["y_max"] + spanne)
-        return xs, ys
+        return xs, ys, luecken(ausdruck, a)
 
-    def zeichnen(a, xs, ys):
+    def zeichnen(a, xs, ys, offen):
         fig = Figure(figsize=(BREITE / 100, HOEHE / 100), dpi=100, facecolor="white")
         FigureCanvasAgg(fig)
         ax = fig.add_axes(FLAECHE)
@@ -124,6 +152,10 @@ try:
         ax.yaxis.set_major_formatter(ohne_null)
         ax.tick_params(labelsize=7, length=3, colors="#333333")
         ax.plot(xs, ys, color=FARBE, linewidth=2)
+        for x0, y0 in offen:
+            # ~5 px radius at 100 dpi, white inside, ring in the graph colour
+            ax.plot([x0], [y0], "o", markersize=7.2, markerfacecolor="white",
+                    markeredgecolor=FARBE, markeredgewidth=1.5, zorder=5)
         puffer = io.BytesIO()
         fig.savefig(puffer, format="png", dpi=100, facecolor="white", metadata={"Software": None})
         return base64.b64encode(puffer.getvalue()).decode("ascii")
