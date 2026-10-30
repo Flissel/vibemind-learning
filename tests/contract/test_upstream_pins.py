@@ -19,8 +19,8 @@ EXPECTED = {
         "url": "https://github.com/Flissel/learnhouse.git",
         "upstream": "https://github.com/learnhouse/learnhouse.git",
         # vibemind/learning: the Learning extension rescued from the running image (25.10.);
-        # the old pin 1363478 existed in no branch of the fork.
-        "commit": "7a6e6b5f7c5c0f328729d96bfb1d1df8d4851d4f",
+        # the old pin 1363478 existed in no branch of the fork. 30.10.: the fork live on the VM.
+        "commit": "25ed16b73cf711d01e24f06f19e6ffbba3f8b69b",
         "license": "AGPL-3.0-only",
     },
     "penecho": {
