@@ -45,6 +45,7 @@ from spaces.learning.services.course_factory.practice_catalog import (
 from spaces.learning.services.lernsequenz.aus_struktur import _media_available, _random_ids
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
+from spaces.learning.services.werkstatt.belege import belege_auswaehlen
 from spaces.learning.services.werkstatt.graph import GraphFehler, graphen_zeichnen
 from spaces.learning.services.werkstatt.inhalt import (
     AufgabeInhalt,
@@ -186,7 +187,9 @@ class WerkstattKatalog:
         for i, (eintrag, inhalt) in enumerate(inhalte):
             key = eintrag["aufgaben_key"]
             item_id = _stable_id(course_id, course_revision, "item", key)
-            cited = list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
+            cited = belege_auswaehlen(
+                list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
+            )
             item_type, erwartet, config, rubrik = _item_felder(
                 item_id, inhalt, (graph_bilder or {}).get(i), mathe=mathe
             )

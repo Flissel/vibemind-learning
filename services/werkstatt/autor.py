@@ -17,6 +17,7 @@ from spaces.learning.services.course_factory.model_gateway import (
     ModelInvocation,
 )
 from spaces.learning.services.course_factory.verification import SourceSnapshot
+from spaces.learning.services.werkstatt.belege import nur_ueberschrift
 from spaces.learning.services.werkstatt.inhalt import AufgabeInhalt, Fach, Grobentwurf
 from spaces.learning.services.werkstatt.pruefung import (
     Befund,
@@ -67,16 +68,6 @@ def _rolle(basis: str, fach: Fach) -> str:
     return f"{basis}_mathe" if fach == "mathe" else basis
 
 
-def _normal(text: object) -> str:
-    return " ".join(str(text or "").split()).casefold()
-
-
-def _nur_ueberschrift(content: object, heading: object) -> bool:
-    """True if a chunk's text is empty or just its own heading (optionally with Markdown #)."""
-    text = _normal(str(content or "").strip().lstrip("#"))
-    return not text or text == _normal(heading)
-
-
 def _fuer_modell(keyed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What the model sees of each chunk: its key, heading and text. Ids, hashes and
     coordinates stay on the server (keys are resolved there); they were most of the payload."""
@@ -84,7 +75,7 @@ def _fuer_modell(keyed: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for ref in keyed:
         locator = ref.get("locator")
         heading = locator.get("heading") if isinstance(locator, dict) else None
-        if "content" in ref and _nur_ueberschrift(ref["content"], heading):
+        if "content" in ref and nur_ueberschrift(ref["content"], heading):
             continue  # nothing to cite; keys of the others stay as assigned over the full catalog
         eintrag: dict[str, Any] = {"key": ref["key"]}
         if heading:

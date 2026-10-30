@@ -917,3 +917,34 @@ def test_skizze_mit_aufgeloester_quelle_bekommt_source_refs(tmp_path):
     WerkstattKatalog(factory).projizieren(COURSE, 1, [_eintrag("skizze", inhalt)], None, fach="mathe")
     refs = _items(factory, 1)["skizze"].scoring_config["source_refs"]
     assert len(refs) == 1 and chunk in refs[0]
+
+
+def _beleg(heading: str, content: str) -> str:
+    import json
+
+    return json.dumps({"locator": {"heading": heading}, "content": content})
+
+
+def test_belege_ohne_ueberschriften_und_dubletten_hoechstens_vier() -> None:
+    from spaces.learning.services.werkstatt.belege import belege_auswaehlen
+
+    refs = [
+        _beleg("Kopf", "# Kopf"),
+        _beleg("A", "Text A eins"),
+        _beleg("A", "Text A zwei"),
+        *[_beleg(f"H{i}", f"Text {i}") for i in range(5)],
+    ]
+    out = belege_auswaehlen(refs)
+    import json
+
+    headings = [json.loads(r)["locator"]["heading"] for r in out]
+    assert headings == ["A", "H0", "H1", "H2"]
+    assert refs[1] in out and refs[2] not in out
+
+
+def test_belege_nur_ueberschriften_behalten_den_ersten() -> None:
+    from spaces.learning.services.werkstatt.belege import belege_auswaehlen
+
+    refs = [_beleg("K1", "K1"), _beleg("K2", "## K2")]
+    assert belege_auswaehlen(refs) == refs[:1]
+    assert belege_auswaehlen([]) == []
