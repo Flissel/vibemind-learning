@@ -461,3 +461,55 @@ def test_open_response_uses_rubric_boundary_for_mastery_or_review(
     assert reviews == (0 if accepted else 1)
     assert evidence == (1 if accepted else 0)
     engine.dispose()
+
+
+def test_partial_rubric_answer_returns_feedback_per_criterion(tmp_path: Path) -> None:
+    engine, factory, course_id = _open_item_store(tmp_path)
+    service = AdaptiveSessionService(
+        factory, clock=lambda: NOW, rubric_evaluator=_RubricStub(accepted=True)
+    )
+    turn = service.start(
+        SessionStartCommand(
+            course_id=course_id, course_revision=1, actor_id="crit-1",
+            mode="training", blueprint={"max_attempts": 2},
+        )
+    )
+    answered = service.answer(
+        AnswerCommand(
+            session_id=turn.session_id, actor_id="crit-1",
+            expected_session_revision=turn.session_revision,
+            answer={"text": "Teilweise richtig."},
+        )
+    )
+    assert answered.feedback is not None
+    assert len(answered.feedback.criteria) == 1
+    crit = answered.feedback.criteria[0]
+    assert crit.criterion_id == "authority"
+    assert crit.description == "Uses the authorized execution path."
+    assert crit.score == pytest.approx(0.8)
+    assert crit.feedback == "Die Antwort nutzt den autorisierten Pfad."
+    assert answered.feedback.model_dump(mode="json")["criteria"][0]["criterion_id"] == "authority"
+    # The feedback is not persisted: a resumed session shows the next task, no feedback.
+    resumed = service.resume(course_id=course_id, course_revision=1, actor_id="crit-1")
+    assert resumed is not None and resumed.feedback is None
+    engine.dispose()
+
+
+def test_deterministic_answer_has_no_criteria(adaptive_session_store) -> None:
+    _, course_id, _ = adaptive_session_store
+    service = _service(adaptive_session_store)
+    turn = service.start(
+        SessionStartCommand(
+            course_id=course_id, course_revision=1, actor_id="crit-2",
+            mode="training", blueprint={"max_attempts": 2},
+        )
+    )
+    answered = service.answer(
+        AnswerCommand(
+            session_id=turn.session_id, actor_id="crit-2",
+            expected_session_revision=turn.session_revision,
+            answer={"choice_id": _richtig(turn)},
+        )
+    )
+    assert answered.feedback is not None
+    assert answered.feedback.criteria == ()

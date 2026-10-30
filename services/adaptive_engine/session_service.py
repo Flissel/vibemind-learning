@@ -115,6 +115,15 @@ class SessionProgress(BaseModel):
     total: int = Field(ge=1)
 
 
+class CriterionFeedback(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    criterion_id: str
+    description: str
+    score: float = Field(ge=0, le=1)
+    feedback: str = ""
+
+
 class TurnFeedback(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -122,6 +131,9 @@ class TurnFeedback(BaseModel):
     score: float = Field(ge=0, le=1)
     rationale_codes: tuple[str, ...]
     source_refs: tuple[str, ...]
+    # Per-criterion verdicts of rubric types; empty for deterministic types and not
+    # persisted (a resumed session carries no feedback at all).
+    criteria: tuple[CriterionFeedback, ...] = ()
 
 
 class AuditReceipt(BaseModel):
@@ -170,6 +182,7 @@ class _AnswerAudit:
     response_id: str
     evaluation_id: str
     mastery_applied: bool
+    criteria: tuple[CriterionFeedback, ...] = ()
 
 
 class AdaptiveSessionService:
@@ -295,7 +308,7 @@ class AdaptiveSessionService:
                 self._append_next(db, row, self._catalog(db, row.course_id, row.course_revision))
             db.flush()
             feedback = (
-                self._feedback(evaluation)
+                self._feedback(evaluation, audit.criteria)
                 if row.mode == "training"
                 else None
             )
@@ -649,7 +662,21 @@ class AdaptiveSessionService:
             evaluation=evaluation,
             successful=decision.accepted and decision.score >= 0.65,
         )
-        return evaluation, _AnswerAudit(response.id, evaluation.id, applied)
+        points = {value.criterion_id: value for value in criteria}
+        shown: list[CriterionFeedback] = []
+        for result in decision.criterion_results:
+            known = points.get(result.criterion_id)
+            if known is None:
+                continue
+            shown.append(
+                CriterionFeedback(
+                    criterion_id=known.criterion_id,
+                    description=known.description,
+                    score=min(1.0, max(0.0, result.awarded_points / known.points)),
+                    feedback=result.feedback,
+                )
+            )
+        return evaluation, _AnswerAudit(response.id, evaluation.id, applied, tuple(shown))
 
     def _apply_mastery_and_review(
         self,
@@ -1230,7 +1257,10 @@ class AdaptiveSessionService:
         return {key: value for key, value in raw.items() if key in allowed}
 
     @staticmethod
-    def _feedback(evaluation: LearningEvaluation) -> TurnFeedback:
+    def _feedback(
+        evaluation: LearningEvaluation,
+        criteria: tuple[CriterionFeedback, ...] = (),
+    ) -> TurnFeedback:
         state = (
             "needs_review"
             if not evaluation.accepted
@@ -1245,6 +1275,7 @@ class AdaptiveSessionService:
             score=evaluation.score,
             rationale_codes=tuple(evaluation.rationale_codes),
             source_refs=tuple(evaluation.source_refs),
+            criteria=criteria,
         )
 
     @staticmethod
