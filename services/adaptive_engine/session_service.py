@@ -664,7 +664,8 @@ class AdaptiveSessionService:
         )
         points = {value.criterion_id: value for value in criteria}
         shown: list[CriterionFeedback] = []
-        for result in decision.criterion_results:
+        # Unaccepted decisions go to human review; their per-criterion text is ungrounded.
+        for result in (decision.criterion_results if decision.accepted else ()):
             known = points.get(result.criterion_id)
             if known is None:
                 continue
@@ -1259,7 +1260,7 @@ class AdaptiveSessionService:
     @staticmethod
     def _feedback(
         evaluation: LearningEvaluation,
-        criteria: tuple[CriterionFeedback, ...] = (),
+        criteria: tuple[CriterionFeedback, ...],
     ) -> TurnFeedback:
         state = (
             "needs_review"
