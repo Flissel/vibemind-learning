@@ -513,3 +513,27 @@ def test_deterministic_answer_has_no_criteria(adaptive_session_store) -> None:
     )
     assert answered.feedback is not None
     assert answered.feedback.criteria == ()
+
+
+def test_unaccepted_rubric_answer_hides_criteria(tmp_path: Path) -> None:
+    engine, factory, course_id = _open_item_store(tmp_path)
+    service = AdaptiveSessionService(
+        factory, clock=lambda: NOW, rubric_evaluator=_RubricStub(accepted=False)
+    )
+    turn = service.start(
+        SessionStartCommand(
+            course_id=course_id, course_revision=1, actor_id="crit-3",
+            mode="training", blueprint={"max_attempts": 2},
+        )
+    )
+    answered = service.answer(
+        AnswerCommand(
+            session_id=turn.session_id, actor_id="crit-3",
+            expected_session_revision=turn.session_revision,
+            answer={"text": "Unsicher."},
+        )
+    )
+    assert answered.feedback is not None
+    assert answered.feedback.state == "needs_review"
+    assert answered.feedback.criteria == ()
+    engine.dispose()
