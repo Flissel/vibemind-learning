@@ -56,6 +56,9 @@ _DETERMINISTIC_TYPES = frozenset(
     {"single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"}
 )
 _RUBRIC_TYPES = frozenset({"open", "case", "code"})
+# From this best score an item counts as solved for selection (a sketch graded 0.97 must
+# not be re-served). Feedback bands in _feedback stay at 0.999 / 0.65.
+_SOLVED_SCORE = 0.9
 
 
 class SessionRubricBoundary(Protocol):
@@ -941,7 +944,7 @@ class AdaptiveSessionService:
                 select(LearningAttempt.item_id)
                 .join(LearningResponse, LearningResponse.attempt_id == LearningAttempt.id)
                 .join(LearningEvaluation, LearningEvaluation.response_id == LearningResponse.id)
-                .where(LearningAttempt.session_id == session_id, LearningEvaluation.score >= 0.999)
+                .where(LearningAttempt.session_id == session_id, LearningEvaluation.score >= _SOLVED_SCORE)
             ).all()
         )
 
