@@ -51,7 +51,7 @@ def test_result_shows_description_not_id() -> None:
         "session": {"feedback": {"criteria": [
             {"criterion_id": "r1", "description": "Parabel nach oben offen", "score": 1.0, "feedback": "ok"}]}},
     }
-    bewertung = {"criteria": [
+    bewertung = {"accepted": True, "criteria": [
         {"criterion_id": "r1", "score": 1.0, "feedback": "Gut gezeichnet."},
         {"criterion_id": "r2", "score": 0.0, "feedback": "Fehlt."},
     ]}
@@ -99,13 +99,13 @@ def test_canvas_box_ratio_equals_drawing_ratio_so_nothing_is_stretched() -> None
     code = m.group(0) + ";console.log(JSON.stringify([hoehe(360,800),hoehe(1000,900),hoehe(300,100000)]))"
     out = subprocess.run([node, "-e", code], capture_output=True, text=True, check=True).stdout
     tall, desktop, cap = __import__("json").loads(out)
-    # 360x800 phone: box 360 wide, 60 % of 800 = 480 high; drawing 1000 x tall has the same ratio.
-    assert abs(tall / 1000 - 480 / 360) < 0.01
+    # 360x800 phone: box 360 wide, 45 % of 800 = 360 high; drawing 1000 x tall has the same ratio.
+    assert abs(tall / 1000 - 360 / 360) < 0.01
     assert desktop == 620 and cap == 3000
 
 
 def test_math_task_and_criteria_become_plain_text_everywhere() -> None:
-    bewertung = {"criteria": [{"criterion_id": "r1", "score": 1.0, "feedback": "Der Scheitel liegt bei $x^2$."}]}
+    bewertung = {"accepted": True, "criteria": [{"criterion_id": "r1", "score": 1.0, "feedback": "Der Scheitel liegt bei $x^2$."}]}
     ergebnis = {"session": {"feedback": {"criteria": [
         {"criterion_id": "r1", "description": "Parabel $x^2$ offen", "score": 1.0, "feedback": ""}]}}}
     roh = kriterien_anzeige(bewertung, ergebnis)[0]
@@ -120,3 +120,19 @@ def test_claw_page_gets_math_flag_and_umlaut_errors() -> None:
     with pytest.raises(ZeichnungAbgelehnt) as fehler:
         objekte_aus_strichen("x")
     assert fehler.value.grund == "Die Zeichnung ist ungültig oder zu groß."
+
+
+def test_criteria_are_hidden_while_the_evaluation_is_not_accepted() -> None:
+    ergebnis = {"session": {"feedback": {"criteria": []}}}
+    kriterien = [{"criterion_id": "r1", "score": 1.0, "feedback": "Gut."}]
+    assert kriterien_anzeige({"accepted": False, "criteria": kriterien}, ergebnis) == []
+    assert kriterien_anzeige({"criteria": kriterien}, ergebnis) == []
+    assert len(kriterien_anzeige({"accepted": True, "criteria": kriterien}, ergebnis)) == 1
+
+
+def test_toolbar_wraps_and_submit_sits_above_the_canvas() -> None:
+    seite = _seite()
+    css = re.search(r"\.leiste\{([^}]*)\}", seite).group(1)
+    assert "flex-wrap:wrap" in css and "nowrap" not in css and "overflow-x" not in css
+    leiste = seite[seite.index('class="leiste"'):seite.index("<canvas")]
+    assert 'id="abgeben"' in leiste

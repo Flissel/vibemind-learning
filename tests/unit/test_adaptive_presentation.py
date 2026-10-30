@@ -38,3 +38,10 @@ def test_an_image_fill_in_shows_picture_and_boxes_but_no_answer() -> None:
         "answers": ["install.ps1"],
     }))
     assert set(shown) == {"image", "width", "height", "shell", "rect", "more"}
+
+
+def test_the_learner_sees_the_filtered_refs_while_grading_keeps_all() -> None:
+    mit = SimpleNamespace(scoring_config={"source_refs": ["a", "b", "c"], "anzeige_refs": ["a"]})
+    ohne = SimpleNamespace(scoring_config={"source_refs": ["a", "b"]})
+    assert AdaptiveSessionService._anzeige_refs(mit) == ("a",)
+    assert AdaptiveSessionService._anzeige_refs(ohne) == ("a", "b")

@@ -1208,9 +1208,17 @@ class AdaptiveSessionService:
             options=tuple(options),
             difficulty=item.difficulty,
             representation=cls._representation(item),
-            source_refs=cls._string_list(item.scoring_config.get("source_refs", [])),
+            source_refs=cls._anzeige_refs(item),
             presentation=presentation,
         )
+
+    @classmethod
+    def _anzeige_refs(cls, item: AdaptiveItem) -> tuple[str, ...]:
+        """What the learner is shown: the filtered refs when the item has them, else all.
+
+        Grading reads `source_refs` directly and always sees every source."""
+        config = item.scoring_config
+        return cls._string_list(config["anzeige_refs"] if "anzeige_refs" in config else config.get("source_refs", []))
 
     @staticmethod
     def _options(item: AdaptiveItem) -> tuple[ChoiceOption, ...]:

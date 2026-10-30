@@ -715,7 +715,7 @@ def test_terminal_luecke_bleibt_unveraendert(tmp_path):
     WerkstattKatalog(factory).projizieren(COURSE, 3, [_eintrag("luecke", _luecke(shell=None))], None)
     (item,) = _items(factory, 3).values()
     assert item.scoring_config == {
-        "source_refs": [], "hints": [], "options": [],
+        "source_refs": [], "anzeige_refs": [], "hints": [], "options": [],
         "prompt": "Ergänzen Sie den Befehl, der den Ordner wechselt.",
         "presentation": {"template": "{{befehl}} Dokumente", "shell": None},
     }
@@ -948,3 +948,23 @@ def test_belege_nur_ueberschriften_behalten_den_ersten() -> None:
     refs = [_beleg("K1", "K1"), _beleg("K2", "## K2")]
     assert belege_auswaehlen(refs) == refs[:1]
     assert belege_auswaehlen([]) == []
+
+
+def _beleg_ref(heading, content):
+    import json
+
+    return json.dumps({"locator": {"heading": heading}, "content": content})
+
+
+def test_belegfilter_kuerzt_nur_die_anzeige_nicht_die_bewertungsquellen(tmp_path, monkeypatch):
+    refs = [_beleg_ref("Gleich", f"Text {i}") for i in range(3)]
+    monkeypatch.setattr(
+        WerkstattKatalog, "_quellen",
+        staticmethod(lambda session, course_id, inhalte: {f"z{i}": r for i, r in enumerate(refs)}),
+    )
+    factory = _factory(tmp_path)
+    inhalt = {**_skizze(), "citation_ids": ["z0", "z1", "z2"]}
+    WerkstattKatalog(factory).projizieren(COURSE, 1, [_eintrag("skizze", inhalt)], None)
+    config = _items(factory, 1)["skizze"].scoring_config
+    assert len(config["source_refs"]) == 3 and len(config["anzeige_refs"]) == 1
+    assert config["anzeige_refs"][0] in refs and len(config["hints"]) == 1

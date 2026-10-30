@@ -427,7 +427,7 @@ def _kapitel_aus_manifest(
         )["eintraege"]
         if inhalt.lektion is not None:
             eintraege.append({
-                "key": m["lektion_key"], "art": "lesson", "titel": inhalt.lektion.title,
+                "key": m["lektion_key"], "art": "lesson", "titel": klartext(inhalt.lektion.title) if mathe else inhalt.lektion.title,
                 "markdown": inhalt.lektion.body,
                 "claims": [c.text for c in inhalt.lektion.claims],
             })

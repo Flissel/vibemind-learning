@@ -187,14 +187,15 @@ class WerkstattKatalog:
         for i, (eintrag, inhalt) in enumerate(inhalte):
             key = eintrag["aufgaben_key"]
             item_id = _stable_id(course_id, course_revision, "item", key)
-            cited = belege_auswaehlen(
-                list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
-            )
+            alle = list(dict.fromkeys(refs[c] for c in inhalt.citation_ids if c in refs))
+            # The grader gets every source; only the learner's view and the hints are filtered.
+            cited = belege_auswaehlen(alle)
             item_type, erwartet, config, rubrik = _item_felder(
                 item_id, inhalt, (graph_bilder or {}).get(i), mathe=mathe
             )
             scoring_config: dict[str, Any] = {
-                "source_refs": cited, "hints": _section_hints(cited), "options": [],
+                "source_refs": alle, "anzeige_refs": cited,
+                "hints": _section_hints(cited, mathe=mathe), "options": [],
                 "presentation": {}, **config,
             }
             if mathe:

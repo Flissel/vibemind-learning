@@ -356,3 +356,18 @@ async def test_neu_ausliefern_blockiert_weiter_bei_befund(tmp_path):
     with pytest.raises(ValueError, match="freigabe_blockiert"):
         await freigabe_ausfuehren(s, gw, neu["freigabe_id"], approval_ref="k2", learnhouse_revision=2)
     assert len(gw.aufrufe) == 1
+
+
+def test_lektionstitel_wird_im_mathe_kurs_zu_klartext() -> None:
+    from types import SimpleNamespace
+
+    from spaces.learning.services.werkstatt.freigabe import _kapitel_aus_manifest
+    from spaces.learning.tests.unit.test_werkstatt_pruefung import lektion, quiz
+
+    store = SimpleNamespace(fassungen=lambda task_id: [
+        {"number": 1, "content": quiz(lektion=lektion(title="Die Ableitung $f'$"))}])
+    manifest = [{"position": 0, "kapitel": "K", "task_id": "t", "fassung": 1,
+                 "lektion_key": "l", "aufgaben_key": "a"}]
+    mathe = _kapitel_aus_manifest(store, manifest, mathe=True)[0]["eintraege"][0]["titel"]
+    terminal = _kapitel_aus_manifest(store, manifest)[0]["eintraege"][0]["titel"]
+    assert mathe == "Die Ableitung f'" and terminal == "Die Ableitung $f'$"

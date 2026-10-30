@@ -183,7 +183,7 @@ def _scaled(rubric: list[dict[str, object]], total: int = 100) -> list[dict[str,
     return [{**criterion, "points": value} for criterion, value in zip(rubric, floors)]
 
 
-def _section_hints(refs: list[str]) -> list[str]:
+def _section_hints(refs: list[str], *, mathe: bool = False) -> list[str]:
     """Point to the cited section; never the answer, no model call."""
     headings: list[str] = []
     for ref in refs:
@@ -193,7 +193,11 @@ def _section_hints(refs: list[str]) -> list[str]:
             continue
         if isinstance(heading, str) and heading.strip() and heading not in headings:
             headings.append(heading.strip())
-    return [f"Lies noch einmal den Abschnitt „{heading}“ in der Unterlage." for heading in headings]
+    if mathe:
+        from spaces.learning.services.werkstatt.formeltext import klartext
+
+        headings = [klartext(heading) for heading in headings]
+    return [f"Lesen Sie den Abschnitt „{heading}“ noch einmal." for heading in headings]
 
 
 def _source_refs(session: Session, draft: CourseDraft) -> dict[str, str]:

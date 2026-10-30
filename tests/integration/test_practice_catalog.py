@@ -145,7 +145,7 @@ def test_items_carry_a_section_hint_the_engine_serves(factory, monkeypatch) -> N
         )
     )
     hint = service.hint(turn.session_id, actor_id="local-owner")
-    assert hint == "Lies noch einmal den Abschnitt „Vor der Arbeit“ in der Unterlage."
+    assert hint == "Lesen Sie den Abschnitt „Vor der Arbeit“ noch einmal."
 
 
 @pytest.mark.parametrize(
@@ -342,3 +342,15 @@ def test_rubric_points_are_scaled_to_one_hundred(factory) -> None:
     with factory() as session:
         item = session.scalar(select(AdaptiveItem).where(AdaptiveItem.course_id == course_id, AdaptiveItem.item_type == "case"))
     assert [c["points"] for c in item.rubric] == [40, 60]
+
+
+def test_hints_address_the_learner_with_sie_and_math_headings_lose_latex() -> None:
+    import json
+
+    from spaces.learning.services.course_factory.practice_catalog import _section_hints
+
+    ref = json.dumps({"locator": {"heading": "Die Ableitung $f'$"}})
+    roh = _section_hints([ref])[0]
+    klar = _section_hints([ref], mathe=True)[0]
+    assert roh.startswith("Lesen Sie den Abschnitt") and roh.endswith("noch einmal.") and "Lies" not in roh
+    assert "$" in roh and "$" not in klar and "f'" in klar

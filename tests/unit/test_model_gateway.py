@@ -762,3 +762,7 @@ def test_werkstatt_aufgabe_prompt_v2_verbietet_schluessel_im_text() -> None:
     text = ROLE_PROMPTS["werkstatt_aufgabe"]
     for teil in ("powershell, cmd or bash", "never write source keys", "at least one source key", "never announces"):
         assert teil in text
+
+
+def test_learning_tutor_always_addresses_the_learner_with_sie() -> None:
+    assert "always address the learner with 'Sie'" in ROLE_PROMPTS["learning_tutor"]

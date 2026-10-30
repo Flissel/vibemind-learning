@@ -36,20 +36,21 @@ def flaeche_html(aufgabe: str, *, mathe: bool = False) -> str:
         '<button type="button" id="radierer">Radierer</button>'
         '<button type="button" id="zurueck">Rückgängig</button>'
         '<button type="button" id="leeren">Leeren</button>'
-        '<button type="button" id="hinweis">Hinweis</button></div>'
+        '<button type="button" id="hinweis">Hinweis</button>'
+        '<button type="button" id="abgeben" class="abgeben">Abgeben</button></div>'
+        '<p id="status"></p>'
         '<p id="hinweistext" class="hinweistext"></p>'
         '<canvas id="flaeche" width="1000" height="620"></canvas>'
-        '<p><button type="button" id="abgeben" class="abgeben">Abgeben</button> '
-        '<span id="status"></span></p><div id="ergebnis"></div>'
+        '<div id="ergebnis"></div>'
     )
 
 
 SKRIPT = r"""
 const c = document.getElementById('flaeche'), g = c.getContext('2d');
 const striche = []; let aktiv = null, farbe = '#111111', radierer = false;
-// Keep the drawing coordinates isotropic: the box is as high as 60 % of the window at its
+// Keep the drawing coordinates isotropic: the box is as high as 45 % of the window at its
 // CSS width, and the internal height follows (height:auto keeps the same ratio, no stretch).
-function hoehe(breite, fenster){ return Math.min(3000, Math.max(620, Math.round(1000 * fenster * 0.6 / Math.max(breite, 1)))); }
+function hoehe(breite, fenster){ return Math.min(3000, Math.max(620, Math.round(1000 * fenster * 0.45 / Math.max(breite, 1)))); }
 c.height = hoehe(c.clientWidth || 1000, window.innerHeight || 0);
 function weiss(){ g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); }
 function zeichne(s){ if (s.punkte.length < 1) return; g.strokeStyle = s.farbe; g.lineWidth = s.breite;
@@ -115,8 +116,8 @@ def seite_html(titel: str, inhalt: str, *, nonce: str, skript: bool = False) -> 
         ".aufgabe{font-size:1.05rem;margin:.3rem 0;display:-webkit-box;-webkit-box-orient:vertical;"
         "-webkit-line-clamp:6;line-clamp:6;overflow:hidden}.aufgabe.offen{display:block;-webkit-line-clamp:unset}"
         ".mehr{margin:0 0 .3rem}"
-        ".leiste{display:flex;gap:.4rem;align-items:center;flex-wrap:nowrap;overflow-x:auto;margin:.3rem 0}"
-        ".leiste button,.leiste label{white-space:nowrap;flex:none}"
+        ".leiste{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.3rem 0}"
+        ".leiste button,.leiste label{white-space:nowrap}"
         ".farbe{width:1.6rem;height:1.6rem;border:2px solid #888;border-radius:50%;cursor:pointer}"
         "canvas{border:1px solid #999;width:100%;height:auto;touch-action:none;background:#fff}"
         ".abgeben{font-size:1.1rem;padding:.5rem 1.5rem}.hinweistext{background:#f4f4ee;padding:.4rem .6rem}"
@@ -136,6 +137,9 @@ def kriterien_anzeige(bewertung: dict, ergebnis: dict, *, mathe: bool = False) -
         str(k.get("criterion_id")): str(k.get("description") or "")
         for k in feedback if isinstance(k, dict)
     }
+    if bewertung.get("accepted") is not True:
+        # An unaccepted evaluation is not shown: no fallback "Kriterium N" rows either.
+        return []
     umschreiben = _klartext if mathe else (lambda text: text)
     zeilen = []
     for nummer, c in enumerate(bewertung.get("criteria") or [], start=1):
