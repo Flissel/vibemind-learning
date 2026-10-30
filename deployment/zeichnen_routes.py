@@ -21,7 +21,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from spaces.learning.claw.zeichnung import ZeichnungAbgelehnt, objekte_aus_strichen
-from spaces.learning.services.zeichnen.flaeche import flaeche_html, seite_html
+from spaces.learning.services.zeichnen.flaeche import flaeche_html, kriterien_anzeige, seite_html
 from spaces.learning.services.zeichnen.link import DrawingGrant, read_drawing_token
 
 MCP_URL_ENV = "LEARNING_MCP_URL"
@@ -112,7 +112,7 @@ def _task_prompt(grant: DrawingGrant) -> str:
 def page(token: str) -> HTMLResponse:
     grant = _grant(token)
     if grant is None:
-        return _page(404, "Nicht gefunden", "<p>Dieser Zeichenlink ist ungueltig oder abgelaufen.</p>")
+        return _page(404, "Nicht gefunden", "<p>Dieser Zeichenlink ist ungültig oder abgelaufen.</p>")
     task = _task(grant)
     presentation = task.get("presentation")
     mathe = isinstance(presentation, dict) and presentation.get("math") is True
@@ -123,16 +123,16 @@ def page(token: str) -> HTMLResponse:
 def hint(token: str, request: Request) -> JSONResponse:
     grant = _grant(token)
     if grant is None:
-        return _json(404, {"ok": False, "fehler": "Dieser Zeichenlink ist ungueltig oder abgelaufen."})
+        return _json(404, {"ok": False, "fehler": "Dieser Zeichenlink ist ungültig oder abgelaufen."})
     if not _same_origin(request):
         return _json(403, {"ok": False, "fehler": "Hinweis nur von dieser Seite aus."})
     answer = _mcp("learning_hint_request", grant, payload={"task_id": grant.activity_id})
     if not answer["ok"]:
         fehler = answer["fehler"]
-        return _json(409, {"ok": False, "fehler": "Im Pruefungsmodus gibt es keine Hinweise." if "exam" in fehler else fehler})
+        return _json(409, {"ok": False, "fehler": "Im Prüfungsmodus gibt es keine Hinweise." if "exam" in fehler else fehler})
     text = answer["ergebnis"].get("hint")
     if not isinstance(text, str) or not text:
-        return _json(409, {"ok": False, "fehler": "Kein Hinweis verfuegbar."})
+        return _json(409, {"ok": False, "fehler": "Kein Hinweis verfügbar."})
     return _json(200, {"ok": True, "hinweis": text})
 
 
@@ -140,7 +140,7 @@ def hint(token: str, request: Request) -> JSONResponse:
 def submit(token: str, request: Request, payload: Annotated[dict[str, Any], Body()]) -> JSONResponse:
     grant = _grant(token)
     if grant is None:
-        return _json(404, {"ok": False, "fehler": "Dieser Zeichenlink ist ungueltig oder abgelaufen."})
+        return _json(404, {"ok": False, "fehler": "Dieser Zeichenlink ist ungültig oder abgelaufen."})
     if not _same_origin(request):
         return _json(403, {"ok": False, "fehler": "Abgabe nur von dieser Seite aus."})
     png = payload.get("png")
@@ -151,7 +151,7 @@ def submit(token: str, request: Request, payload: Annotated[dict[str, Any], Body
     except ZeichnungAbgelehnt as error:
         return _json(400, {"ok": False, "fehler": error.grund})
     if not objekte:
-        return _json(400, {"ok": False, "fehler": "Die Zeichenflaeche ist leer."})
+        return _json(400, {"ok": False, "fehler": "Die Zeichenfläche ist leer."})
     ergebnis = _abgeben(grant, png.removeprefix("data:image/png;base64,"), objekte)
     return _json(200 if ergebnis.get("ok") else 409, ergebnis)
 
@@ -191,11 +191,8 @@ def _abgeben(grant: DrawingGrant, png_base64: str, objekte: list[dict[str, Any]]
             "angenommen": bewertung.get("accepted"),
             "hinweis_bewertung": None
             if bewertung.get("accepted")
-            else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prueft "
-            "sie noch; bis dahin wird sie deinem Lernstand nicht angerechnet.",
-            "kriterien": [
-                {"kriterium": c.get("criterion_id"), "punkte": c.get("score"), "rueckmeldung": c.get("feedback")}
-                for c in bewertung.get("criteria") or []
-            ],
+            else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prüft "
+            "sie noch; bis dahin wird sie Ihrem Lernstand nicht angerechnet.",
+            "kriterien": kriterien_anzeige(bewertung, eingereicht["ergebnis"]),
         },
     }

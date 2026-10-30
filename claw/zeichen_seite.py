@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from . import werkzeuge
-from spaces.learning.services.zeichnen.flaeche import SKRIPT, flaeche_html, seite_html
+from spaces.learning.services.zeichnen.flaeche import SKRIPT, flaeche_html, kriterien_anzeige, seite_html
 
 from .zeichnung import ZeichnungAbgelehnt, objekte_aus_strichen
 
@@ -78,7 +78,7 @@ class ZeichenSeite:
             try:
                 zeichnung = werkzeuge._zeichnungen.holen(geheimnis)
             except ZeichnungAbgelehnt as error:
-                await _seite(send, 410, "Nicht mehr gueltig", f"<p>{html.escape(error.grund)}</p>")
+                await _seite(send, 410, "Nicht mehr gültig", f"<p>{html.escape(error.grund)}</p>")
                 return
             await _seite(send, 200, "Zeichenaufgabe", flaeche_html(zeichnung.aufgabe), skript=True)
         elif scope["method"] == "POST":
@@ -87,7 +87,7 @@ class ZeichenSeite:
                 return
             daten = await _koerper(receive)
             if not isinstance(daten, dict):
-                await _json(send, 400, {"ok": False, "fehler": "Die Abgabe ist ungueltig."})
+                await _json(send, 400, {"ok": False, "fehler": "Die Abgabe ist ungültig."})
                 return
             png = daten.get("png")
             if not isinstance(png, str) or not png.startswith("data:image/png;base64,"):
@@ -150,7 +150,7 @@ def _abgeben(geheimnis: str, png_base64: str, striche: object) -> dict[str, Any]
     except ZeichnungAbgelehnt as error:
         return {"ok": False, "fehler": error.grund}
     if not objekte:
-        return {"ok": False, "fehler": "Die Zeichenflaeche ist leer."}
+        return {"ok": False, "fehler": "Die Zeichenfläche ist leer."}
     sid, ref = zeichnung.session_id, zeichnung.session_ref
     offen = werkzeuge._mcp(
         "learning.canvas.open",
@@ -204,13 +204,9 @@ def _abgeben(geheimnis: str, png_base64: str, striche: object) -> dict[str, Any]
             # An unsure or unsupported AI decision goes to human review; say so.
             "hinweis_bewertung": None
             if bewertung.get("accepted")
-            else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prueft "
-            "sie noch; bis dahin wird sie deinem Lernstand nicht angerechnet.",
-            "kriterien": [
-                {"kriterium": c.get("criterion_id"), "punkte": c.get("score"),
-                 "rueckmeldung": c.get("feedback")}
-                for c in bewertung.get("criteria") or []
-            ],
+            else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prüft "
+            "sie noch; bis dahin wird sie Ihrem Lernstand nicht angerechnet.",
+            "kriterien": kriterien_anzeige(bewertung, eingereicht["daten"]["ergebnis"]),
             "evaluation_id": eingereicht["daten"]["ergebnis"].get("evaluation_id"),
         },
     }
@@ -226,9 +222,9 @@ def _hinweis(geheimnis: str) -> dict[str, Any]:
     if not antwort.get("ok"):
         fehler = str(antwort.get("fehler") or "")
         if "exam" in fehler:
-            fehler = "Im Pruefungsmodus gibt es keine Hinweise."
-        return {"ok": False, "fehler": fehler or "Kein Hinweis verfuegbar."}
+            fehler = "Im Prüfungsmodus gibt es keine Hinweise."
+        return {"ok": False, "fehler": fehler or "Kein Hinweis verfügbar."}
     text = (antwort.get("daten") or {}).get("ergebnis", {}).get("hint")
     if not isinstance(text, str) or not text:
-        return {"ok": False, "fehler": "Kein Hinweis verfuegbar."}
+        return {"ok": False, "fehler": "Kein Hinweis verfügbar."}
     return {"ok": True, "hinweis": text}
