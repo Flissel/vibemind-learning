@@ -171,6 +171,9 @@ def _abgeben(grant: DrawingGrant, png_base64: str, objekte: list[dict[str, Any]]
     stand = _mcp("learning_progress_show", grant)
     if not stand["ok"]:
         return stand
+    task = stand["ergebnis"]["session"].get("task") or {}
+    presentation = task.get("presentation") if isinstance(task, dict) else None
+    mathe = isinstance(presentation, dict) and presentation.get("math") is True
     eingereicht = _mcp(
         "learning_canvas_submit", grant, write=True, expected_revision=revision + 1,
         # The person pressed the submit button on this page; that is the confirmation.
@@ -193,6 +196,6 @@ def _abgeben(grant: DrawingGrant, png_base64: str, objekte: list[dict[str, Any]]
             if bewertung.get("accepted")
             else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prüft "
             "sie noch; bis dahin wird sie Ihrem Lernstand nicht angerechnet.",
-            "kriterien": kriterien_anzeige(bewertung, eingereicht["ergebnis"]),
+            "kriterien": kriterien_anzeige(bewertung, eingereicht["ergebnis"], mathe=mathe),
         },
     }

@@ -29,6 +29,7 @@ class Zeichnung:
     activity_id: str
     session_ref: str
     aufgabe: str
+    mathe: bool = False
     erstellt: float = field(default_factory=time.monotonic)
 
 
@@ -80,7 +81,7 @@ def objekte_aus_strichen(striche: object) -> list[dict[str, Any]]:
     artifact its shape and let a hint point at a stroke.
     """
     if not isinstance(striche, list) or len(striche) > _MAX_STROKES:
-        raise ZeichnungAbgelehnt("Die Zeichnung ist ungueltig oder zu gross.")
+        raise ZeichnungAbgelehnt("Die Zeichnung ist ungültig oder zu groß.")
     objekte: list[dict[str, Any]] = []
     punkte_gesamt = 0
     for index, strich in enumerate(striche):
@@ -94,9 +95,9 @@ def objekte_aus_strichen(striche: object) -> list[dict[str, Any]]:
             xs = [float(p[0]) for p in punkte]
             ys = [float(p[1]) for p in punkte]
         except (TypeError, ValueError, IndexError) as error:
-            raise ZeichnungAbgelehnt("Die Zeichnung ist ungueltig.") from error
+            raise ZeichnungAbgelehnt("Die Zeichnung ist ungültig.") from error
         if not all(-1e6 <= v <= 1e6 for v in xs + ys):
-            raise ZeichnungAbgelehnt("Die Zeichnung ist ungueltig.")
+            raise ZeichnungAbgelehnt("Die Zeichnung ist ungültig.")
         objekte.append(
             {
                 "object_id": f"strich-{index + 1}",

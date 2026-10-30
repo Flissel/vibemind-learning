@@ -80,7 +80,7 @@ class ZeichenSeite:
             except ZeichnungAbgelehnt as error:
                 await _seite(send, 410, "Nicht mehr gültig", f"<p>{html.escape(error.grund)}</p>")
                 return
-            await _seite(send, 200, "Zeichenaufgabe", flaeche_html(zeichnung.aufgabe), skript=True)
+            await _seite(send, 200, "Zeichenaufgabe", flaeche_html(zeichnung.aufgabe, mathe=zeichnung.mathe), skript=True)
         elif scope["method"] == "POST":
             if headers.get(b"origin") not in self._origins:
                 await _json(send, 403, {"ok": False, "fehler": "Abgabe nur von dieser Seite aus."})
@@ -206,7 +206,7 @@ def _abgeben(geheimnis: str, png_base64: str, striche: object) -> dict[str, Any]
             if bewertung.get("accepted")
             else "Die KI war sich bei dieser Bewertung nicht sicher genug. Ein Mensch prüft "
             "sie noch; bis dahin wird sie Ihrem Lernstand nicht angerechnet.",
-            "kriterien": kriterien_anzeige(bewertung, eingereicht["daten"]["ergebnis"]),
+            "kriterien": kriterien_anzeige(bewertung, eingereicht["daten"]["ergebnis"], mathe=zeichnung.mathe),
             "evaluation_id": eingereicht["daten"]["ergebnis"].get("evaluation_id"),
         },
     }

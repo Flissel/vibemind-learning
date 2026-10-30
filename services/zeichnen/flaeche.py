@@ -13,6 +13,12 @@ import html
 SUBMITTED_MESSAGE = "learning-zeichnung-abgegeben"
 
 
+def _klartext(text: str) -> str:
+    from spaces.learning.services.werkstatt.formeltext import klartext
+
+    return klartext(text)
+
+
 def flaeche_html(aufgabe: str, *, mathe: bool = False) -> str:
     if mathe:
         from spaces.learning.services.werkstatt.formeltext import klartext
@@ -41,6 +47,10 @@ def flaeche_html(aufgabe: str, *, mathe: bool = False) -> str:
 SKRIPT = r"""
 const c = document.getElementById('flaeche'), g = c.getContext('2d');
 const striche = []; let aktiv = null, farbe = '#111111', radierer = false;
+// Keep the drawing coordinates isotropic: the box is as high as 60 % of the window at its
+// CSS width, and the internal height follows (height:auto keeps the same ratio, no stretch).
+function hoehe(breite, fenster){ return Math.min(3000, Math.max(620, Math.round(1000 * fenster * 0.6 / Math.max(breite, 1)))); }
+c.height = hoehe(c.clientWidth || 1000, window.innerHeight || 0);
 function weiss(){ g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); }
 function zeichne(s){ if (s.punkte.length < 1) return; g.strokeStyle = s.farbe; g.lineWidth = s.breite;
   g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath(); g.moveTo(...s.punkte[0]);
@@ -108,14 +118,14 @@ def seite_html(titel: str, inhalt: str, *, nonce: str, skript: bool = False) -> 
         ".leiste{display:flex;gap:.4rem;align-items:center;flex-wrap:nowrap;overflow-x:auto;margin:.3rem 0}"
         ".leiste button,.leiste label{white-space:nowrap;flex:none}"
         ".farbe{width:1.6rem;height:1.6rem;border:2px solid #888;border-radius:50%;cursor:pointer}"
-        "canvas{border:1px solid #999;width:100%;height:auto;min-height:60vh;touch-action:none;background:#fff}"
+        "canvas{border:1px solid #999;width:100%;height:auto;touch-action:none;background:#fff}"
         ".abgeben{font-size:1.1rem;padding:.5rem 1.5rem}.hinweistext{background:#f4f4ee;padding:.4rem .6rem}"
         ".hinweistext:empty{display:none}</style>"
         f"<body>{kopf}{inhalt}{script}</body></html>"
     ).encode("utf-8")
 
 
-def kriterien_anzeige(bewertung: dict, ergebnis: dict) -> list[dict]:
+def kriterien_anzeige(bewertung: dict, ergebnis: dict, *, mathe: bool = False) -> list[dict]:
     """Per-criterion rows for the result: the rubric description, never the internal id.
 
     ``bewertung`` is the canvas evaluation, ``ergebnis`` the submit result; the
@@ -126,8 +136,14 @@ def kriterien_anzeige(bewertung: dict, ergebnis: dict) -> list[dict]:
         str(k.get("criterion_id")): str(k.get("description") or "")
         for k in feedback if isinstance(k, dict)
     }
+    umschreiben = _klartext if mathe else (lambda text: text)
     zeilen = []
     for nummer, c in enumerate(bewertung.get("criteria") or [], start=1):
         text = beschreibung.get(str(c.get("criterion_id"))) or f"Kriterium {nummer}"
-        zeilen.append({"kriterium": text, "punkte": c.get("score"), "rueckmeldung": c.get("feedback")})
+        rueck = c.get("feedback")
+        zeilen.append({
+            "kriterium": umschreiben(text),
+            "punkte": c.get("score"),
+            "rueckmeldung": umschreiben(rueck) if isinstance(rueck, str) else rueck,
+        })
     return zeilen

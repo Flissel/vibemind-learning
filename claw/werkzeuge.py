@@ -719,13 +719,16 @@ def zeichenaufgabe_oeffnen(session_id: str, activity_id: str) -> dict[str, Any]:
     if not geoeffnet.get("ok"):
         return geoeffnet
     aufgabe = ""
+    mathe = False
     stand = fortschritt(session_id)
     if stand.get("ok"):
         task = (stand["daten"].get("ergebnis", {}).get("session") or {}).get("task") or {}
         aufgabe = str(task.get("prompt") or "")
+        presentation = task.get("presentation")
+        mathe = isinstance(presentation, dict) and presentation.get("math") is True
     geheimnis = _zeichnungen.merken(
         Zeichnung(session_id=session_id, activity_id=activity_id, session_ref=session_ref,
-                  aufgabe=aufgabe)
+                  aufgabe=aufgabe, mathe=mathe)
     )
     offen = _browser_oeffnen(zeichen_link(geheimnis))
     return {
