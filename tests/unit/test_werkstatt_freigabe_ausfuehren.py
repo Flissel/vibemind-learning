@@ -36,6 +36,21 @@ class FakeGateway:
         return {"revision": expected_revision + 1, "aktualisiert": 0, "neu": 2, "unveroeffentlicht": 0}
 
 
+BEWERTUNG = {"titel": "Kurs abschließen", "eintraege": [
+    {"key": "kursbewertung", "art": "bewertung", "titel": "Wie fanden Sie diesen Kurs?"}]}
+
+
+@pytest.mark.asyncio
+async def test_freigabe_endet_mit_kursbewertung(tmp_path):
+    for store, kapitel in ((_mathe_store(tmp_path), "Ableiten: $f'$"), (_store(tmp_path), "Pfad lesen")):
+        _aufgabe(store, _quiz("Frage?"), kapitel=kapitel)
+        gw = FakeGateway()
+        await freigabe_ausfuehren(store, gw, _vorbereiten(store)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+        kap = gw.aufrufe[0]["kapitel"]
+        assert kap[-1] == BEWERTUNG
+        assert not any("kursbewertung" in str(k) for k in kap[:-1])
+
+
 @pytest.mark.asyncio
 async def test_freigabe_schreibt_manifest_nach_learnhouse(tmp_path):
     s = _store(tmp_path)
@@ -55,7 +70,8 @@ async def test_freigabe_schreibt_manifest_nach_learnhouse(tmp_path):
     (aufruf,) = gw.aufrufe
     assert aufruf["course_id"] == COURSE and aufruf["expected_revision"] == 4
     assert aufruf["freigabe_id"] == v["freigabe_id"]
-    k1, k2 = aufruf["kapitel"]
+    k1, k2, abschluss = aufruf["kapitel"]
+    assert abschluss == BEWERTUNG
     assert k1["titel"] == "Kapitel 1" and k2["titel"] == "Kapitel 2"
     assert [(e["key"], e["art"]) for e in k1["eintraege"]] == [
         (f"werkstatt:{t1}:lektion", "lesson"), (f"werkstatt:{t1}", "task"),

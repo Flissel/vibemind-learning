@@ -435,7 +435,10 @@ def _kapitel_aus_manifest(
             "key": m["aufgaben_key"], "art": "task",
             "titel": aktivitaetstitel(inhalt.prompt, mathe=mathe), "prompt": inhalt.prompt,
         })
-    return list(kapitel.values())
+    # The last page of every course: the rating. Fixed text, so it never goes through klartext.
+    abschluss = {"titel": "Kurs abschließen", "eintraege": [
+        {"key": "kursbewertung", "art": "bewertung", "titel": "Wie fanden Sie diesen Kurs?"}]}
+    return [*kapitel.values(), abschluss]
 
 
 def _mit_inhalt(store: WerkstattStore, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
