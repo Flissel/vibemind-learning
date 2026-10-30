@@ -244,13 +244,16 @@ def _vergleichen(
 
 def freigabe_vorbereiten(
     store: WerkstattStore, course_id: str, *, autor: str, learnhouse_revision: int,
-    entwurf: Callable[[], CourseDraft] | None = None,
+    entwurf: Callable[[], CourseDraft] | None = None, neu_ausliefern: bool = False,
 ) -> dict[str, Any]:
     """Compare with the last release, or, before the first one, with the taken-over Fassungen.
 
     `vergleich.offline` lists the LearnHouse entries that go offline (not blocking);
     `vergleich.zusammengefuehrt`, on the first release of a taken-over course, the lessons
-    joined into one section at takeover, read from the published draft via `entwurf`."""
+    joined into one section at takeover, read from the published draft via `entwurf`.
+    With `neu_ausliefern`, a course with nothing changed is still releasable: the comparison
+    carries `neu_ausliefern`, so the unchanged state is written again (new presentation only).
+    It has no effect when anything changed, and findings still block."""
     kurs = store.kurs(course_id)
     aufgaben = {a["task_id"]: a for a in store.aufgaben_alle(course_id)}
     ersten = {
@@ -346,6 +349,9 @@ def freigabe_vorbereiten(
         )
     blockiert = any(b["blockierend"] for b in befunde)
     nichts = not any(vergleich[k] for k in ("neu", "geaendert", "textkorrektur", "geloescht"))
+    if nichts and neu_ausliefern:
+        vergleich["neu_ausliefern"] = True
+        nichts = False
     angelegt = store.freigabe_anlegen(
         course_id, manifest=manifest, vergleich=vergleich, befunde=befunde,
         learnhouse_revision_vorher=learnhouse_revision, autor=autor,
@@ -524,7 +530,9 @@ async def freigabe_ausfuehren(
     if any(b.get("blockierend") for b in freigabe["befunde"]):
         raise ValueError("freigabe_blockiert")
     vergleich = freigabe["vergleich"]
-    if not any(vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")):
+    if not vergleich.get("neu_ausliefern") and not any(
+        vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")
+    ):
         raise ValueError("nichts_zu_veroeffentlichen")
     mathe = _ist_mathe(store, freigabe["course_id"])
     kapitel = _kapitel_aus_manifest(store, freigabe["manifest"], mathe=mathe)

@@ -164,6 +164,10 @@ class Zurueckholen(_Body):
     number: int = Field(ge=1)
 
 
+class FreigabeAnfordern(_Body):
+    neu_ausliefern: bool = False
+
+
 class Freigeben(_Body):
     approval_ref: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -562,8 +566,12 @@ def _freigabe_sicht(freigabe: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/kurse/{course_id}/freigabe", status_code=status.HTTP_201_CREATED)
-def freigabe_anfordern(course_id: str, context: Context, autor: Autor) -> dict[str, Any]:
-    """Prepare a release: comparison with the last release, findings, and whether it blocks."""
+def freigabe_anfordern(
+    course_id: str, context: Context, autor: Autor, body: FreigabeAnfordern | None = None,
+) -> dict[str, Any]:
+    """Prepare a release: comparison with the last release, findings, and whether it blocks.
+
+    `neu_ausliefern` releases an unchanged course again (only the presentation changed)."""
     context.require(ROLE_AUTHOR)
     kurs = _kurs(course_id)
     revision = _learnhouse_revision(_learnhouse(), course_id, context)
@@ -577,7 +585,8 @@ def freigabe_anfordern(course_id: str, context: Context, autor: Autor) -> dict[s
 
     try:
         vorbereitet = freigabe_vorbereiten(
-            runtime.store, course_id, autor=autor, learnhouse_revision=revision, entwurf=entwurf
+            runtime.store, course_id, autor=autor, learnhouse_revision=revision, entwurf=entwurf,
+            neu_ausliefern=bool(body and body.neu_ausliefern),
         )
     except ValueError as error:
         if str(error) != "freigabe_gleichzeitig":

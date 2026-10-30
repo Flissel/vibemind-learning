@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from spaces.learning.services.course_factory.learnhouse_gateway import LearnHouseGatewayError
-from spaces.learning.services.werkstatt.freigabe import freigabe_ausfuehren
+from spaces.learning.services.werkstatt.freigabe import freigabe_ausfuehren, freigabe_vorbereiten
 from spaces.learning.tests.unit.test_werkstatt_freigabe import (
     COURSE,
     _aufgabe,
@@ -322,3 +322,37 @@ async def test_fehlende_manifest_fassung_wird_gemeldet(tmp_path):
         row.manifest = [dict(row.manifest[0], fassung=99)]
     with pytest.raises(ValueError, match="manifest_fassung_fehlt"):
         await freigabe_ausfuehren(s, FakeGateway(), v["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+
+
+@pytest.mark.asyncio
+async def test_neu_ausliefern_schreibt_unveraenderten_stand(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    gw = FakeGateway()
+    await freigabe_ausfuehren(s, gw, _vorbereiten(s)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+    neu = freigabe_vorbereiten(
+        s, COURSE, autor="kursleitung-a", learnhouse_revision=2, neu_ausliefern=True
+    )
+    r = await freigabe_ausfuehren(s, gw, neu["freigabe_id"], approval_ref="k2", learnhouse_revision=2)
+    assert r["learnhouse_revision"] == 3 and len(gw.aufrufe) == 2
+    assert gw.aufrufe[1]["kapitel"] and gw.aufrufe[1]["expected_revision"] == 2
+    assert s.freigabe(neu["freigabe_id"])["zustand"] == "freigegeben"
+
+
+@pytest.mark.asyncio
+async def test_neu_ausliefern_blockiert_weiter_bei_befund(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    gw = FakeGateway()
+    await freigabe_ausfuehren(s, gw, _vorbereiten(s)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+    neu = freigabe_vorbereiten(
+        s, COURSE, autor="kursleitung-a", learnhouse_revision=2, neu_ausliefern=True
+    )
+    with s._sessions.begin() as session:
+        from sqlalchemy import update
+        from spaces.learning.services.werkstatt.models import WerkstattFreigabe
+        session.execute(update(WerkstattFreigabe).where(WerkstattFreigabe.id == neu["freigabe_id"]).values(
+            befunde=[{"code": "x", "task_id": None, "blockierend": True, "text": "t"}]))
+    with pytest.raises(ValueError, match="freigabe_blockiert"):
+        await freigabe_ausfuehren(s, gw, neu["freigabe_id"], approval_ref="k2", learnhouse_revision=2)
+    assert len(gw.aufrufe) == 1

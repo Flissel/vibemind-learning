@@ -218,6 +218,11 @@ def _werkstatt_inhalt(inhalt: dict[str, Any]) -> str:
             "<p><strong>Die Freigabe ist blockiert.</strong> Bitte beheben Sie die blockierenden "
             "Befunde in der Werkstatt und lassen Sie die Freigabe dann erneut anzeigen.</p>"
         )
+    elif vergleich.get("neu_ausliefern"):
+        teile.append(
+            "<p>Am Inhalt hat sich nichts geändert. Der Kurs wird mit der aktuellen "
+            "Darstellung neu ausgeliefert.</p>"
+        )
     elif inhalt.get("nichts_zu_veroeffentlichen"):
         teile.append("<p>Seit der letzten Freigabe hat sich nichts geändert.</p>")
     return "".join(teile)

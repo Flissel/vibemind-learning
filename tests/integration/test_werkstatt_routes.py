@@ -887,3 +887,20 @@ def test_kurs_ohne_fach_angabe_ist_terminal(env: Env) -> None:
     env.kurs()
     kurs = env.client.get(f"/api/v1/werkstatt/kurse/{env.course_id}", headers=env.h()).json()
     assert kurs["fach"] == "terminal"
+
+
+def test_freigabe_neu_ausliefern_per_body(env: Env, learnhouse: _FakeLearnHouse) -> None:
+    env.kurs()
+    _freigebbare_aufgabe(env)
+    erste = _vorbereiten(env).json()["freigabe_id"]
+    assert _freigeben(env, erste, roles="learning.publisher").status_code == 200
+    gleich = _vorbereiten(env).json()
+    assert gleich["nichts_zu_veroeffentlichen"] is True
+    antwort = env.client.post(
+        f"/api/v1/werkstatt/kurse/{env.course_id}/freigabe", headers=env.h(),
+        json={"neu_ausliefern": True},
+    )
+    assert antwort.status_code == 201, antwort.text
+    body = antwort.json()
+    assert body["nichts_zu_veroeffentlichen"] is False
+    assert body["vergleich"]["neu_ausliefern"] is True

@@ -1021,7 +1021,7 @@ def _handy_link_senden(geheimnis: str, titel: str, nummer: int, blockiert: bool)
     return _telegram_senden(nachricht)
 
 
-def werkstatt_freigabe_anzeigen(course_id: str) -> dict[str, Any]:
+def werkstatt_freigabe_anzeigen(course_id: str, neu_ausliefern: bool = False) -> dict[str, Any]:
     """Bereitet die Freigabe eines Werkstatt-Kurses vor und zeigt, was sich fuer Lernende
     aendern wuerde: `vergleich` (neu, geaendert, textkorrektur, geloescht mit Kurzfassung und
     Fassung alt/neu; `unveraendert` als Zahl; `offline` und `zusammengefuehrt`: Lektionen und
@@ -1030,11 +1030,14 @@ def werkstatt_freigabe_anzeigen(course_id: str) -> dict[str, Any]:
     (`link_geoeffnet`) und schickt der Inhaberin, wenn eingerichtet, den Link aufs Handy
     (`handy_link_gesendet`). Freigeben kann nur die Inhaberin dort mit einem Klick, einmal und
     10 Minuten lang; es gibt kein Werkzeug dafuer. Nie behaupten, der Kurs sei freigegeben.
+    `neu_ausliefern=True` nur setzen, wenn sich an den Aufgaben nichts geaendert hat, die
+    Darstellung aber neu ausgeliefert werden soll.
     """
 
     def act(client: LearningClient) -> dict[str, Any]:
         data = client.post(
-            f"{_WERKSTATT}/kurse/{_seg(course_id)}/freigabe", {}, roles=ROLE_AUTHOR, extra=_AUTOR
+            f"{_WERKSTATT}/kurse/{_seg(course_id)}/freigabe",
+            {"neu_ausliefern": True} if neu_ausliefern else {}, roles=ROLE_AUTHOR, extra=_AUTOR,
         )
         titel = str(data.get("titel") or course_id)
         inhalt = {

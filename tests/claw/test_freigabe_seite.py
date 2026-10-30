@@ -409,3 +409,23 @@ def test_page_loads_katex_with_sri_and_keeps_formula_text_escaped(store) -> None
     assert page.status_code == 200
     _katex_pruefen(page)
     assert "$x^2$ &lt;b&gt;fett&lt;/b&gt;" in page.text and "<b>fett</b>" not in page.text
+
+
+
+def test_werkstatt_seite_neu_ausliefern_zeigt_satz_und_knopf(uhr) -> None:
+    secret = werkzeuge._freigaben.merken(
+        "f-3", 5, 7,
+        {
+            "art": "werkstatt", "course_id": "kurs-1", "titel": "Kurs", "nummer": 5,
+            "learnhouse_revision": 7, "blockiert": False, "nichts_zu_veroeffentlichen": False,
+            "vergleich": {"neu": [], "geaendert": [], "textkorrektur": [], "geloescht": [],
+                          "unveraendert": 3, "neu_ausliefern": True},
+            "befunde": [],
+        },
+        art="werkstatt",
+    ).geheimnis
+    page = _call("GET", f"/freigabe/{secret}")
+    assert page.status_code == 200
+    assert "Am Inhalt hat sich nichts geändert" in page.text
+    assert "neu ausgeliefert" in page.text
+    assert '<button type="submit"' in page.text

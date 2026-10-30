@@ -222,3 +222,13 @@ def test_kein_werkzeug_gibt_frei() -> None:
     assert "werkstatt_freigabe_anzeigen" in namen
     assert namen.isdisjoint({"werkstatt_freigeben", "freigeben", "pruefung_entscheiden"})
     assert not any(n.endswith("freigeben") for n in namen)
+
+
+
+def test_neu_ausliefern_geht_an_die_route(fake: Fake, browser) -> None:
+    werkzeuge.werkstatt_freigabe_anzeigen(COURSE)
+    assert json.loads(fake.requests[-1].content or b"{}") == {}
+    out = werkzeuge.werkstatt_freigabe_anzeigen(COURSE, neu_ausliefern=True)
+    assert out["ok"] is True, out
+    assert json.loads(fake.requests[-1].content) == {"neu_ausliefern": True}
+    assert "neu_ausliefern" in (werkzeuge.werkstatt_freigabe_anzeigen.__doc__ or "")

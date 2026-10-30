@@ -369,3 +369,26 @@ def test_dauerhafte_nummernkollision_meldet_freigabe_gleichzeitig(tmp_path, monk
     with pytest.raises(ValueError, match="freigabe_gleichzeitig"):
         _vorbereiten(s)
     assert s.freigabe_offene(COURSE)["nummer"] == 1  # nothing was discarded by the failed try
+
+
+def test_neu_ausliefern_macht_unveraenderten_kurs_freigebbar(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    _freigeben(s, _vorbereiten(s)["freigabe_id"])
+    ohne = _vorbereiten(s)
+    assert ohne["nichts_zu_veroeffentlichen"] is True and "neu_ausliefern" not in ohne["vergleich"]
+    r = freigabe_vorbereiten(
+        s, COURSE, autor="kursleitung-a", learnhouse_revision=1, neu_ausliefern=True
+    )
+    assert r["nichts_zu_veroeffentlichen"] is False and r["blockiert"] is False
+    assert r["vergleich"]["neu_ausliefern"] is True
+    assert s.freigabe(r["freigabe_id"])["vergleich"]["neu_ausliefern"] is True
+
+
+def test_neu_ausliefern_ist_wirkungslos_wenn_sich_etwas_aendert(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _quiz())
+    r = freigabe_vorbereiten(
+        s, COURSE, autor="kursleitung-a", learnhouse_revision=1, neu_ausliefern=True
+    )
+    assert r["nichts_zu_veroeffentlichen"] is False and "neu_ausliefern" not in r["vergleich"]
