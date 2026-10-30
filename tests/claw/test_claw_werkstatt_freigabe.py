@@ -231,4 +231,4 @@ def test_neu_ausliefern_geht_an_die_route(fake: Fake, browser) -> None:
     out = werkzeuge.werkstatt_freigabe_anzeigen(COURSE, neu_ausliefern=True)
     assert out["ok"] is True, out
     assert json.loads(fake.requests[-1].content) == {"neu_ausliefern": True}
-    assert "neu_ausliefern" in (werkzeuge.werkstatt_freigabe_anzeigen.__doc__ or "")
+    assert "neu_ausliefern" in (werkzeuge.werkstatt_freigabe_anzeigen.__doc__ or "")

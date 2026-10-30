@@ -428,4 +428,4 @@ def test_werkstatt_seite_neu_ausliefern_zeigt_satz_und_knopf(uhr) -> None:
     assert page.status_code == 200
     assert "Am Inhalt hat sich nichts geändert" in page.text
     assert "neu ausgeliefert" in page.text
-    assert '<button type="submit"' in page.text
+    assert '<button type="submit"' in page.text
