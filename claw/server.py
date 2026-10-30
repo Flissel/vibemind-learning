@@ -22,6 +22,9 @@ if str(PKG_ROOT) not in sys.path:
 from spaces.learning.claw import werkzeuge  # noqa: E402
 from spaces.learning.claw.freigabe_seite import PREFIX as FREIGABE_PREFIX  # noqa: E402
 from spaces.learning.claw.freigabe_seite import FreigabeSeite  # noqa: E402
+from spaces.learning.claw.bewertungen import PREFIX as BEWERTUNGEN_PREFIX  # noqa: E402
+from spaces.learning.claw.bewertungen import starte_melder  # noqa: E402
+from spaces.learning.claw.bewertungen_seite import BewertungenSeite  # noqa: E402
 from spaces.learning.claw.pruefung_seite import PREFIX as PRUEFUNG_PREFIX  # noqa: E402
 from spaces.learning.claw.pruefung_seite import PruefungSeite  # noqa: E402
 from spaces.learning.claw.zeichen_seite import PREFIX as ZEICHEN_PREFIX  # noqa: E402
@@ -207,11 +210,15 @@ class FreigabeWeiche:
     """`/freigabe/...`, `/zeichnen/...` und `/pruefung/...` an die lokalen Seiten, alles
     andere hinter BearerAuth."""
 
-    def __init__(self, mcp_app: Any, seite: Any, zeichnen: Any = None, pruefung: Any = None) -> None:
+    def __init__(
+        self, mcp_app: Any, seite: Any, zeichnen: Any = None, pruefung: Any = None,
+        bewertungen: Any = None,
+    ) -> None:
         self._mcp_app = mcp_app
         self._seite = seite
         self._zeichnen = zeichnen
         self._pruefung = pruefung
+        self._bewertungen = bewertungen
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         path = scope.get("path", "") if scope["type"] == "http" else ""
@@ -224,6 +231,9 @@ class FreigabeWeiche:
         if self._pruefung is not None and path.startswith(PRUEFUNG_PREFIX):
             await self._pruefung(scope, receive, send)
             return
+        if self._bewertungen is not None and path.startswith(BEWERTUNGEN_PREFIX):
+            await self._bewertungen(scope, receive, send)
+            return
         await self._mcp_app(scope, receive, send)
 
 
@@ -233,7 +243,8 @@ def build_app(server: Any, token: str, port: int = DEFAULT_PORT) -> Any:
     if factory is None:
         raise SystemExit("MCP-Paket bietet keine ASGI-App; ohne Token-Pruefung wird nicht gestartet")
     return FreigabeWeiche(
-        BearerAuth(factory(), token), FreigabeSeite(port), ZeichenSeite(port), PruefungSeite(port)
+        BearerAuth(factory(), token), FreigabeSeite(port), ZeichenSeite(port), PruefungSeite(port),
+        BewertungenSeite(port),
     )
 
 
@@ -267,6 +278,7 @@ def main() -> None:
             transport_security=transport_security_settings(port),
         )
     register_tools(server)
+    starte_melder()
     uvicorn.run(build_app(server, token, port), **uvicorn_settings(host, port))
 
 
