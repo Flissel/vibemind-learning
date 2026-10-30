@@ -98,10 +98,14 @@ def _mcp(tool: str, grant: DrawingGrant, *, write: bool = False, **fields: Any) 
     return {"ok": True, "ergebnis": payload.get("result") or {}}
 
 
-def _task_prompt(grant: DrawingGrant) -> str:
+def _task(grant: DrawingGrant) -> dict[str, Any]:
     stand = _mcp("learning_progress_show", grant)
     task = ((stand.get("ergebnis") or {}).get("session") or {}).get("task") or {}
-    return str(task.get("prompt") or "") if stand["ok"] else ""
+    return task if stand["ok"] and isinstance(task, dict) else {}
+
+
+def _task_prompt(grant: DrawingGrant) -> str:
+    return str(_task(grant).get("prompt") or "")
 
 
 @router.get("/zeichnen/{token}", response_class=HTMLResponse)
@@ -109,7 +113,10 @@ def page(token: str) -> HTMLResponse:
     grant = _grant(token)
     if grant is None:
         return _page(404, "Nicht gefunden", "<p>Dieser Zeichenlink ist ungueltig oder abgelaufen.</p>")
-    return _page(200, "Zeichenaufgabe", flaeche_html(_task_prompt(grant)), script=True)
+    task = _task(grant)
+    presentation = task.get("presentation")
+    mathe = isinstance(presentation, dict) and presentation.get("math") is True
+    return _page(200, "Zeichenaufgabe", flaeche_html(str(task.get("prompt") or ""), mathe=mathe), script=True)
 
 
 @router.post("/zeichnen/{token}/hinweis")

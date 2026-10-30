@@ -13,7 +13,11 @@ import html
 SUBMITTED_MESSAGE = "learning-zeichnung-abgegeben"
 
 
-def flaeche_html(aufgabe: str) -> str:
+def flaeche_html(aufgabe: str, *, mathe: bool = False) -> str:
+    if mathe:
+        from spaces.learning.services.werkstatt.formeltext import klartext
+
+        aufgabe = klartext(aufgabe)
     farben = "".join(
         f'<button type="button" class="farbe" data-farbe="{f}" style="background:{f}"></button>'
         for f in ("#111111", "#d22", "#16c", "#1a7f37", "#e8a400")

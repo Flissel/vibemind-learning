@@ -103,7 +103,7 @@ async def test_mathe_kurs_schickt_formelsatz_fuer_lektionen(tmp_path):
     assert aufruf["math"] is True
     aufgabe = aufruf["kapitel"][0]["eintraege"][1]
     # The LearnHouse activity name shows the formula text without its dollars.
-    assert aufgabe["titel"] == "Welchen Wert hat f(1) für f(x)=x^2?"
+    assert aufgabe["titel"] == "Welchen Wert hat f(1) für f(x)=x²?"
     assert aufgabe["prompt"] == "Welchen Wert hat $f(1)$ für $f(x)=x^2$?"
 
 
@@ -114,10 +114,25 @@ def test_aktivitaetstitel_schneidet_nie_in_einer_formel():
     titel = aktivitaetstitel(lang, mathe=True)
     assert titel == "Bestimmen Sie " + "x" * 100 + " zu"
     assert len(aktivitaetstitel("a" * 300, mathe=True)) == 120
-    assert aktivitaetstitel("Mit $$x^2$$ und \\$5", mathe=True) == "Mit x^2 und $5"
+    assert aktivitaetstitel("Mit $$x^2$$ und \\$5", mathe=True) == "Mit x² und $5"
     # Terminal courses keep the plain cut, dollars included.
     terminal = "Was zeigt $env:Path an? " + "y" * 200
     assert aktivitaetstitel(terminal, mathe=False) == terminal[:120]
+
+
+@pytest.mark.asyncio
+async def test_mathe_kapiteltitel_ohne_latex_terminal_unveraendert(tmp_path):
+    s = _mathe_store(tmp_path)
+    _aufgabe(s, _quiz("Frage?"), kapitel="Ableiten: Regeln, $f'$ und $f''$ nutzen")
+    gw = FakeGateway()
+    await freigabe_ausfuehren(s, gw, _vorbereiten(s)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+    assert gw.aufrufe[0]["kapitel"][0]["titel"] == "Ableiten: Regeln, f' und f'' nutzen"
+
+    t = _store(tmp_path)
+    _aufgabe(t, _quiz("Frage?"), kapitel="Pfad $env:Path lesen")
+    gw2 = FakeGateway()
+    await freigabe_ausfuehren(t, gw2, _vorbereiten(t)["freigabe_id"], approval_ref="k", learnhouse_revision=1)
+    assert gw2.aufrufe[0]["kapitel"][0]["titel"] == "Pfad $env:Path lesen"
 
 
 @pytest.mark.asyncio

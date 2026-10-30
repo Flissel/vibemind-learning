@@ -24,6 +24,7 @@ from spaces.learning.services.course_factory.quality_gate import (
     uses_informal_address,
 )
 from spaces.learning.services.course_factory.schemas import CourseDraft
+from spaces.learning.services.werkstatt.formeltext import klartext
 from spaces.learning.services.werkstatt.inhalt import Fall, Offen, Quiz, _loesung, inhalt_lesen
 from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion
 from spaces.learning.services.werkstatt.store import WerkstattStore
@@ -400,7 +401,7 @@ def aktivitaetstitel(prompt: str, *, mathe: bool) -> str:
     titel, position = "", 0
     for treffer in _TITEL_FORMEL.finditer(prompt):
         text = prompt[position:treffer.start()].replace("\\$", "$")
-        formel = " ".join((treffer.group(1) or treffer.group(2)).split())
+        formel = klartext("$" + (treffer.group(1) or treffer.group(2)) + "$")
         if len(titel) + len(text) + len(formel) > _TITEL_LAENGE:
             return (titel + text)[:_TITEL_LAENGE].rstrip()
         titel += text + formel
@@ -416,7 +417,7 @@ def _kapitel_aus_manifest(
     for m in sorted(manifest, key=lambda e: e["position"]):
         inhalt = inhalt_lesen(_fassungs_inhalt(store, m["task_id"], m["fassung"]))
         eintraege = kapitel.setdefault(
-            m["kapitel"], {"titel": m["kapitel"], "eintraege": []}
+            m["kapitel"], {"titel": klartext(m["kapitel"]) if mathe else m["kapitel"], "eintraege": []}
         )["eintraege"]
         if inhalt.lektion is not None:
             eintraege.append({
