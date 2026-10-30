@@ -23,6 +23,7 @@ from spaces.learning.deployment.course_factory_routes import (
 )
 from spaces.learning.deployment.health import HealthService
 from spaces.learning.deployment.lernsequenz_routes import router as lernsequenz_router
+from spaces.learning.deployment.bewertungen_routes import router as bewertungen_router
 from spaces.learning.deployment.notizen_routes import router as notizen_router
 from spaces.learning.deployment.quellen_routes import router as quellen_router
 from spaces.learning.deployment.review_routes import router as review_router
@@ -164,6 +165,7 @@ app.include_router(course_factory_router)
 app.include_router(review_router)
 app.include_router(lernsequenz_router)
 app.include_router(notizen_router)
+app.include_router(bewertungen_router)
 app.include_router(quellen_router)
 app.include_router(zeichnen_router)
 app.include_router(werkstatt_router)
