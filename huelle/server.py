@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import httpx
+
+from .bruecke import Bruecke
+from .durchreicher import Durchreicher
 from .einstellung import Einstellung, einstellung_lesen
+from .lern_mcp import LernMcp
+from .penecho_mcp import PenEchoMcp
+from .sperre import Sperre
 from .weiche import Weiche
 
 
@@ -25,13 +33,21 @@ def _platzhalter(text: str) -> Any:
 
 
 def build_app(einstellung: Einstellung) -> Weiche:
-    # Task 5/7/8: durchreicher_app, api_app und seite_app ersetzen die Platzhalter.
-    return Weiche(
-        einstellung,
-        _platzhalter("Die Seite ist noch nicht verfügbar."),
-        _platzhalter("Die Schnittstelle ist noch nicht verfügbar."),
-        _platzhalter("Die Fläche ist gerade nicht erreichbar."),
+    # Eine Sperre fuer Durchreicher und Bruecke: die Bruecke stellt sie, der Durchreicher prueft sie.
+    sperre = Sperre()
+    durchreicher = Durchreicher(
+        einstellung.penecho_url, sperre,
+        frozenset({einstellung.basis, f"http://127.0.0.1:{einstellung.port}"}),
     )
+    bruecke = Bruecke(
+        einstellung,
+        LernMcp(einstellung.mcp_url, einstellung.actor_id),
+        PenEchoMcp(Path(einstellung.penecho_state)),
+        sperre,
+        httpx.Client(timeout=30.0, follow_redirects=False),
+    )
+    # Task 8: seite_app ersetzt den Platzhalter.
+    return Weiche(einstellung, _platzhalter("Die Seite ist noch nicht verfügbar."), bruecke, durchreicher)
 
 
 def uvicorn_settings(host: str, port: int) -> dict[str, object]:
