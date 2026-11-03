@@ -10,14 +10,16 @@ from pathlib import Path
 import httpx
 import pytest
 
-from spaces.learning.huelle.penecho_mcp import PenEchoMcp, PenEchoNichtErreichbar
+from spaces.learning.huelle.penecho_mcp import PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
 
 TOKEN = "ab" * 32
 SID = "s" * 64
 
 
 class Fake:
-    def __init__(self, *, fehler: bool = False) -> None:
+    def __init__(self, *, fehler: bool = False, tool_404: int = 0, tool_fehler: str | None = None) -> None:
+        self.tool_404 = tool_404
+        self.tool_fehler = tool_fehler
         self.anfragen: list[tuple[dict, httpx.Headers]] = []
         self.fehler = fehler
 
@@ -36,7 +38,14 @@ class Fake:
             )
         if self.fehler:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "error": {"code": -1, "message": "x"}})
+        if self.tool_404 > 0:
+            self.tool_404 -= 1
+            return httpx.Response(404, json={"error": "Session not found"})
         name = body["params"]["name"]
+        if self.tool_fehler:
+            sc = {"code": self.tool_fehler, "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": [{"type": "text", "text": json.dumps(sc)}]}})
         if name == "penecho_start_session":
             res = {"structuredContent": {"sessionId": "sess-1"}, "content": []}
         elif name == "penecho_capture_canvas":
@@ -144,3 +153,43 @@ def test_schnappschuss_liefert_png(zustand: Path) -> None:
     arg = fake.aufrufe("penecho_capture_canvas")[0]["arguments"]
     assert arg["target"] == "region"
     assert arg["region"] == {"x": 0, "y": 3200, "w": 2400, "h": 1600}
+
+
+def test_404_auf_werkzeugaufruf_reconnect_und_einmal_wiederholen(zustand: Path) -> None:
+    fake = Fake(tool_404=1)
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t", "x", 1)
+    methoden = [b["method"] for b, _ in fake.anfragen]
+    assert methoden.count("initialize") == 2
+    assert len(fake.aufrufe("penecho_edit_canvas")) == 2  # 404-Versuch + Wiederholung
+    neue = [b for b, _ in fake.anfragen if b["method"] == "tools/call"]
+    assert len(neue) == 2 and neue[0]["params"]["arguments"]["requestId"] == neue[1]["params"]["arguments"]["requestId"]
+
+
+def test_zweites_404_wird_nicht_erreichbar(zustand: Path) -> None:
+    with pytest.raises(PenEchoNichtErreichbar):
+        _client(zustand, Fake(tool_404=2)).aufgabe_setzen("sess-1", "t", "x", 1)
+
+
+def test_vergessen_entfernt_eintrag(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.sitzung("Kurs A")
+    c.vergessen("Kurs A")
+    datei = zustand.parent / "learning-huelle" / "sitzungen.json"
+    assert json.loads(datei.read_text(encoding="utf-8")) == {}
+    c.sitzung("Kurs A")
+    assert len(fake.aufrufe("penecho_start_session")) == 2
+    c.vergessen("Unbekannt")  # kein Fehler
+
+
+@pytest.mark.parametrize("code", ["session_not_found", "session_expired", "session_closed", "canvas_disconnected"])
+def test_unbekannte_sitzung_ist_eigener_fehler(zustand: Path, code: str) -> None:
+    with pytest.raises(PenEchoSitzungUnbekannt) as info:
+        _client(zustand, Fake(tool_fehler=code)).aufgabe_setzen("alt", "t", "x", 1)
+    assert isinstance(info.value, PenEchoNichtErreichbar)
+
+
+def test_anderer_werkzeugfehler_bleibt_allgemein(zustand: Path) -> None:
+    with pytest.raises(PenEchoNichtErreichbar) as info:
+        _client(zustand, Fake(tool_fehler="invalid_argument")).aufgabe_setzen("s", "t", "x", 1)
+    assert not isinstance(info.value, PenEchoSitzungUnbekannt)

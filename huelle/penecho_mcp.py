@@ -30,6 +30,21 @@ class PenEchoNichtErreichbar(Exception):
     """PenEcho antwortet nicht oder lehnt die Anfrage ab."""
 
 
+class PenEchoSitzungUnbekannt(PenEchoNichtErreichbar):
+    """PenEcho kennt die Canvas-Sitzung (sessionId) nicht mehr oder sie ist geschlossen."""
+
+
+# Fehlercodes aus PenEcho service.js (ownedSession): session_not_found, session_expired,
+# session_closed, canvas_disconnected.
+_SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
+
+
+class _HttpFehler(PenEchoNichtErreichbar):
+    def __init__(self, text: str, status: int | None) -> None:
+        super().__init__(text)
+        self.status = status
+
+
 def _typ(fehler: BaseException) -> str:
     return type(fehler).__name__
 
@@ -137,21 +152,32 @@ class PenEchoMcp:
             daten = antwort.json()
         except Exception as fehler:
             log.warning("PenEcho-Aufruf %s fehlgeschlagen: %s", methode, _typ(fehler))
-            raise PenEchoNichtErreichbar(_typ(fehler)) from None
+            raise _HttpFehler(_typ(fehler), getattr(getattr(fehler, "response", None), "status_code", None)) from None
         if not isinstance(daten, dict) or "error" in daten or not isinstance(daten.get("result"), dict):
             log.warning("PenEcho-Aufruf %s abgelehnt", methode)
             raise PenEchoNichtErreichbar("jsonrpc")
         return daten["result"]
 
     def _werkzeug(self, name: str, argumente: dict[str, Any]) -> dict[str, Any]:
-        self._verbinden()
-        try:
-            ergebnis = self._rpc("tools/call", {"name": name, "arguments": argumente})
-        except PenEchoNichtErreichbar:
-            self._zuruecksetzen()  # naechster Aufruf baut neu auf (z. B. nach PenEcho-Neustart)
-            raise
+        for versuch in (1, 2):
+            self._verbinden()
+            try:
+                ergebnis = self._rpc("tools/call", {"name": name, "arguments": argumente})
+            except _HttpFehler as fehler:
+                # Der MCP-Zugang verfaellt nach Leerlauf (404/400): neu verbinden, einmal wiederholen.
+                self._zuruecksetzen()
+                if versuch == 1 and fehler.status in (400, 404):
+                    continue
+                raise
+            except PenEchoNichtErreichbar:
+                self._zuruecksetzen()
+                raise
+            break
         if ergebnis.get("isError"):
+            code = self._struktur(ergebnis).get("code")
             log.warning("PenEcho-Werkzeug %s meldet Fehler", name)
+            if isinstance(code, str) and code in _SITZUNG_CODES:
+                raise PenEchoSitzungUnbekannt(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -191,6 +217,13 @@ class PenEchoMcp:
             except OSError:
                 pass
             raise
+
+    def vergessen(self, titel: str) -> None:
+        """Entfernt die gemerkte sessionId zu einem Titel (naechstes sitzung() startet neu)."""
+        karte = self._gemerkt()
+        if titel in karte:
+            del karte[titel]
+            self._merken(karte)
 
     # ---- Oeffentliche Methoden -------------------------------------------
     def sitzung(self, titel: str) -> str:
