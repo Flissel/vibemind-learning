@@ -20,7 +20,7 @@ Receive = Callable[[], Awaitable[dict[str, Any]]]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 SPERR_TEXT = "Während der Aufgabe hilft „Erklär mir das“."
-NICHT_ERREICHBAR = "Fläche weg"
+NICHT_ERREICHBAR = "Die Fläche ist gerade nicht erreichbar."
 
 _HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection",
@@ -34,8 +34,21 @@ _WS_KOPF = frozenset({
 _FRAME = re.compile(r"frame-ancestors\s+'none'", re.IGNORECASE)
 
 
+_VERBOTEN = (chr(92).encode(), bytes([9]), bytes([13]), bytes([10]))  # Backslash, Tab, CR, LF
+
+
+def pfad_unzulaessig(scope: Scope) -> bool:
+    """Node (WHATWG-URL) macht aus Backslash ein `/` und streicht Tab/CR/LF; Browser senden das nie.
+
+    Solche Pfade werden abgewiesen, statt sie zu kanonisieren, damit Pruefung und Weitergabe nie auseinanderlaufen.
+    """
+    roh = scope.get("raw_path") or scope["path"].encode("utf-8")
+    return any(z in roh for z in _VERBOTEN)
+
+
 def ist_ki_pfad(pfad: str) -> bool:
     """Prueft roh und normalisiert (Node loest `..` und %2e auf), ohne Gross-/Kleinschreibung."""
+    pfad = pfad.replace("\\", "/")
     kandidaten = {pfad, unquote(pfad)}
     for k in list(kandidaten):
         kandidaten.add(posixpath.normpath(k))
@@ -102,6 +115,14 @@ class Durchreicher:
         return aus
 
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if pfad_unzulaessig(scope):
+            body = "Ungültiger Pfad".encode("utf-8")
+            await send({"type": "http.response.start", "status": 400, "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ]})
+            await send({"type": "http.response.body", "body": body})
+            return
         if self._sperre.gesperrt() and ist_ki_pfad(scope["path"]):
             body = json.dumps({"error": SPERR_TEXT}, ensure_ascii=False).encode("utf-8")
             await send({"type": "http.response.start", "status": 423, "headers": [
@@ -156,7 +177,8 @@ class Durchreicher:
         nachricht = await receive()
         if nachricht["type"] != "websocket.connect":
             return
-        if self._sperre.gesperrt() and ist_ki_pfad(scope["path"]):
+        ki_pfad = ist_ki_pfad(scope["path"])
+        if pfad_unzulaessig(scope) or (ki_pfad and self._sperre.gesperrt()):
             await send({"type": "websocket.close", "code": 1008, "reason": SPERR_TEXT})
             return
         kopf = [(n.decode("latin-1"), w.decode("latin-1")) for n, w in scope["headers"]
@@ -172,12 +194,18 @@ class Durchreicher:
             return
         await send({"type": "websocket.accept", "subprotocol": upstream.subprotocol})
 
+        closed = asyncio.Event()
+
         async def hoch() -> None:
             while True:
                 n = await receive()
                 if n["type"] == "websocket.disconnect":
                     return
                 if n["type"] == "websocket.receive":
+                    if ki_pfad and self._sperre.gesperrt():  # Sperre kann nach dem Verbindungsaufbau greifen
+                        await send({"type": "websocket.close", "code": 1008, "reason": SPERR_TEXT})
+                        closed.set()
+                        return
                     if n.get("text") is not None:
                         await upstream.send(n["text"])
                     elif n.get("bytes") is not None:
@@ -199,6 +227,7 @@ class Durchreicher:
             await asyncio.gather(*aufgaben, return_exceptions=True)
             await upstream.close()
             try:
-                await send({"type": "websocket.close", "code": 1000})
+                if not closed.is_set():
+                    await send({"type": "websocket.close", "code": 1000})
             except Exception:  # Gegenseite schon zu
                 pass

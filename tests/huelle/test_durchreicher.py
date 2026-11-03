@@ -91,7 +91,8 @@ def _frei() -> Sperre:
 
 async def _lauf(app: Any, pfad: str, *, methode: str = "GET", headers: list[tuple[bytes, bytes]] | None = None,
                 body: bytes = b"") -> tuple[int, list[tuple[bytes, bytes]], list[tuple[float, bytes]]]:
-    scope = {"type": "http", "method": methode, "path": pfad, "query_string": b"", "headers": headers or []}
+    scope = {"type": "http", "method": methode, "path": pfad, "raw_path": pfad.encode("utf-8"),
+             "query_string": b"", "headers": headers or []}
     gesendet: list[dict[str, Any]] = []
     zeiten: list[tuple[float, bytes]] = []
     gegeben = False
@@ -131,6 +132,15 @@ def test_ki_pfad_umgehungen_gesperrt(fake: tuple[FakePenEcho, str], pfad: str) -
     upstream.aufrufe.clear()
     status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre()), pfad))
     assert status == 423
+    assert upstream.aufrufe == []
+
+
+@pytest.mark.parametrize("pfad", ["/api\\ai\\command", "/api\\ai/command", "/api/ai\tcommand", "/api/ai/comm\nand"])
+def test_ki_pfad_backslash_und_steuerzeichen_nicht_durch(fake: tuple[FakePenEcho, str], pfad: str) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre()), pfad, methode="POST", body=b"{}"))
+    assert status in (400, 423)
     assert upstream.aufrufe == []
 
 
@@ -199,11 +209,11 @@ def test_penecho_weg_502() -> None:
     s.close()  # nichts lauscht mehr
     status, _, teile = asyncio.run(_lauf(Durchreicher(f"http://127.0.0.1:{port}", _frei()), "/"))
     assert status == 502
-    assert b"".join(t for _, t in teile).decode("utf-8") == "Fläche weg"
+    assert b"".join(t for _, t in teile).decode("utf-8") == "Die Fläche ist gerade nicht erreichbar."
 
 
 async def _ws_lauf(app: Any, pfad: str, nachricht: str) -> list[dict[str, Any]]:
-    scope = {"type": "websocket", "path": pfad, "query_string": b"", "headers": [
+    scope = {"type": "websocket", "path": pfad, "raw_path": pfad.encode("utf-8"), "query_string": b"", "headers": [
         (b"host", b"lernen.example.test"), (b"origin", b"https://lernen.example.test")]}
     gesendet: list[dict[str, Any]] = []
     eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -241,3 +251,38 @@ def test_websocket_penecho_weg_schliesst() -> None:
     s.close()
     gesendet = asyncio.run(_ws_lauf(Durchreicher(f"http://127.0.0.1:{port}", _frei()), "/api/mcp/canvas", "hi"))
     assert [m["type"] for m in gesendet] == ["websocket.close"]
+
+
+def test_websocket_backslash_pfad_gesperrt(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre()), "/api\\canvas-agent\\socket", "hi"))
+    assert [m["type"] for m in gesendet] == ["websocket.close"]
+
+
+def test_websocket_wird_bei_neuer_sperre_geschlossen(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    sperre = _frei()
+
+    async def lauf() -> list[dict[str, Any]]:
+        app = Durchreicher(url, sperre)
+        scope = {"type": "websocket", "path": "/api/canvas-agent/socket", "raw_path": b"/api/canvas-agent/socket",
+                 "query_string": b"", "headers": []}
+        gesendet: list[dict[str, Any]] = []
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        eingang.put_nowait({"type": "websocket.connect"})
+
+        async def send(m: dict[str, Any]) -> None:
+            gesendet.append(m)
+            if m["type"] == "websocket.accept":
+                eingang.put_nowait({"type": "websocket.receive", "text": "eins"})
+            elif m["type"] == "websocket.send" and m["text"] == "echo:eins":
+                sperre.offen("naechste-aufgabe")
+                eingang.put_nowait({"type": "websocket.receive", "text": "zwei"})
+
+        await asyncio.wait_for(app(scope, eingang.get, send), timeout=10)
+        return gesendet
+
+    gesendet = asyncio.run(lauf())
+    texte = [m.get("text") for m in gesendet if m["type"] == "websocket.send"]
+    assert texte == ["echo:eins"]
+    assert gesendet[-1]["type"] == "websocket.close" and gesendet[-1]["code"] == 1008
