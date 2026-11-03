@@ -19,6 +19,7 @@ from spaces.learning.bridge.dispatcher import (
 from spaces.learning.bridge.ui_bridge import UiBridge
 from spaces.learning.bridge.learnhouse_client import LearnHouseClient
 from spaces.learning.bridge.local_canvas import LocalCanvasBackend, LocalCanvasLauncher
+from spaces.learning.services.notizen.store import NoteStore
 from spaces.learning.services.zeichnen.link import drawing_url
 from spaces.learning.bridge.penecho_client import PenEchoClient
 from spaces.learning.contracts.events import EVENT_TOOL_MAP, LearningToolName
@@ -187,7 +188,7 @@ def build_default_dispatcher(
                 else frozenset()
             ),
         )
-        gateways.update(build_session_gateways(adaptive_sessions))
+        gateways.update(build_session_gateways(adaptive_sessions, NoteStore(session_factory)))
         if evaluation_client is not None:
             gateways[LearningToolName.TUTOR_ASK] = TutorGateway(
                 sessions=adaptive_sessions,

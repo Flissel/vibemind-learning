@@ -108,6 +108,10 @@ class LearningNote(Base):
     extra: Mapped[str] = mapped_column(Text, nullable=False, default="")
     extra_sources: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     own_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # "sequenz" (Sequenzplayer) oder "bewertung" (Notiz aus einer falschen Antwort).
+    quelle: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="sequenz", server_default="sequenz"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

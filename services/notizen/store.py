@@ -20,6 +20,7 @@ SELECTION_MAX = 2_000
 TEXT_MAX = 20_000
 OWN_TEXT_MAX = 10_000
 SOURCES_MAX = 20
+QUELLEN = ("sequenz", "bewertung")
 
 
 def _text(value: object, name: str, limit: int) -> str:
@@ -44,6 +45,7 @@ def _public(note: LearningNote) -> dict[str, Any]:
         "extra": note.extra,
         "extra_sources": list(note.extra_sources),
         "own_text": note.own_text,
+        "quelle": note.quelle,
         "created_at": _iso(note.created_at),
         "updated_at": _iso(note.updated_at),
     }
@@ -56,7 +58,10 @@ class NoteStore:
     def create(
         self, *, actor_id: str, course_id: str, sequence_id: str, anchor: dict[str, Any],
         selection: str, explanation: str, extra: str, extra_sources: list[str],
+        quelle: str = "sequenz",
     ) -> dict[str, Any]:
+        if quelle not in QUELLEN:
+            raise ValueError("quelle must be one of: " + ", ".join(QUELLEN))
         if not isinstance(anchor, dict) or not anchor:
             raise ValueError("anchor must name a section or checkpoint")
         if not isinstance(extra_sources, list) or len(extra_sources) > SOURCES_MAX or not all(
@@ -74,6 +79,7 @@ class NoteStore:
             extra=_text(extra, "extra", TEXT_MAX),
             extra_sources=list(extra_sources),
             own_text="",
+            quelle=quelle,
         )
         now = utc_now()
         note.created_at = note.updated_at = now
@@ -81,11 +87,13 @@ class NoteStore:
             db.add(note)
         return _public(note)
 
-    def list_for(self, actor_id: str) -> list[dict[str, Any]]:
+    def list_for(self, actor_id: str, quelle: str = "sequenz") -> list[dict[str, Any]]:
+        if quelle not in QUELLEN:
+            raise ValueError("quelle must be one of: " + ", ".join(QUELLEN))
         with self._sessions() as db:
             notes = db.scalars(
                 select(LearningNote)
-                .where(LearningNote.actor_id == actor_id)
+                .where(LearningNote.actor_id == actor_id, LearningNote.quelle == quelle)
                 .order_by(LearningNote.created_at.desc(), LearningNote.id.desc())
             ).all()
             return [_public(note) for note in notes]

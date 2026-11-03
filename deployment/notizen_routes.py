@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from spaces.learning.deployment.lernende_auth import lernende_person
 from spaces.learning.deployment.vibemind_auth import ApiError
-from spaces.learning.services.notizen.store import OWN_TEXT_MAX, NoteStore
+from spaces.learning.services.notizen.store import OWN_TEXT_MAX, QUELLEN, NoteStore
 
 router = APIRouter()
 
@@ -36,9 +36,11 @@ def _actor(request: Request) -> str:
 
 
 @router.get("/api/v1/notizen")
-def list_notes(request: Request) -> JSONResponse:
+def list_notes(request: Request, quelle: str = "sequenz") -> JSONResponse:
     actor_id = _actor(request)
-    return JSONResponse({"notes": _store().list_for(actor_id)})
+    if quelle not in QUELLEN:
+        raise ApiError(status.HTTP_400_BAD_REQUEST, "invalid_request", "quelle must be sequenz or bewertung")
+    return JSONResponse({"notes": _store().list_for(actor_id, quelle)})
 
 
 @router.patch("/api/v1/notizen/{note_id}")

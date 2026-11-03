@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from uuid import UUID
 
@@ -20,10 +21,15 @@ from spaces.learning.contracts.ui_intents import (
 from spaces.learning.services.adaptive_engine.session_service import (
     AdaptiveSessionService,
     AnswerCommand,
+    PublicTask,
     SessionStartCommand,
     SessionTurn,
 )
 from spaces.learning.services.db.repository import PersistenceConflict
+from spaces.learning.services.notizen.aus_bewertung import notiz_aus_bewertung
+from spaces.learning.services.notizen.store import NoteStore
+
+logger = logging.getLogger(__name__)
 
 
 SESSION_TOOL_NAMES = frozenset(
@@ -40,8 +46,11 @@ SESSION_TOOL_NAMES = frozenset(
 
 
 class AdaptiveSessionGateway:
-    def __init__(self, service: AdaptiveSessionService) -> None:
+    def __init__(
+        self, service: AdaptiveSessionService, notes: NoteStore | None = None
+    ) -> None:
         self._service = service
+        self._notes = notes
 
     def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         try:
@@ -193,14 +202,46 @@ class AdaptiveSessionGateway:
         answer = request.event.payload.get("answer")
         if session_id is None or revision is None or not isinstance(answer, dict):
             raise ValueError("task answer requires session, revision, and answer")
-        return self._service.answer(
+        actor_id = request.event.actor.actor_id
+        # The turn after an answer carries the NEXT task, so the answered one is read first.
+        answered = self._answered_task(str(session_id), actor_id) if self._notes else None
+        turn = self._service.answer(
             AnswerCommand(
                 session_id=str(session_id),
-                actor_id=request.event.actor.actor_id,
+                actor_id=actor_id,
                 expected_session_revision=revision,
                 answer=answer,
             )
         )
+        if answered is not None:
+            self._note_from_feedback(turn, answered, actor_id)
+        return turn
+
+    def _answered_task(self, session_id: str, actor_id: str) -> PublicTask | None:
+        try:
+            return self._service.current(session_id, actor_id=actor_id).task
+        except Exception:  # noqa: BLE001 - answer() reports the real error to the caller
+            return None
+
+    def _note_from_feedback(
+        self, turn: SessionTurn, task: PublicTask, actor_id: str
+    ) -> None:
+        """A wrong training answer leaves one note per (session, task); never blocks the reply."""
+        if turn.mode != "training" or turn.feedback is None or self._notes is None:
+            return
+        try:
+            fields = notiz_aus_bewertung(task, turn.feedback, turn.session_id)
+            if fields is None:
+                return
+            anchor = fields["anchor"]
+            if any(
+                n["sequence_id"] == turn.session_id and n["anchor"] == anchor
+                for n in self._notes.list_for(actor_id, quelle="bewertung")
+            ):
+                return
+            self._notes.create(actor_id=actor_id, course_id=turn.course_id, **fields)
+        except Exception as error:  # noqa: BLE001 - the learner reply stays unchanged
+            logger.warning("learning_note_from_rating_failed", extra={"error_type": type(error).__name__})
 
     def _current(self, request: ToolRequestV1) -> SessionTurn:
         session_id = request.event.session_id
@@ -257,8 +298,9 @@ class AdaptiveSessionGateway:
 
 def build_session_gateways(
     service: AdaptiveSessionService,
+    notes: NoteStore | None = None,
 ) -> Mapping[LearningToolName, ApplicationGateway]:
-    gateway = AdaptiveSessionGateway(service)
+    gateway = AdaptiveSessionGateway(service, notes)
     return {tool: gateway for tool in SESSION_TOOL_NAMES}
 
 
