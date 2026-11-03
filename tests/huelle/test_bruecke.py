@@ -328,6 +328,18 @@ def test_andere_ablehnung_409_nicht_angenommen() -> None:
     assert lern.tools()[-1] == "learning_task_next"
 
 
+def test_zeichnung_canvas_konflikt_409_schon_abgegeben() -> None:
+    lern, client, _, _ = _zeichen_sitzung()
+    lern.antworten["learning_canvas_save"] = LearningAbgelehnt("PenEcho learning canvas revision conflict",
+                                                               "canvas_revision_conflict")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/zeichnung", json={"revision": 1})
+    assert r.status_code == 409
+    assert r.json()["meldung"] == SCHON_ABGEGEBEN and r.json()["code"] == "canvas_revision_conflict"
+    assert r.json()["turn"]["task"]["id"] == TASK_1
+    assert lern.tools()[-1] == "learning_task_next"
+    assert "learning_canvas_submit" not in lern.tools()
+
+
 def test_zeichnung_andere_ablehnung_409_nicht_angenommen() -> None:
     lern, client, _, _ = _zeichen_sitzung()
     lern.antworten["learning_canvas_save"] = LearningAbgelehnt("canvas snapshot must be a PNG image",

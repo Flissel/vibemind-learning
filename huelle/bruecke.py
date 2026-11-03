@@ -66,8 +66,11 @@ MAX_FRAGE = 500
 SMILEYS = frozenset({"gut", "mittel", "schlecht"})
 _PNG = b"\x89PNG\r\n\x1a\n"
 _NAMENSRAUM = UUID("0b8f6c1e-3a7d-4f52-9c1e-6d2a4b7e9f30")
-# Learning-Codes (mcp/tools/sessions.py), bei denen die Abgabe schon verbucht oder ueberholt ist.
-_SCHON_ABGEGEBEN_CODES = frozenset({"session_revision_conflict", "session_state_conflict"})
+# Learning-Codes (mcp/tools/sessions.py, mcp/tools/canvas.py), bei denen die Abgabe schon
+# verbucht oder ueberholt ist (Ruling H).
+_SCHON_ABGEGEBEN_CODES = frozenset({
+    "session_revision_conflict", "session_state_conflict", "canvas_revision_conflict",
+})
 _SERVICE_HEADER = "X-LearnHouse-Learning-Service-Key"
 _ACTOR_HEADER = "X-Learning-Actor"
 
