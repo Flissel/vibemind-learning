@@ -59,3 +59,40 @@ test("klartext: Grundfaelle wie formeltext.py", () => {
   assert.equal(klartext("Preis \\$5"), "Preis $5");
   assert.equal(klartext("$x_1 \\to \\infty$"), "x₁ → ∞");
 });
+
+import { meldungFuer, nach409, ALLGEMEIN, FESTE_MELDUNGEN } from "./aufgabe.js";
+
+test("meldungFuer: alle festen deutschen Texte der Bruecke bleiben", () => {
+  for (const m of [
+    "Learning ist gerade nicht erreichbar. Ihre Fläche bleibt erhalten.",
+    "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.",
+    "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe.",
+    "Dieser Kurs hat noch keine freigegebenen Aufgaben.",
+    "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist.",
+    "Die Fläche ist gerade nicht erreichbar.",
+    "Kein Hinweis verfügbar.",
+    "Im Prüfungsmodus gibt es keine Hinweise.",
+    "Bitte wählen Sie eines der drei Gesichter.",
+    "Bitte nennen Sie höchstens drei Stichworte.",
+    "Diesen Kurs gibt es hier nicht.",
+    "Ungültige Eingabe.",
+    "Die aktuelle Aufgabe ist keine Zeichenaufgabe.",
+    "Während der Aufgabe hilft „Erklär mir das“.",
+  ]) {
+    assert.ok(FESTE_MELDUNGEN.has(m), m);
+    assert.equal(meldungFuer({ meldung: m }), m);
+  }
+});
+
+test("meldungFuer: Fremdtexte werden allgemein", () => {
+  assert.equal(meldungFuer({ meldung: "no task is open" }), ALLGEMEIN);
+  assert.equal(meldungFuer({}), ALLGEMEIN);
+  assert.equal(meldungFuer(null), ALLGEMEIN);
+});
+
+test("nach409: offene Aufgabe -> weiter, sonst zeigen", () => {
+  assert.equal(nach409({ state: "active", task: { id: "t" } }), "weiter");
+  assert.equal(nach409({ state: "completed", task: null }), "zeigen");
+  assert.equal(nach409({ state: "active", task: null }), "zeigen");
+  assert.equal(nach409(undefined), "zeigen");
+});

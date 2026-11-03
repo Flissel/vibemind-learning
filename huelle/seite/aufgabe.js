@@ -109,3 +109,33 @@ export function formel(text, katex) {
     return { text: klartext(quelle) };
   }
 }
+
+// ---- Meldungen der Bruecke (alle festen deutschen Texte aus bruecke.py) ---------------------
+export const ALLGEMEIN = "Das hat gerade nicht geklappt. Bitte versuchen Sie es noch einmal.";
+export const FESTE_MELDUNGEN = new Set([
+  "Learning ist gerade nicht erreichbar. Ihre Fläche bleibt erhalten.",
+  "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.",
+  "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe.",
+  "Dieser Kurs hat noch keine freigegebenen Aufgaben.",
+  "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist.",
+  "Die Fläche ist gerade nicht erreichbar.",
+  "Kein Hinweis verfügbar.",
+  "Im Prüfungsmodus gibt es keine Hinweise.",
+  "Bitte wählen Sie eines der drei Gesichter.",
+  "Bitte nennen Sie höchstens drei Stichworte.",
+  "Diesen Kurs gibt es hier nicht.",
+  "Ungültige Eingabe.",
+  "Die aktuelle Aufgabe ist keine Zeichenaufgabe.",
+  "Während der Aufgabe hilft „Erklär mir das“.",
+]);
+
+/** Der Banner-Text zu einer Fehlerantwort: feste Texte der Bruecke, sonst der allgemeine Text. */
+export function meldungFuer(daten) {
+  const m = daten && typeof daten.meldung === "string" ? daten.meldung : "";
+  return FESTE_MELDUNGEN.has(m) ? m : ALLGEMEIN;
+}
+
+/** Nach einem 409 mit Turn: hat der Turn eine offene Aufgabe, ruft die Seite `weiter` (Flaeche, Sperre). */
+export function nach409(turn) {
+  return turn && turn.state === "active" && turn.task ? "weiter" : "zeigen";
+}

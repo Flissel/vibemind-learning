@@ -1,5 +1,5 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
-import { antwortAus, formel, klartext } from "./aufgabe.js";
+import { antwortAus, formel, klartext, meldungFuer, nach409 } from "./aufgabe.js";
 
 const API = "/lernen/api";
 
@@ -19,11 +19,6 @@ const TEXT = {
   zahl: "Bitte eine Zahl eingeben, z. B. -1,5",
   rechnen: "Sie können auf der Fläche rechnen oder zeichnen.",
 };
-// Nur diese Texte der Bruecke werden angezeigt (Ruling I); alles andere wird zum allgemeinen Text.
-const FESTE_MELDUNGEN = new Set([
-  TEXT.nichtErreichbar, TEXT.schonAbgegeben, TEXT.keinKurs, TEXT.flaecheWeg, TEXT.sperre,
-  TEXT.nichtAngenommen, TEXT.keinHinweis, TEXT.keinHinweisPruefung,
-]);
 const SHELLS = { powershell: "Windows PowerShell", cmd: "Windows CMD", unix: "macOS / Linux" };
 const SMILEYS = [
   { wert: "schlecht", zeichen: "😕" },
@@ -82,11 +77,6 @@ function banner(text) {
   const b = $("banner");
   b.textContent = text ?? "";
   b.hidden = !text;
-}
-
-function meldungFuer(daten) {
-  const m = daten && typeof daten.meldung === "string" ? daten.meldung : "";
-  return FESTE_MELDUNGEN.has(m) ? m : TEXT.allgemein;
 }
 
 async function api(methode, pfad, body) {
@@ -275,7 +265,7 @@ function karteRueckmeldung() {
   const text = r.state === "needs_review" && !r.text ? TEXT.wirdGeprueft : r.text;
   for (const absatz of absaetze(text)) box.append(setzeText(el("p"), absatz, z.aufgabeMathe === true));
   $("karte").replaceChildren(box, el("div", { class: "knoepfe" },
-    el("button", { type: "button", class: "haupt-knopf", id: "weiter", text: "Weiter", onclick: weiter })));
+    el("button", { type: "button", class: "haupt-knopf", id: "weiter", text: "Weiter", onclick: () => weiter() })));
 }
 
 function karteLeer() {
@@ -403,7 +393,9 @@ function fehlerBehandeln(r) {
     z.phase = "aufgabe";
     const abgeschlossen = r.daten.turn.progress?.completed;
     turnUebernehmen(r.daten.turn, typeof abgeschlossen === "number" ? abgeschlossen + 1 : null);
-    zeigen();
+    // Flaeche und Sperre fuer eine neue Aufgabe setzt nur `weiter`.
+    if (nach409(r.daten.turn) === "weiter") void weiter(true);
+    else zeigen();
   }
 }
 
@@ -464,10 +456,10 @@ function rueckmeldungZeigen(daten) {
   void notizenLaden();
 }
 
-async function weiter() {
+async function weiter(bannerBehalten = false) {
   const t = z.turn;
   sperren(true);
-  banner("");
+  if (bannerBehalten !== true) banner("");
   const r = await api("POST", `/sitzungen/${t.session_id}/weiter`);
   z.busy = false;
   if (!r.ok) { sperren(false); fehlerBehandeln(r); return; }
