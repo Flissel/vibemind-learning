@@ -17,6 +17,7 @@ import websockets
 from spaces.learning.huelle.durchreicher import SPERR_TEXT, Durchreicher
 from spaces.learning.huelle.sperre import Sperre
 
+EIGEN = frozenset({"https://lernen.example.test", "http://127.0.0.1:8099"})
 CSP = "default-src 'self'; frame-ancestors 'none'; img-src data:"
 
 
@@ -117,7 +118,7 @@ async def _lauf(app: Any, pfad: str, *, methode: str = "GET", headers: list[tupl
 def test_ki_pfad_gesperrt_423_ohne_upstream(fake: tuple[FakePenEcho, str]) -> None:
     upstream, url = fake
     upstream.aufrufe.clear()
-    app = Durchreicher(url, Sperre())  # Startzustand unbekannt
+    app = Durchreicher(url, Sperre(), EIGEN)  # Startzustand unbekannt
     status, headers, teile = asyncio.run(_lauf(app, "/api/ai/command", methode="POST", body=b"{}"))
     assert status == 423
     assert json.loads(b"".join(t for _, t in teile).decode("utf-8")) == {"error": "Während der Aufgabe hilft „Erklär mir das“."}
@@ -130,7 +131,7 @@ def test_ki_pfad_gesperrt_423_ohne_upstream(fake: tuple[FakePenEcho, str]) -> No
 def test_ki_pfad_umgehungen_gesperrt(fake: tuple[FakePenEcho, str], pfad: str) -> None:
     upstream, url = fake
     upstream.aufrufe.clear()
-    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre()), pfad))
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre(), EIGEN), pfad))
     assert status == 423
     assert upstream.aufrufe == []
 
@@ -139,7 +140,7 @@ def test_ki_pfad_umgehungen_gesperrt(fake: tuple[FakePenEcho, str], pfad: str) -
 def test_ki_pfad_backslash_und_steuerzeichen_nicht_durch(fake: tuple[FakePenEcho, str], pfad: str) -> None:
     upstream, url = fake
     upstream.aufrufe.clear()
-    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre()), pfad, methode="POST", body=b"{}"))
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre(), EIGEN), pfad, methode="POST", body=b"{}"))
     assert status in (400, 423)
     assert upstream.aufrufe == []
 
@@ -147,7 +148,7 @@ def test_ki_pfad_backslash_und_steuerzeichen_nicht_durch(fake: tuple[FakePenEcho
 def test_ki_pfad_frei_wird_durchgereicht(fake: tuple[FakePenEcho, str]) -> None:
     upstream, url = fake
     upstream.aufrufe.clear()
-    status, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei()), "/api/ai/command", methode="POST", body=b"{}"))
+    status, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/api/ai/command", methode="POST", body=b"{}"))
     assert status == 200
     assert upstream.aufrufe == ["/api/ai/command"]
     assert b"".join(t for _, t in teile) == b"hallo"
@@ -156,14 +157,14 @@ def test_ki_pfad_frei_wird_durchgereicht(fake: tuple[FakePenEcho, str]) -> None:
 def test_andere_pfade_trotz_sperre_durchgereicht(fake: tuple[FakePenEcho, str]) -> None:
     upstream, url = fake
     upstream.aufrufe.clear()
-    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre()), "/api/cloud/status"))
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, Sperre(), EIGEN), "/api/cloud/status"))
     assert status == 200
     assert upstream.aufrufe == ["/api/cloud/status"]
 
 
 def test_csp_frame_ancestors_wird_self(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei()), "/"))
+    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/"))
     csp = [v for k, v in headers if k == b"content-security-policy"]
     assert csp == [b"default-src 'self'; frame-ancestors 'self'; img-src data:"]
     assert (b"x-eigen", b"unveraendert") in headers
@@ -172,7 +173,7 @@ def test_csp_frame_ancestors_wird_self(fake: tuple[FakePenEcho, str]) -> None:
 def test_host_und_origin_umgeschrieben(fake: tuple[FakePenEcho, str]) -> None:
     upstream, url = fake
     host = url.removeprefix("http://")
-    asyncio.run(_lauf(Durchreicher(url, _frei()), "/", methode="POST", body=b"x", headers=[
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", methode="POST", body=b"x", headers=[
         (b"host", b"lernen.example.test"), (b"origin", b"https://lernen.example.test"),
         (b"connection", b"keep-alive"), (b"cookie", b"a=b"),
     ]))
@@ -184,19 +185,19 @@ def test_host_und_origin_umgeschrieben(fake: tuple[FakePenEcho, str]) -> None:
 
 def test_origin_wird_nicht_erfunden(fake: tuple[FakePenEcho, str]) -> None:
     upstream, url = fake
-    asyncio.run(_lauf(Durchreicher(url, _frei()), "/", headers=[(b"host", b"lernen.example.test")]))
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", headers=[(b"host", b"lernen.example.test")]))
     assert "origin" not in upstream.kopf
 
 
 def test_set_cookie_bleibt(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei()), "/"))
+    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/"))
     assert (b"set-cookie", b"penecho_ai_session_x=abc; HttpOnly; SameSite=Strict") in headers
 
 
 def test_sse_wird_gestreamt(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    _, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei()), "/sse"))
+    _, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/sse"))
     daten = [(t, b) for t, b in teile if b]
     assert [b for _, b in daten] == [b"data: 1\n\n", b"data: 2\n\n"]
     assert daten[1][0] - daten[0][0] >= 0.7  # erstes Ereignis kam vor dem Ende an
@@ -207,7 +208,7 @@ def test_penecho_weg_502() -> None:
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()  # nichts lauscht mehr
-    status, _, teile = asyncio.run(_lauf(Durchreicher(f"http://127.0.0.1:{port}", _frei()), "/"))
+    status, _, teile = asyncio.run(_lauf(Durchreicher(f"http://127.0.0.1:{port}", _frei(), EIGEN), "/"))
     assert status == 502
     assert b"".join(t for _, t in teile).decode("utf-8") == "Die Fläche ist gerade nicht erreichbar."
 
@@ -232,7 +233,7 @@ async def _ws_lauf(app: Any, pfad: str, nachricht: str) -> list[dict[str, Any]]:
 
 def test_websocket_durchgereicht(fake: tuple[FakePenEcho, str]) -> None:
     upstream, url = fake
-    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre()), "/api/mcp/canvas", "hi"))
+    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre(), EIGEN), "/api/mcp/canvas", "hi"))
     assert [m["type"] for m in gesendet][:2] == ["websocket.accept", "websocket.send"]
     assert gesendet[1]["text"] == "echo:hi"
     assert upstream.kopf["origin"] == url
@@ -240,7 +241,7 @@ def test_websocket_durchgereicht(fake: tuple[FakePenEcho, str]) -> None:
 
 def test_websocket_ki_pfad_gesperrt(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre()), "/api/canvas-agent/socket", "hi"))
+    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre(), EIGEN), "/api/canvas-agent/socket", "hi"))
     assert [m["type"] for m in gesendet] == ["websocket.close"]
 
 
@@ -249,13 +250,13 @@ def test_websocket_penecho_weg_schliesst() -> None:
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
-    gesendet = asyncio.run(_ws_lauf(Durchreicher(f"http://127.0.0.1:{port}", _frei()), "/api/mcp/canvas", "hi"))
+    gesendet = asyncio.run(_ws_lauf(Durchreicher(f"http://127.0.0.1:{port}", _frei(), EIGEN), "/api/mcp/canvas", "hi"))
     assert [m["type"] for m in gesendet] == ["websocket.close"]
 
 
 def test_websocket_backslash_pfad_gesperrt(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre()), "/api\\canvas-agent\\socket", "hi"))
+    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, Sperre(), EIGEN), "/api\\canvas-agent\\socket", "hi"))
     assert [m["type"] for m in gesendet] == ["websocket.close"]
 
 
@@ -264,9 +265,10 @@ def test_websocket_wird_bei_neuer_sperre_geschlossen(fake: tuple[FakePenEcho, st
     sperre = _frei()
 
     async def lauf() -> list[dict[str, Any]]:
-        app = Durchreicher(url, sperre)
+        app = Durchreicher(url, sperre, EIGEN)
         scope = {"type": "websocket", "path": "/api/canvas-agent/socket", "raw_path": b"/api/canvas-agent/socket",
-                 "query_string": b"", "headers": []}
+                 "query_string": b"",
+                 "headers": [(b"origin", b"https://lernen.example.test")]}
         gesendet: list[dict[str, Any]] = []
         eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         eingang.put_nowait({"type": "websocket.connect"})
@@ -286,3 +288,64 @@ def test_websocket_wird_bei_neuer_sperre_geschlossen(fake: tuple[FakePenEcho, st
     texte = [m.get("text") for m in gesendet if m["type"] == "websocket.send"]
     assert texte == ["echo:eins"]
     assert gesendet[-1]["type"] == "websocket.close" and gesendet[-1]["code"] == 1008
+
+
+def test_http_fremde_herkunft_403_ohne_upstream(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    for fremd in (b"https://boese.example.test", b"null", b"HTTPS://lernen.example.test:444",
+                  b"https://lernen.example.test/"):
+        status, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/api/local-access/pin",
+                                             methode="POST", body=b"{}", headers=[(b"origin", fremd)]))
+        assert status == 403, fremd
+        assert b"".join(t for _, t in teile) == b"Nicht erlaubt."
+    assert upstream.aufrufe == []
+
+
+def test_http_eigene_herkunft_wird_umgeschrieben(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    for eigen in (b"https://lernen.example.test", b"HTTPS://Lernen.Example.test", b"http://127.0.0.1:8099"):
+        asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", methode="POST", body=b"{}",
+                          headers=[(b"origin", eigen)]))
+        assert upstream.kopf["origin"] == url
+
+
+def _ws_mit_origin(app: Any, origin: bytes | None) -> list[dict[str, Any]]:
+    async def lauf() -> list[dict[str, Any]]:
+        scope = {"type": "websocket", "path": "/api/mcp/canvas", "raw_path": b"/api/mcp/canvas", "query_string": b"",
+                 "headers": [] if origin is None else [(b"origin", origin)]}
+        gesendet: list[dict[str, Any]] = []
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        eingang.put_nowait({"type": "websocket.connect"})
+
+        async def send(m: dict[str, Any]) -> None:
+            gesendet.append(m)
+            if m["type"] == "websocket.accept":
+                eingang.put_nowait({"type": "websocket.receive", "text": "hi"})
+            if m["type"] == "websocket.send":
+                eingang.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+        await asyncio.wait_for(app(scope, eingang.get, send), timeout=10)
+        return gesendet
+
+    return asyncio.run(lauf())
+
+
+def test_websocket_ohne_origin_1008(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    gesendet = _ws_mit_origin(Durchreicher(url, _frei(), EIGEN), None)
+    assert [(m["type"], m.get("code")) for m in gesendet] == [("websocket.close", 1008)]
+
+
+def test_websocket_fremde_origin_1008(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    for fremd in (b"https://boese.example.test", b"null"):
+        gesendet = _ws_mit_origin(Durchreicher(url, _frei(), EIGEN), fremd)
+        assert [(m["type"], m.get("code")) for m in gesendet] == [("websocket.close", 1008)]
+
+
+def test_websocket_eigene_origin_echo(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    gesendet = _ws_mit_origin(Durchreicher(url, _frei(), EIGEN), b"https://lernen.example.test")
+    assert gesendet[1]["text"] == "echo:hi"
+    assert upstream.kopf["origin"] == url

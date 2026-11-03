@@ -65,12 +65,13 @@ def _pfad_und_query(scope: Scope) -> str:
 
 
 class Durchreicher:
-    def __init__(self, penecho_url: str, sperre: Sperre) -> None:
+    def __init__(self, penecho_url: str, sperre: Sperre, eigene_herkuenfte: frozenset[str]) -> None:
         teile = urlsplit(penecho_url)
         self._basis = f"{teile.scheme}://{teile.netloc}"
         self._netloc = teile.netloc
         self._ws_basis = ("wss" if teile.scheme == "https" else "ws") + f"://{teile.netloc}"
         self._sperre = sperre
+        self._eigene = frozenset(h.lower() for h in eigene_herkuenfte)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -87,6 +88,10 @@ class Durchreicher:
                     return
 
     # --- HTTP ---------------------------------------------------------------------------
+
+    def _origin_erlaubt(self, origin: str) -> bool:
+        """Exakter Vergleich (scheme://host[:port], Host klein); `null` und Pfadanhaenge fallen durch."""
+        return origin.lower() in self._eigene
 
     def _anfrage_kopf(self, scope: Scope) -> list[tuple[str, str]]:
         kopf: list[tuple[str, str]] = []
@@ -115,6 +120,15 @@ class Durchreicher:
         return aus
 
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
+        for roh_name, roh_wert in scope["headers"]:
+            if roh_name.lower() == b"origin" and not self._origin_erlaubt(roh_wert.decode("latin-1")):
+                body = b"Nicht erlaubt."
+                await send({"type": "http.response.start", "status": 403, "headers": [
+                    (b"content-type", b"text/plain; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ]})
+                await send({"type": "http.response.body", "body": body})
+                return
         if pfad_unzulaessig(scope):
             body = "Ungültiger Pfad".encode("utf-8")
             await send({"type": "http.response.start", "status": 400, "headers": [
@@ -176,6 +190,10 @@ class Durchreicher:
     async def _ws(self, scope: Scope, receive: Receive, send: Send) -> None:
         nachricht = await receive()
         if nachricht["type"] != "websocket.connect":
+            return
+        origin = next((w.decode("latin-1") for n, w in scope["headers"] if n.lower() == b"origin"), None)
+        if origin is None or not self._origin_erlaubt(origin):
+            await send({"type": "websocket.close", "code": 1008})
             return
         ki_pfad = ist_ki_pfad(scope["path"])
         if pfad_unzulaessig(scope) or (ki_pfad and self._sperre.gesperrt()):
