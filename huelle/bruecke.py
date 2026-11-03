@@ -15,8 +15,10 @@ import base64
 import io
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, NoReturn, TypeVar
 from uuid import UUID, uuid5
 
@@ -24,12 +26,12 @@ import httpx
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .einstellung import Einstellung, Kurs
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
-from .penecho_mcp import RASTER_BREITE, RASTER_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
+from .penecho_mcp import BEREICH_BREITE, BEREICH_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
 from .sperre import Sperre
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,13 @@ _SCHON_ABGEGEBEN_CODES = frozenset({
 })
 _SERVICE_HEADER = "X-LearnHouse-Learning-Service-Key"
 _ACTOR_HEADER = "X-Learning-Actor"
+# Bilder der Aufgaben (gezeichnete Graphen, Terminalfenster) liegen bei learning-api; die Seite holt sie
+# ueber die eigene Route. Gleiches Namensmuster wie der Fork (practice.py `_MEDIA_PATH`).
+MEDIEN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(png|jpg|webp)$")
+_MEDIEN_PFAD = re.compile(r"^/lernsequenz-medien/([A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:png|jpg|webp))$")
+MEDIEN_ROUTE = "/lernen/api/medien/"
+_MEDIEN_ART = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+MAX_MEDIUM = 8 * 1024 * 1024
 
 
 def _typ(fehler: BaseException) -> str:
@@ -91,6 +100,7 @@ class _Antwort(Exception):
 @dataclass
 class _Sitzung:
     kurs: Kurs
+    sid: str                        # Learning-Sitzung; zugleich Schluessel der Flaeche (Ruling L)
     aufgabe_id: str | None = None   # aktuelle Aufgabe laut letztem Turn
     nummer: int | None = None       # Flaechenbereich der aktuellen Aufgabe (Ruling B)
     auf_flaeche: bool = False       # aktuelle Aufgabe steht schon auf der Flaeche
@@ -116,11 +126,37 @@ def _nummer(turn: dict[str, Any]) -> int:
     return (completed if isinstance(completed, int) and not isinstance(completed, bool) else 0) + 1
 
 
+def _medien(turn: dict[str, Any]) -> dict[str, Any]:
+    """Bildfelder der Aufgabe auf die eigene Route umschreiben, alles andere darin entfernen (wie der Fork)."""
+    task = turn.get("task")
+    presentation = task.get("presentation") if isinstance(task, dict) else None
+    if not isinstance(presentation, dict):
+        return turn
+
+    def fix(eintrag: dict[str, Any]) -> None:
+        if "image" not in eintrag or eintrag["image"] is None:
+            return
+        bild = eintrag["image"]
+        treffer = _MEDIEN_PFAD.fullmatch(bild) if isinstance(bild, str) else None
+        if treffer:
+            eintrag["image"] = MEDIEN_ROUTE + treffer.group(1)
+        else:
+            eintrag.pop("image")
+
+    fix(presentation)
+    for seite in ("left", "right"):
+        eintraege = presentation.get(seite)
+        for eintrag in eintraege if isinstance(eintraege, list) else []:
+            if isinstance(eintrag, dict):
+                fix(eintrag)
+    return turn
+
+
 def _turn(result: dict[str, Any]) -> dict[str, Any]:
     turn = result.get("session")
     if not isinstance(turn, dict):
         raise LearningWeg("session")
-    return turn
+    return _medien(turn)
 
 
 def rueckmeldung_text(turn: dict[str, Any]) -> str | None:
@@ -182,6 +218,7 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/erklaeren", self._r_erklaeren, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/hinweis", self._r_hinweis, methods=["POST"]),
             Route(f"{p}/notizen", self._r_notizen, methods=["GET"]),
+            Route(f"{p}/medien/{{name}}", self._r_medien, methods=["GET"]),
         ])
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -255,24 +292,29 @@ class Bruecke:
         if kurs is None:
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
         task = _task(turn)
-        sitzung = _Sitzung(kurs, task["id"] if task else None, _nummer(turn) if task else None)
+        sitzung = _Sitzung(kurs, norm, task["id"] if task else None, _nummer(turn) if task else None)
         self._sitzungen[norm] = sitzung
         return norm, sitzung, turn
 
     # ---- PenEcho ----------------------------------------------------------
-    def _auf_flaeche(self, titel: str, aktion: Callable[[str], T]) -> T:
-        """Canvas-Aufruf; kennt PenEcho die Sitzung nicht mehr, einmal neu anlegen und wiederholen."""
-        session_id = self._penecho.sitzung(titel)
+    def _auf_flaeche(self, sitzung: _Sitzung, aktion: Callable[[str], T]) -> T:
+        """Canvas-Aufruf auf der Flaeche dieser Lernsitzung (Ruling L).
+
+        Kennt PenEcho die Sitzung nicht mehr, einmal neu anlegen und wiederholen.
+        """
+        titel = f"{sitzung.kurs.titel} · {date.today():%d.%m.%Y}"
+        session_id = self._penecho.sitzung(sitzung.sid, titel)
         try:
             return aktion(session_id)
         except PenEchoSitzungUnbekannt:
-            self._penecho.vergessen(titel)
-            return aktion(self._penecho.sitzung(titel))
+            self._penecho.vergessen(sitzung.sid)
+            return aktion(self._penecho.sitzung(sitzung.sid, titel))
 
-    def _flaeche_still(self, titel: str, aktion: Callable[[str], Any]) -> bool:
+    def _flaeche_still(self, sitzung: _Sitzung, aktion: Callable[[str], Any]) -> bool:
         try:
-            self._auf_flaeche(titel, aktion)
-        except (PenEchoNichtErreichbar, OSError) as fehler:
+            self._auf_flaeche(sitzung, aktion)
+        except (PenEchoNichtErreichbar, OSError, ValueError) as fehler:
+            # ValueError: Aufgabennummer ausserhalb der 20 Bereiche der Flaeche.
             log.warning("Flaeche uebersprungen: %s", _typ(fehler))
             return False
         return True
@@ -291,7 +333,7 @@ class Bruecke:
             return nummer, True
         text = str(task.get("prompt") or "")
         ok = self._flaeche_still(
-            sitzung.kurs.titel, lambda s: self._penecho.aufgabe_setzen(s, aufgabe_id, text, nummer)
+            sitzung, lambda s: self._penecho.aufgabe_setzen(s, aufgabe_id, text, nummer)
         )
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
         return nummer, ok
@@ -299,12 +341,33 @@ class Bruecke:
     def _frei(self, sitzung: _Sitzung) -> None:
         """Die Sperre ist global: nur loesen, wenn keine andere Sitzung eine offene Aufgabe hat.
 
-        Andere bekannte Sitzungen zaehlen mit ihrer aktuellen Aufgabe. Kurse ohne bekannte Sitzung
-        (etwa nach einem Neustart) fragt die Bruecke per Ueberblick; scheitert das, bleibt es gesperrt.
+        Andere bekannte Sitzungen liest die Bruecke bei Learning neu, statt der gemerkten Aufgabe zu
+        trauen (sie kann anderswo, etwa im Fork, laengst abgegeben sein). Ist Learning weg, bleibt es
+        gesperrt; lehnt Learning eine gemerkte Sitzung ab, wird sie vergessen und ihr Kurs per Ueberblick
+        geprueft. Kurse ohne bekannte Sitzung (etwa nach einem Neustart) fragt die Bruecke per Ueberblick;
+        scheitert das, bleibt es gesperrt.
         """
-        for andere in list(self._sitzungen.values()):
-            if andere is not sitzung and andere.aufgabe_id is not None:
-                self._sperre.offen(andere.aufgabe_id)
+        for andere_sid, andere in list(self._sitzungen.items()):
+            if andere is sitzung:
+                continue
+            try:
+                turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=andere_sid))
+            except LearningWeg as fehler:
+                log.warning("Sperre bleibt, Sitzung nicht lesbar: %s", _typ(fehler))
+                self._sperre.unbekannt()
+                return
+            except LearningAbgelehnt as fehler:
+                log.warning("Gemerkte Sitzung abgelehnt, vergessen: %s", _typ(fehler))
+                self._sitzungen.pop(andere_sid, None)
+                continue
+            task = _task(turn)
+            nummer = _nummer(turn) if task else None
+            neu = task["id"] if task else None
+            if neu != andere.aufgabe_id or nummer != andere.nummer:
+                andere.auf_flaeche = False
+            andere.aufgabe_id, andere.nummer = neu, nummer
+            if task is not None:
+                self._sperre.offen(task["id"])
                 return
         bekannt = {s.kurs.course_id for s in list(self._sitzungen.values())} | {sitzung.kurs.course_id}
         for kurs in self._e.kurse:
@@ -323,7 +386,7 @@ class Bruecke:
             andere_sid = _uuid(str(laufend.get("session_id"))) if isinstance(laufend, dict) else None
             if task is not None:
                 if andere_sid is not None:
-                    self._sitzungen.setdefault(andere_sid, _Sitzung(kurs, task["id"], _nummer(laufend)))
+                    self._sitzungen.setdefault(andere_sid, _Sitzung(kurs, andere_sid, task["id"], _nummer(laufend)))
                 self._sperre.offen(task["id"])
                 return
         self._sperre.frei()
@@ -344,7 +407,7 @@ class Bruecke:
             return None, False
         titel = f"Rückmeldung zu Aufgabe {nummer}"
         ok = self._flaeche_still(
-            sitzung.kurs.titel, lambda s: self._penecho.notizkarte(s, aufgabe_id, titel, text)
+            sitzung, lambda s: self._penecho.notizkarte(s, aufgabe_id, titel, text)
         )
         return text, ok
 
@@ -382,9 +445,13 @@ class Bruecke:
             if sid is None:
                 raise LearningWeg("session_id")
         turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+        # Learning nennt fuer diesen Kurs genau diese Sitzung: aeltere gemerkte Sitzungen des Kurses
+        # (abgebrochen, ersetzt) wuerden sonst die Sperre mit ihrer alten Aufgabe zuhalten.
+        for alt in [k for k, s in self._sitzungen.items() if s.kurs.course_id == kurs.course_id and k != sid]:
+            del self._sitzungen[alt]
         sitzung = self._sitzungen.get(sid)
         if sitzung is None or sitzung.kurs.course_id != kurs.course_id:
-            sitzung = self._sitzungen[sid] = _Sitzung(kurs)
+            sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid)
         nummer, flaeche = self._zeigen(sitzung, turn)
         begriffe = ueberblick.get("begriffe")
         return {
@@ -450,7 +517,7 @@ class Bruecke:
             self._stand_neu(sid, sitzung, "session_state_conflict")
         # 1. Schnappschuss des Aufgabenbereichs; ohne Flaeche keine Abgabe.
         try:
-            bild = self._auf_flaeche(sitzung.kurs.titel, lambda s: self._penecho.schnappschuss(s, nummer))
+            bild = self._auf_flaeche(sitzung, lambda s: self._penecho.schnappschuss(s, nummer))
             png = _als_png(bild)
         except Exception as fehler:  # noqa: BLE001 - PenEcho weg oder Bild unlesbar
             log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
@@ -481,7 +548,7 @@ class Bruecke:
                 "objects": [{
                     "object_id": "schnappschuss",
                     "object_type": "image",
-                    "x": 0, "y": 0, "width": RASTER_BREITE, "height": RASTER_HOEHE, "rotation": 0,
+                    "x": 0, "y": 0, "width": BEREICH_BREITE, "height": BEREICH_HOEHE, "rotation": 0,
                     "asset_ref": f"artifact://learning/canvas/{sid}/{canvas_rev + 1}/snapshot.png",
                 }],
             }
@@ -590,6 +657,37 @@ class Bruecke:
         if not isinstance(wert, dict):
             raise LearningWeg("api")
         return wert
+
+    async def _r_medien(self, request: Request) -> Response:
+        """Ein Aufgabenbild von learning-api (`/lernsequenz-medien/{name}`), nur bekannte Namen und Arten."""
+        name = request.path_params["name"]
+        treffer = MEDIEN_NAME.fullmatch(name)
+        if treffer is None:
+            return self._json(404, {"meldung": "Nicht gefunden"})
+        try:
+            inhalt = await run_in_threadpool(self._medium, name)
+        except LearningWeg:
+            return self._json(503, {"meldung": NICHT_ERREICHBAR})
+        if inhalt is None:
+            return self._json(404, {"meldung": "Nicht gefunden"})
+        # Der Typ kommt aus der Endung, nicht von der Gegenseite.
+        return Response(inhalt, media_type=_MEDIEN_ART[treffer.group(1)], headers={
+            "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff",
+        })
+
+    def _medium(self, name: str) -> bytes | None:
+        # Die Medienroute von learning-api ist offen; der Dienstschluessel geht nicht mit.
+        try:
+            antwort = self._http.get(f"{self._e.api_url.rstrip('/')}/lernsequenz-medien/{name}")
+        except httpx.HTTPError as fehler:
+            log.warning("learning-api nicht erreichbar: %s", _typ(fehler))
+            raise LearningWeg("medien") from None
+        if antwort.status_code == 404:
+            return None
+        if antwort.status_code != 200 or len(antwort.content) > MAX_MEDIUM:
+            log.warning("learning-api Medien: HTTP %s", antwort.status_code)
+            raise LearningWeg("medien")
+        return antwort.content
 
     async def _r_notizen(self, request: Request) -> JSONResponse:
         course_id = request.query_params.get("course_id", "")

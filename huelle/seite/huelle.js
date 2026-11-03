@@ -1,5 +1,7 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
-import { antwortAus, formel, klartext, meldungFuer, nach409 } from "./aufgabe.js";
+import {
+  antwortAus, bildAus, fensterAus, formel, klartext, meldungFuer, nach409, prozent, sperrHinweis, SPERR_HINWEIS,
+} from "./aufgabe.js";
 
 const API = "/lernen/api";
 
@@ -9,7 +11,7 @@ const TEXT = {
   schonAbgegeben: "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.",
   keinKurs: "Dieser Kurs hat noch keine freigegebenen Aufgaben.",
   flaecheWeg: "Die Fläche ist gerade nicht erreichbar.",
-  sperre: "Während der Aufgabe hilft „Erklär mir das“.",
+  sperre: SPERR_HINWEIS,
   nichtAngenommen: "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe.",
   wirdGeprueft: "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist.",
   keinHinweis: "Kein Hinweis verfügbar.",
@@ -158,7 +160,44 @@ function reihenfolgeFeld(items, math) {
   return { knoten: liste, lesen: () => ({ reihenfolge: [...ordnung] }) };
 }
 
+function bildKnoten(bild, alt) {
+  return el("img", { class: "bild", src: bild.src, alt, width: bild.width, height: bild.height, loading: "lazy" });
+}
+
+/** Lueckentext im gezeichneten Fenster (wie TaskRenderer.tsx); laedt das Bild nicht, kommt die Textzeile. */
+function fensterFeld(task, fenster) {
+  const shell = typeof task.presentation?.shell === "string" ? task.presentation.shell : undefined;
+  const name = shell ? SHELLS[shell] ?? shell : "Terminal";
+  const eingabe = el("input", {
+    type: "text", name: "antwort", class: "fenster-luecke", "aria-label": `Lücke im Fenster von ${name}`,
+    autocomplete: "off", spellcheck: "false", required: true,
+  });
+  Object.assign(eingabe.style, prozent(fenster.rect, fenster));
+  const spiegel = fenster.more.map((r) => {
+    const s = el("span", { class: "fenster-spiegel", "aria-hidden": "true" });
+    Object.assign(s.style, prozent(r, fenster));
+    return s;
+  });
+  eingabe.addEventListener("input", () => { for (const s of spiegel) s.textContent = eingabe.value; });
+  const bild = el("img", { src: fenster.src, alt: `Fenster von ${name}`, width: fenster.width, height: fenster.height });
+  const rahmen = el("div", { class: "fenster" }, bild, eingabe, ...spiegel);
+  rahmen.style.aspectRatio = `${fenster.width} / ${fenster.height}`;
+  const knoten = el("div", {}, rahmen);
+  const feld = { knoten, lesen: () => ({ text: eingabe.value }) };
+  bild.addEventListener("error", () => {
+    const ersatz = textLuecke(task);
+    knoten.replaceChildren(ersatz.knoten);
+    feld.lesen = ersatz.lesen;
+  });
+  return feld;
+}
+
 function luckenFeld(task) {
+  const fenster = fensterAus(task.presentation);
+  return fenster ? fensterFeld(task, fenster) : textLuecke(task);
+}
+
+function textLuecke(task) {
   const vorlage = typeof task.presentation?.template === "string" ? task.presentation.template : "{{wert}}";
   const shell = typeof task.presentation?.shell === "string" ? task.presentation.shell : undefined;
   const teile = vorlage.split(/(\{\{\w+\}\})/).filter(Boolean);
@@ -181,13 +220,22 @@ function zuordnungFeld(task, math) {
   const links = Array.isArray(task.presentation?.left) ? task.presentation.left : [];
   const rechts = Array.isArray(task.presentation?.right) ? task.presentation.right : [];
   const knoten = el("div");
+  // Die rechte Seite als sichtbare Liste (Bilder wie „Graph 1“, gesetzte Formeln); ein <option> zeigt nur Text.
+  if (math || rechts.some((r) => bildAus(r))) {
+    knoten.append(el("ul", { class: "auswahlliste", "aria-label": "Zur Auswahl" }, ...rechts.map((r) => {
+      const bild = bildAus(r);
+      return el("li", {}, setzeText(el("span", { class: "titel" }), r.label, math), bild ? bildKnoten(bild, r.label) : null);
+    })));
+  }
   const selects = new Map();
   for (const eintrag of links) {
     const auswahl = el("select", { name: `paar-${eintrag.id}`, required: true },
       el("option", { value: "", disabled: true, selected: true, text: "– bitte wählen –" }),
       ...rechts.map((r) => el("option", { value: r.id, text: math ? klartext(r.label) : r.label })));
     selects.set(eintrag.id, auswahl);
-    knoten.append(el("label", { class: "zeile" }, setzeText(el("span", { class: "titel" }), eintrag.label, math), auswahl));
+    const bild = bildAus(eintrag);
+    knoten.append(el("label", { class: "zeile" }, setzeText(el("span", { class: "titel" }), eintrag.label, math),
+      bild ? bildKnoten(bild, eintrag.label) : null, auswahl));
   }
   return { knoten, lesen: () => ({ paare: Object.fromEntries([...selects].map(([id, s]) => [id, s.value])) }) };
 }
@@ -236,9 +284,11 @@ function karteAufgabe() {
   const feld = feldFuer(task);
   const zeichnung = task.type === "penecho_canvas";
   const abgeben = el("button", { type: "submit", class: "haupt-knopf", id: "abgeben", text: zeichnung ? "Zeichnung abgeben" : "Abgeben" });
+  const sperrText = sperrHinweis(t);
   const form = el("form", { novalidate: false },
     setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
     feld.knoten,
+    sperrText ? el("p", { class: "hinweistext sperrhinweis", text: sperrText }) : null,
     el("div", { class: "knoepfe" },
       abgeben,
       el("button", { type: "button", id: "erklaeren", text: "Erklär mir das", onclick: erklaeren }),

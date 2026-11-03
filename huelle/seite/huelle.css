@@ -46,6 +46,20 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .reihe .titel { flex: 1 1 auto; min-width: 0; }
 .reihe button { width: 2.5rem; height: 2.5rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; }
 .hinweistext { margin: .5rem 0; color: #55524a; font-size: .95rem; }
+.sperrhinweis { padding: .4rem .6rem; border-left: 3px solid #3a6ea5; background: #eef3f8; color: #17191c; }
+
+.bild { display: block; max-width: 100%; height: auto; margin: .4rem 0 0; border: 1px solid #e4e1d8; border-radius: .4rem; }
+.zeile > .bild { flex-basis: 100%; }
+.auswahlliste { list-style: none; margin: 0 0 .75rem; padding: 0; display: grid; gap: .5rem; }
+.auswahlliste li { min-width: 0; padding: .4rem .6rem; border: 1px solid #e4e1d8; border-radius: .5rem; }
+.auswahlliste .titel { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.fenster { position: relative; width: 100%; max-width: 560px; overflow: hidden; border: 1px solid #c9c6bc; border-radius: .4rem; container-type: inline-size; }
+.fenster img { position: absolute; inset: 0; width: 100%; height: 100%; }
+.karte .fenster .fenster-luecke, .fenster-spiegel {
+  position: absolute; box-sizing: border-box; padding: 0 .25rem; border: 2px solid #b4681a; border-radius: 2px;
+  background: #fff8ec; color: #17191c; font-family: ui-monospace, Consolas, monospace; line-height: 1;
+}
+.fenster-spiegel { display: flex; align-items: center; overflow: hidden; white-space: nowrap; border-style: dashed; color: #55524a; }
 .fehler { color: #a3150a; margin: .25rem 0 0; }
 
 .knoepfe { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }

@@ -8,12 +8,12 @@ nie geloggt; Fehler werden nur als Typname gemeldet.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
 import ssl
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +21,40 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-RASTER_HOEHE = 1600
-RASTER_BREITE = 2400
 PROTOKOLL = "2025-11-25"
+SCHLUESSEL_PRAEFIX = "learning-huelle:"
+MAX_SCHLUESSEL = 128  # schema.js: sessionKey/sessionId/requestId maxLength 128
+
+# Ruling L: eine Flaeche je Lernsitzung mit 20 Aufgabenbereichen in PenEchos Weltgrenzen
+# (schema.js: Weltkoordinaten 0..20000). Zwei Spalten zu zehn Zeilen; Aufgabe 1-10 links, 11-20 rechts.
+FLAECHE_GROESSE = 20000
+BEREICHE = 20
+BEREICH_BREITE = 9000
+BEREICH_HOEHE = 1900
+_RAND = 500
+_SPALTEN_SCHRITT = 10000
+_ZEILEN_SCHRITT = 1950
+_ZEILEN = 10
+
+
+def bereich(nummer: int) -> dict[str, int]:
+    """Weltregion des Aufgabenbereichs `nummer` (1..20); ausserhalb ValueError."""
+    if isinstance(nummer, bool) or not isinstance(nummer, int) or not 1 <= nummer <= BEREICHE:
+        raise ValueError("Aufgabenbereich ausserhalb der Flaeche")
+    spalte, zeile = divmod(nummer - 1, _ZEILEN)
+    return {
+        "x": _RAND + spalte * _SPALTEN_SCHRITT,
+        "y": _RAND + zeile * _ZEILEN_SCHRITT,
+        "w": BEREICH_BREITE,
+        "h": BEREICH_HOEHE,
+    }
+
+
+def _sitzungsschluessel(schluessel: str) -> str:
+    roh = SCHLUESSEL_PRAEFIX + schluessel
+    if len(roh) <= MAX_SCHLUESSEL:
+        return roh
+    return SCHLUESSEL_PRAEFIX + hashlib.sha256(schluessel.encode("utf-8")).hexdigest()
 
 
 class PenEchoNichtErreichbar(Exception):
@@ -218,41 +249,47 @@ class PenEchoMcp:
                 pass
             raise
 
-    def vergessen(self, titel: str) -> None:
-        """Entfernt die gemerkte sessionId zu einem Titel (naechstes sitzung() startet neu)."""
+    def vergessen(self, schluessel: str) -> None:
+        """Entfernt die gemerkte sessionId zu einem Schluessel (naechstes sitzung() startet neu)."""
         karte = self._gemerkt()
-        if titel in karte:
-            del karte[titel]
+        if schluessel in karte:
+            del karte[schluessel]
             self._merken(karte)
 
     # ---- Oeffentliche Methoden -------------------------------------------
-    def sitzung(self, titel: str) -> str:
-        # schema.js:656-658 penecho_start_session: title (Pflicht), sessionKey, restore (bool)
-        # Die Merkdatei haelt titel -> sessionId; ein bekannter Titel startet keine neue Sitzung.
-        bekannt = self._gemerkt().get(titel)
+    def sitzung(self, schluessel: str, titel: str) -> str:
+        """PenEcho-Sitzung (eine Flaeche) zu `schluessel`, der Learning-Sitzungs-ID (Ruling L).
+
+        schema.js:656-658 penecho_start_session: title (Pflicht), sessionKey, restore (bool).
+        Die Merkdatei haelt schluessel -> sessionId; ein bekannter Schluessel startet keine neue Sitzung.
+        Der Titel zaehlt nur beim ersten Anlegen.
+        """
+        bekannt = self._gemerkt().get(schluessel)
         if bekannt:
             return bekannt
         ergebnis = self._werkzeug("penecho_start_session", {
             "title": titel,
-            "sessionKey": "learning-huelle:" + titel,
+            "sessionKey": _sitzungsschluessel(schluessel),
             "restore": True,
         })
         session_id = self._struktur(ergebnis).get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise PenEchoNichtErreichbar("sessionId")
         karte = self._gemerkt()
-        karte[titel] = session_id
+        karte[schluessel] = session_id
         self._merken(karte)
         return session_id
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int) -> None:
-        # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y)
+        # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
+        # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
+        region = bereich(nummer)
         self._werkzeug("penecho_edit_canvas", {
             "sessionId": session_id,
-            "requestId": f"aufgabe-{aufgabe_id}-{uuid.uuid4().hex[:8]}",
+            "requestId": f"aufgabe-{aufgabe_id}-{nummer}"[:MAX_SCHLUESSEL],
             "action": "create_text",
             "text": f"Aufgabe {nummer}: {text}",
-            "region": {"x": 0, "y": nummer * RASTER_HOEHE, "w": RASTER_BREITE, "h": RASTER_HOEHE},
+            "region": region,
         })
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
@@ -273,10 +310,11 @@ class PenEchoMcp:
     def schnappschuss(self, session_id: str, nummer: int) -> bytes:
         # schema.js:666 penecho_capture_canvas: target "region" verlangt region {x,y,w,h};
         # das Bild kommt als content-Eintrag type "image" (base64 in data), protocol.js:28-37.
+        region = bereich(nummer)
         ergebnis = self._werkzeug("penecho_capture_canvas", {
             "sessionId": session_id,
             "target": "region",
-            "region": {"x": 0, "y": nummer * RASTER_HOEHE, "w": RASTER_BREITE, "h": RASTER_HOEHE},
+            "region": region,
             "quality": "detail",
         })
         for teil in ergebnis.get("content") or []:

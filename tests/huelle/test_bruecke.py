@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 from typing import Any
 
 import httpx
@@ -16,7 +17,7 @@ from spaces.learning.huelle.bruecke import (
 )
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
-from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
+from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich
 from spaces.learning.huelle.sperre import Sperre
 
 KURS = "11111111-1111-4111-8111-111111111111"
@@ -85,15 +86,16 @@ class FakePenEcho:
         if self.fehler is not None:
             raise self.fehler
 
-    def sitzung(self, titel: str) -> str:
-        self.aufrufe.append(("sitzung", titel))
+    def sitzung(self, schluessel: str, titel: str) -> str:
+        self.aufrufe.append(("sitzung", schluessel, titel))
         return "pe-1"
 
-    def vergessen(self, titel: str) -> None:
-        self.aufrufe.append(("vergessen", titel))
+    def vergessen(self, schluessel: str) -> None:
+        self.aufrufe.append(("vergessen", schluessel))
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int) -> None:
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
+        bereich(nummer)  # wie PenEchoMcp: ausserhalb der 20 Bereiche ValueError
         self._pruefen("aufgabe_setzen")
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
@@ -152,7 +154,9 @@ def test_oeffnen_setzt_fort_statt_neu() -> None:
     assert body["turn"]["task"]["id"] == TASK_1
     assert body["nummer"] == 1 and body["flaeche"] is True
     assert ("aufgabe_setzen", "pe-1", TASK_1, "Frage 1", 1) in penecho.aufrufe
-    assert ("sitzung", "Testkurs") in penecho.aufrufe
+    sitzungen = [a for a in penecho.aufrufe if a[0] == "sitzung"]
+    assert sitzungen and all(a[1] == SID for a in sitzungen)
+    assert re.fullmatch(r"Testkurs · \d{2}\.\d{2}\.\d{4}", sitzungen[0][2])
 
 
 def test_oeffnen_startet_ohne_sitzung() -> None:
@@ -675,6 +679,8 @@ class ZweiKurse:
 
     def next(self, kw: dict[str, Any]) -> dict[str, Any]:
         stand = self.stand[KURS if kw["session_id"] == SID else KURS_B]
+        if isinstance(stand, Exception):
+            raise stand
         assert isinstance(stand, dict)
         return {"session": stand}
 
@@ -737,3 +743,161 @@ def test_alle_kurse_ohne_offene_aufgabe_frei() -> None:
     r = client.post(f"/lernen/api/sitzungen/{SID_B}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
     assert r.status_code == 200
     assert sperre.gesperrt() is False
+
+
+# ---- Abschlusspruefung: Flaeche je Lernsitzung, veraltete Sitzungen, Bilder -------------
+
+SID_2 = "99999999-9999-4999-8999-999999999999"
+
+
+def _turn_in(sid: str, task_id: str | None = TASK_1, **kw: Any) -> dict[str, Any]:
+    t = turn(task_id, **kw)
+    t["session_id"] = sid
+    return t
+
+
+def test_flaeche_je_lernsitzung_nicht_je_kurs() -> None:
+    welt = {"sid": SID}
+
+    def ueberblick(kw: dict[str, Any]) -> dict[str, Any]:
+        return _ueberblick(_turn_in(welt["sid"]))
+
+    lern = FakeLern({"learning_course_overview": ueberblick,
+                     "learning_task_next": lambda kw: {"session": _turn_in(kw["session_id"])}})
+    client, _, penecho = bauen(lern)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    welt["sid"] = SID_2  # neue Lernsitzung desselben Kurses
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    schluessel = [a[1] for a in penecho.aufrufe if a[0] == "sitzung"]
+    assert schluessel == [SID, SID_2]
+
+
+def test_nummer_ausserhalb_der_flaeche_kein_absturz() -> None:
+    weit = turn(TASK_1, completed=20)
+    lern = FakeLern({"learning_course_overview": _ueberblick(weit), "learning_task_next": {"session": weit}})
+    client, sperre, _ = bauen(lern)
+    r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    assert r.status_code == 200 and r.json()["flaeche"] is False and r.json()["nummer"] == 21
+    assert sperre.gesperrt() is True
+
+
+def test_oeffnen_verwirft_alte_sitzung_des_kurses() -> None:
+    # S1 hatte eine offene Aufgabe; danach laeuft bei Learning nur noch S2.
+    welt: dict[str, Any] = {"aktiv": _turn_in(SID)}
+
+    def next_(kw: dict[str, Any]) -> dict[str, Any]:
+        if kw["session_id"] == SID and welt["aktiv"]["session_id"] != SID:
+            return {"session": _turn_in(SID, None, state="abandoned")}
+        return {"session": welt["aktiv"]}
+
+    lern = FakeLern({
+        "learning_course_overview": lambda kw: _ueberblick(welt["aktiv"]),
+        "learning_task_next": next_,
+        "learning_task_answer": lambda kw: {"session": _turn_in(SID_2, None, completed=5, revision=6,
+                                                                state="completed")},
+    })
+    client, sperre, _ = bauen(lern)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    welt["aktiv"] = _turn_in(SID_2, TASK_2)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    vorher = len(lern.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID_2}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200
+    assert sperre.gesperrt() is False
+    # S1 wurde beim zweiten Oeffnen verworfen und nicht mehr gefragt.
+    assert all(kw.get("session_id") != SID for _, kw in lern.aufrufe[vorher:])
+
+
+def test_frei_liest_andere_sitzungen_bei_learning_neu() -> None:
+    welt = ZweiKurse(turn(), turn_b())
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen")
+    # A wurde anderswo (etwa im Fork) fertig; die Huelle hat noch die alte Aufgabe im Speicher.
+    welt.stand[KURS] = turn(None, completed=5, revision=6, state="completed")
+    welt.antwort_b = turn_b(None, completed=5, revision=6, state="completed")
+    r = client.post(f"/lernen/api/sitzungen/{SID_B}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200
+    assert sperre.gesperrt() is False
+
+
+def test_frei_lesefehler_der_anderen_sitzung_bleibt_gesperrt() -> None:
+    welt = ZweiKurse(turn(), turn_b())
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen")
+    welt.stand[KURS] = LearningWeg("x")
+    welt.antwort_b = turn_b(None, completed=5, revision=6, state="completed")
+    r = client.post(f"/lernen/api/sitzungen/{SID_B}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200
+    assert sperre.gesperrt() is True
+
+
+BILD = "term-0123456789abcdef.png"
+
+
+def _mit_bildern(t: dict[str, Any]) -> dict[str, Any]:
+    t["task"]["type"] = "matching"
+    t["task"]["presentation"] = {
+        "image": f"/lernsequenz-medien/{BILD}", "width": 640, "height": 360,
+        "left": [{"id": "a", "label": "Graph 1", "image": "/lernsequenz-medien/graph-a.webp", "width": 4, "height": 3},
+                 {"id": "b", "label": "Text"}],
+        "right": [{"id": "s", "label": "f", "image": "https://evil.example/x.png"},
+                  {"id": "t", "label": "g", "image": "/lernsequenz-medien/../x.png"}],
+    }
+    return t
+
+
+def test_bilder_im_turn_zeigen_auf_eigene_route() -> None:
+    lern = FakeLern({"learning_course_overview": _ueberblick(_mit_bildern(turn())),
+                     "learning_task_next": {"session": _mit_bildern(turn())}})
+    _, _, _, body = _offen(lern)
+    p = body["turn"]["task"]["presentation"]
+    assert p["image"] == f"/lernen/api/medien/{BILD}" and p["width"] == 640
+    assert p["left"][0]["image"] == "/lernen/api/medien/graph-a.webp"
+    assert "image" not in p["left"][1]
+    assert "image" not in p["right"][0] and "image" not in p["right"][1]
+
+
+def test_bilder_auch_nach_antwort_und_409() -> None:
+    naechster = _mit_bildern(turn(TASK_2, completed=1, revision=2))
+    lern, client, _, _ = _offene_sitzung({"session": naechster})
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.json()["turn"]["task"]["presentation"]["image"] == f"/lernen/api/medien/{BILD}"
+    lern.antworten["learning_task_answer"] = LearningAbgelehnt("stale", "session_revision_conflict")
+    lern.antworten["learning_task_next"] = [{"session": _mit_bildern(turn(TASK_2, completed=1, revision=2))}]
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 409
+    assert r.json()["turn"]["task"]["presentation"]["image"] == f"/lernen/api/medien/{BILD}"
+
+
+def test_medien_route_holt_bild_von_learning_api() -> None:
+    gesehen: list[httpx.Request] = []
+
+    def api(request: httpx.Request) -> httpx.Response:
+        gesehen.append(request)
+        if request.url.path == f"/lernsequenz-medien/{BILD}":
+            return httpx.Response(200, content=PNG, headers={"content-type": "text/html"})
+        return httpx.Response(404)
+
+    client, _, _ = bauen(FakeLern({}), api=api)
+    r = client.get(f"/lernen/api/medien/{BILD}")
+    assert r.status_code == 200 and r.content == PNG
+    assert r.headers["content-type"] == "image/png"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert str(gesehen[0].url) == f"{API}/lernsequenz-medien/{BILD}"
+    assert "X-LearnHouse-Learning-Service-Key" not in gesehen[0].headers
+    assert client.get("/lernen/api/medien/fehlt-0000.jpg").status_code == 404
+    anzahl = len(gesehen)
+    for name in ("..%2Fx.png", ".x.png", "x.gif", "a" * 130 + ".png", "x.png.html"):
+        assert client.get(f"/lernen/api/medien/{name}").status_code == 404, name
+    assert len(gesehen) == anzahl
+
+
+def test_medien_route_learning_weg_503() -> None:
+    def api(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("weg")
+
+    client, _, _ = bauen(FakeLern({}), api=api)
+    r = client.get(f"/lernen/api/medien/{BILD}")
+    assert r.status_code == 503

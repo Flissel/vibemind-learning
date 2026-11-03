@@ -139,3 +139,50 @@ export function meldungFuer(daten) {
 export function nach409(turn) {
   return turn && turn.state === "active" && turn.task ? "weiter" : "zeigen";
 }
+
+// ---- KI-Sperre ---------------------------------------------------------------------------------
+export const SPERR_HINWEIS = "Während der Aufgabe hilft „Erklär mir das“.";
+
+/** Der Hinweis zur KI-Sperre, solange eine Aufgabe offen ist; sonst null. */
+export function sperrHinweis(turn) {
+  return turn && turn.state === "active" && turn.task ? SPERR_HINWEIS : null;
+}
+
+// ---- Bilder (wie practiceModel.ts im Fork, Quelle ist die eigene Medienroute der Bruecke) -------
+const MEDIEN = /^\/lernen\/api\/medien\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(png|jpg|webp)$/;
+const positiv = (n) => typeof n === "number" && Number.isFinite(n) && n > 0;
+
+/** Ein Bild der Aufgabe `{src, width, height}`, nur von der Medienroute und mit Groesse; sonst null. */
+export function bildAus(wert) {
+  if (!wert || typeof wert !== "object") return null;
+  const { image, width, height } = wert;
+  if (typeof image !== "string" || !MEDIEN.test(image) || !positiv(width) || !positiv(height)) return null;
+  return { src: image, width, height };
+}
+
+function kasten(wert) {
+  if (!wert || typeof wert !== "object") return null;
+  const { x, y, w, h } = wert;
+  const endlich = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  return endlich(x) && endlich(y) && positiv(w) && positiv(h) ? { x, y, w, h } : null;
+}
+
+/** Das gezeichnete Fenster eines Lueckentexts: Bild, Eingabekasten und gespiegelte Kaesten; sonst null. */
+export function fensterAus(presentation) {
+  const bild = bildAus(presentation);
+  const rect = kasten(presentation?.rect);
+  if (!bild || !rect) return null;
+  const more = Array.isArray(presentation.more) ? presentation.more.map(kasten).filter(Boolean) : [];
+  return { ...bild, rect, more };
+}
+
+/** Lage eines Kastens in Prozent des Bildes (TaskRenderer.tsx `percent`). */
+export function prozent(r, bild) {
+  return {
+    left: `${(r.x / bild.width) * 100}%`,
+    top: `${(r.y / bild.height) * 100}%`,
+    width: `${(r.w / bild.width) * 100}%`,
+    height: `${(r.h / bild.height) * 100}%`,
+    fontSize: `clamp(9px, ${((r.h / bild.width) * 100 * 0.72).toFixed(3)}cqw, 18px)`,
+  };
+}

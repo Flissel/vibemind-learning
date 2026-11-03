@@ -96,3 +96,41 @@ test("nach409: offene Aufgabe -> weiter, sonst zeigen", () => {
   assert.equal(nach409({ state: "active", task: null }), "zeigen");
   assert.equal(nach409(undefined), "zeigen");
 });
+
+import { bildAus, fensterAus, prozent, sperrHinweis, SPERR_HINWEIS } from "./aufgabe.js";
+
+test("bildAus: nur Bilder der eigenen Medienroute mit Groesse", () => {
+  assert.deepEqual(bildAus({ image: "/lernen/api/medien/graph-a.webp", width: 4, height: 3 }),
+    { src: "/lernen/api/medien/graph-a.webp", width: 4, height: 3 });
+  assert.equal(bildAus({ image: "https://evil.example/x.png", width: 4, height: 3 }), null);
+  assert.equal(bildAus({ image: "/lernsequenz-medien/x.png", width: 4, height: 3 }), null);
+  assert.equal(bildAus({ image: "/lernen/api/medien/../x.png", width: 4, height: 3 }), null);
+  assert.equal(bildAus({ image: "/lernen/api/medien/x.png", width: 0, height: 3 }), null);
+  assert.equal(bildAus({ image: "/lernen/api/medien/x.png" }), null);
+  assert.equal(bildAus(null), null);
+});
+
+test("fensterAus: Lueckentext im gezeichneten Fenster nur mit Bild und Kasten", () => {
+  const p = { image: "/lernen/api/medien/term-1.png", width: 200, height: 100,
+    rect: { x: 10, y: 20, w: 50, h: 10 }, more: [{ x: 1, y: 2, w: 3, h: 4 }, { x: -1 }] };
+  assert.deepEqual(fensterAus(p), { src: "/lernen/api/medien/term-1.png", width: 200, height: 100,
+    rect: { x: 10, y: 20, w: 50, h: 10 }, more: [{ x: 1, y: 2, w: 3, h: 4 }] });
+  assert.equal(fensterAus({ ...p, rect: undefined }), null);
+  assert.equal(fensterAus({ ...p, image: "x.png" }), null);
+});
+
+test("prozent: Kasten relativ zum Bild wie im Fork", () => {
+  const r = prozent({ x: 10, y: 20, w: 50, h: 10 }, { width: 200, height: 100 });
+  assert.equal(r.left, "5%");
+  assert.equal(r.top, "20%");
+  assert.equal(r.width, "25%");
+  assert.equal(r.height, "10%");
+  assert.match(r.fontSize, /^clamp\(9px, [0-9.]+cqw, 18px\)$/);
+});
+
+test("sperrHinweis: bei offener Aufgabe der feste Text, sonst nichts", () => {
+  assert.equal(SPERR_HINWEIS, "Während der Aufgabe hilft „Erklär mir das“.");
+  assert.equal(sperrHinweis({ state: "active", task: { id: "t" } }), SPERR_HINWEIS);
+  assert.equal(sperrHinweis({ state: "completed", task: null }), null);
+  assert.equal(sperrHinweis(null), null);
+});
