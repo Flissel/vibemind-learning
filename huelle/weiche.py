@@ -19,6 +19,16 @@ ABGELAUFEN = "Dieser Link ist abgelaufen oder ungültig."
 NICHT_ERLAUBT = "Nicht erlaubt."
 WEITER = "Weiter zum Lernen"
 _LESEND = frozenset({"GET", "HEAD"})
+# PenEcho liefert diese Vendor-Skripte selbst oeffentlich aus (`Access-Control-Allow-Origin: *`,
+# `Cross-Origin-Resource-Policy: cross-origin`; PenEcho src/server/main.js ca. Zeilen 4163-4180).
+# Widgets laufen in Sandbox-Frames mit opakem Origin und laden sie ohne Cookie; deshalb gehen genau
+# diese Pfade (GET/HEAD, exakter Pfad, Query erlaubt) auf dem Flaechen-Port ohne Cookie durch.
+OEFFENTLICHE_PENECHO_DATEIEN = frozenset({
+    "/widget-renderer.js",
+    "/ink-lab-vendor.js",
+    "/playground/liveclay-v1.js",
+    "/visual-explainer-vendor.js",
+})
 # Die Zugangsseite setzt das Cookie mit 200 und leitet erst dann weiter: so ist die Navigation zu
 # /lernen/ eine eigene (same-site), und das SameSite=Strict-Cookie geht mit, auch wenn der Link aus
 # einer anderen App (Telegram) kam. Kein Skript, daher passt die strenge CSP.
@@ -165,12 +175,22 @@ class FlaechenWeiche(_Tor):
         super().__init__(einstellung, einstellung.flaechen_hosts)
         self._durchreicher = durchreicher_app
 
+    def _host_erlaubt(self, scope: Scope) -> bool:
+        for name, wert in scope.get("headers", []):
+            if name.lower() == b"host":
+                return wert.decode("latin-1").lower() in self._hosts
+        return False
+
+    def _oeffentlich(self, scope: Scope) -> bool:
+        return (scope["type"] == "http" and scope.get("method") in _LESEND
+                and scope.get("path", "") in OEFFENTLICHE_PENECHO_DATEIEN and self._host_erlaubt(scope))
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         art = scope["type"]
         if art == "lifespan":
             await _lifespan(receive, send)
             return
-        if not self._erlaubt(scope):
+        if not self._oeffentlich(scope) and not self._erlaubt(scope):
             await self._abweisen(scope, send)
             return
         if _ist_lernen(scope.get("path", "")):

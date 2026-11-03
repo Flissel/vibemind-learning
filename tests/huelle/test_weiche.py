@@ -174,3 +174,53 @@ def test_websocket_ohne_cookie_1008() -> None:
         {"type": "websocket.close", "code": 1008}
     ]
     assert aufrufe == []
+
+
+def test_oeffentliche_penecho_dateien_ohne_cookie_auf_dem_flaechen_port() -> None:
+    for pfad in ("/widget-renderer.js", "/ink-lab-vendor.js", "/playground/liveclay-v1.js",
+                 "/visual-explainer-vendor.js"):
+        for methode in ("GET", "HEAD"):
+            _, flaeche, aufrufe = _weichen()
+            gesendet = _anfrage(flaeche, pfad, host=FLAECHE_HOST, methode=methode)
+            assert _start(gesendet)["status"] == 200, (pfad, methode)
+            assert aufrufe == ["durch"]
+
+
+def test_oeffentliche_penecho_datei_mit_query_string_pfad_bleibt_exakt() -> None:
+    _, flaeche, aufrufe = _weichen()
+    scope_path = "/widget-renderer.js"  # ASGI trennt die Query (?v=1.4.2) vom Pfad ab
+    gesendet = _anfrage(flaeche, scope_path, host=FLAECHE_HOST)
+    assert _start(gesendet)["status"] == 200
+    assert aufrufe == ["durch"]
+
+
+def test_oeffentliche_penecho_datei_nur_lesend() -> None:
+    for methode in ("POST", "PUT", "DELETE", "OPTIONS"):
+        _, flaeche, aufrufe = _weichen()
+        gesendet = _anfrage(flaeche, "/widget-renderer.js", host=FLAECHE_HOST, methode=methode)
+        assert _start(gesendet)["status"] == 403, methode
+        assert aufrufe == []
+
+
+def test_oeffentliche_penecho_datei_nur_exakter_pfad() -> None:
+    for pfad in ("/widget-renderer.js/x", "/widget-renderer.jsx", "/widget-renderer.js/",
+                 "/x/widget-renderer.js", "/playground/liveclay-v1.js/..", "/playground/"):
+        _, flaeche, aufrufe = _weichen()
+        gesendet = _anfrage(flaeche, pfad, host=FLAECHE_HOST)
+        assert _start(gesendet)["status"] == 403, pfad
+        assert aufrufe == []
+
+
+def test_oeffentliche_penecho_datei_nicht_auf_dem_seiten_port() -> None:
+    seiten, _, aufrufe = _weichen()
+    gesendet = _anfrage(seiten, "/widget-renderer.js")
+    assert _start(gesendet)["status"] == 403
+    assert aufrufe == []
+
+
+def test_oeffentliche_penecho_datei_fremder_host_403() -> None:
+    for host in ("fremd.example.test", HOST):
+        _, flaeche, aufrufe = _weichen()
+        gesendet = _anfrage(flaeche, "/widget-renderer.js", host=host)
+        assert _start(gesendet)["status"] == 403, host
+        assert aufrufe == []
