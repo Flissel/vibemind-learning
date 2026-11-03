@@ -134,3 +134,15 @@ test("sperrHinweis: bei offener Aufgabe der feste Text, sonst nichts", () => {
   assert.equal(sperrHinweis({ state: "completed", task: null }), null);
   assert.equal(sperrHinweis(null), null);
 });
+
+import { begriffTitel } from "./aufgabe.js";
+
+test("begriffTitel: Slug wird lesbar, alles andere bleibt", () => {
+  assert.equal(begriffTitel("ablauf-kurvendiskussion"), "Ablauf kurvendiskussion");
+  assert.equal(begriffTitel("ableitungsregeln"), "Ableitungsregeln");
+  assert.equal(begriffTitel("größe-änderung"), "Größe änderung");
+  assert.equal(begriffTitel("Ableitung der Sinusfunktion"), "Ableitung der Sinusfunktion");
+  assert.equal(begriffTitel("Kettenregel"), "Kettenregel");
+  assert.equal(begriffTitel("a--b"), "a--b");
+  assert.equal(begriffTitel(""), "");
+});

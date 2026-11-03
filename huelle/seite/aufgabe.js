@@ -186,3 +186,11 @@ export function prozent(r, bild) {
     fontSize: `clamp(9px, ${((r.h / bild.width) * 100 * 0.72).toFixed(3)}cqw, 18px)`,
   };
 }
+
+// Begriffstitel aus dem Graphen sind oft Slugs (`ablauf-kurvendiskussion`): lesbar machen, sonst unveraendert.
+export function begriffTitel(titel) {
+  const t = String(titel ?? "");
+  if (t.includes(" ") || !/^[a-z0-9äöüß]+(-[a-z0-9äöüß]+)*$/.test(t)) return t;
+  const s = t.replaceAll("-", " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}

@@ -480,3 +480,26 @@ def test_frame_ancestors_auf_seitenherkunft(fake: tuple[FakePenEcho, str]) -> No
     csp = [v for k, v in headers if k == b"content-security-policy"]
     assert csp == [b"default-src 'self'; frame-ancestors https://lernen.example.test http://127.0.0.1:8150; "
                    b"img-src data:"]
+
+
+def _csp_nach(app: Durchreicher, csp: str) -> str:
+    aus = app._antwort_kopf([(b"Content-Security-Policy", csp.encode("latin-1"))])
+    return aus[0][1].decode("latin-1")
+
+
+def test_frame_ancestors_self_bekommt_seitenherkuenfte() -> None:
+    seite = ("https://lernen.example.test", "http://127.0.0.1:8150")
+    app = Durchreicher("http://127.0.0.1:1", _frei(), EIGEN, rahmen_herkuenfte=seite)
+    csp = _csp_nach(app, "default-src 'self'; frame-ancestors 'self' http://localhost:3888; img-src data:")
+    assert csp == ("default-src 'self'; frame-ancestors 'self' http://localhost:3888 "
+                   "https://lernen.example.test http://127.0.0.1:8150; img-src data:")
+
+
+def test_frame_ancestors_self_ohne_seitenherkunft_unveraendert() -> None:
+    app = Durchreicher("http://127.0.0.1:1", _frei(), EIGEN)
+    assert _csp_nach(app, "frame-ancestors 'self'") == "frame-ancestors 'self'"
+
+
+def test_frame_ancestors_self_keine_doppelten_herkuenfte() -> None:
+    app = Durchreicher("http://127.0.0.1:1", _frei(), EIGEN, rahmen_herkuenfte=("http://a.test",))
+    assert _csp_nach(app, "frame-ancestors 'self' http://a.test") == "frame-ancestors 'self' http://a.test"

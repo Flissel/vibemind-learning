@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  antwortAus, bildAus, fensterAus, formel, klartext, meldungFuer, nach409, prozent, sperrHinweis, SPERR_HINWEIS,
+  antwortAus, begriffTitel, bildAus, fensterAus, formel, klartext, meldungFuer, nach409, prozent, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 
 const API = "/lernen/api";
@@ -398,7 +398,7 @@ function begriffeZeigen(begriffe) {
     fuellung.style.width = wert === null ? "0%" : `${Math.round(wert * 100)}%`;
     return el("li", {},
       el("div", { class: "begriff-titel" },
-        el("span", { text: klartext(b.titel) }),
+        el("span", { text: klartext(begriffTitel(b.titel)) }),
         el("span", { text: wert === null ? "—" : `${Math.round(wert * 100)} %` })),
       el("div", { class: "balken", role: "img", "aria-label": wert === null ? "—" : `${Math.round(wert * 100)} %` }, fuellung));
   }));

@@ -35,6 +35,9 @@ _WS_KOPF = frozenset({
     "sec-websocket-protocol", "sec-websocket-accept",
 })
 _FRAME = re.compile(r"frame-ancestors\s+'none'", re.IGNORECASE)
+# Direktive mit 'self' (z. B. widget-host.html in PenEcho): Browser pruefen JEDEN Vorfahren, die Huelle-Seite
+# (andere Herkunft als die Flaeche) ist der oberste, also muss sie dort mit eingetragen sein.
+_FRAME_SELF = re.compile(r"(frame-ancestors)([^;]*)", re.IGNORECASE)
 
 
 _VERBOTEN = (chr(92).encode(), bytes([9]), bytes([13]), bytes([10]))  # Backslash, Tab, CR, LF
@@ -122,6 +125,7 @@ class Durchreicher:
         self._ws_basis = ("wss" if teile.scheme == "https" else "ws") + f"://{teile.netloc}"
         self._sperre = sperre
         self._eigene = frozenset(h.lower() for h in eigene_herkuenfte)
+        self._seiten = tuple(rahmen_herkuenfte)
         self._rahmen = "frame-ancestors " + (" ".join(rahmen_herkuenfte) if rahmen_herkuenfte else "'none'")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -164,13 +168,21 @@ class Durchreicher:
             kopf.append(("origin", self._basis))
         return kopf
 
+    def _mit_seiten(self, m: re.Match[str]) -> str:
+        quellen = m.group(2).split()
+        if "'self'" not in (q.lower() for q in quellen):
+            return m.group(0)
+        neu = [h for h in self._seiten if h not in quellen]
+        return m.group(0) if not neu else m.group(1) + " " + " ".join(quellen + neu)
+
     def _antwort_kopf(self, roh: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
         aus: list[tuple[bytes, bytes]] = []
         for name, wert in roh:
             if name.decode("latin-1").lower() in _HOP:
                 continue
             if name.lower() == b"content-security-policy":
-                wert = _FRAME.sub(lambda _m: self._rahmen, wert.decode("latin-1")).encode("latin-1")
+                text = _FRAME.sub(lambda _m: self._rahmen, wert.decode("latin-1"))
+                wert = _FRAME_SELF.sub(self._mit_seiten, text).encode("latin-1")
             aus.append((name, wert))
         return aus
 
