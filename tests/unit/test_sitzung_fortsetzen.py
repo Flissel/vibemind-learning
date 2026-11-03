@@ -244,3 +244,23 @@ def test_resume_ist_lesend_ohne_idempotenzschluessel(tmp_path: Path) -> None:
     )
     assert overview.state == "completed"
     assert overview.result["course_revision"] == 2
+
+
+def test_resume_und_ueberblick_tragen_keinen_ui_intent(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _build(tmp_path)
+    service = AdaptiveSessionService(factory)
+    _start(service, course_id, 2)
+    gateway = AdaptiveSessionGateway(service)
+    resumed = gateway.execute(_resume_request(course_id, 2))
+    assert resumed.result["session"] is not None
+    assert resumed.ui_intent is None
+    overview = gateway.execute(
+        _request(
+            LearningToolName.COURSE_OVERVIEW,
+            "learning.course.overview",
+            course_id,
+            {},
+        )
+    )
+    assert overview.ui_intent is None
+    engine.dispose()

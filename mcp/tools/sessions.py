@@ -161,7 +161,7 @@ class AdaptiveSessionGateway:
             actor_id=request.event.actor.actor_id,
         )
         if turn is not None:
-            return self._turn_outcome(turn)
+            return self._turn_outcome(turn, intent=False)
         return self._course_outcome(str(course_id), revision, {"session": None})
 
     def _overview(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
