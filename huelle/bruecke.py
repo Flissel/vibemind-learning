@@ -39,6 +39,7 @@ T = TypeVar("T")
 # Feste Texte (Plan, global.md).
 NICHT_ERREICHBAR = "Learning ist gerade nicht erreichbar. Ihre Fläche bleibt erhalten."
 SCHON_ABGEGEBEN = "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand."
+NICHT_ANGENOMMEN = "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe."  # Ruling H
 KEIN_KURS = "Dieser Kurs hat noch keine freigegebenen Aufgaben."
 WIRD_GEPRUEFT = "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist."
 FLAECHE_WEG = "Die Fläche ist gerade nicht erreichbar."
@@ -65,6 +66,8 @@ MAX_FRAGE = 500
 SMILEYS = frozenset({"gut", "mittel", "schlecht"})
 _PNG = b"\x89PNG\r\n\x1a\n"
 _NAMENSRAUM = UUID("0b8f6c1e-3a7d-4f52-9c1e-6d2a4b7e9f30")
+# Learning-Codes (mcp/tools/sessions.py), bei denen die Abgabe schon verbucht oder ueberholt ist.
+_SCHON_ABGEGEBEN_CODES = frozenset({"session_revision_conflict", "session_state_conflict"})
 _SERVICE_HEADER = "X-LearnHouse-Learning-Service-Key"
 _ACTOR_HEADER = "X-Learning-Actor"
 
@@ -275,8 +278,8 @@ class Bruecke:
         """Aufgabe auf die Flaeche setzen und die KI sperren; ohne Aufgabe die Sperre loesen."""
         task = _task(turn)
         if task is None:
-            self._sperre.frei()
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
+            self._frei(sitzung)
             return None, False
         nummer = _nummer(turn)
         aufgabe_id = task["id"]
@@ -289,6 +292,38 @@ class Bruecke:
         )
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
         return nummer, ok
+
+    def _frei(self, sitzung: _Sitzung) -> None:
+        """Die Sperre ist global: nur loesen, wenn keine andere Sitzung eine offene Aufgabe hat.
+
+        Andere bekannte Sitzungen zaehlen mit ihrer aktuellen Aufgabe. Kurse ohne bekannte Sitzung
+        (etwa nach einem Neustart) fragt die Bruecke per Ueberblick; scheitert das, bleibt es gesperrt.
+        """
+        for andere in list(self._sitzungen.values()):
+            if andere is not sitzung and andere.aufgabe_id is not None:
+                self._sperre.offen(andere.aufgabe_id)
+                return
+        bekannt = {s.kurs.course_id for s in list(self._sitzungen.values())} | {sitzung.kurs.course_id}
+        for kurs in self._e.kurse:
+            if kurs.course_id in bekannt:
+                continue
+            try:
+                ueberblick = self._lern.rufe(
+                    "learning_course_overview", "learning.course.overview", course_id=kurs.course_id
+                )
+            except (LearningWeg, LearningAbgelehnt) as fehler:
+                log.warning("Sperre bleibt, Ueberblick fehlgeschlagen: %s", _typ(fehler))
+                self._sperre.unbekannt()
+                return
+            laufend = ueberblick.get("session")
+            task = _task(laufend) if isinstance(laufend, dict) else None
+            andere_sid = _uuid(str(laufend.get("session_id"))) if isinstance(laufend, dict) else None
+            if task is not None:
+                if andere_sid is not None:
+                    self._sitzungen.setdefault(andere_sid, _Sitzung(kurs, task["id"], _nummer(laufend)))
+                self._sperre.offen(task["id"])
+                return
+        self._sperre.frei()
 
     def _vormerken(self, sitzung: _Sitzung, turn: dict[str, Any]) -> int | None:
         """Naechste Aufgabe merken, ohne sie zu zeigen (das macht `weiter`)."""
@@ -310,13 +345,14 @@ class Bruecke:
         )
         return text, ok
 
-    def _stand_neu(self, sid: str, sitzung: _Sitzung) -> NoReturn:
-        """Nach einer Ablehnung den aktuellen Stand laden; 409 mit Turn."""
+    def _stand_neu(self, sid: str, sitzung: _Sitzung, code: str) -> NoReturn:
+        """Nach einer Ablehnung den aktuellen Stand laden; 409 mit Turn (Ruling H fuer den Text)."""
         turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
-        if _task(turn) is None:
-            self._sperre.frei()
         self._vormerken(sitzung, turn)
-        raise _Antwort(409, {"meldung": SCHON_ABGEGEBEN, "turn": turn})
+        if _task(turn) is None:
+            self._frei(sitzung)
+        meldung = SCHON_ABGEGEBEN if code in _SCHON_ABGEGEBEN_CODES else NICHT_ANGENOMMEN
+        raise _Antwort(409, {"code": code, "meldung": meldung, "turn": turn})
 
     # ---- Routen -----------------------------------------------------------
     async def _r_kurse(self, request: Request) -> JSONResponse:
@@ -372,11 +408,12 @@ class Bruecke:
                 "learning_task_answer", "learning.task.answer", session_id=sid, expected_revision=revision,
                 payload={"answer": answer}, schreibend=True,
             )
-        except LearningAbgelehnt:
-            self._stand_neu(sid, sitzung)
+        except LearningAbgelehnt as fehler:
+            self._stand_neu(sid, sitzung, fehler.code)
         turn = _turn(result)
-        # Abgegeben: KI frei. Erst `weiter` zeigt die naechste Aufgabe und sperrt wieder.
-        self._sperre.frei()
+        # Abgegeben: KI frei (sofern kein anderer Kurs eine offene Aufgabe hat).
+        # Erst `weiter` zeigt die naechste Aufgabe und sperrt wieder.
+        self._frei(sitzung)
         if beantwortet_nr is None:
             progress = turn.get("progress")
             beantwortet_nr = max(int(progress.get("completed") or 1), 1) if isinstance(progress, dict) else 1
@@ -407,7 +444,7 @@ class Bruecke:
         sid, sitzung, _ = self._sitzung(sid_roh)
         nummer = sitzung.nummer
         if nummer is None:
-            self._stand_neu(sid, sitzung)
+            self._stand_neu(sid, sitzung, "session_state_conflict")
         # 1. Schnappschuss des Aufgabenbereichs; ohne Flaeche keine Abgabe.
         try:
             bild = self._auf_flaeche(sitzung.kurs.titel, lambda s: self._penecho.schnappschuss(s, nummer))
@@ -419,7 +456,7 @@ class Bruecke:
         stand = _turn(self._lern.rufe("learning_progress_show", "learning.progress.show", session_id=sid))
         task = _task(stand)
         if stand.get("session_revision") != revision or task is None:
-            self._stand_neu(sid, sitzung)
+            self._stand_neu(sid, sitzung, "session_revision_conflict" if task else "session_state_conflict")
         if task.get("type") != "penecho_canvas":
             raise _Antwort(400, {"meldung": KEINE_ZEICHENAUFGABE})
         activity_id = task["id"]
@@ -463,12 +500,12 @@ class Bruecke:
                     "adaptive_session_revision": revision,
                 },
             )
-        except LearningAbgelehnt:
-            self._stand_neu(sid, sitzung)
+        except LearningAbgelehnt as fehler:
+            self._stand_neu(sid, sitzung, fehler.code)
         except (KeyError, TypeError, ValueError):
             raise LearningWeg("canvas") from None
         turn = _turn(eingereicht)
-        self._sperre.frei()
+        self._frei(sitzung)
         bewertung = eingereicht.get("evaluation") if isinstance(eingereicht.get("evaluation"), dict) else {}
         text, flaeche = self._rueckmeldung(sitzung, turn, activity_id, nummer)
         sitzung.auf_flaeche = False

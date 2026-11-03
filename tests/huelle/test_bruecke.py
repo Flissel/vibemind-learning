@@ -11,7 +11,9 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from spaces.learning.huelle.bruecke import FLAECHE_WEG, KEIN_KURS, NICHT_ERREICHBAR, SCHON_ABGEGEBEN, Bruecke
+from spaces.learning.huelle.bruecke import (
+    FLAECHE_WEG, KEIN_KURS, NICHT_ANGENOMMEN, NICHT_ERREICHBAR, SCHON_ABGEGEBEN, Bruecke,
+)
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
@@ -117,11 +119,11 @@ def _api_leer(request: httpx.Request) -> httpx.Response:
 
 
 def bauen(lern: FakeLern, penecho: FakePenEcho | None = None, *, api=_api_leer,
-          sperre: Sperre | None = None) -> tuple[TestClient, Sperre, FakePenEcho]:
+          sperre: Sperre | None = None, einstellung=E) -> tuple[TestClient, Sperre, FakePenEcho]:
     sperre = sperre or Sperre()
     penecho = penecho or FakePenEcho()
     http = httpx.Client(transport=httpx.MockTransport(api))
-    bruecke = Bruecke(E, lern, penecho, sperre, http)  # type: ignore[arg-type]
+    bruecke = Bruecke(einstellung, lern, penecho, sperre, http)  # type: ignore[arg-type]
     return TestClient(bruecke), sperre, penecho
 
 
@@ -303,10 +305,37 @@ def test_doppelabgabe_409_laedt_stand() -> None:
     lern.antworten["learning_task_next"] = [{"session": turn(TASK_2, completed=1, revision=2)}]
     r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
     assert r.status_code == 409
-    assert r.json()["meldung"] == SCHON_ABGEGEBEN
+    assert r.json()["meldung"] == SCHON_ABGEGEBEN and r.json()["code"] == "session_revision_conflict"
     assert r.json()["turn"]["task"]["id"] == TASK_2
     assert lern.tools().count("learning_task_answer") == 1
     assert lern.tools()[-1] == "learning_task_next"
+
+
+def test_zustandskonflikt_409_schon_abgegeben() -> None:
+    lern, client, _, _ = _offene_sitzung(LearningAbgelehnt("session is not active", "session_state_conflict"))
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 409
+    assert r.json()["meldung"] == SCHON_ABGEGEBEN and r.json()["code"] == "session_state_conflict"
+
+
+def test_andere_ablehnung_409_nicht_angenommen() -> None:
+    lern, client, _, _ = _offene_sitzung(LearningAbgelehnt("answer format is invalid", "invalid_session_request"))
+    lern.antworten["learning_task_next"] = [{"session": turn()}]
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 409
+    assert r.json() == {"code": "invalid_session_request", "meldung": NICHT_ANGENOMMEN, "turn": turn()}
+    assert lern.tools().count("learning_task_answer") == 1
+    assert lern.tools()[-1] == "learning_task_next"
+
+
+def test_zeichnung_andere_ablehnung_409_nicht_angenommen() -> None:
+    lern, client, _, _ = _zeichen_sitzung()
+    lern.antworten["learning_canvas_save"] = LearningAbgelehnt("canvas snapshot must be a PNG image",
+                                                               "invalid_canvas_request")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/zeichnung", json={"revision": 1})
+    assert r.status_code == 409
+    assert r.json()["meldung"] == NICHT_ANGENOMMEN and r.json()["code"] == "invalid_canvas_request"
+    assert "turn" in r.json() and "learning_canvas_submit" not in lern.tools()
 
 
 def test_abgeschlossene_sitzung_gibt_frei() -> None:
@@ -604,3 +633,104 @@ def test_build_app_teilt_eine_sperre() -> None:
     assert isinstance(bruecke, Bruecke)
     assert bruecke._sperre is durchreicher._sperre
     assert durchreicher._eigene == frozenset({"https://lernen.example.test", f"http://127.0.0.1:{E.port}"})
+
+
+# ---- Sperre ueber mehrere Kurse ---------------------------------------------------
+
+KURS_B = "77777777-7777-4777-8777-777777777777"
+SID_B = "88888888-8888-4888-8888-888888888888"
+TASK_B = "44444444-4444-4444-8444-44444444444b"
+E2 = einstellung_lesen({
+    "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
+    "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+    "LEARNING_HUELLE_API_URL": API,
+    "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
+    "LEARNING_HUELLE_ACTOR": ACTOR,
+    "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": KURS, "titel": "Testkurs"},
+                                         {"course_id": KURS_B, "titel": "Kurs B"}]),
+})
+
+
+def turn_b(task_id: str | None = TASK_B, **kw: Any) -> dict[str, Any]:
+    t = turn(task_id, course_id=KURS_B, **kw)
+    t["session_id"] = SID_B
+    return t
+
+
+class ZweiKurse:
+    """Learning mit zwei Kursen: Ueberblick und Turns je Kurs bzw. Sitzung."""
+
+    def __init__(self, a: dict[str, Any] | Exception | None, b: dict[str, Any] | None) -> None:
+        self.stand: dict[str, Any] = {KURS: a, KURS_B: b}
+        self.antwort_b: dict[str, Any] | None = None
+
+    def ueberblick(self, kw: dict[str, Any]) -> dict[str, Any]:
+        stand = self.stand[kw["course_id"]]
+        if isinstance(stand, Exception):
+            raise stand
+        return _ueberblick(stand if stand is not None and stand["state"] == "active" else None)
+
+    def next(self, kw: dict[str, Any]) -> dict[str, Any]:
+        stand = self.stand[KURS if kw["session_id"] == SID else KURS_B]
+        assert isinstance(stand, dict)
+        return {"session": stand}
+
+    def lern(self) -> FakeLern:
+        return FakeLern({
+            "learning_course_overview": self.ueberblick,
+            "learning_task_next": self.next,
+            "learning_session_start": lambda kw: {"session": self.stand[kw["course_id"]]},
+            "learning_task_answer": lambda kw: {"session": self.antwort_b},
+        })
+
+
+def test_a_offen_b_fertig_bleibt_gesperrt() -> None:
+    welt = ZweiKurse(turn(), turn_b(None, state="completed"))
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    # B hat keine laufende Sitzung; der Start liefert hier eine schon fertige.
+    r = client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen")
+    assert r.status_code == 200 and r.json()["turn"]["task"] is None
+    assert sperre.gesperrt() is True
+
+
+def test_antwort_in_b_waehrend_a_offen_bleibt_gesperrt() -> None:
+    welt = ZweiKurse(turn(), turn_b())
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen")
+    welt.antwort_b = turn_b(TASK_2, completed=1, revision=2)
+    r = client.post(f"/lernen/api/sitzungen/{SID_B}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200
+    assert sperre.gesperrt() is True
+
+
+def test_neustart_unbekannter_kurs_mit_offener_aufgabe_sperrt() -> None:
+    # Nur B ist in diesem Prozess bekannt; A hat bei Learning eine offene Aufgabe.
+    welt = ZweiKurse(turn(), turn_b(None, state="completed"))
+    lern = welt.lern()
+    client, sperre, _ = bauen(lern, einstellung=E2)
+    sperre.frei()
+    assert client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen").status_code == 200
+    assert sperre.gesperrt() is True
+    ueberblicke = [kw["course_id"] for t, kw in lern.aufrufe if t == "learning_course_overview"]
+    assert ueberblicke == [KURS_B, KURS]
+
+
+def test_neustart_ueberblick_weg_bleibt_gesperrt() -> None:
+    welt = ZweiKurse(LearningWeg("x"), turn_b(None, state="completed"))
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    sperre.frei()
+    assert client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen").status_code == 200
+    assert sperre.gesperrt() is True
+
+
+def test_alle_kurse_ohne_offene_aufgabe_frei() -> None:
+    welt = ZweiKurse(None, turn_b())
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen")
+    assert sperre.gesperrt() is True
+    welt.antwort_b = turn_b(None, completed=5, revision=6, state="completed")
+    r = client.post(f"/lernen/api/sitzungen/{SID_B}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200
+    assert sperre.gesperrt() is False
