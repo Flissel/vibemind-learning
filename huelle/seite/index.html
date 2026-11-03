@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lernen</title>
+<link rel="stylesheet" href="/lernen/huelle.css">
+<!--KOPF-->
+<script type="module" src="/lernen/huelle.js"></script>
+</head>
+<body class="layout-a">
+<header class="kopf">
+  <label class="kurswahl">
+    <span class="nur-leser">Kurs</span>
+    <select id="kurs" aria-label="Kurs"></select>
+  </label>
+  <p id="fortschritt" class="fortschritt" aria-live="polite"></p>
+  <div class="umschalter" role="group" aria-label="Anordnung">
+    <button type="button" id="layout-a" data-layout="a" aria-pressed="true">Fläche groß</button>
+    <button type="button" id="layout-c" data-layout="c" aria-pressed="false">Geteilt</button>
+  </div>
+</header>
+<p id="banner" class="banner" role="alert" hidden></p>
+<main class="haupt">
+  <section id="leiste" class="leiste" aria-label="Aufgabe">
+    <div id="karte" class="karte"></div>
+    <div id="hilfe" class="hilfe" aria-live="polite"></div>
+    <section id="begriffe-box" class="block" hidden>
+      <h2>Begriffe</h2>
+      <ul id="begriffe" class="begriffe"></ul>
+    </section>
+    <section id="notizen-box" class="block" hidden>
+      <h2>Ihre Notizen</h2>
+      <ul id="notizen" class="notizen"></ul>
+    </section>
+  </section>
+  <section id="flaeche" class="flaeche" aria-label="Fläche">
+    <iframe id="rahmen" src="/" title="Fläche"></iframe>
+  </section>
+</main>
+</body>
+</html>

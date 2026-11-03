@@ -1,0 +1,99 @@
+"""Seite der Lern-Huelle: Header, CSP, Dateien ohne Adressen, Zugang nur mit Cookie."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+from spaces.learning.claw.formeln import KOPF
+from spaces.learning.huelle.einstellung import einstellung_lesen
+from spaces.learning.huelle.seite_app import DATEIEN, SEITE, seite_app, seiten_csp
+from spaces.learning.huelle.server import build_app
+from spaces.learning.huelle.zugang import COOKIE, token_erzeugen
+
+SCHLUESSEL = "k" * 40
+HOST = "lernen.example.test"
+E = einstellung_lesen({
+    "LEARNING_HUELLE_BASIS": f"https://{HOST}",
+    "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+    "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
+    "LEARNING_HUELLE_ACTOR": "lh-1-test",
+    "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "11111111-1111-4111-8111-111111111111", "titel": "T"}]),
+})
+
+
+def _hole(app: Any, path: str, *, methode: str = "GET", host: str = HOST, cookie: str | None = None) -> list[dict[str, Any]]:
+    headers = [(b"host", host.encode())]
+    if cookie is not None:
+        headers.append((b"cookie", f"{COOKIE}={cookie}".encode()))
+    scope = {"type": "http", "method": methode, "path": path, "headers": headers}
+    gesendet: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(nachricht: dict[str, Any]) -> None:
+        gesendet.append(nachricht)
+
+    asyncio.run(app(scope, receive, send))
+    return gesendet
+
+
+def test_seite_hat_csp_und_keine_adressen() -> None:
+    for name, (datei, art) in DATEIEN.items():
+        gesendet = _hole(seite_app, "/lernen/" + name)
+        kopf = {k.lower(): v for k, v in gesendet[0]["headers"]}
+        assert gesendet[0]["status"] == 200
+        assert kopf[b"content-type"].decode() == art
+        csp = kopf[b"content-security-policy"].decode()
+        assert "script-src 'self' https://cdn.jsdelivr.net/npm/katex@0.16.11/" in csp
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "connect-src 'self'" in csp and "frame-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp and "default-src 'none'" in csp
+        assert "unsafe-eval" not in csp and "script-src 'unsafe-inline'" not in csp
+        assert kopf[b"x-content-type-options"] == b"nosniff"
+        assert kopf[b"referrer-policy"] == b"same-origin"
+        assert kopf[b"cache-control"] == b"no-store"
+        text = gesendet[1]["body"].decode("utf-8")
+        for verboten in ("100.", "ts.net", "http://", "https://"):
+            if name == "" and verboten == "https://":
+                continue  # der KaTeX-Kopf kommt von der CDN-Adresse der Claw-Seiten
+            assert verboten not in text, (datei, verboten)
+
+
+def test_seite_traegt_katex_kopf_und_rahmen() -> None:
+    html = _hole(seite_app, "/lernen/")[1]["body"].decode("utf-8")
+    assert KOPF in html and "<!--KOPF-->" not in html
+    assert '<iframe id="rahmen" src="/"' in html
+    for text in ("Fläche groß", "Geteilt"):
+        assert text in html
+
+
+def test_csp_ohne_unsichere_erweiterung() -> None:
+    csp = seiten_csp().decode()
+    assert csp.count("script-src") == 1 and "'unsafe-inline'" in csp.split("style-src")[1].split(";")[0]
+    assert "script-src" in csp and "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0]
+
+
+def test_nur_bekannte_dateien_und_nur_lesen() -> None:
+    assert _hole(seite_app, "/lernen/../x")[0]["status"] == 404
+    assert _hole(seite_app, "/lernen/index.html")[0]["status"] == 404
+    assert _hole(seite_app, "/lernen/", methode="POST")[0]["status"] == 405
+    kopf = _hole(seite_app, "/lernen/huelle.js", methode="HEAD")
+    assert kopf[0]["status"] == 200 and kopf[1]["body"] == b""
+
+
+def test_seite_nur_mit_cookie() -> None:
+    weiche = build_app(E)
+    assert _hole(weiche, "/lernen/")[0]["status"] == 403
+    assert _hole(weiche, "/lernen/huelle.js", cookie="muell")[0]["status"] == 403
+    assert _hole(weiche, "/lernen/", host="evil.example", cookie=token_erzeugen(SCHLUESSEL))[0]["status"] == 403
+    mit = _hole(weiche, "/lernen/", cookie=token_erzeugen(SCHLUESSEL))
+    assert mit[0]["status"] == 200 and b"<iframe" in mit[1]["body"]
+
+
+def test_seitendateien_vollstaendig() -> None:
+    for name in ("index.html", "huelle.css", "huelle.js", "aufgabe.js", "aufgabe.test.mjs"):
+        assert (Path(SEITE) / name).is_file()

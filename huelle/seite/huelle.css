@@ -1,0 +1,86 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex; flex-direction: column;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #17191c; background: #f6f5f1; overflow-x: hidden;
+}
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; max-width: 100%; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+.nur-leser { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.kopf {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem;
+  padding: .5rem .75rem; background: #fff; border-bottom: 1px solid #c9c6bc;
+}
+.kurswahl select { min-height: 2.5rem; max-width: 14rem; padding: 0 .5rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; }
+.fortschritt { flex: 1 1 8rem; margin: 0; font-weight: 600; min-width: 0; }
+.umschalter { display: flex; gap: .25rem; }
+.umschalter button { min-height: 2.5rem; padding: 0 .9rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff; }
+.umschalter button[aria-pressed="true"] { background: #17191c; color: #fff; }
+
+.banner { margin: 0; padding: .6rem .75rem; background: #fdecea; color: #8a1c13; border-bottom: 1px solid #e3b3ae; overflow-wrap: anywhere; }
+
+.haupt { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: 320px minmax(0, 1fr); }
+.layout-c .haupt { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.leiste { min-width: 0; overflow-y: auto; padding: .75rem; background: #fff; border-right: 1px solid #c9c6bc; overflow-wrap: anywhere; }
+.flaeche { min-width: 0; min-height: 0; background: #fff; }
+.flaeche iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+
+.karte h1, .karte h2, .block h2 { margin: 0 0 .5rem; font-size: 1.05rem; line-height: 1.4; }
+.karte .aufgabe { margin: 0 0 .75rem; font-weight: 600; }
+.karte fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.option { display: flex; gap: .6rem; align-items: flex-start; margin: 0 0 .4rem; padding: .5rem .6rem; border: 1px solid #d9d6cc; border-radius: .5rem; }
+.option input { margin-top: .3rem; }
+.option span { min-width: 0; }
+.karte textarea, .karte input[type="text"] { width: 100%; padding: .5rem .6rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; }
+.karte textarea { min-height: 8rem; resize: vertical; }
+.zeile { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0 0 .5rem; min-width: 0; }
+.zeile > .titel { flex: 1 1 8rem; min-width: 0; font-weight: 600; }
+.zeile select { min-height: 2.5rem; max-width: 100%; }
+.luecke { margin: 0 0 .5rem; padding: .6rem .7rem; background: #17191c; color: #f4f4f4; border-radius: .5rem; font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.luecke input { width: auto !important; min-width: 10ch; max-width: 100%; color: #17191c; }
+.reihe { display: flex; align-items: center; gap: .5rem; margin: 0 0 .4rem; padding: .4rem .5rem; border: 1px solid #d9d6cc; border-radius: .5rem; }
+.reihe .titel { flex: 1 1 auto; min-width: 0; }
+.reihe button { width: 2.5rem; height: 2.5rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; }
+.hinweistext { margin: .5rem 0; color: #55524a; font-size: .95rem; }
+.fehler { color: #a3150a; margin: .25rem 0 0; }
+
+.knoepfe { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.knoepfe button { min-height: 2.5rem; padding: 0 1rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff; }
+.knoepfe button.haupt-knopf { background: #17191c; color: #fff; }
+
+.rueckmeldung { margin: 0 0 .75rem; padding: .6rem .7rem; border-left: 4px solid #17191c; background: #f6f5f1; }
+.rueckmeldung.richtig { border-color: #1d7a3e; }
+.rueckmeldung.falsch { border-color: #b4681a; }
+.rueckmeldung.pruefung { border-color: #3a6ea5; }
+.rueckmeldung p { margin: 0 0 .4rem; }
+.antwortbox { margin: .5rem 0; padding: .6rem .7rem; background: #eef3f8; border-radius: .5rem; }
+.antwortbox p { margin: 0 0 .4rem; }
+
+.block { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid #e4e1d8; }
+.begriffe, .notizen { list-style: none; margin: 0; padding: 0; }
+.begriffe li { margin: 0 0 .5rem; }
+.begriff-titel { display: flex; justify-content: space-between; gap: .5rem; font-size: .95rem; }
+.balken { height: .5rem; margin-top: .2rem; border-radius: .25rem; background: #e4e1d8; overflow: hidden; }
+.balken > span { display: block; height: 100%; background: #1d7a3e; }
+.notizen li { margin: 0 0 .6rem; padding: .5rem .6rem; border: 1px solid #e4e1d8; border-radius: .5rem; font-size: .95rem; }
+.notizen .auswahl { margin: 0 0 .25rem; font-weight: 600; }
+.notizen .erklaerung { margin: 0; }
+
+.bewertung h2 { font-size: 1.3rem; margin: 0 0 .75rem; }
+.smileys { display: flex; gap: .5rem; margin: 0 0 .75rem; }
+.smileys button { flex: 1; padding: .5rem 0; font-size: 2rem; border: 2px solid transparent; border-radius: .75rem; background: #f6f5f1; }
+.smileys button[aria-pressed="true"] { border-color: #17191c; background: #fff; }
+.bewertung input { display: block; margin: 0 0 .5rem; }
+.danke { font-weight: 600; }
+
+@media (max-width: 699px) {
+  body { height: auto; min-height: 100%; overflow-y: auto; }
+  .haupt, .layout-c .haupt { display: flex; flex-direction: column; }
+  .leiste { overflow: visible; border-right: 0; border-bottom: 1px solid #c9c6bc; }
+  .flaeche { height: 70vh; flex: 0 0 70vh; }
+  .kurswahl select { max-width: 100%; }
+}

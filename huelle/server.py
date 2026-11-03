@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -12,24 +11,9 @@ from .durchreicher import Durchreicher
 from .einstellung import Einstellung, einstellung_lesen
 from .lern_mcp import LernMcp
 from .penecho_mcp import PenEchoMcp
+from .seite_app import seite_app
 from .sperre import Sperre
 from .weiche import Weiche
-
-
-def _platzhalter(text: str) -> Any:
-    """Platzhalter, bis die Folge-Tasks (Seite, API, Durchreicher) die echten Apps liefern."""
-
-    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "websocket":
-            await send({"type": "websocket.close", "code": 1013})
-            return
-        body = text.encode("utf-8")
-        await send({"type": "http.response.start", "status": 503,
-                    "headers": [(b"content-type", b"text/plain; charset=utf-8"),
-                                (b"content-length", str(len(body)).encode("ascii"))]})
-        await send({"type": "http.response.body", "body": body})
-
-    return app
 
 
 def build_app(einstellung: Einstellung) -> Weiche:
@@ -46,8 +30,7 @@ def build_app(einstellung: Einstellung) -> Weiche:
         sperre,
         httpx.Client(timeout=30.0, follow_redirects=False),
     )
-    # Task 8: seite_app ersetzt den Platzhalter.
-    return Weiche(einstellung, _platzhalter("Die Seite ist noch nicht verfügbar."), bruecke, durchreicher)
+    return Weiche(einstellung, seite_app, bruecke, durchreicher)
 
 
 def uvicorn_settings(host: str, port: int) -> dict[str, object]:
