@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 import threading
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+# Fuer genau diese Version sind KI_PFADE und CLOUD_PFADE aus dem Quelltext ermittelt.
+GEPRUEFTE_PENECHO_VERSION = "1.4.2"
 
 # Befund zu PenEcho v1.4.2 (node_modules/penecho/src/server/main.js, nur gelesen).
 # Modellaufruf JA (gesperrt):
@@ -49,6 +58,12 @@ class Sperre:
         self._lock = threading.Lock()
         self._zustand = _UNBEKANNT
         self._aufgabe_id: str | None = None
+        self._dauerhaft = False
+
+    def dauerhaft_gesperrt(self) -> None:
+        """Ab jetzt immer gesperrt, bis zum Neustart (etwa bei einer ungeprueften PenEcho-Version)."""
+        with self._lock:
+            self._dauerhaft = True
 
     def offen(self, aufgabe_id: str) -> None:
         with self._lock:
@@ -64,4 +79,32 @@ class Sperre:
 
     def gesperrt(self) -> bool:
         with self._lock:
-            return self._zustand != _FREI
+            return self._dauerhaft or self._zustand != _FREI
+
+
+def penecho_version(paket: Path) -> str | None:
+    """Version aus `package.json` der PenEcho-Installation; None, wenn nicht lesbar oder kein PenEcho."""
+    try:
+        daten = json.loads((Path(paket) / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(daten, dict) or daten.get("name") != "penecho":
+        return None
+    version = daten.get("version")
+    return version if isinstance(version, str) else None
+
+
+def penecho_version_pruefen(paket: Path, sperre: Sperre) -> bool:
+    """Nur die gepruefte Version darf die Sperre je loesen; sonst bleibt die KI bis zum Neustart zu.
+
+    Die KI-Pfade oben stammen aus dem Quelltext genau dieser Version. Eine neuere PenEcho-Version
+    kann neue Modellrouten haben, die die Sperre nicht kennt.
+    """
+    version = penecho_version(paket)
+    if version == GEPRUEFTE_PENECHO_VERSION:
+        return True
+    sperre.dauerhaft_gesperrt()
+    gefunden = re.sub(r"[^0-9A-Za-z.+-]", "", version)[:40] if version else "unbekannt"
+    log.warning("PenEcho-Version %s ist nicht geprueft (erwartet %s); die KI bleibt gesperrt",
+                gefunden, GEPRUEFTE_PENECHO_VERSION)
+    return False

@@ -17,6 +17,7 @@ KURS = "11111111-1111-4111-8111-111111111111"
 def _env(**extra: str) -> dict[str, str]:
     env = {
         "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
+        "LEARNING_HUELLE_FLAECHE_BASIS": "https://lernen.example.test:8443",
         "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
         "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
         "LEARNING_HUELLE_ACTOR": "lh-1-test",
@@ -42,6 +43,15 @@ def test_einstellung_vorgaben() -> None:
     assert e.basis == "https://lernen.example.test"
     assert e.erlaubte_hosts == {"lernen.example.test", "127.0.0.1:8150"}
     assert e.kurse[0].course_id == KURS
+    # Zweite Herkunft fuer PenEcho (Ruling J): eigener Port, eigene Host-Liste.
+    assert e.flaeche_port == 8151
+    assert e.flaeche_basis == "https://lernen.example.test:8443"
+    assert e.flaechen_hosts == {"lernen.example.test:8443", "127.0.0.1:8151"}
+    assert e.seiten_herkuenfte == ("https://lernen.example.test", "http://127.0.0.1:8150")
+    assert e.flaechen_herkuenfte == ("https://lernen.example.test:8443", "http://127.0.0.1:8151")
+    assert e.penecho_paket.replace("\\", "/").endswith("VibeMind/penecho/node_modules/penecho")
+    eigen = einstellung_lesen(_env(LEARNING_HUELLE_FLAECHE_PORT="9001", LEARNING_HUELLE_PENECHO_PAKET="/opt/pe"))
+    assert eigen.flaeche_port == 9001 and eigen.penecho_paket == "/opt/pe"
 
 
 def test_einstellung_meldet_fehlenden_wert_ohne_inhalt() -> None:
@@ -61,6 +71,12 @@ def test_einstellung_meldet_fehlenden_wert_ohne_inhalt() -> None:
         ("LEARNING_HUELLE_BASIS", "http://lernen.example.test"),
         ("LEARNING_HUELLE_KURSE", "[]"),
         ("LEARNING_HUELLE_KURSE", '[{"course_id": "kein-uuid", "titel": "x"}]'),
+        ("LEARNING_HUELLE_FLAECHE_BASIS", ""),
+        ("LEARNING_HUELLE_FLAECHE_BASIS", "http://lernen.example.test:8443"),
+        ("LEARNING_HUELLE_FLAECHE_BASIS", "https://lernen.example.test"),
+        ("LEARNING_HUELLE_FLAECHE_BASIS", "https://anders.example.test:8443"),
+        ("LEARNING_HUELLE_FLAECHE_PORT", "8150"),
+        ("LEARNING_HUELLE_FLAECHE_PORT", "keine"),
     ],
 )
 def test_einstellung_lehnt_ungueltige_werte_ab(name: str, wert: str) -> None:

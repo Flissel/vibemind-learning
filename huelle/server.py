@@ -1,7 +1,12 @@
-"""Server der Lern-Huelle. Start: `python -m spaces.learning.huelle.server`."""
+"""Server der Lern-Huelle. Start: `python -m spaces.learning.huelle.server`.
+
+Ein Prozess, zwei Ports (Ruling J): der Seiten-Port liefert `/lernen/*`, der Flaechen-Port nur PenEcho.
+Beide teilen eine Sperre und eine Bruecke.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -12,16 +17,19 @@ from .einstellung import Einstellung, einstellung_lesen
 from .lern_mcp import LernMcp
 from .penecho_mcp import PenEchoMcp
 from .seite_app import seite_app
-from .sperre import Sperre
-from .weiche import Weiche
+from .sperre import Sperre, penecho_version_pruefen
+from .weiche import FlaechenWeiche, Weiche
 
 
-def build_app(einstellung: Einstellung) -> Weiche:
+def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
+    """(Seiten-Weiche, Flaechen-Weiche) mit einer gemeinsamen Sperre."""
     # Eine Sperre fuer Durchreicher und Bruecke: die Bruecke stellt sie, der Durchreicher prueft sie.
     sperre = Sperre()
+    # Eine ungepruefte PenEcho-Version kann neue Modellrouten haben: dann wird die Sperre nie frei.
+    penecho_version_pruefen(Path(einstellung.penecho_paket), sperre)
     durchreicher = Durchreicher(
-        einstellung.penecho_url, sperre,
-        frozenset({einstellung.basis, f"http://127.0.0.1:{einstellung.port}"}),
+        einstellung.penecho_url, sperre, frozenset(einstellung.flaechen_herkuenfte),
+        rahmen_herkuenfte=einstellung.seiten_herkuenfte,
     )
     bruecke = Bruecke(
         einstellung,
@@ -30,7 +38,7 @@ def build_app(einstellung: Einstellung) -> Weiche:
         sperre,
         httpx.Client(timeout=30.0, follow_redirects=False),
     )
-    return Weiche(einstellung, seite_app, bruecke, durchreicher)
+    return Weiche(einstellung, seite_app(einstellung), bruecke), FlaechenWeiche(einstellung, durchreicher)
 
 
 def uvicorn_settings(host: str, port: int) -> dict[str, object]:
@@ -38,11 +46,27 @@ def uvicorn_settings(host: str, port: int) -> dict[str, object]:
     return {"host": host, "port": port, "log_level": "warning", "proxy_headers": False}
 
 
-def main() -> None:
-    einstellung = einstellung_lesen()
+async def _beide(einstellung: Einstellung) -> None:
     import uvicorn
 
-    uvicorn.run(build_app(einstellung), **uvicorn_settings(einstellung.host, einstellung.port))
+    seiten, flaeche = build_apps(einstellung)
+    server = [
+        uvicorn.Server(uvicorn.Config(seiten, **uvicorn_settings(einstellung.host, einstellung.port))),
+        uvicorn.Server(uvicorn.Config(flaeche, **uvicorn_settings(einstellung.host, einstellung.flaeche_port))),
+    ]
+
+    async def laufen(s: object) -> None:
+        try:
+            await s.serve()  # type: ignore[attr-defined]
+        finally:
+            for anderer in server:  # endet einer, enden beide
+                anderer.should_exit = True
+
+    await asyncio.gather(*(laufen(s) for s in server))
+
+
+def main() -> None:
+    asyncio.run(_beide(einstellung_lesen()))
 
 
 if __name__ == "__main__":

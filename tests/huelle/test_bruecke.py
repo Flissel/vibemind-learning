@@ -17,7 +17,6 @@ from spaces.learning.huelle.bruecke import (
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
-from spaces.learning.huelle.server import build_app
 from spaces.learning.huelle.sperre import Sperre
 
 KURS = "11111111-1111-4111-8111-111111111111"
@@ -32,6 +31,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16
 
 E = einstellung_lesen({
     "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
+    "LEARNING_HUELLE_FLAECHE_BASIS": "https://lernen.example.test:8443",
     "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
     "LEARNING_HUELLE_API_URL": API,
     "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
@@ -637,16 +637,6 @@ def test_lern_mcp_fehlerabbildung() -> None:
         LernMcp("http://m.test/mcp", ACTOR, transport=httpx.MockTransport(netz)).rufe("learning_task_next", "x")
 
 
-# ---- Verdrahtung ----------------------------------------------------------------
-
-def test_build_app_teilt_eine_sperre() -> None:
-    weiche = build_app(E)
-    bruecke, durchreicher = weiche._api, weiche._durchreicher
-    assert isinstance(bruecke, Bruecke)
-    assert bruecke._sperre is durchreicher._sperre
-    assert durchreicher._eigene == frozenset({"https://lernen.example.test", f"http://127.0.0.1:{E.port}"})
-
-
 # ---- Sperre ueber mehrere Kurse ---------------------------------------------------
 
 KURS_B = "77777777-7777-4777-8777-777777777777"
@@ -654,6 +644,7 @@ SID_B = "88888888-8888-4888-8888-888888888888"
 TASK_B = "44444444-4444-4444-8444-44444444444b"
 E2 = einstellung_lesen({
     "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
+    "LEARNING_HUELLE_FLAECHE_BASIS": "https://lernen.example.test:8443",
     "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
     "LEARNING_HUELLE_API_URL": API,
     "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,

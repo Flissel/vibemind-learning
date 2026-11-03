@@ -26,6 +26,11 @@ API_URL = "LEARNING_HUELLE_API_URL"
 SCHLUESSEL = "LEARNHOUSE_LEARNING_SERVICE_KEY"
 ACTOR = "LEARNING_HUELLE_ACTOR"
 KURSE = "LEARNING_HUELLE_KURSE"
+# Zweite Herkunft nur fuer PenEcho (Ruling J): PenEcho-Widgets laufen mit der Herkunft, die PenEcho
+# ausliefert, und duerfen die Seite und ihre API nicht erreichen.
+FLAECHE_PORT = "LEARNING_HUELLE_FLAECHE_PORT"
+FLAECHE_BASIS = "LEARNING_HUELLE_FLAECHE_BASIS"
+PENECHO_PAKET = "LEARNING_HUELLE_PENECHO_PAKET"
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,9 @@ class Einstellung:
     dienst_schluessel: str
     actor_id: str
     kurse: tuple[Kurs, ...]
+    flaeche_port: int
+    flaeche_basis: str
+    penecho_paket: str
 
     @property
     def basis_host(self) -> str:
@@ -53,7 +61,21 @@ class Einstellung:
 
     @property
     def erlaubte_hosts(self) -> frozenset[str]:
+        """Hosts des Seiten-Ports (Seite, API, Zugang)."""
         return frozenset({self.basis_host, f"127.0.0.1:{self.port}"})
+
+    @property
+    def flaechen_hosts(self) -> frozenset[str]:
+        """Hosts des Flaechen-Ports (nur PenEcho)."""
+        return frozenset({basis_aufteilen(self.flaeche_basis, FLAECHE_BASIS)[1], f"127.0.0.1:{self.flaeche_port}"})
+
+    @property
+    def seiten_herkuenfte(self) -> tuple[str, str]:
+        return (self.basis, f"http://127.0.0.1:{self.port}")
+
+    @property
+    def flaechen_herkuenfte(self) -> tuple[str, str]:
+        return (self.flaeche_basis, f"http://127.0.0.1:{self.flaeche_port}")
 
 
 def basis_aufteilen(roh: str, name: str = BASIS) -> tuple[str, str]:
@@ -95,15 +117,33 @@ def _kurse(roh: str) -> tuple[Kurs, ...]:
     return kurse
 
 
+def _port(env: Mapping[str, str], name: str, vorgabe: int) -> int:
+    try:
+        port = int((env.get(name) or "").strip() or str(vorgabe))
+    except ValueError:
+        raise RuntimeError(f"{name} ist keine Zahl") from None
+    if not 0 < port < 65536:
+        raise RuntimeError(f"{name} liegt ausserhalb des Bereichs")
+    return port
+
+
+def _penecho_paket_vorgabe(env: Mapping[str, str]) -> str:
+    """Die PenEcho-Installation der PC-Einrichtung (Plan, Task 10)."""
+    return os.path.join(env.get("LOCALAPPDATA") or "", "VibeMind", "penecho", "node_modules", "penecho")
+
+
 def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
     env = os.environ if env is None else env
-    try:
-        port = int((env.get(PORT) or "").strip() or "8150")
-    except ValueError:
-        raise RuntimeError(f"{PORT} ist keine Zahl") from None
-    if not 0 < port < 65536:
-        raise RuntimeError(f"{PORT} liegt ausserhalb des Bereichs")
+    port = _port(env, PORT, 8150)
+    flaeche_port = _port(env, FLAECHE_PORT, 8151)
+    if flaeche_port == port:
+        raise RuntimeError(f"{FLAECHE_PORT} muss sich von {PORT} unterscheiden")
     basis = basis_aufteilen(_pflicht(env, BASIS), BASIS)[0]
+    flaeche_basis = basis_aufteilen(_pflicht(env, FLAECHE_BASIS), FLAECHE_BASIS)[0]
+    # Gleicher Host, anderer Port: das Zugangscookie gilt je Host (Ports zaehlen nicht) fuer beide,
+    # die Herkuenfte bleiben getrennt.
+    if flaeche_basis == basis or urlsplit(flaeche_basis).hostname != urlsplit(basis).hostname:
+        raise RuntimeError(f"{FLAECHE_BASIS} braucht denselben Host wie {BASIS}, aber einen anderen Port")
     schluessel = _pflicht(env, SCHLUESSEL)
     if len(schluessel) < MIN_SCHLUESSEL:
         raise RuntimeError(f"{SCHLUESSEL} ist zu kurz")
@@ -121,4 +161,7 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         dienst_schluessel=schluessel,
         actor_id=actor,
         kurse=_kurse(_pflicht(env, KURSE)),
+        flaeche_port=flaeche_port,
+        flaeche_basis=flaeche_basis,
+        penecho_paket=(env.get(PENECHO_PAKET) or "").strip() or _penecho_paket_vorgabe(env),
     )
