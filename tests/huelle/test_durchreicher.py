@@ -162,11 +162,11 @@ def test_andere_pfade_trotz_sperre_durchgereicht(fake: tuple[FakePenEcho, str]) 
     assert upstream.aufrufe == ["/api/cloud/status"]
 
 
-def test_csp_frame_ancestors_wird_self(fake: tuple[FakePenEcho, str]) -> None:
+def test_csp_ohne_rahmen_herkunft_bleibt_none(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
     _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/"))
     csp = [v for k, v in headers if k == b"content-security-policy"]
-    assert csp == [b"default-src 'self'; frame-ancestors 'self'; img-src data:"]
+    assert csp == [b"default-src 'self'; frame-ancestors 'none'; img-src data:"]
     assert (b"x-eigen", b"unveraendert") in headers
 
 
@@ -349,3 +349,134 @@ def test_websocket_eigene_origin_echo(fake: tuple[FakePenEcho, str]) -> None:
     gesendet = _ws_mit_origin(Durchreicher(url, _frei(), EIGEN), b"https://lernen.example.test")
     assert gesendet[1]["text"] == "echo:hi"
     assert upstream.kopf["origin"] == url
+
+
+# ---- Abschlusspruefung: Cloud-Kopplung, Pfade, Zugangscookie, websockets-API -------------
+
+@pytest.mark.parametrize("pfad", [
+    "/api/cloud/sign-in", "/api/cloud/sign-in/start", "/api/cloud/sign-in/callback", "/api/cloud/pair",
+    "/api/cloud/device/enable", "/api/cloud/mcp/access", "/api/CLOUD/Pair", "/x/../api/cloud/pair",
+    "/api/cloud/%70air",
+])
+def test_cloud_kopplung_immer_403_auch_bei_freier_sperre(fake: tuple[FakePenEcho, str], pfad: str) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), pfad, methode="POST", body=b"{}"))
+    assert status == 403, pfad
+    assert b"".join(t for _, t in teile) == "Nicht erlaubt.".encode()
+    assert upstream.aufrufe == []
+
+
+def test_cloud_kopplung_websocket_1008(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    gesendet = asyncio.run(_ws_lauf(Durchreicher(url, _frei(), EIGEN), "/api/cloud/pair", "hi"))
+    assert [(m["type"], m.get("code")) for m in gesendet] == [("websocket.close", 1008)]
+
+
+def test_andere_cloud_pfade_bleiben_offen(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    for pfad in ("/api/cloud/status", "/api/cloud/sign-out", "/api/cloud/device/disable"):
+        status, _, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), pfad))
+        assert status == 200, pfad
+    assert upstream.aufrufe == ["/api/cloud/status", "/api/cloud/sign-out", "/api/cloud/device/disable"]
+
+
+@pytest.mark.parametrize("roh", [b"api/ai/command", b"*", b"http://evil.example/x"])
+def test_pfad_ohne_schraegstrich_400(fake: tuple[FakePenEcho, str], roh: bytes) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    scope_pfad = roh.decode()
+
+    async def lauf() -> int:
+        scope = {"type": "http", "method": "GET", "path": scope_pfad, "raw_path": roh, "query_string": b"",
+                 "headers": []}
+        gesendet: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(m: dict[str, Any]) -> None:
+            gesendet.append(m)
+
+        await Durchreicher(url, _frei(), EIGEN)(scope, receive, send)
+        return gesendet[0]["status"]
+
+    assert asyncio.run(lauf()) == 400
+    assert upstream.aufrufe == []
+
+
+def test_ungueltige_url_wird_502(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+
+    async def lauf() -> int:
+        scope = {"type": "http", "method": "GET", "path": "/", "raw_path": b"/", "query_string": b"a=\x01",
+                 "headers": []}
+        gesendet: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(m: dict[str, Any]) -> None:
+            gesendet.append(m)
+
+        await Durchreicher(url, _frei(), EIGEN)(scope, receive, send)
+        return gesendet[0]["status"]
+
+    assert asyncio.run(lauf()) == 502
+
+
+def test_zugangscookie_geht_nicht_an_penecho(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", headers=[
+        (b"cookie", b"huelle_zugang=geheim; penecho_ai_session_x=abc"),
+    ]))
+    assert upstream.kopf["cookie"] == "penecho_ai_session_x=abc"
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", headers=[(b"cookie", b"huelle_zugang=geheim")]))
+    assert "cookie" not in upstream.kopf
+
+
+def test_zugangscookie_geht_nicht_an_penecho_websocket(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+
+    async def lauf() -> None:
+        scope = {"type": "websocket", "path": "/api/mcp/canvas", "raw_path": b"/api/mcp/canvas", "query_string": b"",
+                 "headers": [(b"origin", b"https://lernen.example.test"),
+                             (b"cookie", b"huelle_zugang=geheim; a=b")]}
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        eingang.put_nowait({"type": "websocket.connect"})
+
+        async def send(m: dict[str, Any]) -> None:
+            if m["type"] == "websocket.accept":
+                eingang.put_nowait({"type": "websocket.receive", "text": "hi"})
+            if m["type"] == "websocket.send":
+                eingang.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+        await asyncio.wait_for(Durchreicher(url, _frei(), EIGEN)(scope, eingang.get, send), timeout=10)
+
+    asyncio.run(lauf())
+    assert "huelle_zugang" not in upstream.kopf.get("cookie", "")
+    assert upstream.kopf.get("cookie") == "a=b"
+
+
+def test_websockets_kopf_argument_je_version() -> None:
+    from spaces.learning.huelle.durchreicher import _kopf_argument
+
+    def neu(uri: str, *, additional_headers: Any = None, origin: Any = None) -> None: ...
+
+    def alt(uri: str, *, extra_headers: Any = None, origin: Any = None) -> None: ...
+
+    assert _kopf_argument(neu) == "additional_headers"
+    assert _kopf_argument(alt) == "extra_headers"
+    erwartet = "additional_headers" if int(websockets.__version__.split(".")[0]) >= 14 else "extra_headers"
+    assert _kopf_argument(websockets.connect) == erwartet
+
+
+def test_frame_ancestors_auf_seitenherkunft(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    seite = ("https://lernen.example.test", "http://127.0.0.1:8150")
+    app = Durchreicher(url, _frei(), EIGEN, rahmen_herkuenfte=seite)
+    _, headers, _ = asyncio.run(_lauf(app, "/"))
+    csp = [v for k, v in headers if k == b"content-security-policy"]
+    assert csp == [b"default-src 'self'; frame-ancestors https://lernen.example.test http://127.0.0.1:8150; "
+                   b"img-src data:"]
