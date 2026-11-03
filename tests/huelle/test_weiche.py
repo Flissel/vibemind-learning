@@ -41,13 +41,16 @@ def _weichen() -> tuple[Weiche, FlaechenWeiche, list[str]]:
 
 
 def _anfrage(app: Any, path: str, *, art: str = "http", host: str = HOST, cookie: str | None = None,
-             methode: str = "GET", origin: str | None = None) -> list[dict[str, Any]]:
+             methode: str = "GET", origin: str | None = None,
+             raw_path: bytes | None = None) -> list[dict[str, Any]]:
     headers = [(b"host", host.encode())]
     if cookie is not None:
         headers.append((b"cookie", f"{COOKIE}={cookie}".encode()))
     if origin is not None:
         headers.append((b"origin", origin.encode()))
     scope = {"type": art, "method": methode, "path": path, "headers": headers}
+    if raw_path is not None:
+        scope["raw_path"] = raw_path
     gesendet: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:
@@ -224,3 +227,20 @@ def test_oeffentliche_penecho_datei_fremder_host_403() -> None:
         gesendet = _anfrage(flaeche, "/widget-renderer.js", host=host)
         assert _start(gesendet)["status"] == 403, host
         assert aufrufe == []
+
+
+def test_oeffentliche_penecho_datei_roher_pfad_mit_prozent_bekommt_keine_ausnahme() -> None:
+    # Parser-Differenz: dekodierter Pfad passt, der rohe (weitergereichte) nicht.
+    for roh in (b"/widget-renderer%2Ejs", b"/widget-renderer.js%00", b"/%77idget-renderer.js"):
+        _, flaeche, aufrufe = _weichen()
+        gesendet = _anfrage(flaeche, "/widget-renderer.js", host=FLAECHE_HOST, raw_path=roh)
+        assert _start(gesendet)["status"] == 403, roh
+        assert aufrufe == []
+
+
+def test_oeffentliche_penecho_datei_roher_pfad_exakt_geht_durch() -> None:
+    for roh in (b"/widget-renderer.js", b"/widget-renderer.js?v=1.4.2"):
+        _, flaeche, aufrufe = _weichen()
+        gesendet = _anfrage(flaeche, "/widget-renderer.js", host=FLAECHE_HOST, raw_path=roh)
+        assert _start(gesendet)["status"] == 200, roh
+        assert aufrufe == ["durch"]

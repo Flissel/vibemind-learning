@@ -29,6 +29,7 @@ OEFFENTLICHE_PENECHO_DATEIEN = frozenset({
     "/playground/liveclay-v1.js",
     "/visual-explainer-vendor.js",
 })
+_OEFFENTLICH_ROH = frozenset(p.encode() for p in OEFFENTLICHE_PENECHO_DATEIEN)
 # Die Zugangsseite setzt das Cookie mit 200 und leitet erst dann weiter: so ist die Navigation zu
 # /lernen/ eine eigene (same-site), und das SameSite=Strict-Cookie geht mit, auch wenn der Link aus
 # einer anderen App (Telegram) kam. Kein Skript, daher passt die strenge CSP.
@@ -182,8 +183,11 @@ class FlaechenWeiche(_Tor):
         return False
 
     def _oeffentlich(self, scope: Scope) -> bool:
+        # Rohe Bytes vergleichen: der Durchreicher leitet den ROHEN Pfad weiter; ein dekodierter
+        # Vergleich (%2E, %00 ...) waere eine Parser-Differenz. Query gehoert nicht zum Pfad.
+        roh = (scope.get("raw_path") or scope.get("path", "").encode()).split(b"?", 1)[0]
         return (scope["type"] == "http" and scope.get("method") in _LESEND
-                and scope.get("path", "") in OEFFENTLICHE_PENECHO_DATEIEN and self._host_erlaubt(scope))
+                and roh in _OEFFENTLICH_ROH and self._host_erlaubt(scope))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         art = scope["type"]
