@@ -15,6 +15,8 @@ class LearningEventType(StrEnum):
     COURSE_PUBLISH = "learning.course.publish"
     CHAPTER_OPEN = "learning.chapter.open"
     SESSION_START = "learning.session.start"
+    SESSION_RESUME = "learning.session.resume"
+    COURSE_OVERVIEW = "learning.course.overview"
     TASK_NEXT = "learning.task.next"
     TASK_ANSWER = "learning.task.answer"
     HINT_REQUEST = "learning.hint.request"
@@ -39,6 +41,8 @@ class LearningToolName(StrEnum):
     COURSE_PUBLISH = "learning_course_publish"
     CHAPTER_OPEN = "learning_chapter_open"
     SESSION_START = "learning_session_start"
+    SESSION_RESUME = "learning_session_resume"
+    COURSE_OVERVIEW = "learning_course_overview"
     TASK_NEXT = "learning_task_next"
     TASK_ANSWER = "learning_task_answer"
     HINT_REQUEST = "learning_hint_request"
@@ -63,6 +67,8 @@ EVENT_TOOL_MAP: dict[LearningEventType, LearningToolName] = {
     LearningEventType.COURSE_PUBLISH: LearningToolName.COURSE_PUBLISH,
     LearningEventType.CHAPTER_OPEN: LearningToolName.CHAPTER_OPEN,
     LearningEventType.SESSION_START: LearningToolName.SESSION_START,
+    LearningEventType.SESSION_RESUME: LearningToolName.SESSION_RESUME,
+    LearningEventType.COURSE_OVERVIEW: LearningToolName.COURSE_OVERVIEW,
     LearningEventType.TASK_NEXT: LearningToolName.TASK_NEXT,
     LearningEventType.TASK_ANSWER: LearningToolName.TASK_ANSWER,
     LearningEventType.HINT_REQUEST: LearningToolName.HINT_REQUEST,

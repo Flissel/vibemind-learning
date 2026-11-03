@@ -29,6 +29,8 @@ from spaces.learning.services.db.repository import PersistenceConflict
 SESSION_TOOL_NAMES = frozenset(
     {
         LearningToolName.SESSION_START,
+        LearningToolName.SESSION_RESUME,
+        LearningToolName.COURSE_OVERVIEW,
         LearningToolName.TASK_NEXT,
         LearningToolName.TASK_ANSWER,
         LearningToolName.HINT_REQUEST,
@@ -46,6 +48,10 @@ class AdaptiveSessionGateway:
             if request.tool is LearningToolName.SESSION_START:
                 turn = self._start(request)
                 return self._turn_outcome(turn)
+            if request.tool is LearningToolName.SESSION_RESUME:
+                return self._resume(request)
+            if request.tool is LearningToolName.COURSE_OVERVIEW:
+                return self._overview(request)
             if request.tool is LearningToolName.TASK_ANSWER:
                 turn = self._answer(request)
                 return self._turn_outcome(turn)
@@ -82,6 +88,24 @@ class AdaptiveSessionGateway:
     ) -> TruthReadbackV1 | None:
         if outcome.aggregate is None:
             return None
+        if outcome.aggregate.aggregate_type == "course":
+            # Read-only course views have no session to re-read; the aggregate
+            # names the course revision the answer was computed from.
+            return TruthReadbackV1(
+                invocation_id=request.event.invocation_id,
+                correlation_id=request.event.correlation_id,
+                owner="adaptive-engine",
+                terminal_state="completed",
+                aggregate=outcome.aggregate,
+                evidence=EvidenceRefV1(
+                    owner="adaptive-engine",
+                    evidence_id=(
+                        f"course:{outcome.aggregate.aggregate_id}:"
+                        f"{outcome.aggregate.revision}"
+                    ),
+                    evidence_type="application_readback",
+                ),
+            )
         if not self._service.has_revision(
             outcome.aggregate.aggregate_id, outcome.aggregate.revision
         ):
@@ -122,6 +146,45 @@ class AdaptiveSessionGateway:
                 mode=mode,
                 blueprint=blueprint,
             )
+        )
+
+    def _resume(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        course_id = request.event.course_id
+        revision = request.event.payload.get("course_revision")
+        if course_id is None:
+            raise ValueError("session resume requires course_id")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise ValueError("session resume requires course_revision")
+        turn = self._service.resume(
+            course_id=str(course_id),
+            course_revision=revision,
+            actor_id=request.event.actor.actor_id,
+        )
+        if turn is not None:
+            return self._turn_outcome(turn)
+        return self._course_outcome(str(course_id), revision, {"session": None})
+
+    def _overview(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        course_id = request.event.course_id
+        if course_id is None:
+            raise ValueError("course overview requires course_id")
+        overview = self._service.ueberblick(
+            course_id=str(course_id), actor_id=request.event.actor.actor_id
+        )
+        return self._course_outcome(
+            str(course_id), overview["course_revision"] or 0, overview
+        )
+
+    @staticmethod
+    def _course_outcome(
+        course_id: str, revision: int, result: dict[str, object]
+    ) -> ApplicationOutcomeV1:
+        return ApplicationOutcomeV1(
+            state="completed",
+            aggregate=AggregateRefV1(
+                aggregate_type="course", aggregate_id=course_id, revision=revision
+            ),
+            result=result,
         )
 
     def _answer(self, request: ToolRequestV1) -> SessionTurn:

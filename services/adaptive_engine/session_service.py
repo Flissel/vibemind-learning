@@ -245,6 +245,60 @@ class AdaptiveSessionService:
             )
             return self._with_readback(self._turn(db, row)) if row is not None else None
 
+    def ueberblick(self, *, course_id: str, actor_id: str) -> dict[str, object]:
+        """Begriffe mit Beherrschung der Person und die aktive Sitzung."""
+        course_id = str(UUID(course_id))
+        with self._session_factory() as db:
+            revision = db.scalar(
+                select(func.max(AdaptiveItem.course_revision)).where(
+                    AdaptiveItem.course_id == course_id,
+                    AdaptiveItem.quality_status == "approved",
+                )
+            )
+            if revision is None:
+                return {
+                    "course_id": course_id,
+                    "course_revision": None,
+                    "begriffe": [],
+                    "session": None,
+                }
+            rows = db.execute(
+                select(AdaptiveConcept, ConceptMastery)
+                .outerjoin(
+                    ConceptMastery,
+                    (ConceptMastery.concept_id == AdaptiveConcept.id)
+                    & (ConceptMastery.actor_id == actor_id),
+                )
+                .where(
+                    AdaptiveConcept.course_id == course_id,
+                    AdaptiveConcept.course_revision == revision,
+                )
+            ).all()
+            begriffe = sorted(
+                (
+                    {
+                        "concept_key": concept.concept_key,
+                        "titel": concept.title,
+                        "beherrschung": (
+                            None
+                            if mastery is None
+                            else round(mastery.alpha / (mastery.alpha + mastery.beta), 2)
+                        ),
+                    }
+                    for concept, mastery in rows
+                ),
+                key=lambda entry: (str(entry["titel"]), str(entry["concept_key"])),
+            )
+        turn = self.resume(
+            course_id=course_id, course_revision=revision, actor_id=actor_id
+        )
+        return {
+            "course_id": course_id,
+            "course_revision": revision,
+            "begriffe": begriffe,
+            "session": turn.model_dump(mode="json") if turn is not None else None,
+        }
+
     def current(self, session_id: str, *, actor_id: str) -> SessionTurn:
         with self._session_factory() as db:
             row = db.get(LearningSession, str(UUID(session_id)))

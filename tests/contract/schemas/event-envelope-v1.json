@@ -65,6 +65,8 @@
         "learning.course.publish",
         "learning.chapter.open",
         "learning.session.start",
+        "learning.session.resume",
+        "learning.course.overview",
         "learning.task.next",
         "learning.task.answer",
         "learning.hint.request",
