@@ -22,6 +22,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .umschalter button[aria-pressed="true"] { background: #17191c; color: #fff; }
 
 .banner { margin: 0; padding: .6rem .75rem; background: #fdecea; color: #8a1c13; border-bottom: 1px solid #e3b3ae; overflow-wrap: anywhere; }
+.hinweis { background: #fff6dc; color: #5c4600; border-bottom-color: #e6d49a; }
+.hinweis button { margin-left: .5rem; }
 
 .haupt { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: 320px minmax(0, 1fr); }
 .layout-c .haupt { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }

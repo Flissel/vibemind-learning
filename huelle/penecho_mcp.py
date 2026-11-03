@@ -295,9 +295,14 @@ class PenEchoMcp:
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines
         # aus html/architecture/sequence/workflow/scene/note
+        # schema.js:703: requestId ist Pflicht und "nur fuer identische Argumente wiederverwenden";
+        # daher traegt sie einen Kurz-Hash der Argumente (deterministisch, <= 128 Zeichen).
+        pruefsumme = hashlib.sha256(f"{titel}\n{text}".encode("utf-8")).hexdigest()[:12]
+        rest = MAX_SCHLUESSEL - len("rueckmeldung--") - len(pruefsumme)
         self._werkzeug("penecho_present_widget", {
             "sessionId": session_id,
-            "artifactId": f"rueckmeldung-{aufgabe_id}",
+            "requestId": f"rueckmeldung-{aufgabe_id[:rest]}-{pruefsumme}",
+            "artifactId": f"rueckmeldung-{aufgabe_id}"[:MAX_SCHLUESSEL],
             "title": titel,
             "note": {
                 "title": titel,

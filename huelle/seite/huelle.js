@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  antwortAus, begriffTitel, bildAus, fensterAus, formel, klartext, meldungFuer, nach409, prozent, sperrHinweis, SPERR_HINWEIS,
+  antwortAus, begriffeZusammenfassen, begriffTitel, bildAus, fensterAus, flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, meldungFuer, nach409, prozent, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 
 const API = "/lernen/api";
@@ -392,7 +392,7 @@ async function karteBewertung() {
 // ---- Seitenbereiche ----------------------------------------------------------------------------
 function begriffeZeigen(begriffe) {
   const liste = $("begriffe");
-  liste.replaceChildren(...(begriffe ?? []).map((b) => {
+  liste.replaceChildren(...begriffeZusammenfassen(begriffe).map((b) => {
     const wert = typeof b.beherrschung === "number" ? Math.max(0, Math.min(1, b.beherrschung)) : null;
     const fuellung = el("span");
     fuellung.style.width = wert === null ? "0%" : `${Math.round(wert * 100)}%`;
@@ -402,7 +402,22 @@ function begriffeZeigen(begriffe) {
         el("span", { text: wert === null ? "—" : `${Math.round(wert * 100)} %` })),
       el("div", { class: "balken", role: "img", "aria-label": wert === null ? "—" : `${Math.round(wert * 100)} %` }, fuellung));
   }));
-  $("begriffe-box").hidden = !begriffe || begriffe.length === 0;
+  $("begriffe-box").hidden = liste.children.length === 0;
+}
+
+function flaechenHinweisZeigen(daten) {
+  $("flaechen-hinweis-text").textContent = FLAECHEN_HINWEIS;
+  $("flaechen-hinweis").hidden = !flaechenHinweis(daten);
+}
+
+// Erneutes Oeffnen des aktuellen Kurses nur zum Pruefen der Verbindung: nichts wird abgegeben oder neu geladen.
+async function flaecheVerbinden() {
+  const kurs = z.kurs;
+  if (!kurs) return;
+  const r = await api("POST", `/kurse/${kurs.course_id}/oeffnen`);
+  if (z.kurs !== kurs) return;
+  if (!r.ok) { fehlerBehandeln(r); return; }
+  flaechenHinweisZeigen(r.daten);
 }
 
 async function notizenLaden() {
@@ -457,6 +472,7 @@ function sperren(an) {
 
 async function kursOeffnen(kurs) {
   banner("");
+  $("flaechen-hinweis").hidden = true;
   z.kurs = kurs;
   z.turn = null;
   z.phase = "aufgabe";
@@ -469,7 +485,8 @@ async function kursOeffnen(kurs) {
   if (!r.ok) { fehlerBehandeln(r); return; }
   begriffeZeigen(r.daten.begriffe);
   turnUebernehmen(r.daten.turn, r.daten.nummer);
-  if (r.daten.flaeche === false) banner(TEXT.flaecheWeg);
+  flaechenHinweisZeigen(r.daten);
+  if (r.daten.flaeche === false && !flaechenHinweis(r.daten)) banner(TEXT.flaecheWeg);
   zeigen();
   void notizenLaden();
 }
@@ -539,6 +556,7 @@ async function hinweis() {
 // ---- Start --------------------------------------------------------------------------------------------
 async function start() {
   layoutSetzen(speicher("lesen", "huelle-layout"));
+  $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
   $("layout-a").addEventListener("click", () => layoutSetzen("a"));
   $("layout-c").addEventListener("click", () => layoutSetzen("c"));
   const r = await api("GET", "/kurse");

@@ -190,7 +190,30 @@ export function prozent(r, bild) {
 // Begriffstitel aus dem Graphen sind oft Slugs (`ablauf-kurvendiskussion`): lesbar machen, sonst unveraendert.
 export function begriffTitel(titel) {
   const t = String(titel ?? "");
-  if (t.includes(" ") || !/^[a-z0-9äöüß]+(-[a-z0-9äöüß]+)*$/.test(t)) return t;
-  const s = t.replaceAll("-", " ");
+  if (t.includes(" ") || !/^[a-z0-9äöüß]+([-_][a-z0-9äöüß]+)*$/.test(t)) return t;
+  const s = t.replace(/[-_]/g, " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Begriffe mit gleichem Anzeigetitel (ohne Gross-/Kleinschreibung) werden einer; hoehere Beherrschung gewinnt (null/fehlend am niedrigsten). */
+export function begriffeZusammenfassen(begriffe) {
+  const stufe = (b) => (typeof b?.beherrschung === "number" ? b.beherrschung : -1);
+  const reihe = [];
+  const platz = new Map();
+  for (const b of Array.isArray(begriffe) ? begriffe : []) {
+    const schluessel = begriffTitel(b?.titel).toLowerCase();
+    if (!platz.has(schluessel)) { platz.set(schluessel, reihe.length); reihe.push(b); continue; }
+    const i = platz.get(schluessel);
+    if (stufe(b) > stufe(reihe[i])) reihe[i] = b;
+  }
+  return reihe;
+}
+
+// ---- Flaechen-Hinweis ----------------------------------------------------------------------------
+export const FLAECHEN_HINWEIS =
+  "Die Fläche ist noch nicht verbunden. Schalten Sie oben in der Fläche „MCP“ ein und tippen Sie dann auf „Fläche verbinden“.";
+
+/** Ob der Hinweis zur nicht verbundenen Flaeche gezeigt wird: Antwort mit flaeche false und offene Aufgabe. */
+export function flaechenHinweis(daten) {
+  return !!daten && daten.flaeche === false && daten.turn?.state === "active" && !!daten.turn?.task;
 }

@@ -241,3 +241,49 @@ def test_sitzungsschluessel_hoechstens_128_zeichen(zustand: Path) -> None:
     _client(zustand, fake).sitzung("x" * 300, TITEL)
     schluessel = fake.aufrufe("penecho_start_session")[0]["arguments"]["sessionKey"]
     assert len(schluessel) <= 128 and schluessel.startswith("learning-huelle:")
+
+
+# Pflichtschluessel je Werkzeug, kopiert aus PenEcho 1.4.2 src/server/mcp/schema.js:
+#   penecho_start_session  Z.658 required:["title"]
+#   penecho_edit_canvas    Z.665 required:["sessionId","requestId","action"]
+#   penecho_present_widget Z.675 required:["sessionId","artifactId","title"] + Z.703 requestId
+#   penecho_capture_canvas Z.666 required:["sessionId"] (kein requestId: exactKeys Z.474 lehnt ihn ab)
+_PFLICHT = {
+    "penecho_start_session": {"title"},
+    "penecho_edit_canvas": {"sessionId", "requestId", "action"},
+    "penecho_present_widget": {"sessionId", "artifactId", "title", "requestId"},
+    "penecho_capture_canvas": {"sessionId"},
+}
+_ERLAUBT = {
+    "penecho_start_session": {"canvasId", "instanceId", "documentId", "target", "takeover", "title",
+                              "client", "sessionKey", "restore", "show"},
+    "penecho_capture_canvas": {"sessionId", "target", "objectId", "artifactId", "region", "quality"},
+}
+
+
+def test_alle_aufrufe_enthalten_die_pflichtschluessel_des_schemas(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.sitzung(LERN_SID, TITEL)
+    c.aufgabe_setzen("sess-1", "t1", "x", 1)
+    c.notizkarte("sess-1", "t1", "Rueckmeldung", "Gut.")
+    c.schnappschuss("sess-1", 1)
+    for name, pflicht in _PFLICHT.items():
+        aufrufe = fake.aufrufe(name)
+        assert aufrufe, name
+        for a in aufrufe:
+            assert pflicht <= set(a["arguments"]), name
+            assert not set(a["arguments"]) - _ERLAUBT.get(name, set(a["arguments"])), name
+
+
+def test_widget_request_id_deterministisch_und_gueltig(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.notizkarte("sess-1", "t1", "A", "Text")
+    c.notizkarte("sess-1", "t1", "A", "Text")
+    c.notizkarte("sess-1", "t1", "A", "anderer Text")
+    c.notizkarte("sess-1", "x" * 200, "A", "Text")
+    ids = [a["arguments"]["requestId"] for a in fake.aufrufe("penecho_present_widget")]
+    assert ids[0] == ids[1] != ids[2]  # gleiche Argumente gleiche Id, geaenderte Argumente neue Id
+    assert ids[0].startswith("rueckmeldung-t1")
+    assert all(1 <= len(i) <= 128 for i in ids)

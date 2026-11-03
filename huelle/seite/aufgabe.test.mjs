@@ -146,3 +146,38 @@ test("begriffTitel: Slug wird lesbar, alles andere bleibt", () => {
   assert.equal(begriffTitel("a--b"), "a--b");
   assert.equal(begriffTitel(""), "");
 });
+
+import { begriffeZusammenfassen, flaechenHinweis } from "./aufgabe.js";
+
+test("begriffTitel: Unterstrich wie Bindestrich", () => {
+  assert.equal(begriffTitel("hinreichende_bedingung"), "Hinreichende bedingung");
+  assert.equal(begriffTitel("hinreichende-bedingung"), "Hinreichende bedingung");
+  assert.equal(begriffTitel("a_b-c"), "A b c");
+  assert.equal(begriffTitel("a__b"), "a__b");
+});
+
+test("begriffeZusammenfassen: gleiche Anzeigetitel werden eins, hoehere Beherrschung gewinnt", () => {
+  const aus = begriffeZusammenfassen([
+    { titel: "hinreichende_bedingung", beherrschung: 0.2 },
+    { titel: "Kettenregel", beherrschung: null },
+    { titel: "hinreichende-bedingung", beherrschung: 0.6 },
+    { titel: "kettenregel" },
+    { titel: "Produktregel", beherrschung: 0 },
+    { titel: "produktregel", beherrschung: null },
+  ]);
+  assert.deepEqual(aus.map((b) => b.titel), ["hinreichende-bedingung", "Kettenregel", "Produktregel"]);
+  assert.equal(aus[0].beherrschung, 0.6);
+  assert.equal(aus[1].beherrschung ?? null, null);
+  assert.equal(aus[2].beherrschung, 0);
+  assert.deepEqual(begriffeZusammenfassen(null), []);
+});
+
+test("flaechenHinweis: nur bei flaeche false und offener Aufgabe", () => {
+  const offen = { state: "active", task: { id: "t" } };
+  assert.equal(flaechenHinweis({ flaeche: false, turn: offen }), true);
+  assert.equal(flaechenHinweis({ flaeche: true, turn: offen }), false);
+  assert.equal(flaechenHinweis({ turn: offen }), false);
+  assert.equal(flaechenHinweis({ flaeche: false, turn: { state: "completed" } }), false);
+  assert.equal(flaechenHinweis({ flaeche: false }), false);
+  assert.equal(flaechenHinweis(null), false);
+});
