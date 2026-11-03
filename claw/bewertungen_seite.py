@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .bewertungen import PREFIX, token_gueltig
+from .bewertungen import PREFIX, anzahl, token_gueltig
 from .formeln import KOPF, csp
 from .freigabe import handy_basis
 
@@ -98,7 +98,7 @@ def _kurs(k: dict[str, Any]) -> str:
     teile = [
         '<section style="border:1px solid #999;border-radius:6px;padding:1rem;margin:1rem 0">',
         f"<h2>{_e(k.get('kurs_titel') or 'Ohne Titel')}</h2>",
-        f"<p>{summe} Bewertungen: {verteilung}</p>",
+        f"<p>{anzahl(summe)}: {verteilung}</p>",
     ]
     top = k.get("stichworte_top") or []
     if top:

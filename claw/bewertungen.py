@@ -66,6 +66,11 @@ def _ursprung() -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def anzahl(summe: int) -> str:
+    """'1 Bewertung' / 'n Bewertungen' fuer Nachricht und Uebersicht."""
+    return "1 Bewertung" if summe == 1 else f"{summe} Bewertungen"
+
+
 def nachricht(b: dict[str, Any], link: str) -> str:
     emoji = _EMOJI.get(str(b.get("smiley")), "")
     stichworte = [str(s) for s in b.get("stichworte") or []]
@@ -74,7 +79,7 @@ def nachricht(b: dict[str, Any], link: str) -> str:
     gut, mittel, schlecht = (int(v.get(k) or 0) for k in ("gut", "mittel", "schlecht"))
     zusatz = " (geändert)" if b.get("geaendert") else ""
     summe = gut + mittel + schlecht
-    bisher = "Bisher 1 Bewertung:" if summe == 1 else f"Bisher {summe} Bewertungen:"
+    bisher = f"Bisher {anzahl(summe)}:"
     return (
         f"Kursbewertung · {b.get('kurs_titel') or ''}{zusatz}\n"
         f"{emoji} – {teil}\n"

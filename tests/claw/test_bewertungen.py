@@ -149,6 +149,14 @@ def test_seite_escaped_stichworte(api) -> None:
     assert "Zwingen" in seite.text and "30.10.2026 11:00" in seite.text
 
 
+def test_seite_einzahl_bei_einer_bewertung(monkeypatch: pytest.MonkeyPatch) -> None:
+    kurs = {"course_id": "c1", "kurs_titel": "Zwingen", "verteilung": {"gut": 1, "mittel": 0, "schlecht": 0},
+            "stichworte_top": [], "einzeln": [{"smiley": "gut", "stichworte": [], "datum": "2026-10-30T10:00:00+00:00"}]}
+    monkeypatch.setattr(werkzeuge, "_client", lambda: _Ctx(_Client(kurse=[kurs])))
+    seite = _seite(f"/bewertungen/{token_erzeugen()}")
+    assert "1 Bewertung:" in seite.text and "1 Bewertungen" not in seite.text
+
+
 def test_datum_deutsch_lokal() -> None:
     from spaces.learning.claw.bewertungen_seite import _datum
 
