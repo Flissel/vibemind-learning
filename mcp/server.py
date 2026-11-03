@@ -28,7 +28,7 @@ from spaces.learning.mcp.tools.courses import build_course_gateways
 from spaces.learning.mcp.tools.navigation import build_navigation_gateways
 from spaces.learning.mcp.tools.generation import build_generation_gateways
 from spaces.learning.mcp.tools.materials import build_material_gateway
-from spaces.learning.mcp.tools.sessions import build_session_gateways
+from spaces.learning.mcp.tools.sessions import BewertungsNotizen, build_session_gateways
 from spaces.learning.mcp.tools.tutor import TutorGateway
 from spaces.learning.mcp.tools.canvas import (
     CanvasEvaluationClient,
@@ -188,7 +188,10 @@ def build_default_dispatcher(
                 else frozenset()
             ),
         )
-        gateways.update(build_session_gateways(adaptive_sessions, NoteStore(session_factory)))
+        note_store = NoteStore(session_factory)
+        gateways.update(build_session_gateways(adaptive_sessions, note_store))
+        # Wrong drawings become notes like wrong answers (same hook, same dedup).
+        bewertungs_notizen = BewertungsNotizen(adaptive_sessions, note_store)
         if evaluation_client is not None:
             gateways[LearningToolName.TUTOR_ASK] = TutorGateway(
                 sessions=adaptive_sessions,
@@ -218,6 +221,7 @@ def build_default_dispatcher(
                     page_link=drawing_url
                     if os.environ.get("LEARNING_PUBLIC_API_URL", "").strip()
                     else None,
+                    notes=bewertungs_notizen,
                 )))
             elif artifact_root and penecho_url and penecho_origin and penecho_token:
                 penecho = PenEchoClient(
@@ -230,6 +234,7 @@ def build_default_dispatcher(
                     artifacts=CanvasArtifactStore(artifact_root=Path(artifact_root)),
                     evaluations=evaluation_client,
                     tutor=evaluation_client,
+                    notes=bewertungs_notizen,
                 )))
     return build_status_dispatcher(
         gateways=gateways,

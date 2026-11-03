@@ -264,3 +264,67 @@ def test_resume_und_ueberblick_tragen_keinen_ui_intent(tmp_path: Path) -> None:
     )
     assert overview.ui_intent is None
     engine.dispose()
+
+
+def _start_mode(service: AdaptiveSessionService, course_id: str, revision: int, mode: str):
+    return service.start(
+        SessionStartCommand(
+            course_id=course_id,
+            course_revision=revision,
+            actor_id=ACTOR,
+            mode=mode,
+            blueprint={"max_attempts": 5} if mode == "training" else {"item_count": 1},
+        )
+    )
+
+
+def test_resume_setzt_sitzung_einer_aelteren_revision_fort(tmp_path: Path) -> None:
+    # Ruling K: eine neue Kursrevision darf eine laufende Uebung nicht verwaisen lassen.
+    engine, factory, course_id, _ = _build(tmp_path)
+    service = AdaptiveSessionService(factory)
+    alt = _start(service, course_id, 1)
+    resumed = service.resume(course_id=course_id, course_revision=2, actor_id=ACTOR)
+    assert resumed is not None and resumed.session_id == alt.session_id
+    overview = service.ueberblick(course_id=course_id, actor_id=ACTOR)
+    assert overview["course_revision"] == 2
+    assert overview["session"]["session_id"] == alt.session_id
+    outcome = AdaptiveSessionGateway(service).execute(_resume_request(course_id, 2))
+    assert outcome.result["session"]["session_id"] == alt.session_id
+    engine.dispose()
+
+
+def _aelter_machen(factory, session_id: str) -> None:
+    from datetime import timedelta
+
+    from spaces.learning.services.adaptive_engine.models import LearningSession
+
+    with factory() as db, db.begin():
+        row = db.get(LearningSession, session_id)
+        row.created_at = row.created_at - timedelta(hours=1)
+
+
+def test_resume_nimmt_neueste_aktive_uebung(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _build(tmp_path)
+    service = AdaptiveSessionService(factory)
+    alt = _start(service, course_id, 1)
+    _aelter_machen(factory, alt.session_id)
+    neu = _start(service, course_id, 2)
+    resumed = service.resume(course_id=course_id, course_revision=1, actor_id=ACTOR)
+    assert resumed is not None and resumed.session_id == neu.session_id
+    engine.dispose()
+
+
+def test_pruefung_wird_nie_fortgesetzt(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _build(tmp_path)
+    service = AdaptiveSessionService(factory)
+    _start_mode(service, course_id, 2, "exam")
+    assert service.resume(course_id=course_id, course_revision=2, actor_id=ACTOR) is None
+    assert service.ueberblick(course_id=course_id, actor_id=ACTOR)["session"] is None
+    # Eine Uebung daneben wird gefunden, auch wenn die Pruefung juenger ist.
+    uebung = _start(service, course_id, 2)
+    _aelter_machen(factory, uebung.session_id)
+    _start_mode(service, course_id, 2, "exam")
+    resumed = service.resume(course_id=course_id, course_revision=2, actor_id=ACTOR)
+    assert resumed is not None and resumed.session_id == uebung.session_id
+    assert resumed.mode == "training"
+    engine.dispose()

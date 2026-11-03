@@ -228,16 +228,23 @@ class AdaptiveSessionService:
         return self._with_readback(turn)
 
     def resume(
-        self, *, course_id: str, course_revision: int, actor_id: str
+        self, *, course_id: str, course_revision: int | None = None, actor_id: str
     ) -> SessionTurn | None:
+        """The newest active TRAINING session of the person in this course, of any revision.
+
+        A new course revision must not orphan a running practice session, and exam sessions are
+        never resumed. `course_revision` is still accepted (callers send it) but does not filter;
+        new sessions keep taking their revision from the caller.
+        """
+        del course_revision
         course_id = str(UUID(course_id))
         with self._session_factory() as db:
             row = db.scalar(
                 select(LearningSession)
                 .where(
                     LearningSession.course_id == course_id,
-                    LearningSession.course_revision == course_revision,
                     LearningSession.actor_id == actor_id,
+                    LearningSession.mode == "training",
                     LearningSession.state == "active",
                 )
                 .order_by(LearningSession.created_at.desc(), LearningSession.id.desc())

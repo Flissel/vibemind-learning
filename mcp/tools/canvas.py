@@ -72,6 +72,14 @@ class CanvasTutor(Protocol):
     async def ask(self, **kwargs): ...
 
 
+class CanvasNotes(Protocol):
+    """`mcp.tools.sessions.BewertungsNotizen`: read the answered task first, then note the feedback."""
+
+    def vorher(self, session_id: str, actor_id: str): ...
+
+    def nachher(self, turn: SessionTurn, task, actor_id: str) -> None: ...
+
+
 class CanvasLauncher(Protocol):
     def ensure(
         self, *, session_id: UUID, activity_id: UUID, session_ref: str, actor_id: str
@@ -311,11 +319,14 @@ class CanvasGateway:
         tutor: CanvasTutor,
         launcher: CanvasLauncher | None = None,
         page_link: Callable[[DrawingGrant], str] | None = None,
+        notes: CanvasNotes | None = None,
     ) -> None:
         self._penecho = penecho
         self._artifacts = artifacts
         self._evaluations = evaluations
         self._tutor = tutor
+        # A wrong drawing leaves a note like a wrong answer (same hook and dedup as sessions.py).
+        self._notes = notes
         # Learning's own canvas creates the launch on open; PenEcho's bridge
         # expected its host UI (LearnHouse) to do that.
         self._launcher = launcher
@@ -486,6 +497,9 @@ class CanvasGateway:
         adaptive_revision = request.event.payload.get("adaptive_session_revision")
         if isinstance(adaptive_revision, bool) or not isinstance(adaptive_revision, int):
             raise ValueError("canvas adaptive session revision is invalid")
+        actor_id = request.event.actor.actor_id
+        # The turn after the submission carries the NEXT task, so the answered one is read first.
+        answered = self._notes.vorher(str(session.id), actor_id) if self._notes else None
         submitted = self._evaluations.submit(
             session_id=str(session.id),
             actor_id=request.event.actor.actor_id,
@@ -497,6 +511,8 @@ class CanvasGateway:
         )
         result = submitted.result
         turn = submitted.turn
+        if self._notes is not None and answered is not None:
+            self._notes.nachher(turn, answered, actor_id)
         return ApplicationOutcomeV1(
             state="completed",
             aggregate=AggregateRefV1(

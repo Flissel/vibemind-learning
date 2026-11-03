@@ -245,3 +245,103 @@ def test_migration_0019_head(tmp_path: Path) -> None:
             assert c.exec_driver_sql("SELECT quelle FROM learning_notes WHERE id='n1'").scalar_one() == "sequenz"
     finally:
         engine.dispose()
+
+# ---- Zeichenabgaben: derselbe Haken wie bei Antworten (Abschlusspruefung, Befund 10) -----
+
+class _Bewertung:
+    """Stellvertreter fuer CanvasRubricResultV1 (nur die Felder, die CanvasGateway liest)."""
+
+    def __init__(self) -> None:
+        self.evaluation_id = uuid4()
+
+    def model_dump(self, *, mode: str) -> dict:
+        return {"evaluation_id": str(self.evaluation_id)}
+
+
+def _zeichen_gateway(service, notes, session_id: str, revision: int):
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from spaces.learning.mcp.tools.canvas import CanvasGateway, CanvasSubmissionOutcome
+    from spaces.learning.services.adaptive_engine.session_service import AnswerCommand
+
+    leinwand = SimpleNamespace(
+        id=UUID(session_id), revision=3,
+        launch=SimpleNamespace(actor_id=ACTOR, source_refs=()),
+    )
+
+    class PenEcho:
+        def open_session(self, sid, ref):
+            return leinwand
+
+        def export_session(self, sid, ref):
+            return SimpleNamespace(snapshot_png_base64="iVBORw0KGgo=")
+
+    class Artefakte:
+        def import_export(self, export):
+            return SimpleNamespace()
+
+    class Bewertungen:
+        # Wie learning-worker: die Abgabe wird als Antwort der adaptiven Sitzung bewertet (hier falsch).
+        def submit(self, **werte):
+            turn = service.answer(AnswerCommand(
+                session_id=werte["session_id"], actor_id=werte["actor_id"],
+                expected_session_revision=werte["expected_session_revision"], answer={"choice_id": "b"},
+            ))
+            return CanvasSubmissionOutcome(result=_Bewertung(), turn=turn)  # type: ignore[arg-type]
+
+    gateway = CanvasGateway(penecho=PenEcho(), artifacts=Artefakte(), evaluations=Bewertungen(),
+                            tutor=object(), notes=notes)  # type: ignore[arg-type]
+    request = ToolRequestV1.model_validate({
+        "tool": LearningToolName.CANVAS_SUBMIT.value,
+        "event": {
+            "event_type": "learning.canvas.submit", "invocation_id": str(uuid4()),
+            "correlation_id": str(uuid4()), "idempotency_key": str(uuid4()),
+            "actor": {"actor_id": ACTOR, "actor_type": "local_user"},
+            "session_id": session_id, "expected_revision": 3,
+            "confirmation": {"confirmed": True, "approval_ref": "test-1"},
+            "payload": {"session_ref": "ref-1", "submission_id": str(uuid4()),
+                        "adaptive_session_revision": revision},
+        },
+    })
+    return gateway, request
+
+
+def test_falsche_zeichnung_legt_notiz_an(tmp_path: Path) -> None:
+    from spaces.learning.mcp.tools.sessions import BewertungsNotizen
+
+    engine, service, store, course_id = _gateway_welt(tmp_path)
+    turn = _start(service, course_id)
+    erste = turn.task
+    haken = BewertungsNotizen(service, store)
+    gateway, request = _zeichen_gateway(service, haken, turn.session_id, turn.session_revision)
+    outcome = gateway.execute(request)
+    assert outcome.state == "completed", outcome
+    notizen = store.list_for(ACTOR, quelle="bewertung")
+    assert len(notizen) == 1
+    assert notizen[0]["anchor"] == {"art": "aufgabe", "aufgabe": erste.id}
+    assert notizen[0]["sequence_id"] == turn.session_id and notizen[0]["course_id"] == course_id
+    # Gleiche Entdoppelung wie bei Antworten: dieselbe (Sitzung, Aufgabe) bleibt eine Notiz.
+    wieder = service.current(turn.session_id, actor_id=ACTOR).model_copy(update={"feedback": _feedback("incorrect")})
+    haken.nachher(wieder, erste, ACTOR)
+    AdaptiveSessionGateway(service, store)._note_from_feedback(wieder, erste, ACTOR)  # noqa: SLF001
+    assert len(store.list_for(ACTOR, quelle="bewertung")) == 1
+    engine.dispose()
+
+
+def test_zeichnung_ohne_notizen_bleibt_wie_bisher(tmp_path: Path) -> None:
+    engine, service, store, course_id = _gateway_welt(tmp_path)
+    turn = _start(service, course_id)
+    gateway, request = _zeichen_gateway(service, None, turn.session_id, turn.session_revision)
+    assert gateway.execute(request).state == "completed"
+    assert store.list_for(ACTOR, quelle="bewertung") == []
+    engine.dispose()
+
+
+def test_server_verdrahtet_notizen_fuer_zeichnungen() -> None:
+    import inspect
+
+    from spaces.learning.mcp import server
+
+    quelle = inspect.getsource(server)
+    assert quelle.count("notes=bewertungs_notizen") == 2

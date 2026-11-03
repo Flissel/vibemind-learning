@@ -45,12 +45,48 @@ SESSION_TOOL_NAMES = frozenset(
 )
 
 
+class BewertungsNotizen:
+    """Note hook shared by answers and canvas submissions.
+
+    A wrong training answer leaves one note per (session, task); it never blocks the reply.
+    `vorher` reads the task being answered (the turn after an answer carries the NEXT task),
+    `nachher` writes the note from the turn's feedback.
+    """
+
+    def __init__(self, service: AdaptiveSessionService, notes: NoteStore) -> None:
+        self._service = service
+        self._notes = notes
+
+    def vorher(self, session_id: str, actor_id: str) -> PublicTask | None:
+        try:
+            return self._service.current(session_id, actor_id=actor_id).task
+        except Exception:  # noqa: BLE001 - the answer itself reports the real error to the caller
+            return None
+
+    def nachher(self, turn: SessionTurn, task: PublicTask, actor_id: str) -> None:
+        if turn.mode != "training" or turn.feedback is None:
+            return
+        try:
+            fields = notiz_aus_bewertung(task, turn.feedback, turn.session_id)
+            if fields is None:
+                return
+            anchor = fields["anchor"]
+            if any(
+                n["sequence_id"] == turn.session_id and n["anchor"] == anchor
+                for n in self._notes.list_for(actor_id, quelle="bewertung")
+            ):
+                return
+            self._notes.create(actor_id=actor_id, course_id=turn.course_id, **fields)
+        except Exception as error:  # noqa: BLE001 - the learner reply stays unchanged
+            logger.warning("learning_note_from_rating_failed", extra={"error_type": type(error).__name__})
+
+
 class AdaptiveSessionGateway:
     def __init__(
         self, service: AdaptiveSessionService, notes: NoteStore | None = None
     ) -> None:
         self._service = service
-        self._notes = notes
+        self._notes = BewertungsNotizen(service, notes) if notes is not None else None
 
     def execute(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
         try:
@@ -204,7 +240,7 @@ class AdaptiveSessionGateway:
             raise ValueError("task answer requires session, revision, and answer")
         actor_id = request.event.actor.actor_id
         # The turn after an answer carries the NEXT task, so the answered one is read first.
-        answered = self._answered_task(str(session_id), actor_id) if self._notes else None
+        answered = self._notes.vorher(str(session_id), actor_id) if self._notes else None
         turn = self._service.answer(
             AnswerCommand(
                 session_id=str(session_id),
@@ -217,31 +253,12 @@ class AdaptiveSessionGateway:
             self._note_from_feedback(turn, answered, actor_id)
         return turn
 
-    def _answered_task(self, session_id: str, actor_id: str) -> PublicTask | None:
-        try:
-            return self._service.current(session_id, actor_id=actor_id).task
-        except Exception:  # noqa: BLE001 - answer() reports the real error to the caller
-            return None
-
     def _note_from_feedback(
         self, turn: SessionTurn, task: PublicTask, actor_id: str
     ) -> None:
         """A wrong training answer leaves one note per (session, task); never blocks the reply."""
-        if turn.mode != "training" or turn.feedback is None or self._notes is None:
-            return
-        try:
-            fields = notiz_aus_bewertung(task, turn.feedback, turn.session_id)
-            if fields is None:
-                return
-            anchor = fields["anchor"]
-            if any(
-                n["sequence_id"] == turn.session_id and n["anchor"] == anchor
-                for n in self._notes.list_for(actor_id, quelle="bewertung")
-            ):
-                return
-            self._notes.create(actor_id=actor_id, course_id=turn.course_id, **fields)
-        except Exception as error:  # noqa: BLE001 - the learner reply stays unchanged
-            logger.warning("learning_note_from_rating_failed", extra={"error_type": type(error).__name__})
+        if self._notes is not None:
+            self._notes.nachher(turn, task, actor_id)
 
     def _current(self, request: ToolRequestV1) -> SessionTurn:
         session_id = request.event.session_id
