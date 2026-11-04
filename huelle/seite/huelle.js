@@ -514,6 +514,7 @@ function rueckmeldungZeigen(daten) {
   z.turn = turn;
   z.nummer = daten.nummer ?? null;
   z.busy = false;
+  if (Array.isArray(daten.begriffe)) begriffeZeigen(daten.begriffe);
   const state = turn?.feedback?.state ?? (daten.meldung ? "needs_review" : null);
   const text = typeof daten.rueckmeldung === "string" ? daten.rueckmeldung : "";
   if (!state && !text) { void weiter(); return; }

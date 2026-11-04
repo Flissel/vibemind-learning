@@ -45,11 +45,12 @@ NICHT_ANGENOMMEN = "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre 
 KEIN_KURS = "Dieser Kurs hat noch keine freigegebenen Aufgaben."
 WIRD_GEPRUEFT = "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist."
 FLAECHE_WEG = "Die Fläche ist gerade nicht erreichbar."
-# Uebernommen aus dem Fork (apps/web/lib/learning/practiceModel.ts) bzw. deployment/*_routes.py.
+# Nach dem Fork (apps/web/lib/learning/practiceModel.ts). Die Huelle zeigt keine Quellenbelege;
+# nach der Abgabe ist PenEchos KI frei und erklaert den Weg auf der Flaeche.
 _RUECKMELDUNG = {
     "correct": "Richtig – gut gemacht.",
-    "partial": "Teilweise richtig. Sehen Sie sich die Quellenbelege noch einmal an.",
-    "incorrect": "Noch nicht richtig. Die Quellenbelege unten zeigen, wo es steht.",
+    "partial": "Teilweise richtig. Lassen Sie sich jetzt auf der Fläche von der KI erklären, was noch fehlt.",
+    "incorrect": "Noch nicht richtig. Lassen Sie sich den Lösungsweg jetzt auf der Fläche von der KI erklären.",
     "needs_review": WIRD_GEPRUEFT,
 }
 KEIN_HINWEIS = "Kein Hinweis verfügbar."
@@ -174,8 +175,18 @@ def rueckmeldung_text(turn: dict[str, Any]) -> str | None:
         score, text = k.get("score"), k.get("feedback")
         if isinstance(score, (int, float)) and score < 1 and isinstance(text, str) and text.strip():
             beschreibung = k.get("description")
-            zeilen.append(f"{beschreibung}: {text}" if isinstance(beschreibung, str) and beschreibung else text)
+            beschreibung = beschreibung.rstrip(" .:") if isinstance(beschreibung, str) else ""
+            text = _ohne_quellenmarken(text)
+            zeilen.append(f"{beschreibung}: {text}" if beschreibung else text)
     return "\n\n".join(zeilen) or None
+
+
+# mcp/tools/tutor.py nummeriert die Quellen als S1, S2, ...; die Huelle zeigt sie nicht an.
+_QUELLENMARKE = re.compile(r"\s*\((?:vgl\.\s*)?S\d+(?:\s*,\s*S\d+)*\)")
+
+
+def _ohne_quellenmarken(text: str) -> str:
+    return _QUELLENMARKE.sub("", text)
 
 
 def _als_png(bild: bytes) -> bytes:
@@ -411,6 +422,16 @@ class Bruecke:
         )
         return text, ok
 
+    def _begriffe(self, kurs: Any) -> list[Any] | None:
+        """Aktuelle Beherrschung nach einer Abgabe; None, wenn Learning sie gerade nicht liefert."""
+        try:
+            ueberblick = self._lern.rufe("learning_course_overview", "learning.course.overview", course_id=kurs.course_id)
+        except (LearningWeg, LearningAbgelehnt) as fehler:
+            log.warning("Begriffe nach Abgabe nicht geladen: %s", _typ(fehler))
+            return None
+        begriffe = ueberblick.get("begriffe")
+        return begriffe if isinstance(begriffe, list) else None
+
     def _stand_neu(self, sid: str, sitzung: _Sitzung, code: str) -> NoReturn:
         """Nach einer Ablehnung den aktuellen Stand laden; 409 mit Turn (Ruling H fuer den Text)."""
         turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
@@ -490,7 +511,8 @@ class Bruecke:
         text, flaeche = self._rueckmeldung(sitzung, turn, beantwortet_id, beantwortet_nr)
         sitzung.auf_flaeche = False
         nummer = self._vormerken(sitzung, turn)
-        return {"turn": turn, "rueckmeldung": text, "nummer": nummer, "flaeche": flaeche}
+        return {"turn": turn, "rueckmeldung": text, "nummer": nummer, "flaeche": flaeche,
+                "begriffe": self._begriffe(sitzung.kurs)}
 
     async def _r_weiter(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
@@ -587,6 +609,7 @@ class Bruecke:
             "rueckmeldung": text,
             "nummer": naechste,
             "flaeche": flaeche,
+            "begriffe": self._begriffe(sitzung.kurs),
         }
 
     async def _r_erklaeren(self, request: Request) -> JSONResponse:
@@ -608,7 +631,8 @@ class Bruecke:
         tutor = result.get("tutor")
         if not isinstance(tutor, dict) or not isinstance(tutor.get("answer"), str):
             raise LearningWeg("tutor")
-        return {"answer": tutor["answer"], "next_step": str(tutor.get("next_step") or "")}
+        return {"answer": _ohne_quellenmarken(tutor["answer"]),
+                "next_step": _ohne_quellenmarken(str(tutor.get("next_step") or ""))}
 
     async def _r_hinweis(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]

@@ -79,13 +79,17 @@ function latex(formel) {
 
 /** `$`-Zeichen entfernen und LaTeX in lesbaren Text verwandeln; Leerraum wird zusammengezogen. */
 export function klartext(text) {
-  const roh = String(text ?? "").replace(DOLLAR, (_m, a, b) => latex(a ?? b)).replace(/\\\$/g, "$");
+  const roh = String(text ?? "").replace(DOLLAR, (_m, a, b) => latex(a ?? b)).replace(/\\\$/g, "$").replace(FETT, "$1");
   return roh.split(/\s+/).filter(Boolean).join(" ");
 }
 
 export function maskiere(text) {
   return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+
+// Der Tutor schreibt Markdown-Fettdruck (**…**); erst maskieren, dann nur dieses eine Muster zulassen.
+const FETT = /\*\*([^*\n]+?)\*\*/g;
+const maskiertMitFett = (text) => maskiere(text).replace(FETT, "<strong>$1</strong>");
 
 /**
  * Text mit `$…$` / `$$…$$` als HTML (KaTeX). Wirft KaTeX oder fehlt es, kommt Klartext ohne `$`.
@@ -98,12 +102,12 @@ export function formel(text, katex) {
     let html = "";
     let ende = 0;
     for (const m of quelle.matchAll(DOLLAR)) {
-      html += maskiere(quelle.slice(ende, m.index).replace(/\\\$/g, "$"));
+      html += maskiertMitFett(quelle.slice(ende, m.index).replace(/\\\$/g, "$"));
       const anzeige = m[1] !== undefined;
       html += katex.renderToString(anzeige ? m[1] : m[2], { displayMode: anzeige, throwOnError: true });
       ende = m.index + m[0].length;
     }
-    html += maskiere(quelle.slice(ende).replace(/\\\$/g, "$"));
+    html += maskiertMitFett(quelle.slice(ende).replace(/\\\$/g, "$"));
     return { html };
   } catch {
     return { text: klartext(quelle) };

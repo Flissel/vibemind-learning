@@ -54,6 +54,16 @@ test("formel: Erfolg maskiert den Rest", () => {
   assert.deepEqual(formel("<b>$a$</b> $$b$$", katex), { html: "&lt;b&gt;<k i>a</k>&lt;/b&gt; <k d>b</k>" });
 });
 
+test("formel: **fett** aus dem Tutor wird <strong>, ohne HTML durchzulassen", () => {
+  const katex = { renderToString: (s) => `<k>${s}</k>` };
+  assert.deepEqual(formel("**1. Schritt:** Bilden Sie $f'$. **<i>x</i>**", katex),
+    { html: "<strong>1. Schritt:</strong> Bilden Sie <k>f'</k>. <strong>&lt;i&gt;x&lt;/i&gt;</strong>" });
+});
+
+test("klartext: **fett** ohne Sternchen", () => {
+  assert.equal(klartext("**1. Definitionsbereich:** ganz $\\mathbb{R}$"), "1. Definitionsbereich: ganz ℝ");
+});
+
 test("klartext: Grundfaelle wie formeltext.py", () => {
   assert.equal(klartext("$\\frac{a+b}{c}$"), "(a+b)/c");
   assert.equal(klartext("Preis \\$5"), "Preis $5");

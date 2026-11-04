@@ -253,8 +253,8 @@ def test_antwort_gibt_frei_und_setzt_notizkarte() -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert sperre.gesperrt() is False
-    tool, kw = lern.aufrufe[-1]
-    assert tool == "learning_task_answer"
+    tool, kw = [a for a in lern.aufrufe if a[0] == "learning_task_answer"][-1]
+    assert lern.aufrufe[-1][0] == "learning_course_overview"  # Begriffe nach der Abgabe
     assert kw["expected_revision"] == 1 and kw["payload"] == {"answer": {"choice_id": "a"}} and kw["schreibend"]
     karte = [a for a in penecho.aufrufe if a[0] == "notizkarte"]
     assert len(karte) == 1
@@ -265,6 +265,41 @@ def test_antwort_gibt_frei_und_setzt_notizkarte() -> None:
     assert body["turn"]["task"]["id"] == TASK_2 and body["nummer"] == 2
     # Die naechste Aufgabe steht noch nicht auf der Flaeche.
     assert not any(a[0] == "aufgabe_setzen" and a[2] == TASK_2 for a in penecho.aufrufe)
+
+
+def test_antwort_liefert_aktuelle_begriffe_und_keine_toten_verweise() -> None:
+    # Die Seite zeigt keine Quellenbelege; der Text verweist auf die Erklaerung auf der Flaeche,
+    # und die Balken der Begriffe kommen nach jeder Abgabe neu mit.
+    naechster = turn(TASK_2, completed=1, revision=2, feedback={"state": "incorrect", "score": 0.0,
+                     "rationale_codes": [], "source_refs": []})
+    lern, client, _, _ = _offene_sitzung({"session": naechster})
+    nachher = _ueberblick(naechster)
+    nachher["begriffe"] = [{"concept_key": "k1", "titel": "Begriff", "beherrschung": 0.6}]
+    lern.antworten["learning_course_overview"] = nachher
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    body = r.json()
+    assert "Quellenbelege" not in body["rueckmeldung"]
+    assert body["rueckmeldung"].startswith("Noch nicht richtig.") and "Fläche" in body["rueckmeldung"]
+    assert body["begriffe"] == [{"concept_key": "k1", "titel": "Begriff", "beherrschung": 0.6}]
+
+
+def test_kriterium_mit_satzende_ohne_doppelpunkt_salat() -> None:
+    naechster = turn(TASK_2, completed=1, revision=2, feedback={"state": "incorrect", "score": 0.0,
+                     "rationale_codes": [], "source_refs": [],
+                     "criteria": [{"criterion_id": "c1", "description": "Benennt den Fehler.", "score": 0.0,
+                                   "feedback": "Der Fehler fehlt (vgl. S5, S6)."}]})
+    _, client, _, _ = _offene_sitzung({"session": naechster})
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert "Benennt den Fehler: Der Fehler fehlt." in r.json()["rueckmeldung"]
+
+
+def test_antwort_ohne_ueberblick_bleibt_gueltig() -> None:
+    naechster = turn(TASK_2, completed=1, revision=2, feedback={"state": "correct", "score": 1.0,
+                     "rationale_codes": [], "source_refs": []})
+    lern, client, _, _ = _offene_sitzung({"session": naechster})
+    lern.antworten["learning_course_overview"] = LearningWeg("x")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200 and r.json()["begriffe"] is None
 
 
 def test_antwort_notizkarte_fehler_wird_geschluckt() -> None:
@@ -467,6 +502,17 @@ def test_zeichnung_wandelt_jpeg_in_png() -> None:
 
 
 # ---- erklaeren / hinweis --------------------------------------------------------
+
+def test_erklaeren_ohne_quellenmarken() -> None:
+    # Der Tutor belegt mit (S1), (S2, S3); die Huelle zeigt keine Quellen, also weg damit.
+    lern, client, _, _ = _offene_sitzung({"session": turn()})
+    lern.antworten["learning_tutor_ask"] = {"tutor": {
+        "answer": "Ein Wendepunkt wechselt die Krümmung (S2). Es gilt f''(x)=0 (vgl. S1, S3).",
+        "next_step": "Bilden Sie f''(x) (S1).", "source_refs": [], "evidence_ref": "e"}}
+    r = client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
+    assert r.json() == {"answer": "Ein Wendepunkt wechselt die Krümmung. Es gilt f''(x)=0.",
+                        "next_step": "Bilden Sie f''(x)."}
+
 
 def test_erklaeren_und_hinweis() -> None:
     lern, client, sperre, _ = _offene_sitzung({"session": turn()})
