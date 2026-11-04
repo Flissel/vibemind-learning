@@ -75,6 +75,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .rueckmeldung p { margin: 0 0 .4rem; }
 .antwortbox { margin: .5rem 0; padding: .6rem .7rem; background: #eef3f8; border-radius: .5rem; }
 .antwortbox p { margin: 0 0 .4rem; }
+.antwortbox .eigene-frage { margin: .6rem 0 .4rem; padding: .4rem .6rem; background: #fff; border-left: 3px solid #1b1b1f; border-radius: .25rem; }
+.rueckfrage { display: flex; flex-direction: column; gap: .4rem; margin-top: .6rem; }
+.karte .rueckfrage textarea { min-height: 4.5rem; }
+.abschluss { margin-bottom: 1.25rem; }
+.abschluss h2 { font-size: 1.3rem; margin: 0 0 .5rem; }
 
 .block { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid #e4e1d8; }
 .begriffe, .notizen { list-style: none; margin: 0; padding: 0; }

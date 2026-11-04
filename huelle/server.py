@@ -37,6 +37,8 @@ def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
         PenEchoMcp(Path(einstellung.penecho_state)),
         sperre,
         httpx.Client(timeout=30.0, follow_redirects=False),
+        # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).
+        Path(einstellung.penecho_state).parent / "learning-huelle" / "kursende.json",
     )
     return Weiche(einstellung, seite_app(einstellung), bruecke), FlaechenWeiche(einstellung, durchreicher)
 

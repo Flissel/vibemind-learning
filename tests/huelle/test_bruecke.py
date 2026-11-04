@@ -121,11 +121,11 @@ def _api_leer(request: httpx.Request) -> httpx.Response:
 
 
 def bauen(lern: FakeLern, penecho: FakePenEcho | None = None, *, api=_api_leer,
-          sperre: Sperre | None = None, einstellung=E) -> tuple[TestClient, Sperre, FakePenEcho]:
+          sperre: Sperre | None = None, einstellung=E, kursende=None) -> tuple[TestClient, Sperre, FakePenEcho]:
     sperre = sperre or Sperre()
     penecho = penecho or FakePenEcho()
     http = httpx.Client(transport=httpx.MockTransport(api))
-    bruecke = Bruecke(einstellung, lern, penecho, sperre, http)  # type: ignore[arg-type]
+    bruecke = Bruecke(einstellung, lern, penecho, sperre, http, kursende)  # type: ignore[arg-type]
     return TestClient(bruecke), sperre, penecho
 
 
@@ -504,14 +504,28 @@ def test_zeichnung_wandelt_jpeg_in_png() -> None:
 # ---- erklaeren / hinweis --------------------------------------------------------
 
 def test_erklaeren_ohne_quellenmarken() -> None:
-    # Der Tutor belegt mit (S1), (S2, S3); die Huelle zeigt keine Quellen, also weg damit.
+    # Der Tutor belegt mit (S1), (S2, S3), "siehe S2", "aus S2"; die Huelle zeigt keine Quellen.
     lern, client, _, _ = _offene_sitzung({"session": turn()})
     lern.antworten["learning_tutor_ask"] = {"tutor": {
-        "answer": "Ein Wendepunkt wechselt die Krümmung (S2). Es gilt f''(x)=0 (vgl. S1, S3).",
-        "next_step": "Bilden Sie f''(x) (S1).", "source_refs": [], "evidence_ref": "e"}}
+        "answer": "Ein Wendepunkt wechselt die Krümmung (S2). Es gilt f''(x)=0 (vgl. S1, S3). "
+                  "Nun Schritt 4 (siehe S2): die pq-Formel aus S2 anwenden.",
+        "next_step": "x", "source_refs": [], "evidence_ref": "e"}}
     r = client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
-    assert r.json() == {"answer": "Ein Wendepunkt wechselt die Krümmung. Es gilt f''(x)=0.",
-                        "next_step": "Bilden Sie f''(x)."}
+    assert r.json()["answer"] == ("Ein Wendepunkt wechselt die Krümmung. Es gilt f''(x)=0. "
+                                  "Nun Schritt 4: die pq-Formel anwenden.")
+
+
+def test_erklaeren_zeigt_next_step_nicht() -> None:
+    # next_step schreibt das Modell mitunter an eine Lehrkraft, samt erwarteter Werte
+    # ("p=-6, q=5 wird erwartet, aber nicht vorgeben"): nie an die lernende Person geben.
+    lern, client, _, _ = _offene_sitzung({"session": turn()})
+    lern.antworten["learning_tutor_ask"] = {"tutor": {
+        "answer": "Welchen Wert hat p bei Ihnen?",
+        "next_step": "Lassen Sie die Lernperson p benennen (p=-6 wird erwartet, aber nicht vorgeben).",
+        "source_refs": [], "evidence_ref": "e"}}
+    r = client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
+    assert r.json() == {"answer": "Welchen Wert hat p bei Ihnen?"}
+    assert "p=-6" not in r.text
 
 
 def test_erklaeren_und_hinweis() -> None:
@@ -520,7 +534,7 @@ def test_erklaeren_und_hinweis() -> None:
                                                       "source_refs": [], "evidence_ref": "e"}}
     lern.antworten["learning_hint_request"] = {"session": turn(), "hint": "Denken Sie an X."}
     r = client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
-    assert r.json() == {"answer": "So geht es.", "next_step": "Weiter so."}
+    assert r.json() == {"answer": "So geht es."}
     tutor = dict(lern.aufrufe)["learning_tutor_ask"]
     assert tutor["course_id"] == KURS and tutor["session_id"] == SID and tutor["payload"]["question"]
     assert client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={"frage": "x" * 501}).status_code == 400
@@ -947,3 +961,111 @@ def test_medien_route_learning_weg_503() -> None:
     client, _, _ = bauen(FakeLern({}), api=api)
     r = client.get(f"/lernen/api/medien/{BILD}")
     assert r.status_code == 503
+
+
+# ---- Kursende: abgeschlossenen Durchlauf zeigen statt stumm neu starten -------------
+
+ENDE = turn(None, completed=5, revision=9, state="completed")
+
+
+def _bis_zum_ende(**kw: Any):
+    lern = FakeLern({
+        "learning_course_overview": _ueberblick(turn()),
+        "learning_task_next": [{"session": turn()}],
+        "learning_session_start": {"session": turn(TASK_2)},
+    })
+    client, sperre, penecho = bauen(lern, **kw)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    lern.antworten["learning_task_next"] = [{"session": ENDE}]
+    r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+    assert r.status_code == 200 and r.json()["turn"]["state"] == "completed"
+    # Learning kennt danach keine aktive Sitzung mehr.
+    lern.antworten["learning_course_overview"] = _ueberblick(None)
+    return lern, client, sperre
+
+
+def test_kursende_zeigt_abgeschlossenen_durchlauf_statt_neustart() -> None:
+    lern, client, sperre = _bis_zum_ende()
+    vorher = len(lern.aufrufe)
+    r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["abgeschlossen"] is True and body["turn"]["state"] == "completed"
+    neu = lern.tools()[vorher:]
+    assert "learning_session_start" not in neu
+    assert ("learning_task_next", {"session_id": SID}) in lern.aufrufe[vorher:]
+    assert sperre.gesperrt() is False
+
+
+def test_neu_startet_frischen_durchlauf() -> None:
+    lern, client, sperre = _bis_zum_ende()
+    lern.antworten["learning_task_next"] = [{"session": turn(TASK_2)}]
+    r = client.post(f"/lernen/api/kurse/{KURS}/neu")
+    assert r.status_code == 200, r.text
+    assert "learning_session_start" in lern.tools()
+    assert r.json()["turn"]["task"]["id"] == TASK_2 and r.json()["abgeschlossen"] is False
+    assert sperre.gesperrt() is True
+    # Danach zaehlt wieder der neue Durchlauf, nicht das alte Ende.
+    lern.antworten["learning_course_overview"] = _ueberblick(turn(TASK_2))
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()["abgeschlossen"] is False
+
+
+def test_kursende_ueberlebt_neustart_der_huelle(tmp_path) -> None:
+    datei = tmp_path / "kursende.json"
+    lern, _, _ = _bis_zum_ende(kursende=datei)
+    assert json.loads(datei.read_text(encoding="utf-8")) == {f"{ACTOR}|{KURS}": SID}
+    lern.antworten["learning_task_next"] = [{"session": ENDE}]
+    client2, _, _ = bauen(lern, kursende=datei)
+    assert client2.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()["abgeschlossen"] is True
+
+
+def test_kursende_einer_fremden_kennung_gilt_nicht(tmp_path) -> None:
+    datei = tmp_path / "kursende.json"
+    datei.write_text(json.dumps({f"lh-1-andere|{KURS}": SID}), encoding="utf-8")
+    lern = FakeLern({"learning_course_overview": _ueberblick(None),
+                     "learning_session_start": {"session": turn()}, "learning_task_next": {"session": turn()}})
+    client, _, _ = bauen(lern, kursende=datei)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()["abgeschlossen"] is False
+    assert "learning_session_start" in lern.tools()
+
+
+def test_unlesbares_kursende_wird_vergessen() -> None:
+    lern, client, _ = _bis_zum_ende()
+    lern.antworten["learning_task_next"] = [LearningAbgelehnt("weg", "session_access_denied"), {"session": turn()}]
+    lern.antworten["learning_session_start"] = {"session": turn()}
+    r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    assert r.status_code == 200 and r.json()["abgeschlossen"] is False
+    assert "learning_session_start" in lern.tools()
+
+
+# ---- Rueckfrage an den Tutor ---------------------------------------------------------
+
+def _tutor(antwort: str) -> dict[str, Any]:
+    return {"tutor": {"answer": antwort, "next_step": "Rechnen Sie.", "source_refs": [], "evidence_ref": "e"}}
+
+
+def test_rueckfrage_traegt_das_bisherige_gespraech() -> None:
+    lern, client, _, _ = _offene_sitzung({"session": turn()})
+    lern.antworten["learning_tutor_ask"] = [_tutor("Bilden Sie zuerst f'."), _tutor("Fast: der Faktor fehlt.")]
+    client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
+    r = client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={"frage": "Ich habe f'(x) = x² raus."})
+    assert r.status_code == 200 and r.json()["answer"] == "Fast: der Faktor fehlt."
+    fragen = [kw["payload"]["question"] for t, kw in lern.aufrufe if t == "learning_tutor_ask"]
+    assert "Bilden Sie zuerst f'." in fragen[1] and "Ich habe f'(x) = x² raus." in fragen[1]
+    assert fragen[1].rstrip().endswith("Ich habe f'(x) = x² raus.")
+    # "Erklär mir das" faengt neu an.
+    client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
+    fragen = [kw["payload"]["question"] for t, kw in lern.aufrufe if t == "learning_tutor_ask"]
+    assert fragen[2] == "Erklär mir das."
+
+
+def test_rueckfrage_vergisst_das_gespraech_bei_neuer_aufgabe() -> None:
+    lern, client, _, _ = _offene_sitzung({"session": turn(TASK_2, completed=1, revision=2)})
+    lern.antworten["learning_tutor_ask"] = [_tutor("Zu Aufgabe 1."), _tutor("Zu Aufgabe 2.")]
+    client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={})
+    client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    lern.antworten["learning_task_next"] = [{"session": turn(TASK_2, completed=1, revision=2)}]
+    client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+    client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={"frage": "Und jetzt?"})
+    letzte = [kw["payload"]["question"] for t, kw in lern.aufrufe if t == "learning_tutor_ask"][-1]
+    assert "Zu Aufgabe 1." not in letzte and letzte == "Und jetzt?"

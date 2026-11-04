@@ -15,10 +15,13 @@ import base64
 import io
 import json
 import logging
+import os
 import re
+import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 from uuid import UUID, uuid5
 
@@ -105,6 +108,9 @@ class _Sitzung:
     aufgabe_id: str | None = None   # aktuelle Aufgabe laut letztem Turn
     nummer: int | None = None       # Flaechenbereich der aktuellen Aufgabe (Ruling B)
     auf_flaeche: bool = False       # aktuelle Aufgabe steht schon auf der Flaeche
+    # Gespraech mit dem Tutor zur aktuellen Aufgabe: (Frage, Antwort); der Tutor selbst merkt sich nichts.
+    tutor: list[tuple[str, str]] = field(default_factory=list)
+    tutor_aufgabe: str | None = None
 
 
 def _uuid(wert: str) -> str | None:
@@ -182,11 +188,29 @@ def rueckmeldung_text(turn: dict[str, Any]) -> str | None:
 
 
 # mcp/tools/tutor.py nummeriert die Quellen als S1, S2, ...; die Huelle zeigt sie nicht an.
-_QUELLENMARKE = re.compile(r"\s*\((?:vgl\.\s*)?S\d+(?:\s*,\s*S\d+)*\)")
+_QUELLENMARKE = re.compile(
+    r"\s*\((?:vgl\.\s*|siehe\s+)?S\d+(?:\s*,\s*S\d+)*\)"  # (S1), (vgl. S1, S2), (siehe S2)
+    r"|\s+(?:aus|in|nach|siehe)\s+S\d+\b"                 # "die pq-Formel aus S2"
+)
 
 
 def _ohne_quellenmarken(text: str) -> str:
     return _QUELLENMARKE.sub("", text)
+
+
+TUTOR_VERLAUF = 3  # so viele Wechsel gehen bei einer Rueckfrage mit
+_TUTOR_ANTWORT_MAX = 2000
+
+
+def _mit_verlauf(verlauf: list[tuple[str, str]], frage: str) -> str:
+    """Rueckfrage samt bisherigem Gespraech; Learnings Tutor sieht sonst nur die einzelne Frage."""
+    if not verlauf:
+        return frage
+    zeilen = ["Bisheriges Gespräch zu dieser Aufgabe:"]
+    for alt, antwort in verlauf[-TUTOR_VERLAUF:]:
+        zeilen += [f"Lernende Person: {alt}", f"Tutor: {antwort[:_TUTOR_ANTWORT_MAX]}"]
+    zeilen += ["", f"Neue Frage der lernenden Person: {frage}"]
+    return "\n".join(zeilen)
 
 
 def _als_png(bild: bytes) -> bytes:
@@ -209,6 +233,7 @@ class Bruecke:
         penecho: PenEchoMcp,
         sperre: Sperre,
         http: httpx.Client,
+        kursende: Path | None = None,
     ) -> None:
         self._e = einstellung
         self._lern = lern
@@ -217,11 +242,17 @@ class Bruecke:
         self._http = http
         self._kurse = {k.course_id: k for k in einstellung.kurse}
         self._sitzungen: dict[str, _Sitzung] = {}
+        # Learnings Ueberblick kennt nur aktive Sitzungen. Damit ein Neuladen nach dem Kursende
+        # nicht stumm neu startet, merkt sich die Huelle den abgeschlossenen Durchlauf
+        # ("Kennung|Kurs" -> Sitzung); ohne Datei nur im Speicher (Tests).
+        self._kursende_datei = kursende
+        self._kursende = self._kursende_lesen()
         self._ablauf = asyncio.Lock()
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
             Route(f"{p}/kurse/{{course_id}}/oeffnen", self._r_oeffnen, methods=["POST"]),
+            Route(f"{p}/kurse/{{course_id}}/neu", self._r_neu, methods=["POST"]),
             Route(f"{p}/kurse/{{course_id}}/bewertung", self._r_bewertung, methods=["GET", "POST"]),
             Route(f"{p}/sitzungen/{{sid}}/antwort", self._r_antwort, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/weiter", self._r_weiter, methods=["POST"]),
@@ -280,6 +311,42 @@ class Bruecke:
             return self._json(antwort.status, antwort.body)
         return await self._ausfuehren(lambda: arbeit(body), ablauf=ablauf)
 
+    # ---- Kursende ---------------------------------------------------------
+    def _kursende_lesen(self) -> dict[str, str]:
+        if self._kursende_datei is None:
+            return {}
+        try:
+            wert = json.loads(self._kursende_datei.read_text(encoding="utf-8"))
+            return {k: v for k, v in wert.items() if isinstance(k, str) and isinstance(v, str)}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def _kursende_schreiben(self) -> None:
+        if self._kursende_datei is None:
+            return
+        ziel = self._kursende_datei
+        try:
+            ziel.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(self._kursende, f)
+            os.replace(tmp, ziel)
+        except OSError as fehler:
+            log.warning("Kursende nicht gespeichert: %s", _typ(fehler))
+
+    def _ende_schluessel(self, kurs: Kurs) -> str:
+        return f"{self._e.actor_id}|{kurs.course_id}"
+
+    def _ende_setzen(self, kurs: Kurs, sid: str | None) -> None:
+        schluessel = self._ende_schluessel(kurs)
+        if self._kursende.get(schluessel) == sid:
+            return
+        if sid is None:
+            self._kursende.pop(schluessel, None)
+        else:
+            self._kursende[schluessel] = sid
+        self._kursende_schreiben()
+
     def _kurs(self, course_id: str) -> Kurs:
         kurs = self._kurse.get(_uuid(course_id) or "")
         if kurs is None:
@@ -335,6 +402,8 @@ class Bruecke:
         task = _task(turn)
         if task is None:
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
+            if turn.get("state") == "completed":
+                self._ende_setzen(sitzung.kurs, sitzung.sid)
             self._frei(sitzung)
             return None, False
         nummer = _nummer(turn)
@@ -449,7 +518,27 @@ class Bruecke:
         course_id = request.path_params["course_id"]
         return await self._ausfuehren(lambda: self._oeffnen(course_id), ablauf=True)
 
-    def _oeffnen(self, course_id: str) -> dict[str, Any]:
+    async def _r_neu(self, request: Request) -> JSONResponse:
+        course_id = request.path_params["course_id"]
+        return await self._ausfuehren(lambda: self._oeffnen(course_id, neu=True), ablauf=True)
+
+    def _abgeschlossen(self, kurs: Kurs) -> tuple[str, dict[str, Any]] | None:
+        """Der gemerkte abgeschlossene Durchlauf, wenn Learning ihn noch als beendet zeigt."""
+        sid = self._kursende.get(self._ende_schluessel(kurs))
+        if sid is None:
+            return None
+        try:
+            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+        except LearningAbgelehnt as fehler:
+            log.warning("Gemerktes Kursende abgelehnt, vergessen: %s", _typ(fehler))
+            self._ende_setzen(kurs, None)
+            return None
+        if _task(turn) is not None or turn.get("state") != "completed":
+            self._ende_setzen(kurs, None)
+            return None
+        return sid, turn
+
+    def _oeffnen(self, course_id: str, *, neu: bool = False) -> dict[str, Any]:
         kurs = self._kurs(course_id)
         ueberblick = self._lern.rufe("learning_course_overview", "learning.course.overview", course_id=kurs.course_id)
         revision = ueberblick.get("course_revision")
@@ -457,6 +546,22 @@ class Bruecke:
             raise _Antwort(409, {"meldung": KEIN_KURS})
         laufend = ueberblick.get("session")
         sid = _uuid(str(laufend.get("session_id"))) if isinstance(laufend, dict) else None
+        if neu:
+            self._ende_setzen(kurs, None)
+        elif sid is None and (ende := self._abgeschlossen(kurs)) is not None:
+            # Kursende: den beendeten Durchlauf zeigen (Bewertung), nichts neu starten.
+            ende_sid, turn = ende
+            sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(kurs, ende_sid))
+            self._zeigen(sitzung, turn)
+            begriffe = ueberblick.get("begriffe")
+            return {
+                "kurs": {"course_id": kurs.course_id, "titel": kurs.titel},
+                "begriffe": begriffe if isinstance(begriffe, list) else [],
+                "turn": turn,
+                "nummer": None,
+                "flaeche": True,
+                "abgeschlossen": True,
+            }
         if sid is None:
             gestartet = _turn(self._lern.rufe(
                 "learning_session_start", "learning.session.start", course_id=kurs.course_id, schreibend=True,
@@ -481,6 +586,7 @@ class Bruecke:
             "turn": turn,
             "nummer": nummer,
             "flaeche": flaeche,
+            "abgeschlossen": False,
         }
 
     async def _r_antwort(self, request: Request) -> JSONResponse:
@@ -618,21 +724,29 @@ class Bruecke:
 
     def _erklaeren(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         frage = body.get("frage")
+        rueckfrage = isinstance(frage, str) and bool(frage.strip())
         if frage is None or (isinstance(frage, str) and not frage.strip()):
             frage = ERKLAER_FRAGE
         if not isinstance(frage, str) or len(frage) > MAX_FRAGE:
             raise _Antwort(400, {"meldung": UNGUELTIG})
+        frage = frage.strip()
         sid, sitzung, _ = self._sitzung(sid_roh)
+        # "Erklär mir das" und jede neue Aufgabe beginnen ein neues Gespraech.
+        if not rueckfrage or sitzung.tutor_aufgabe != sitzung.aufgabe_id:
+            sitzung.tutor, sitzung.tutor_aufgabe = [], sitzung.aufgabe_id
         # Stufe 1 ohne Schnappschuss: learning_tutor_ask nimmt kein Bild an.
         result = self._lern.rufe(
             "learning_tutor_ask", "learning.tutor.ask", course_id=sitzung.kurs.course_id, session_id=sid,
-            payload={"question": frage.strip()},
+            payload={"question": _mit_verlauf(sitzung.tutor, frage)},
         )
         tutor = result.get("tutor")
         if not isinstance(tutor, dict) or not isinstance(tutor.get("answer"), str):
             raise LearningWeg("tutor")
-        return {"answer": _ohne_quellenmarken(tutor["answer"]),
-                "next_step": _ohne_quellenmarken(str(tutor.get("next_step") or ""))}
+        # Nur `answer` geht an die lernende Person: `next_step` formuliert das Modell mitunter als
+        # Anweisung an eine Lehrkraft, samt erwarteter Werte. Die Antwort endet ohnehin mit einer Frage.
+        antwort = _ohne_quellenmarken(tutor["answer"])
+        sitzung.tutor = (sitzung.tutor + [(frage, antwort)])[-TUTOR_VERLAUF:]
+        return {"answer": antwort}
 
     async def _r_hinweis(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]

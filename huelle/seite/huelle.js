@@ -28,6 +28,7 @@ const SMILEYS = [
   { wert: "gut", zeichen: "😃" },
 ];
 const MAX_STICHWORT = 40;
+const MAX_RUECKFRAGE = 500; // bruecke.py MAX_FRAGE
 
 const $ = (id) => document.getElementById(id);
 const katex = () => window.katex;
@@ -39,6 +40,7 @@ const z = {
   nummer: null,
   phase: "aufgabe", // aufgabe | rueckmeldung | ende
   rueckmeldung: null, // {state, text}
+  tutor: [], // [{frage, teile}] Gespraech mit dem Tutor zur aktuellen Aufgabe
   busy: false,
 };
 
@@ -122,6 +124,7 @@ function fortschrittZeigen() {
 
 // ---- Karte -----------------------------------------------------------------------------------
 function hilfeLeeren() {
+  z.tutor = [];
   $("hilfe").replaceChildren();
 }
 
@@ -291,7 +294,7 @@ function karteAufgabe() {
     sperrText ? el("p", { class: "hinweistext sperrhinweis", text: sperrText }) : null,
     el("div", { class: "knoepfe" },
       abgeben,
-      el("button", { type: "button", id: "erklaeren", text: "Erklär mir das", onclick: erklaeren }),
+      el("button", { type: "button", id: "erklaeren", text: "Erklär mir das", onclick: () => erklaeren() }),
       el("button", { type: "button", id: "hinweis", text: "Hinweis", onclick: hinweis })),
   );
   form.addEventListener("submit", (ereignis) => {
@@ -369,7 +372,14 @@ async function karteBewertung() {
   });
   for (const w of woerter) w.addEventListener("input", () => { beruehrt = true; gespeichert = false; aktualisieren(); });
 
-  $("karte").replaceChildren(el("section", { class: "bewertung" },
+  const nochmal = el("button", {
+    type: "button", text: "Noch einmal üben",
+    onclick: () => { if (!z.busy) void kursOeffnen(kurs, "neu"); },
+  });
+  $("karte").replaceChildren(el("section", { class: "abschluss" },
+    el("h2", { text: "Kurs abgeschlossen" }),
+    el("p", { text: "Sie haben alle Aufgaben dieses Durchlaufs bearbeitet. Ihre Begriffe sehen Sie unten." }),
+    el("div", { class: "knoepfe" }, nochmal)), el("section", { class: "bewertung" },
     el("h2", { text: "Wie fanden Sie diesen Kurs?" }),
     el("div", { class: "smileys" }, ...tasten),
     el("p", { text: "Was würden Sie besser machen? Drei kurze Stichworte – oder keins, wenn alles gepasst hat." }),
@@ -470,7 +480,8 @@ function sperren(an) {
   for (const b of $("karte").querySelectorAll("button")) b.disabled = an;
 }
 
-async function kursOeffnen(kurs) {
+// `aktion` "neu" startet nach dem Kursende bewusst einen frischen Durchlauf.
+async function kursOeffnen(kurs, aktion = "oeffnen") {
   banner("");
   $("flaechen-hinweis").hidden = true;
   z.kurs = kurs;
@@ -480,7 +491,7 @@ async function kursOeffnen(kurs) {
   zeigen();
   begriffeZeigen([]);
   $("notizen-box").hidden = true;
-  const r = await api("POST", `/kurse/${kurs.course_id}/oeffnen`);
+  const r = await api("POST", `/kurse/${kurs.course_id}/${aktion === "neu" ? "neu" : "oeffnen"}`);
   if (z.kurs !== kurs) return;
   if (!r.ok) { fehlerBehandeln(r); return; }
   begriffeZeigen(r.daten.begriffe);
@@ -537,13 +548,39 @@ async function weiter(bannerBehalten = false) {
   zeigen();
 }
 
-async function erklaeren() {
+// "Erklär mir das" beginnt ein Gespraech, Rueckfragen fuehren es fort (die Bruecke gibt den Verlauf mit).
+async function erklaeren(frage) {
   const t = z.turn;
+  const rueckfrage = typeof frage === "string" && frage.trim() !== "";
+  if (!rueckfrage) z.tutor = [];
   banner("");
-  const r = await api("POST", `/sitzungen/${t.session_id}/erklaeren`, {});
-  if (!r.ok) { fehlerBehandeln(r); return; }
-  const teile = [r.daten.answer, r.daten.next_step].filter((s) => typeof s === "string" && s);
-  hilfeZeigen(teile);
+  tutorZeigen(true);
+  const r = await api("POST", `/sitzungen/${t.session_id}/erklaeren`, rueckfrage ? { frage: frage.trim() } : {});
+  if (z.turn !== t) return;
+  if (!r.ok) { tutorZeigen(false); fehlerBehandeln(r); return; }
+  const teile = [r.daten.answer].filter((s) => typeof s === "string" && s);
+  z.tutor.push({ frage: rueckfrage ? frage.trim() : null, teile });
+  tutorZeigen(false);
+}
+
+function tutorZeigen(wartet) {
+  const box = el("div", { class: "antwortbox tutor" });
+  for (const eintrag of z.tutor) {
+    if (eintrag.frage) box.append(el("p", { class: "eigene-frage", text: eintrag.frage }));
+    for (const absatz of eintrag.teile) box.append(setzeText(el("p"), absatz, mathe()));
+  }
+  const feld = el("textarea", {
+    rows: "3", maxlength: String(MAX_RUECKFRAGE), autocomplete: "off",
+    "aria-label": "Rückfrage", placeholder: "Ihre Rückfrage oder Ihre Zwischenschritte",
+  });
+  const fragen = el("button", { type: "submit", text: wartet ? "Einen Moment …" : "Fragen", disabled: wartet });
+  const form = el("form", { class: "rueckfrage" }, feld, el("div", { class: "knoepfe" }, fragen));
+  form.addEventListener("submit", (ereignis) => {
+    ereignis.preventDefault();
+    if (feld.value.trim()) void erklaeren(feld.value);
+  });
+  if (z.tutor.length > 0 || wartet) box.append(form);
+  $("hilfe").replaceChildren(box);
 }
 
 async function hinweis() {
@@ -551,7 +588,7 @@ async function hinweis() {
   banner("");
   const r = await api("POST", `/sitzungen/${t.session_id}/hinweis`);
   if (!r.ok) { fehlerBehandeln(r); return; }
-  if (typeof r.daten.hinweis === "string" && r.daten.hinweis) hilfeZeigen([r.daten.hinweis]);
+  if (typeof r.daten.hinweis === "string" && r.daten.hinweis) { z.tutor = []; hilfeZeigen([r.daten.hinweis]); }
 }
 
 // ---- Start --------------------------------------------------------------------------------------------
