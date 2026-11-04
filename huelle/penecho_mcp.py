@@ -12,10 +12,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import ssl
 import tempfile
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -67,7 +69,18 @@ class PenEchoSitzungUnbekannt(PenEchoNichtErreichbar):
 
 # Fehlercodes aus PenEcho service.js (ownedSession): session_not_found, session_expired,
 # session_closed, canvas_disconnected.
+class PenEchoFlaecheVerloren(PenEchoNichtErreichbar):
+    """Die an den sessionKey gebundene Flaeche ist nicht mehr gespeichert (z. B. nach Neustart)."""
+
+
+class PenEchoPlatzBelegt(PenEchoNichtErreichbar):
+    """Der gewuenschte Bereich ist schon belegt (PenEcho LAYOUT_CONFLICT)."""
+
+
 _SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
+# canvas-documents.js (PenEcho 1.4.2): Wiederherstellen einer nie gesicherten Flaeche.
+_VERLOREN_CODES = frozenset({"STORAGE_UNAVAILABLE", "DOCUMENT_NOT_FOUND"})
+_CODE_MUSTER = re.compile(r"[A-Za-z_]{1,40}")
 
 
 class _HttpFehler(PenEchoNichtErreichbar):
@@ -97,6 +110,8 @@ class PenEchoMcp:
         self._mcp_session: str | None = None
         self._next_id = 0
         self._merkdatei = self._state_dir.parent / "learning-huelle" / "sitzungen.json"
+        # Ersatz-sessionKeys fuer Flaechen, die neu angelegt werden mussten (Schluessel -> sessionKey).
+        self._ersatzdatei = self._merkdatei.with_name("flaechen.json")
 
     # ---- Verbindung -------------------------------------------------------
     def _identity(self) -> dict[str, Any]:
@@ -206,9 +221,15 @@ class PenEchoMcp:
             break
         if ergebnis.get("isError"):
             code = self._struktur(ergebnis).get("code")
-            log.warning("PenEcho-Werkzeug %s meldet Fehler", name)
+            # Nur PenEchos feste Codes (z. B. LAYOUT_CONFLICT) ins Log, nie Meldungstext.
+            sicher = code if isinstance(code, str) and _CODE_MUSTER.fullmatch(code) else "?"
+            log.warning("PenEcho-Werkzeug %s meldet Fehler %s", name, sicher)
             if isinstance(code, str) and code in _SITZUNG_CODES:
                 raise PenEchoSitzungUnbekannt(code)
+            if isinstance(code, str) and code in _VERLOREN_CODES:
+                raise PenEchoFlaecheVerloren(code)
+            if code == "LAYOUT_CONFLICT":
+                raise PenEchoPlatzBelegt(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -228,20 +249,21 @@ class PenEchoMcp:
         return {}
 
     # ---- Merkdatei --------------------------------------------------------
-    def _gemerkt(self) -> dict[str, str]:
+    def _gemerkt(self, datei: Path | None = None) -> dict[str, str]:
         try:
-            wert = json.loads(self._merkdatei.read_text(encoding="utf-8"))
+            wert = json.loads((datei or self._merkdatei).read_text(encoding="utf-8"))
             return {k: v for k, v in wert.items() if isinstance(k, str) and isinstance(v, str)}
         except (OSError, ValueError, AttributeError):
             return {}
 
-    def _merken(self, karte: dict[str, str]) -> None:
-        self._merkdatei.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self._merkdatei.parent, suffix=".tmp")
+    def _merken(self, karte: dict[str, str], datei: Path | None = None) -> None:
+        ziel = datei or self._merkdatei
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(karte, f, ensure_ascii=False)
-            os.replace(tmp, self._merkdatei)
+            os.replace(tmp, ziel)
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -267,11 +289,20 @@ class PenEchoMcp:
         bekannt = self._gemerkt().get(schluessel)
         if bekannt:
             return bekannt
-        ergebnis = self._werkzeug("penecho_start_session", {
+        ersatz = self._gemerkt(self._ersatzdatei)
+        argumente = {
             "title": titel,
-            "sessionKey": _sitzungsschluessel(schluessel),
+            "sessionKey": ersatz.get(schluessel) or _sitzungsschluessel(schluessel),
             "restore": True,
-        })
+        }
+        try:
+            ergebnis = self._werkzeug("penecho_start_session", argumente)
+        except PenEchoFlaecheVerloren:
+            # Die gebundene Flaeche war nie gesichert und ist weg: neue Flaeche, neuer Schluessel.
+            neu = _sitzungsschluessel(schluessel)[: MAX_SCHLUESSEL - 9] + "#" + uuid4().hex[:8]
+            ergebnis = self._werkzeug("penecho_start_session", {**argumente, "sessionKey": neu})
+            ersatz[schluessel] = neu
+            self._merken(ersatz, self._ersatzdatei)
         session_id = self._struktur(ergebnis).get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise PenEchoNichtErreichbar("sessionId")
@@ -284,13 +315,20 @@ class PenEchoMcp:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
         region = bereich(nummer)
-        self._werkzeug("penecho_edit_canvas", {
+        argumente = {
             "sessionId": session_id,
             "requestId": f"aufgabe-{aufgabe_id}-{nummer}"[:MAX_SCHLUESSEL],
             "action": "create_text",
             "text": f"Aufgabe {nummer}: {text}",
             "region": region,
-        })
+        }
+        try:
+            self._werkzeug("penecho_edit_canvas", argumente)
+        except PenEchoPlatzBelegt:
+            # PenEchos KI hat den Bereich nach einer Abgabe belegt: PenEcho einen freien Platz waehlen lassen.
+            del argumente["region"]
+            argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
+            self._werkzeug("penecho_edit_canvas", argumente)
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines

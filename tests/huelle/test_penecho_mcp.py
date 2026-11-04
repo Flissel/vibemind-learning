@@ -205,6 +205,70 @@ def test_anderer_werkzeugfehler_bleibt_allgemein(zustand: Path) -> None:
     assert not isinstance(info.value, PenEchoSitzungUnbekannt)
 
 
+def test_belegter_bereich_setzt_aufgabe_an_freien_platz(zustand: Path) -> None:
+    # PenEchos KI darf nach der Abgabe frei zeichnen und kann dabei den naechsten
+    # Aufgabenbereich belegen (LAYOUT_CONFLICT). Dann ohne festen Bereich setzen.
+    fake = Fake()
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and "region" in body["params"]["arguments"]:
+            fake.anfragen.append((body, request.headers))
+            sc = {"code": "LAYOUT_CONFLICT", "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"isError": True, "structuredContent": sc}})
+        return echt(request)
+
+    PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen("sess-1", "t1", "Rechne", 2)
+    versuche = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert len(versuche) == 2
+    assert versuche[0]["region"] == bereich(2) and "region" not in versuche[1]
+    assert versuche[1]["text"] == "Aufgabe 2: Rechne"
+    # Andere Argumente, also eine andere requestId (PenEcho: nur fuer identische Argumente wiederverwenden).
+    assert versuche[0]["requestId"] != versuche[1]["requestId"]
+
+
+@pytest.mark.parametrize("code", ["STORAGE_UNAVAILABLE", "DOCUMENT_NOT_FOUND"])
+def test_verlorene_flaeche_bekommt_neuen_schluessel(zustand: Path, code: str) -> None:
+    # Ungesicherte PenEcho-Flaechen ueberleben keinen Neustart; die alte Bindung laesst sich
+    # nicht wiederherstellen. Dann eine neue Flaeche unter einem neuen Schluessel anlegen.
+    fake = Fake()
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and body["params"]["arguments"].get("sessionKey") == "learning-huelle:" + LERN_SID:
+            fake.anfragen.append((body, request.headers))
+            sc = {"code": code, "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"isError": True, "structuredContent": sc}})
+        return echt(request)
+
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(antwort))
+    assert c.sitzung(LERN_SID, TITEL) == "sess-1"
+    schluessel = [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")]
+    assert schluessel[0] == "learning-huelle:" + LERN_SID
+    assert len(schluessel) == 2 and schluessel[1].startswith("learning-huelle:" + LERN_SID + "#")
+    assert len(schluessel[1]) <= 128
+    # Nach Neustart der Huelle (PenEcho kennt die sessionId nicht mehr) dieselbe neue Flaeche
+    # wiederherstellen, statt erneut eine anzulegen.
+    c2 = PenEchoMcp(zustand, transport=httpx.MockTransport(antwort))
+    c2.vergessen(LERN_SID)
+    c2.sitzung(LERN_SID, TITEL)
+    assert [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")][2] == schluessel[1]
+
+
+def test_werkzeugfehler_loggt_penechos_code_aber_keinen_text(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(PenEchoNichtErreichbar):
+        _client(zustand, Fake(tool_fehler="LAYOUT_CONFLICT")).aufgabe_setzen("s", "t", "x", 1)
+    assert "penecho_edit_canvas meldet Fehler LAYOUT_CONFLICT" in caplog.text
+    # Freitext oder ungewoehnliche Codes landen nicht im Log.
+    caplog.clear()
+    with pytest.raises(PenEchoNichtErreichbar):
+        _client(zustand, Fake(tool_fehler="geheim mit Leerzeichen")).aufgabe_setzen("s", "t", "x", 1)
+    assert "geheim" not in caplog.text and "meldet Fehler ?" in caplog.text
+
+
 # ---- Ruling L: eine Flaeche je Lernsitzung, 20 Bereiche in PenEchos Grenzen -------------
 
 def test_bereiche_liegen_in_penechos_grenzen_und_ueberlappen_nicht() -> None:
