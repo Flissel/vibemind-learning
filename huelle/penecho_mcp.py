@@ -112,6 +112,8 @@ class PenEchoMcp:
         self._merkdatei = self._state_dir.parent / "learning-huelle" / "sitzungen.json"
         # Ersatz-sessionKeys fuer Flaechen, die neu angelegt werden mussten (Schluessel -> sessionKey).
         self._ersatzdatei = self._merkdatei.with_name("flaechen.json")
+        # PenEcho-Dokument-ID des Boards je Lernsitzung (Schluessel -> documentId), BOARD_SPEICHERN.md.
+        self._dokumentdatei = self._merkdatei.with_name("dokumente.json")
 
     # ---- Verbindung -------------------------------------------------------
     def _identity(self) -> dict[str, Any]:
@@ -285,11 +287,15 @@ class PenEchoMcp:
         schema.js:656-658 penecho_start_session: title (Pflicht), sessionKey, restore (bool).
         Die Merkdatei haelt schluessel -> sessionId; ein bekannter Schluessel startet keine neue Sitzung.
         Der Titel zaehlt nur beim ersten Anlegen.
+        Nach einem Neustart findet PenEcho das Board ueber den sessionKey wieder. Meldet PenEcho die
+        Flaeche als verloren, wird das gemerkte Dokument (dokumente.json) in jedem verbundenen Browser
+        gesucht; erst wenn es nirgends liegt, entsteht eine neue Flaeche unter neuem Schluessel.
         """
         bekannt = self._gemerkt().get(schluessel)
         if bekannt:
             return bekannt
         ersatz = self._gemerkt(self._ersatzdatei)
+        dokumente = self._gemerkt(self._dokumentdatei)
         argumente = {
             "title": titel,
             "sessionKey": ersatz.get(schluessel) or _sitzungsschluessel(schluessel),
@@ -298,18 +304,79 @@ class PenEchoMcp:
         try:
             ergebnis = self._werkzeug("penecho_start_session", argumente)
         except PenEchoFlaecheVerloren:
-            # Die gebundene Flaeche war nie gesichert und ist weg: neue Flaeche, neuer Schluessel.
-            neu = _sitzungsschluessel(schluessel)[: MAX_SCHLUESSEL - 9] + "#" + uuid4().hex[:8]
-            ergebnis = self._werkzeug("penecho_start_session", {**argumente, "sessionKey": neu})
-            ersatz[schluessel] = neu
-            self._merken(ersatz, self._ersatzdatei)
-        session_id = self._struktur(ergebnis).get("sessionId")
+            ergebnis = self._gemerktes_board_oeffnen(argumente, dokumente.get(schluessel))
+            if ergebnis is None:
+                # Das Board liegt in keinem verbundenen Browser und nicht in PenEchos Ablage:
+                # neue Flaeche, neuer Schluessel.
+                log.warning("PenEcho-Board nicht gefunden, neue Flaeche")
+                neu = _sitzungsschluessel(schluessel)[: MAX_SCHLUESSEL - 9] + "#" + uuid4().hex[:8]
+                ergebnis = self._werkzeug("penecho_start_session", {**argumente, "sessionKey": neu})
+                ersatz[schluessel] = neu
+                self._merken(ersatz, self._ersatzdatei)
+        struktur = self._struktur(ergebnis)
+        session_id = struktur.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise PenEchoNichtErreichbar("sessionId")
+        self._dokument_merken(schluessel, struktur.get("documentId"), dokumente)
         karte = self._gemerkt()
         karte[schluessel] = session_id
         self._merken(karte)
         return session_id
+
+    def _gemerktes_board_oeffnen(self, argumente: dict[str, Any], dokument: str | None) -> dict[str, Any] | None:
+        """Oeffnet das gemerkte Dokument im ersten verbundenen Browser, der es hat, und bindet die Sitzung.
+
+        schema.js penecho_list_canvases (ohne Argumente) und penecho_open_canvas
+        (instanceId, canvasId, requestId Pflicht; documentId). Ohne Treffer None.
+        """
+        if not dokument:
+            return None
+        liste = self._struktur(self._werkzeug("penecho_list_canvases", {}))
+        browser: list[tuple[str, str]] = []
+        for eintrag in liste.get("canvases") or []:
+            if not isinstance(eintrag, dict):
+                continue
+            ziel = (eintrag.get("instanceId") or liste.get("instanceId"), eintrag.get("canvasId"))
+            if all(isinstance(t, str) and t for t in ziel) and ziel not in browser:
+                browser.append(ziel)
+        for instanz, canvas in browser:
+            try:
+                self._werkzeug("penecho_open_canvas", {
+                    "instanceId": instanz,
+                    "canvasId": canvas,
+                    "documentId": dokument,
+                    "requestId": "oeffnen-" + uuid4().hex,
+                })
+            except PenEchoFlaecheVerloren:
+                continue
+            return self._werkzeug("penecho_start_session", {**argumente, "documentId": dokument})
+        return None
+
+    def _dokument_merken(self, schluessel: str, dokument: Any, dokumente: dict[str, str] | None = None) -> None:
+        if not isinstance(dokument, str) or not dokument:
+            return
+        karte = self._gemerkt(self._dokumentdatei) if dokumente is None else dokumente
+        if karte.get(schluessel) != dokument:
+            karte[schluessel] = dokument
+            self._merken(karte, self._dokumentdatei)
+
+    def speichern(self, session_id: str) -> None:
+        """Sichert das Board der Sitzung als PenEcho-Dokument (BOARD_SPEICHERN.md). Wiederholbar.
+
+        PenEcho schreibt jedes MCP-Board laufend selbst in die Arbeitsflaeche des Browsers
+        (IndexedDB); ein MCP-Werkzeug zum Speichern an einen Ablageort gibt es in PenEcho 1.4.2
+        nicht. speichern() fragt PenEcho nach dem Dokument der Sitzung (schema.js
+        penecho_inspect_session: nur sessionId) und merkt dessen ID, damit sitzung() genau dieses
+        Board wieder oeffnet. Fehler kommen als PenEchoNichtErreichbar.
+        """
+        ergebnis = self._werkzeug("penecho_inspect_session", {"sessionId": session_id})
+        dokument = self._struktur(ergebnis).get("documentId")
+        if not isinstance(dokument, str) or not dokument:
+            raise PenEchoNichtErreichbar("documentId")
+        dokumente = self._gemerkt(self._dokumentdatei)
+        for schluessel, sid in self._gemerkt().items():
+            if sid == session_id:
+                self._dokument_merken(schluessel, dokument, dokumente)
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int) -> None:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).

@@ -257,6 +257,148 @@ def test_verlorene_flaeche_bekommt_neuen_schluessel(zustand: Path, code: str) ->
     assert [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")][2] == schluessel[1]
 
 
+# ---- Board speichern und wieder oeffnen (BOARD_SPEICHERN.md) --------------------------
+
+DOK = "doc-" + "d" * 64
+DOKUMENTE = "dokumente.json"
+
+
+def _fehler(body: dict, code: str) -> httpx.Response:
+    sc = {"code": code, "message": "m"}
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+        "isError": True, "structuredContent": sc, "content": [{"type": "text", "text": json.dumps(sc)}]}})
+
+
+def _ok(body: dict, sc: dict) -> httpx.Response:
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+        "structuredContent": sc, "content": [{"type": "text", "text": json.dumps(sc)}]}})
+
+
+def _merkdatei(zustand: Path, name: str) -> dict:
+    datei = zustand.parent / "learning-huelle" / name
+    return json.loads(datei.read_text(encoding="utf-8")) if datei.exists() else {}
+
+
+def test_speichern_ruft_das_gefundene_werkzeug(zustand: Path) -> None:
+    fake = Fake()
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_inspect_session":
+            fake.anfragen.append((body, request.headers))
+            return _ok(body, {"sessionId": "sess-1", "documentId": DOK, "canvasId": "cv-1"})
+        return echt(request)
+
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(antwort))
+    sid = c.sitzung(LERN_SID, TITEL)
+    vorher = len([b for b, _ in fake.anfragen if b["method"] == "tools/call"])
+    c.speichern(sid)
+    aufrufe = [b["params"] for b, _ in fake.anfragen if b["method"] == "tools/call"][vorher:]
+    assert aufrufe == [{"name": "penecho_inspect_session", "arguments": {"sessionId": "sess-1"}}]
+    # Die Dokument-ID ist zum Lernsitzungs-Schluessel gemerkt, neben flaechen.json.
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: DOK}
+    c.speichern(sid)  # wiederholbar
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: DOK}
+
+
+def test_speichern_fehler_kommen_als_nicht_erreichbar(zustand: Path) -> None:
+    with pytest.raises(PenEchoNichtErreichbar):
+        _client(zustand, Fake(tool_fehler="session_not_found")).speichern("alt")
+    with pytest.raises(PenEchoNichtErreichbar):
+        _client(zustand, Fake(fehler=True)).speichern("sess-1")
+    # Antwort ohne Dokument-ID: nichts merken, Fehler melden.
+    with pytest.raises(PenEchoNichtErreichbar):
+        _client(zustand, Fake()).speichern("sess-1")
+    assert _merkdatei(zustand, DOKUMENTE) == {}
+
+
+def _verlust_fake(fake: Fake, *, browser_mit_dokument: str | None):
+    """start_session ohne documentId: Flaeche verloren. open_canvas klappt nur im genannten Browser."""
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") != "tools/call":
+            return echt(request)
+        name, args = body["params"]["name"], body["params"]["arguments"]
+        if name == "penecho_start_session":
+            fake.anfragen.append((body, request.headers))
+            if args.get("documentId") == DOK:
+                return _ok(body, {"sessionId": "sess-2", "documentId": DOK, "reused": True})
+            if args.get("sessionKey") == "learning-huelle:" + LERN_SID:
+                return _fehler(body, "STORAGE_UNAVAILABLE")
+            return _ok(body, {"sessionId": "sess-neu", "documentId": "doc-neu"})
+        if name == "penecho_list_canvases":
+            fake.anfragen.append((body, request.headers))
+            return _ok(body, {"instanceId": "inst-1", "canvases": [
+                {"instanceId": "inst-1", "canvasId": "cv-a", "documentId": "doc-x", "title": "x", "active": True},
+                {"instanceId": "inst-1", "canvasId": "cv-a", "documentId": "doc-y", "title": "y", "active": False},
+                {"instanceId": "inst-1", "canvasId": "cv-b", "documentId": "doc-z", "title": "z", "active": True},
+            ]})
+        if name == "penecho_open_canvas":
+            fake.anfragen.append((body, request.headers))
+            if args["canvasId"] == browser_mit_dokument and args.get("documentId") == DOK:
+                return _ok(body, {"documentId": DOK, "title": "t", "active": False})
+            return _fehler(body, "STORAGE_UNAVAILABLE")
+        return echt(request)
+
+    return antwort
+
+
+def _dokument_merken(zustand: Path) -> None:
+    datei = zustand.parent / "learning-huelle" / DOKUMENTE
+    datei.parent.mkdir(parents=True, exist_ok=True)
+    datei.write_text(json.dumps({LERN_SID: DOK}), encoding="utf-8")
+
+
+def test_sitzung_oeffnet_gespeichertes_board_nach_verlust(zustand: Path) -> None:
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_verlust_fake(fake, browser_mit_dokument="cv-b")))
+    assert c.sitzung(LERN_SID, TITEL) == "sess-2"
+    # Jeder verbundene Browser wird einmal gefragt, bis einer das Dokument oeffnet.
+    oeffnen = [a["arguments"] for a in fake.aufrufe("penecho_open_canvas")]
+    assert [a["canvasId"] for a in oeffnen] == ["cv-a", "cv-b"]
+    for a in oeffnen:
+        assert a["documentId"] == DOK and a["instanceId"] == "inst-1"
+        assert {"instanceId", "canvasId", "requestId"} <= set(a) <= {
+            "instanceId", "canvasId", "documentId", "locator", "create", "title", "requestId", "show"}
+        assert 1 <= len(a["requestId"]) <= 128
+    assert oeffnen[0]["requestId"] != oeffnen[1]["requestId"]
+    starts = [a["arguments"] for a in fake.aufrufe("penecho_start_session")]
+    assert len(starts) == 2
+    assert all(s["sessionKey"] == "learning-huelle:" + LERN_SID for s in starts)
+    assert "documentId" not in starts[0] and starts[1]["documentId"] == DOK
+    # Kein neuer Ersatzschluessel, keine leere Flaeche.
+    assert _merkdatei(zustand, "flaechen.json") == {}
+    assert _merkdatei(zustand, "sitzungen.json") == {LERN_SID: "sess-2"}
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: DOK}
+
+
+def test_sitzung_ohne_gespeichertes_board_wie_bisher(zustand: Path) -> None:
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_verlust_fake(fake, browser_mit_dokument="cv-b")))
+    assert c.sitzung(LERN_SID, TITEL) == "sess-neu"
+    assert fake.aufrufe("penecho_list_canvases") == [] and fake.aufrufe("penecho_open_canvas") == []
+    starts = [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")]
+    assert len(starts) == 2 and starts[1].startswith("learning-huelle:" + LERN_SID + "#")
+    assert _merkdatei(zustand, "flaechen.json") == {LERN_SID: starts[1]}
+    # Die neue Flaeche ist ab jetzt das Board dieser Lernsitzung.
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-neu"}
+
+
+def test_sitzung_gespeichertes_board_in_keinem_browser_dann_ersatz(zustand: Path) -> None:
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_verlust_fake(fake, browser_mit_dokument=None)))
+    assert c.sitzung(LERN_SID, TITEL) == "sess-neu"
+    assert len(fake.aufrufe("penecho_open_canvas")) == 2
+    starts = [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")]
+    assert starts[-1].startswith("learning-huelle:" + LERN_SID + "#")
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-neu"}
+
+
 def test_werkzeugfehler_loggt_penechos_code_aber_keinen_text(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING)
     with pytest.raises(PenEchoNichtErreichbar):
