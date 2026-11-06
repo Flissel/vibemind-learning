@@ -40,7 +40,10 @@ from starlette.routing import Route
 from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
-from .penecho_mcp import BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
+from .penecho_mcp import (
+    BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar,
+    PenEchoSitzungUnbekannt,
+)
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
 
@@ -197,6 +200,20 @@ def _medien(turn: dict[str, Any]) -> dict[str, Any]:
             if isinstance(eintrag, dict):
                 fix(eintrag)
     return turn
+
+
+def _bildname(wert: object) -> str | None:
+    """Name eines Aufgabenbilds auf der eigenen Route (nach `_medien`); sonst None."""
+    if not isinstance(wert, str) or not wert.startswith(MEDIEN_ROUTE):
+        return None
+    name = wert.removeprefix(MEDIEN_ROUTE)
+    return name if MEDIEN_NAME.fullmatch(name) else None
+
+
+def _seitenverhaeltnis(eintrag: dict[str, Any]) -> float:
+    breite, hoehe = eintrag.get("width"), eintrag.get("height")
+    zahlen = all(isinstance(z, (int, float)) and not isinstance(z, bool) and z > 0 for z in (breite, hoehe))
+    return breite / hoehe if zahlen else 4 / 3  # type: ignore[operator]
 
 
 def _turn(result: dict[str, Any]) -> dict[str, Any]:
@@ -544,8 +561,9 @@ class Bruecke:
         typ = task.get("type")
         text = str(task.get("prompt") or "") if typ == "code" else _tafeltext(task, nummer)
         feld, arbeit = typ in DETERMINISTISCHE_TYPEN, typ in BEREICHS_TYPEN
+        bilder = self._aufgabenbilder(task)
         ok = self._flaeche_still(sitzung, lambda s: self._penecho.aufgabe_setzen(
-            s, aufgabe_id, text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit))
+            s, aufgabe_id, text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit, bilder=bilder))
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
         return nummer, ok
 
@@ -1109,6 +1127,35 @@ class Bruecke:
         return Response(inhalt, media_type=_MEDIEN_ART[treffer.group(1)], headers={
             "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff",
         })
+
+    def _aufgabenbilder(self, task: dict[str, Any]) -> list[Aufgabenbild]:
+        """Bilder der Aufgabe fuer die Flaeche (Spec: „Bilder der Aufgabe als Bild“), in der Reihenfolge
+        Hauptbild, linke, rechte Eintraege. Fehlt eines, entfaellt es; ist learning-api weg, kommt die
+        Aufgabe ohne die restlichen Bilder.
+        """
+        presentation = task.get("presentation")
+        if not isinstance(presentation, dict):
+            return []
+        eintraege: list[tuple[object, dict[str, Any]]] = [(None, presentation)]
+        for seite in ("left", "right"):
+            liste = presentation.get(seite)
+            eintraege += [(e.get("label"), e) for e in (liste if isinstance(liste, list) else []) if isinstance(e, dict)]
+        bilder: list[Aufgabenbild] = []
+        for beschriftung, eintrag in eintraege:
+            name = _bildname(eintrag.get("image"))
+            if name is None:
+                continue
+            try:
+                daten = self._medium(name)
+            except LearningWeg:
+                log.warning("Aufgabenbilder: learning-api nicht erreichbar")
+                return bilder
+            if daten is None:
+                log.warning("Aufgabenbild fehlt bei learning-api")
+                continue
+            text = beschriftung.strip() if isinstance(beschriftung, str) and beschriftung.strip() else None
+            bilder.append(Aufgabenbild(text, daten, _seitenverhaeltnis(eintrag)))
+        return bilder
 
     def _medium(self, name: str) -> bytes | None:
         # Die Medienroute von learning-api ist offen; der Dienstschluessel geht nicht mit.

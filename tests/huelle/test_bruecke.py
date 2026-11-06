@@ -19,7 +19,7 @@ from spaces.learning.huelle.bruecke import (
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import (
-    URTEILE, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
+    URTEILE, Aufgabenbild, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
 )
 from spaces.learning.huelle.sperre import Sperre
 from spaces.learning.huelle.tafel import aufgabentext
@@ -90,6 +90,7 @@ class FakePenEcho:
         # (aufgabe_id, nummer, mit_ergebnisfeld) je aufgabe_setzen; das alte Tupel bleibt fuer die alten Tests.
         self.ergebnisfelder: list[tuple[str, int, bool]] = []
         self.arbeitsfelder: list[tuple[str, int, bool]] = []
+        self.bilder: list[list[Aufgabenbild]] = []
         self.merken_fehler: Exception | None = None
 
     def _pruefen(self, name: str) -> None:
@@ -107,8 +108,10 @@ class FakePenEcho:
         self.aufrufe.append(("vergessen", schluessel))
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
-                       mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False) -> None:
+                       mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
+                       bilder: Any = ()) -> None:
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
+        self.bilder.append(list(bilder))
         self.ergebnisfelder.append((aufgabe_id, nummer, mit_ergebnisfeld))
         self.arbeitsfelder.append((aufgabe_id, nummer, mit_arbeitsfeld))
         bereich(nummer)  # wie PenEchoMcp: ausserhalb der 20 Bereiche ValueError
@@ -1039,6 +1042,47 @@ def test_medien_route_holt_bild_von_learning_api() -> None:
     for name in ("..%2Fx.png", ".x.png", "x.gif", "a" * 130 + ".png", "x.png.html"):
         assert client.get(f"/lernen/api/medien/{name}").status_code == 404, name
     assert len(gesehen) == anzahl
+
+
+WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"0" * 8
+
+
+def _medien_api(fehlt: frozenset[str] = frozenset()):
+    def api(request: httpx.Request) -> httpx.Response:
+        name = request.url.path.removeprefix("/lernsequenz-medien/")
+        if name in fehlt:
+            return httpx.Response(404)
+        if name == BILD:
+            return httpx.Response(200, content=PNG)
+        if name == "graph-a.webp":
+            return httpx.Response(200, content=WEBP)
+        return httpx.Response(404)
+    return api
+
+
+def test_zeigen_gibt_aufgabenbilder_an_die_flaeche() -> None:
+    # Abnahme 06.11.: die Zuordnungsaufgabe nannte vier Graphen, auf der Flaeche stand keiner.
+    lern = FakeLern({"learning_course_overview": _ueberblick(_mit_bildern(turn())),
+                     "learning_task_next": {"session": _mit_bildern(turn())}})
+    _, _, penecho, _ = _offen(lern, api=_medien_api())
+    assert penecho.bilder == [[Aufgabenbild(None, PNG, 640 / 360), Aufgabenbild("Graph 1", WEBP, 4 / 3)]]
+
+
+def test_fehlendes_aufgabenbild_wird_ausgelassen() -> None:
+    lern = FakeLern({"learning_course_overview": _ueberblick(_mit_bildern(turn())),
+                     "learning_task_next": {"session": _mit_bildern(turn())}})
+    _, _, penecho, _ = _offen(lern, api=_medien_api(frozenset({BILD})))
+    assert penecho.bilder == [[Aufgabenbild("Graph 1", WEBP, 4 / 3)]]
+
+
+def test_learning_weg_aufgabe_kommt_ohne_bilder() -> None:
+    def api(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("weg")
+
+    lern = FakeLern({"learning_course_overview": _ueberblick(_mit_bildern(turn())),
+                     "learning_task_next": {"session": _mit_bildern(turn())}})
+    _, _, penecho, body = _offen(lern, api=api)
+    assert penecho.bilder == [[]] and body["turn"]["task"]["id"] == TASK_1
 
 
 def test_medien_route_learning_weg_503() -> None:

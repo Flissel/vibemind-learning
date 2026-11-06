@@ -18,7 +18,7 @@ import time
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 import httpx
@@ -105,6 +105,58 @@ def arbeitsfeld(nummer: int) -> dict[str, int]:
     x = t["x"] + t["w"] + _TEXT_RAND
     return {"x": x, "y": b["y"] + _FELD_RAND_OBEN, "w": b["x"] + b["w"] - _FELD_RAND_RECHTS - x,
             "h": b["h"] - _FELD_RAND_OBEN - _TEXT_RAND}
+
+
+_BILD_LUECKE = 20
+_BILD_SCHILD = 40  # Hoehe der Beschriftung ueber einem Bild (create_text, Schrift 20)
+_BILD_MIN = 80  # schema.js penecho_place_image: width/height minimum 80
+
+
+class Aufgabenbild(NamedTuple):
+    """Ein Bild der Aufgabe (Graph, Skizze) mit optionaler Beschriftung; `seitenverhaeltnis` = Breite/Hoehe."""
+
+    beschriftung: str | None
+    daten: bytes
+    seitenverhaeltnis: float
+
+
+def bildfeld(nummer: int, *, unter_ergebnisfeld: bool) -> dict[str, int]:
+    """Platz der Aufgabenbilder rechts neben dem Text.
+
+    Mit Ergebnisfeld darunter, bis zum Bereichsende; sonst oben im Arbeitsfeld, damit darunter Platz zum
+    Schreiben bleibt und offene Aufgaben direkt im Bild beschriftet werden koennen.
+    """
+    a = arbeitsfeld(nummer)
+    if unter_ergebnisfeld:
+        e = ergebnisfeld(nummer)
+        y = e["y"] + e["h"] + 2 * _BILD_LUECKE
+        return {"x": a["x"], "y": y, "w": a["w"], "h": a["y"] + a["h"] - y}
+    return {"x": a["x"] + _BILD_LUECKE, "y": a["y"] + _BILD_LUECKE, "w": a["w"] - 2 * _BILD_LUECKE,
+            "h": a["h"] // 2 - _BILD_LUECKE}
+
+
+def bildraster(feld: dict[str, int], bilder: Sequence[Aufgabenbild]) -> list[tuple[dict[str, int] | None, dict[str, int]]]:
+    """Je Bild (Schild-Region oder None, Bild-Region) im Raster: eins allein, bis vier 2x2, mehr in drei Spalten."""
+    anzahl = len(bilder)
+    if anzahl == 0:
+        return []
+    spalten = 1 if anzahl == 1 else 2 if anzahl <= 4 else 3
+    zeilen = -(-anzahl // spalten)
+    zelle_b = (feld["w"] - (spalten - 1) * _BILD_LUECKE) // spalten
+    zelle_h = (feld["h"] - (zeilen - 1) * _BILD_LUECKE) // zeilen
+    plaetze: list[tuple[dict[str, int] | None, dict[str, int]]] = []
+    for i, bild in enumerate(bilder):
+        x = feld["x"] + (i % spalten) * (zelle_b + _BILD_LUECKE)
+        y = feld["y"] + (i // spalten) * (zelle_h + _BILD_LUECKE)
+        schild = None
+        if bild.beschriftung:
+            schild = {"x": x, "y": y, "w": zelle_b, "h": _BILD_SCHILD}
+            y += _BILD_SCHILD
+        verhaeltnis = bild.seitenverhaeltnis if bild.seitenverhaeltnis > 0 else 1.0
+        breite = round(min(zelle_b, (zelle_h - (_BILD_SCHILD if schild else 0)) * verhaeltnis))
+        hoehe = round(breite / verhaeltnis)
+        plaetze.append((schild, {"x": x, "y": y, "w": breite, "h": hoehe}))
+    return plaetze
 
 
 def rueckmeldungsfeld(nummer: int) -> dict[str, int]:
@@ -509,7 +561,7 @@ class PenEchoMcp:
 
     def aufgabe_setzen(
         self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
-        mit_arbeitsfeld: bool = False,
+        mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (),
     ) -> None:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
@@ -536,12 +588,52 @@ class PenEchoMcp:
                 objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
         # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
         self._zeigen(session_id, objekt_id)
+        if bilder:
+            # Vor dem Rahmen: dessen Tinte zaehlte sonst als Hindernis im Bildfeld.
+            self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
+                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld))
         if mit_ergebnisfeld:
             self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer),
                                 f"Ihr Ergebnis zu Aufgabe {nummer}", "ergebnis")
         elif mit_arbeitsfeld:
             self._feld_zeichnen(session_id, aufgabe_id, nummer, arbeitsfeld(nummer),
                                 f"Ihre Lösung zu Aufgabe {nummer}", "arbeit")
+
+    def _bilder_setzen(
+        self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
+    ) -> None:
+        """Aufgabenbilder mit Beschriftung im Raster ins Bildfeld (penecho_place_image mit Region).
+
+        Ist ein Platz belegt, steht das Bild meist schon da (Board nach Neustart wiederhergestellt): dann
+        nichts setzen, auch nicht anderswo. Ein fehlendes Bild bricht die Aufgabe nicht ab.
+        """
+        for position, (bild, (schild, platz)) in enumerate(zip(bilder, bildraster(feld, bilder)), start=1):
+            quelle = _datenurl(bild.daten)
+            if quelle is None or len(quelle) > MAX_BILD_DATENURL or min(platz["w"], platz["h"]) < _BILD_MIN:
+                log.warning("Aufgabenbild %d uebersprungen: Format oder Groesse", position)
+                continue
+            try:
+                self._werkzeug("penecho_place_image", {
+                    "sessionId": session_id,
+                    "requestId": self._feld_id("bild", aufgabe_id, nummer, f"-{position}"),
+                    "source": quelle,
+                    "width": platz["w"],
+                    "region": platz,
+                })
+                if schild is not None and bild.beschriftung:
+                    self._werkzeug("penecho_edit_canvas", {
+                        "sessionId": session_id,
+                        "requestId": self._feld_id("bild", aufgabe_id, nummer, f"-{position}-schild"),
+                        "action": "create_text",
+                        "text": bild.beschriftung[:200],
+                        "region": schild,
+                    })
+            except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+                raise
+            except PenEchoPlatzBelegt:
+                log.info("Aufgabenbild %d steht schon da", position)
+            except PenEchoNichtErreichbar as fehler:
+                log.warning("Aufgabenbild %d nicht gesetzt: %s", position, _typ(fehler))
 
     def _zeigen(self, session_id: str, objekt_id: object = None) -> None:
         """Board sichtbar machen und die Aufgabe ins Bild holen (show). Ab Aufgabe 2 laege sie sonst

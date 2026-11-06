@@ -11,8 +11,9 @@ import httpx
 import pytest
 
 from spaces.learning.huelle.penecho_mcp import (
-    BEREICHE, FLAECHE_GROESSE, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar, PenEchoPlatzBelegt,
-    PenEchoSitzungUnbekannt, arbeitsfeld, bereich, ergebnisfeld, rueckmeldungsfeld, textfeld,
+    BEREICHE, FLAECHE_GROESSE, Aufgabenbild, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar,
+    PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
+    textfeld,
 )
 
 TOKEN = "ab" * 32
@@ -1048,3 +1049,101 @@ def test_aufgabe_schon_auf_dem_board_wird_nicht_doppelt_gesetzt(zustand: Path) -
     edits = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
     assert [e["action"] for e in edits] == ["create_text", "show"]
     assert edits[1]["objectId"] == "text-box-3"
+
+
+# ---- Abnahme 06.11.: Aufgabenbilder auf der Flaeche ------------------------------------------
+
+BILD_PNG = b"\x89PNG\r\n\x1a\n" + b"1" * 32
+
+
+def _getrennt(a: dict, b: dict) -> bool:
+    return (a["x"] + a["w"] <= b["x"] or b["x"] + b["w"] <= a["x"]
+            or a["y"] + a["h"] <= b["y"] or b["y"] + b["h"] <= a["y"])
+
+
+@pytest.mark.parametrize("nummer", range(1, 21))
+def test_bildfeld_unter_dem_ergebnisfeld_im_bereich(nummer: int) -> None:
+    f, e, t = bildfeld(nummer, unter_ergebnisfeld=True), ergebnisfeld(nummer), textfeld(nummer)
+    assert _innen(f, bereich(nummer))
+    assert _getrennt(f, {"x": e["x"] - 16, "y": e["y"] - 60, "w": e["w"] + 32, "h": e["h"] + 76})  # Rahmen + Schild
+    assert _getrennt(f, t)
+    assert f["w"] >= 700 and f["h"] >= 400
+
+
+@pytest.mark.parametrize("nummer", range(1, 21))
+def test_bildfeld_oben_im_arbeitsfeld(nummer: int) -> None:
+    # Offene Aufgaben: das Bild steht im Arbeitsfeld, darunter bleibt Platz zum Schreiben und Beschriften.
+    f, a = bildfeld(nummer, unter_ergebnisfeld=False), arbeitsfeld(nummer)
+    assert _innen(f, a)
+    assert f["h"] <= a["h"] // 2 and f["w"] >= 700
+
+
+def _bilder(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_place_image")]
+
+
+def test_aufgabenbilder_im_raster_mit_beschriftung(zustand: Path) -> None:
+    fake = FeldFake(revision=4)
+    bilder = [Aufgabenbild(f"Graph {c}", BILD_PNG, 480 / 360) for c in "ABCD"]
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Ordnen Sie zu", 10, mit_ergebnisfeld=True, bilder=bilder)
+    gesetzt = _bilder(fake)
+    assert [b["requestId"] for b in gesetzt] == [f"bild-t1-10-{i}" for i in range(1, 5)]
+    assert all(b["source"] == "data:image/png;base64," + base64.b64encode(BILD_PNG).decode() for b in gesetzt)
+    feld = bildfeld(10, unter_ergebnisfeld=True)
+    regionen = [b["region"] for b in gesetzt]
+    assert all(_innen(r, feld) for r in regionen)
+    assert all(_getrennt(a, b) for i, a in enumerate(regionen) for b in regionen[i + 1:])
+    assert all(b["width"] == r["w"] and r["w"] >= 240 for b, r in zip(gesetzt, regionen))
+    assert all(abs(r["w"] / r["h"] - 480 / 360) < 0.02 for r in regionen)
+    schilder = [e for e in (a["arguments"] for a in fake.aufrufe("penecho_edit_canvas"))
+                if e["action"] == "create_text" and e["requestId"].startswith("bild-")]
+    assert [s["text"] for s in schilder] == ["Graph A", "Graph B", "Graph C", "Graph D"]
+    for s, r in zip(schilder, regionen):
+        assert s["requestId"].endswith("-schild") and _innen(s["region"], feld)
+        assert s["region"]["y"] + s["region"]["h"] <= r["y"] and _getrennt(s["region"], r)
+    # Bilder vor dem Rahmen: der Rahmen ist Tinte und wuerde sonst als Hindernis zaehlen.
+    namen = [(b["params"]["name"], b["params"]["arguments"].get("action")) for b, _ in fake.anfragen
+             if b["method"] == "tools/call"]
+    assert namen.index(("penecho_place_image", None)) < namen.index(("penecho_edit_canvas", "draw_ink"))
+
+
+def test_einzelbild_ohne_beschriftung_bei_offener_aufgabe(zustand: Path) -> None:
+    fake = FeldFake(revision=4)
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Beschriften Sie", 3, mit_arbeitsfeld=True,
+                                          bilder=[Aufgabenbild(None, BILD_PNG, 2.0)])
+    (b,) = _bilder(fake)
+    assert _innen(b["region"], bildfeld(3, unter_ergebnisfeld=False))
+    assert not [e for e in (a["arguments"] for a in fake.aufrufe("penecho_edit_canvas"))
+                if e["requestId"].startswith("bild-") and e["action"] == "create_text"]
+
+
+def test_belegter_bildplatz_wird_nicht_doppelt_gesetzt(zustand: Path) -> None:
+    # Nach einem Neustart steht das Bild schon da (neue PenEcho-Sitzung kennt die requestId nicht).
+    fake = Fake()
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        params = body.get("params", {}) if body.get("method") == "tools/call" else {}
+        args = params.get("arguments", {})
+        if params.get("name") == "penecho_place_image" or str(args.get("requestId", "")).startswith("bild-"):
+            fake.anfragen.append((body, request.headers))
+            sc = {"code": "LAYOUT_CONFLICT", "message": "m", "details": {"obstacles": [
+                {"id": "image-1", "x": 0, "y": 0, "w": 10, "h": 10}]}}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"isError": True, "structuredContent": sc}})
+        return echt(request)
+
+    PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen(
+        "sess-1", "t1", "Ordnen", 10, bilder=[Aufgabenbild("Graph A", BILD_PNG, 1.0)])
+    gesetzt = _bilder(fake)
+    assert len(gesetzt) == 1 and "region" in gesetzt[0]  # kein zweiter Versuch ohne Region
+
+
+def test_bild_in_fremdem_format_wird_ausgelassen(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    fake = Fake()
+    with caplog.at_level(logging.WARNING):
+        _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Ordnen", 10,
+                                              bilder=[Aufgabenbild("A", b"GIF89a" + b"0" * 10, 1.0),
+                                                      Aufgabenbild("B", BILD_PNG, 1.0)])
+    assert [b["requestId"] for b in _bilder(fake)] == ["bild-t1-10-2"]
+    assert "Aufgabenbild" in caplog.text
