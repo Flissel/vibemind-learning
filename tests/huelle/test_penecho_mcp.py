@@ -982,3 +982,20 @@ def test_rueckmeldung_ist_kein_widget_der_bericht_bleibt_karte(zustand: Path) ->
     c.bericht_zeigen("sess-1", "s1", "# Bericht\nText")
     (bericht,) = [a["arguments"] for a in fake.aufrufe("penecho_present_widget")]
     assert bericht["artifactId"] == "bericht-s1" and "presentation" not in bericht
+
+
+def test_zeigen_kommt_vor_dem_rahmen(zustand: Path) -> None:
+    # Abnahme 06.11.: auf einem frisch angelegten Board lehnte PenEcho draw_ink mit ACTIVE_CANVAS_REQUIRED ab.
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 2, mit_ergebnisfeld=True)
+    aktionen = [a["arguments"]["action"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert aktionen.index("show") < aktionen.index("draw_ink")
+
+
+def test_unsichtbares_board_wird_gezeigt_und_der_rahmen_neu_gezeichnet(zustand: Path) -> None:
+    fake = FeldFake(revision=3)
+    PenEchoMcp(zustand, transport=_fehler_bei_ink(fake, "ACTIVE_CANVAS_REQUIRED")).aufgabe_setzen(
+        "s", "t", "x", 1, mit_ergebnisfeld=True)
+    aktionen = [a["arguments"]["action"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert aktionen[-3:] == ["draw_ink", "show", "draw_ink"]
+    assert fake.gezeichnet == 1

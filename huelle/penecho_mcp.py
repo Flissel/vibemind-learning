@@ -152,6 +152,10 @@ class PenEchoAnfrageSchonBekannt(PenEchoNichtErreichbar):
     """PenEcho meldet REQUEST_ID_CONFLICT: die requestId wurde mit anderen Argumenten schon benutzt."""
 
 
+class PenEchoNichtSichtbar(PenEchoNichtErreichbar):
+    """PenEcho meldet ACTIVE_CANVAS_REQUIRED: draw_ink braucht das Board sichtbar (show)."""
+
+
 _SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
 # canvas-documents.js (PenEcho 1.4.2): Wiederherstellen einer nie gesicherten Flaeche.
 _VERLOREN_CODES = frozenset({"STORAGE_UNAVAILABLE", "DOCUMENT_NOT_FOUND"})
@@ -325,6 +329,8 @@ class PenEchoMcp:
                 raise PenEchoRevisionVeraltet(code)
             if code == "REQUEST_ID_CONFLICT":
                 raise PenEchoAnfrageSchonBekannt(code)
+            if code == "ACTIVE_CANVAS_REQUIRED":
+                raise PenEchoNichtSichtbar(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -504,25 +510,23 @@ class PenEchoMcp:
             del argumente["region"]
             argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
             ergebnis = self._werkzeug("penecho_edit_canvas", argumente)
+        # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
+        self._zeigen(session_id, self._struktur(ergebnis).get("objectId"))
         if mit_ergebnisfeld:
             self._ergebnisfeld_zeichnen(session_id, aufgabe_id, nummer)
-        self._zeigen(session_id, self._struktur(ergebnis).get("objectId"))
 
-    def _zeigen(self, session_id: str, objekt_id: object) -> None:
-        """Die Aufgabe ins Bild holen (show). Ab Aufgabe 2 liegt sie sonst unter dem Bildschirmrand.
+    def _zeigen(self, session_id: str, objekt_id: object = None) -> None:
+        """Board sichtbar machen und die Aufgabe ins Bild holen (show). Ab Aufgabe 2 laege sie sonst
+        unter dem Bildschirmrand; ein frisch angelegtes Board ist ohne show nicht aktiv.
 
         Zierde wie das Schild: nur verlorene Sitzung/Flaeche gehen an den Aufrufer. Eine neue requestId je
         Aufruf, sonst spielte PenEcho beim erneuten Oeffnen nur die alte Antwort ab und zeigte nichts.
         """
-        if not isinstance(objekt_id, str) or not objekt_id:
-            return
+        argumente: dict[str, Any] = {"sessionId": session_id, "requestId": f"zeigen-{uuid4().hex}", "action": "show"}
+        if isinstance(objekt_id, str) and objekt_id:
+            argumente["objectId"] = objekt_id[:MAX_SCHLUESSEL]
         try:
-            self._werkzeug("penecho_edit_canvas", {
-                "sessionId": session_id,
-                "requestId": f"zeigen-{uuid4().hex}",
-                "action": "show",
-                "objectId": objekt_id[:MAX_SCHLUESSEL],
-            })
+            self._werkzeug("penecho_edit_canvas", argumente)
         except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
             raise
         except PenEchoNichtErreichbar as fehler:
@@ -588,6 +592,11 @@ class PenEchoMcp:
                 if versuch == 1:
                     continue  # Flaeche hat sich geaendert: Revision neu lesen, einmal wiederholen
                 log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: Revision veraltet")
+            except PenEchoNichtSichtbar:
+                if versuch == 1:
+                    self._zeigen(session_id)  # Board inzwischen verdeckt: zeigen, einmal wiederholen
+                    continue
+                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: Board nicht sichtbar")
             except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
                 raise
             except PenEchoNichtErreichbar as fehler:
