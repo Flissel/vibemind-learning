@@ -49,7 +49,8 @@ _FELD_RAND_UNTEN = 100
 _RAHMEN_ABSTAND = 8
 _RAHMEN_STAERKE = 4
 _RAHMEN_FARBE = "#2b6cb0"
-URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.")
+# "Wird noch geprüft.": Learnings Zustand needs_review (Rubrik-Bewertung nicht angenommen).
+URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.", "Wird noch geprüft.")
 _SCHILD_HOEHE = 56  # Abstand der Schild-Oberkante ueber dem Feld
 
 

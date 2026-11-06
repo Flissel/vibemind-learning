@@ -234,15 +234,20 @@ def _kriterien_zeilen(feedback: dict[str, Any]) -> list[str]:
 
 # Learnings Urteil (`session_service._turn_feedback`: correct / partial / incorrect / needs_review)
 # auf die Karte; so sagt die Karte dasselbe wie der Turn nach „Passt“.
-_URTEIL_AUS_ZUSTAND = {"correct": "Richtig.", "partial": "Teilweise richtig.", "incorrect": "Noch nicht richtig."}
+_URTEIL_AUS_ZUSTAND = {
+    "correct": "Richtig.",
+    "partial": "Teilweise richtig.",
+    "incorrect": "Noch nicht richtig.",
+    "needs_review": "Wird noch geprüft.",  # Rubrik-Bewertung nicht angenommen: ein Mensch prueft
+}
 _ZUSTANDSNAME = re.compile(r"^[a-z_]{1,40}$")
 
 
 def urteil_aus(vorbewertung: dict[str, Any]) -> str:
     """Urteil der Rueckmeldungskarte, vollstaendig aus Learnings `feedback.state`; keine eigene Schwelle.
 
-    Nicht lesbar -> „Nicht lesbar.“. Fehlt der Zustand oder ist er hier unbekannt (auch
-    `needs_review`), „Noch nicht richtig.“; geloggt wird nur der Zustandsname.
+    Nicht lesbar -> „Nicht lesbar.“. Nur ein fehlender oder hier unbekannter Zustand ergibt
+    „Noch nicht richtig.“; geloggt wird dann nur der Zustandsname.
     """
     if vorbewertung.get("lesbar") is not True:
         return "Nicht lesbar."
@@ -263,7 +268,12 @@ def kartentext(vorbewertung: dict[str, Any]) -> str:
         return KARTE_NICHT_LESBAR
     feedback = vorbewertung.get("feedback")
     zeilen = _kriterien_zeilen(feedback) if isinstance(feedback, dict) else []
-    zeilen.append(KARTE_RICHTIG if urteil == "Richtig." else KARTE_NOCH_NICHT)
+    if urteil == "Richtig.":
+        zeilen.append(KARTE_RICHTIG)
+    elif urteil == "Wird noch geprüft.":
+        zeilen.append(WIRD_GEPRUEFT)  # derselbe Satz wie im Turn nach „Passt“
+    else:
+        zeilen.append(KARTE_NOCH_NICHT)
     return "\n\n".join(zeilen)
 
 

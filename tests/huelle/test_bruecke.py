@@ -14,7 +14,7 @@ from starlette.testclient import TestClient
 
 from spaces.learning.huelle.bruecke import (
     BEWERTUNG_WEG, FLAECHE_WEG, KEIN_KURS, KEINE_FLAECHENAUFGABE, KEINE_KORREKTUR, NICHT_ANGENOMMEN,
-    NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, Bruecke, urteil_aus,
+    NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, WIRD_GEPRUEFT, Bruecke, urteil_aus,
 )
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
@@ -1534,14 +1534,32 @@ def test_urteil_aus_score(vor: dict[str, Any], erwartet: str) -> None:
     ("correct", 0.2, "Richtig."),            # nur der Zustand zaehlt, nicht die Punkte
     ("partial", 1.0, "Teilweise richtig."),
     ("incorrect", 0.9, "Noch nicht richtig."),
+    ("needs_review", 1.0, "Wird noch geprüft."),
 ])
-def test_urteil_je_zustand_von_learning(zustand: str, score: float, erwartet: str) -> None:
-    vor = {"lesbar": True, "score": score, "accepted": True, "feedback": {"state": zustand, "score": score}}
-    assert urteil_aus(vor) == erwartet
+def test_urteil_je_zustand_von_learning(zustand: str, score: float, erwartet: str,
+                                        caplog: pytest.LogCaptureFixture) -> None:
+    vor = {"lesbar": True, "score": score, "accepted": zustand != "needs_review",
+           "feedback": {"state": zustand, "score": score}}
+    with caplog.at_level("WARNING", logger="spaces.learning.huelle.bruecke"):
+        assert urteil_aus(vor) == erwartet
+    assert erwartet in URTEILE
+    assert caplog.messages == []  # bekannte Zustaende sind kein Fehler
+
+
+def test_abgeben_offene_pruefung_karte_wird_noch_geprueft() -> None:
+    kriterium = {"criterion_id": "c1", "description": "Begruendet", "score": 0.4, "feedback": "Begruendung fehlt."}
+    vor = _vor(score=0.4, gelesen=None, art="rubric", criteria=[kriterium])
+    vor["accepted"], vor["feedback"]["state"] = False, "needs_review"
+    _, client, _, penecho = _flaechen_sitzung("open", vor=vor)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200 and r.json()["urteil"] == "Wird noch geprüft."
+    (karte,) = _karten(penecho)
+    assert karte[5] == "Wird noch geprüft."
+    assert "Begruendet: Begruendung fehlt." in karte[6] and WIRD_GEPRUEFT in karte[6]
+    assert "überarbeiten" not in karte[6]
 
 
 @pytest.mark.parametrize("feedback, geloggt", [
-    ({"state": "needs_review", "score": 1.0}, "needs_review"),
     ({"state": "neu_erfunden"}, "neu_erfunden"),
     ({"state": "Geheim -1,5 <x>"}, "str"),
     ({}, "NoneType"),

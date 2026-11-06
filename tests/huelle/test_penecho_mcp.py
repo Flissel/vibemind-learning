@@ -716,7 +716,14 @@ def test_ergebnis_schnappschuss_ist_png_des_feldes(zustand: Path) -> None:
         c.ergebnis_schnappschuss("sess-1", 21)
 
 
-@pytest.mark.parametrize("urteil", ["Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar."])
+def test_urteile_sind_genau_fuenf() -> None:
+    from spaces.learning.huelle.penecho_mcp import URTEILE
+
+    assert URTEILE == ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.", "Wird noch geprüft.")
+
+
+@pytest.mark.parametrize("urteil", ["Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.",
+                                    "Wird noch geprüft."])
 def test_rueckmeldung_zeigen_inhalt(zustand: Path, urteil: str) -> None:
     fake = Fake()
     _client(zustand, fake).rueckmeldung_zeigen("sess-1", "t1", 4, gelesen="B", urteil=urteil, text="Gut gemacht.")
