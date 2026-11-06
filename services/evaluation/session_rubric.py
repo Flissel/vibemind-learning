@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from spaces.learning.services.course_factory.model_gateway import (
     ModelGateway,
     ModelImageInput,
+    ModelInvocation,
     png_bild,
 )
 from spaces.learning.services.evaluation.penecho import _ImageBoundGateway
@@ -37,6 +38,26 @@ class _ReviewCapture:
 class _DeferredMastery:
     def apply(self, value: RubricDecision) -> None:
         del value
+
+
+HANDSCHRIFT_HINWEIS = (
+    "Die Antwort der lernenden Person ist die Handschrift bzw. Zeichnung im beigefügten Bild. "
+    "Gedruckter Aufgabentext im Bild gehört nicht zur Antwort."
+)
+
+
+class _HandschriftHinweisGateway:
+    """Tells the model that the attached picture is the learner's answer (image path only)."""
+
+    def __init__(self, gateway: ModelGateway) -> None:
+        self._gateway = gateway
+
+    async def generate(self, invocation: ModelInvocation, output_model):
+        response = invocation.input_payload.get("response")
+        if isinstance(response, dict):
+            payload = {**invocation.input_payload, "response": {**response, "hinweis": HANDSCHRIFT_HINWEIS}}
+            invocation = replace(invocation, input_payload=payload)
+        return await self._gateway.generate(invocation, output_model)
 
 
 class SessionRubricEvaluator:
@@ -75,7 +96,7 @@ class SessionRubricEvaluator:
         gateway = self._gateway_factory()
         try:
             return await RubricEvaluator(
-                gateway=gateway if bild is None else _ImageBoundGateway(gateway, bild),
+                gateway=gateway if bild is None else _HandschriftHinweisGateway(_ImageBoundGateway(gateway, bild)),
                 recorder=recorder,
                 review_queue=_ReviewCapture(),
                 mastery=_DeferredMastery(),

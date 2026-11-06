@@ -354,3 +354,32 @@ def test_session_rubric_nimmt_rohes_png_ueber_bild_png() -> None:
         SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(
             _request(), bild=png_bild(png), bild_png=png
         )
+
+
+def test_session_rubric_mit_bild_sagt_dem_modell_dass_das_bild_die_antwort_ist() -> None:
+    import hashlib
+
+    from spaces.learning.services.course_factory.model_gateway import ModelImageInput
+    from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
+
+    png = b"\x89PNG\r\n\x1a\nrubric-bild"
+    bild = ModelImageInput(
+        media_type="image/png", content=png, sha256=hashlib.sha256(png).hexdigest()
+    )
+    seen = []
+
+    class _Seen(_Gateway):
+        async def generate(self, invocation, output_model):
+            seen.append(invocation)
+            return await super().generate(invocation, output_model)
+
+    SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(_request(), bild=bild)
+    SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(_request())
+
+    mit, ohne = seen
+    assert mit.image_inputs == (bild,)
+    hinweis = mit.input_payload["response"]["hinweis"]
+    assert "Handschrift" in hinweis and "Bild" in hinweis
+    assert "hinweis" not in ohne.input_payload["response"]
+    assert ohne.input_payload["response"] == _request().response
+    assert {k: v for k, v in mit.input_payload["response"].items() if k != "hinweis"} == _request().response
