@@ -41,17 +41,22 @@ E = einstellung_lesen({
 })
 
 
+# Vorgabe `exam`: nur Pruefungsaufgaben schliessen die Sperre, die Sperr-Tests brauchen also eine.
 def turn(task_id: str | None = TASK_1, *, completed: int = 0, revision: int = 1, state: str = "active",
-         typ: str = "single_choice", feedback: dict[str, Any] | None = None, course_id: str = KURS) -> dict[str, Any]:
+         typ: str = "single_choice", feedback: dict[str, Any] | None = None, course_id: str = KURS,
+         mode: str | None = "exam") -> dict[str, Any]:
     task = None if task_id is None else {
         "id": task_id, "type": typ, "prompt": f"Frage {task_id[-1]}", "options": [], "difficulty": 0.5,
         "representation": "text", "source_refs": [], "presentation": {},
     }
-    return {
+    werte = {
         "session_id": SID, "course_id": course_id, "session_revision": revision, "state": state,
-        "mode": "training", "task": task, "progress": {"completed": completed, "total": 5},
+        "mode": mode, "task": task, "progress": {"completed": completed, "total": 5},
         "feedback": feedback,
     }
+    if mode is None:
+        del werte["mode"]
+    return werte
 
 
 class FakeLern:
@@ -183,6 +188,33 @@ def test_oeffnen_ohne_revision_409_kein_kurs() -> None:
 
 def test_oeffnen_sperrt_bei_offener_aufgabe() -> None:
     lern = FakeLern({"learning_course_overview": _ueberblick(turn()), "learning_task_next": {"session": turn()}})
+    sperre = Sperre()
+    sperre.frei()
+    _, sperre, _, _ = _offen(lern, sperre=sperre)
+    assert sperre.gesperrt() is True
+
+
+def test_oeffnen_uebungsaufgabe_laesst_ki_frei() -> None:
+    uebung = turn(mode="training")
+    lern = FakeLern({"learning_course_overview": _ueberblick(uebung), "learning_task_next": {"session": uebung}})
+    _, sperre, penecho, body = _offen(lern)
+    assert sperre.gesperrt() is False
+    assert body["turn"]["task"]["id"] == TASK_1
+    assert ("aufgabe_setzen", "pe-1", TASK_1, "Frage 1", 1) in penecho.aufrufe
+
+
+def test_oeffnen_uebung_loest_eine_alte_sperre() -> None:
+    uebung = turn(mode="training")
+    lern = FakeLern({"learning_course_overview": _ueberblick(uebung), "learning_task_next": {"session": uebung}})
+    sperre = Sperre()
+    sperre.offen(TASK_2)
+    _, sperre, _, _ = _offen(lern, sperre=sperre)
+    assert sperre.gesperrt() is False
+
+
+def test_oeffnen_ohne_modus_bleibt_gesperrt() -> None:
+    unklar = turn(mode=None)
+    lern = FakeLern({"learning_course_overview": _ueberblick(unklar), "learning_task_next": {"session": unklar}})
     sperre = Sperre()
     sperre.frei()
     _, sperre, _, _ = _offen(lern, sperre=sperre)
@@ -784,6 +816,26 @@ def test_neustart_unbekannter_kurs_mit_offener_aufgabe_sperrt() -> None:
     assert sperre.gesperrt() is True
     ueberblicke = [kw["course_id"] for t, kw in lern.aufrufe if t == "learning_course_overview"]
     assert ueberblicke == [KURS_B, KURS]
+
+
+def test_uebung_in_a_haelt_die_sperre_nicht_zu() -> None:
+    # A uebt (bekannte Sitzung), B ist eine Pruefung, deren Abgabe sie beendet: danach ist alles frei.
+    welt = ZweiKurse(turn(mode="training"), turn_b())
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen")
+    assert sperre.gesperrt() is True
+    welt.antwort_b = turn_b(None, completed=5, revision=6, state="completed")
+    r = client.post(f"/lernen/api/sitzungen/{SID_B}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert r.status_code == 200
+    assert sperre.gesperrt() is False
+
+
+def test_neustart_unbekannte_uebung_sperrt_nicht() -> None:
+    welt = ZweiKurse(turn(mode="training"), turn_b(None, state="completed"))
+    client, sperre, _ = bauen(welt.lern(), einstellung=E2)
+    assert client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen").status_code == 200
+    assert sperre.gesperrt() is False
 
 
 def test_neustart_ueberblick_weg_bleibt_gesperrt() -> None:

@@ -140,7 +140,11 @@ test("prozent: Kasten relativ zum Bild wie im Fork", () => {
 
 test("sperrHinweis: bei offener Aufgabe der feste Text, sonst nichts", () => {
   assert.equal(SPERR_HINWEIS, "Während der Aufgabe hilft „Erklär mir das“.");
+  assert.equal(sperrHinweis({ state: "active", mode: "exam", task: { id: "t" } }), SPERR_HINWEIS);
+  // Ohne Modus wie die Bruecke: zaehlt als Pruefung.
   assert.equal(sperrHinweis({ state: "active", task: { id: "t" } }), SPERR_HINWEIS);
+  // Beim Ueben ist die KI frei: kein Sperrhinweis.
+  assert.equal(sperrHinweis({ state: "active", mode: "training", task: { id: "t" } }), null);
   assert.equal(sperrHinweis({ state: "completed", task: null }), null);
   assert.equal(sperrHinweis(null), null);
 });

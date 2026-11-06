@@ -127,6 +127,14 @@ def _task(turn: dict[str, Any]) -> dict[str, Any] | None:
     return task
 
 
+def _sperrt(turn: dict[str, Any]) -> bool:
+    """Nur eine offene Pruefungsaufgabe schliesst die KI; beim Ueben hilft sie jederzeit (User-Wahl 06.11.).
+
+    Ohne lesbaren Modus zaehlt die Aufgabe als Pruefung.
+    """
+    return _task(turn) is not None and turn.get("mode") != "training"
+
+
 def _nummer(turn: dict[str, Any]) -> int:
     progress = turn.get("progress")
     completed = progress.get("completed") if isinstance(progress, dict) else None
@@ -398,7 +406,7 @@ class Bruecke:
         return True
 
     def _zeigen(self, sitzung: _Sitzung, turn: dict[str, Any]) -> tuple[int | None, bool]:
-        """Aufgabe auf die Flaeche setzen und die KI sperren; ohne Aufgabe die Sperre loesen."""
+        """Aufgabe auf die Flaeche setzen; eine Pruefungsaufgabe sperrt die KI, sonst wird die Sperre geloest."""
         task = _task(turn)
         if task is None:
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
@@ -408,7 +416,10 @@ class Bruecke:
             return None, False
         nummer = _nummer(turn)
         aufgabe_id = task["id"]
-        self._sperre.offen(aufgabe_id)
+        if _sperrt(turn):
+            self._sperre.offen(aufgabe_id)
+        else:
+            self._frei(sitzung)
         if sitzung.aufgabe_id == aufgabe_id and sitzung.nummer == nummer and sitzung.auf_flaeche:
             return nummer, True
         text = str(task.get("prompt") or "")
@@ -419,7 +430,7 @@ class Bruecke:
         return nummer, ok
 
     def _frei(self, sitzung: _Sitzung) -> None:
-        """Die Sperre ist global: nur loesen, wenn keine andere Sitzung eine offene Aufgabe hat.
+        """Die Sperre ist global: nur loesen, wenn keine andere Sitzung eine offene Pruefungsaufgabe hat.
 
         Andere bekannte Sitzungen liest die Bruecke bei Learning neu, statt der gemerkten Aufgabe zu
         trauen (sie kann anderswo, etwa im Fork, laengst abgegeben sein). Ist Learning weg, bleibt es
@@ -446,7 +457,7 @@ class Bruecke:
             if neu != andere.aufgabe_id or nummer != andere.nummer:
                 andere.auf_flaeche = False
             andere.aufgabe_id, andere.nummer = neu, nummer
-            if task is not None:
+            if task is not None and _sperrt(turn):
                 self._sperre.offen(task["id"])
                 return
         bekannt = {s.kurs.course_id for s in list(self._sitzungen.values())} | {sitzung.kurs.course_id}
@@ -467,8 +478,9 @@ class Bruecke:
             if task is not None:
                 if andere_sid is not None:
                     self._sitzungen.setdefault(andere_sid, _Sitzung(kurs, andere_sid, task["id"], _nummer(laufend)))
-                self._sperre.offen(task["id"])
-                return
+                if _sperrt(laufend):
+                    self._sperre.offen(task["id"])
+                    return
         self._sperre.frei()
 
     def _vormerken(self, sitzung: _Sitzung, turn: dict[str, Any]) -> int | None:

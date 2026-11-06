@@ -147,9 +147,9 @@ export function nach409(turn) {
 // ---- KI-Sperre ---------------------------------------------------------------------------------
 export const SPERR_HINWEIS = "Während der Aufgabe hilft „Erklär mir das“.";
 
-/** Der Hinweis zur KI-Sperre, solange eine Aufgabe offen ist; sonst null. */
+/** Der Hinweis zur KI-Sperre, solange eine Pruefungsaufgabe offen ist (beim Ueben ist die KI frei); sonst null. */
 export function sperrHinweis(turn) {
-  return turn && turn.state === "active" && turn.task ? SPERR_HINWEIS : null;
+  return turn && turn.state === "active" && turn.task && turn.mode !== "training" ? SPERR_HINWEIS : null;
 }
 
 // ---- Bilder (wie practiceModel.ts im Fork, Quelle ist die eigene Medienroute der Bruecke) -------

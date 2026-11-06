@@ -1,4 +1,7 @@
-"""KI-Sperre: solange eine Aufgabe offen (oder der Zustand unbekannt) ist, bleibt PenEcho-KI zu."""
+"""KI-Sperre: solange eine Pruefungsaufgabe offen (oder der Zustand unbekannt) ist, bleibt PenEcho-KI zu.
+
+Beim Ueben bleibt die KI frei; welche Aufgabe sperrt, entscheidet die Bruecke (`bruecke._sperrt`).
+"""
 
 from __future__ import annotations
 
