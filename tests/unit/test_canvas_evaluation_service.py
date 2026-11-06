@@ -273,3 +273,160 @@ def test_worker_api_accepts_authenticated_rubric_evaluation(monkeypatch) -> None
     assert response.status_code == 200
     assert response.json()["decision"]["accepted"] is True
     assert rubric.calls == 1
+
+
+_LESE_TASK = {
+    "id": "t1", "type": "single_choice", "prompt": "Welche?",
+    "options": [{"id": "a", "label": "Eins"}, {"id": "b", "label": "Zwei"}],
+    "presentation": {},
+}
+
+
+def _rubric_request() -> RubricEvaluationRequest:
+    return RubricEvaluationRequest(
+        evaluation_id=str(uuid4()), response_id=str(uuid4()),
+        response={"text": "OpenFang"}, expected_answer="Use OpenFang.",
+        rubric=[RubricCriterion(criterion_id="authority", description="Uses authority", points=1)],
+        source_refs=["source://authority/1"], model_version="worker-v1",
+        prompt_version="rubric-v1", source_version="course-r1",
+    )
+
+
+def test_worker_api_handschrift_lesen_braucht_schluessel(monkeypatch) -> None:
+    monkeypatch.setenv(evaluation_api.KEY_ENV, "k" * 32)
+    monkeypatch.setattr(
+        evaluation_api, "_services",
+        lambda: (_ for _ in ()).throw(AssertionError("service must not be called")),
+    )
+    response = TestClient(evaluation_api.app).post(
+        "/internal/handschrift/lesen",
+        json={"task": _LESE_TASK, "png_base64": base64.b64encode(PNG).decode()},
+    )
+    assert response.status_code == 403
+
+
+def test_worker_api_handschrift_lesen_liefert_gelesen_und_antwort(monkeypatch) -> None:
+    from spaces.learning.services.evaluation.handschrift import GelesenV1
+
+    seen = []
+
+    class _Leser:
+        def lesen(self, task, png):
+            seen.append((task, png))
+            return GelesenV1(lesbar=True, roh={"auswahl": ["B"]}, text="B"), {"choice_id": "b"}
+
+    monkeypatch.setenv(evaluation_api.KEY_ENV, "k" * 32)
+    monkeypatch.setattr(evaluation_api, "_services", lambda: SimpleNamespace(leser=_Leser()))
+    response = TestClient(evaluation_api.app).post(
+        "/internal/handschrift/lesen",
+        headers={evaluation_api.KEY_HEADER: "k" * 32},
+        json={"task": _LESE_TASK, "png_base64": base64.b64encode(PNG).decode()},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "gelesen": {"lesbar": True, "roh": {"auswahl": ["B"]}, "text": "B"},
+        "antwort": {"choice_id": "b"},
+    }
+    assert seen == [(_LESE_TASK, PNG)]
+
+
+def test_worker_api_handschrift_lesen_lehnt_ungueltiges_bild_ab(monkeypatch) -> None:
+    class _Leser:
+        def lesen(self, task, png):
+            raise AssertionError("must not be called")
+
+    monkeypatch.setenv(evaluation_api.KEY_ENV, "k" * 32)
+    monkeypatch.setattr(evaluation_api, "_services", lambda: SimpleNamespace(leser=_Leser()))
+    headers = {evaluation_api.KEY_HEADER: "k" * 32}
+    client = TestClient(evaluation_api.app)
+    bad_base64 = client.post("/internal/handschrift/lesen", headers=headers,
+                             json={"task": _LESE_TASK, "png_base64": "!!!notbase64!!!"})
+    too_big = client.post("/internal/handschrift/lesen", headers=headers,
+                          json={"task": _LESE_TASK, "png_base64": "A" * 6_700_001})
+    assert bad_base64.status_code == 422
+    assert too_big.status_code == 422
+
+
+def test_worker_api_handschrift_modellfehler_ist_bewertungsfehler(monkeypatch) -> None:
+    from spaces.learning.services.course_factory.model_gateway import GatewaySchemaError
+
+    class _Leser:
+        def lesen(self, task, png):
+            raise GatewaySchemaError("invalid json")
+
+    monkeypatch.setenv(evaluation_api.KEY_ENV, "k" * 32)
+    monkeypatch.setattr(evaluation_api, "_services", lambda: SimpleNamespace(leser=_Leser()))
+    response = TestClient(evaluation_api.app).post(
+        "/internal/handschrift/lesen",
+        headers={evaluation_api.KEY_HEADER: "k" * 32},
+        json={"task": _LESE_TASK, "png_base64": base64.b64encode(PNG).decode()},
+    )
+    assert response.status_code == 502
+
+
+def test_worker_api_rubrik_reicht_bild_durch(monkeypatch) -> None:
+    request = _rubric_request()
+    received = []
+
+    class _Rubric:
+        def evaluate(self, value, bild=None):
+            received.append((value, bild))
+            raise RuntimeError("stop")
+
+    monkeypatch.setenv(evaluation_api.KEY_ENV, "k" * 32)
+    monkeypatch.setattr(evaluation_api, "_services", lambda: SimpleNamespace(rubric=_Rubric()))
+    client = TestClient(evaluation_api.app, raise_server_exceptions=False)
+    headers = {evaluation_api.KEY_HEADER: "k" * 32}
+    client.post("/internal/rubric/evaluate", headers=headers, json={
+        **request.model_dump(mode="json"),
+        "bild_png_base64": base64.b64encode(PNG).decode(),
+    })
+    (value, bild), = received
+    assert value == request
+    assert bild.content == PNG and bild.media_type == "image/png"
+    bad = client.post("/internal/rubric/evaluate", headers=headers, json={
+        **request.model_dump(mode="json"), "bild_png_base64": base64.b64encode(b"nope").decode(),
+    })
+    assert bad.status_code == 422
+    assert len(received) == 1
+
+
+def test_client_lesen_und_rubrik_mit_bild() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen[request.url.path] = payload
+        if request.url.path == "/internal/handschrift/lesen":
+            return httpx.Response(200, json={
+                "gelesen": {"lesbar": True, "roh": {"auswahl": ["B"]}, "text": "B"},
+                "antwort": {"choice_id": "b"},
+            })
+        return httpx.Response(200, json={"decision": {
+            "evaluation_id": payload["evaluation_id"], "response_id": payload["response_id"],
+            "score": 1, "confidence": 0.9, "accepted": True,
+            "rationale_codes": ["rubric_accepted"],
+            "criterion_results": [{
+                "criterion_id": "authority", "awarded_points": 1,
+                "feedback": "Grounded.", "source_refs": ["source://authority/1"],
+            }],
+            "misconception_tags": [],
+            "evaluator_versions": {"model": "worker-v1", "prompt": "rubric-v1", "sources": "course-r1"},
+            "source_refs": ["source://authority/1"],
+            "evidence_ref": "openfang://completion/rubric-worker-1",
+        }})
+
+    client = CanvasEvaluationClient(
+        base_url="http://learning-worker:8092", service_key="k" * 32,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    gelesen, antwort = client.lesen(_LESE_TASK, PNG)
+    assert gelesen.lesbar is True and gelesen.roh == {"auswahl": ["B"]}
+    assert antwort == {"choice_id": "b"}
+    assert seen["/internal/handschrift/lesen"] == {
+        "task": _LESE_TASK, "png_base64": base64.b64encode(PNG).decode(),
+    }
+    client.evaluate(_rubric_request(), bild_png=PNG)
+    assert seen["/internal/rubric/evaluate"]["bild_png_base64"] == base64.b64encode(PNG).decode()
+    client.evaluate(_rubric_request())
+    assert "bild_png_base64" not in seen["/internal/rubric/evaluate"]

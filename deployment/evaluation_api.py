@@ -17,8 +17,13 @@ from spaces.learning.contracts.penecho import CanvasSubmissionV1, SourceReferenc
 from spaces.learning.mcp.tools.canvas import CanvasAdaptiveSubmissionService
 from spaces.learning.mcp.tools.tutor import TutorService
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
-from spaces.learning.services.course_factory.model_gateway import build_openfang_model_gateway
+from spaces.learning.services.course_factory.model_gateway import (
+    ModelGatewayError,
+    build_openfang_model_gateway,
+    png_bild,
+)
 from spaces.learning.services.db.session import create_learning_engine
+from spaces.learning.services.evaluation.handschrift import HandschriftLeser
 from spaces.learning.services.evaluation.schemas import RubricDecision, RubricEvaluationRequest
 from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
 from spaces.learning.services.lernsequenz.tutor import ask_explain, ask_tutor
@@ -51,6 +56,20 @@ class CanvasHintRequest(_StrictModel):
     drawing_png_base64: Annotated[str, Field(min_length=12, max_length=27_000_000)] | None = None
 
 
+# A PNG is at most 5 MB (model gateway); base64 makes that 4/3 of it. Checked before decoding.
+_MAX_PNG_BASE64 = 6_700_000
+
+
+class HandschriftLesenRequest(_StrictModel):
+    task: dict[str, object]
+    png_base64: Annotated[str, Field(min_length=12, max_length=_MAX_PNG_BASE64)]
+
+
+class RubricEvaluateRequest(RubricEvaluationRequest):
+    # The learner's handwritten result area, for open, case and canvas tasks.
+    bild_png_base64: Annotated[str, Field(min_length=12, max_length=_MAX_PNG_BASE64)] | None = None
+
+
 class SequenceTutorRequest(_StrictModel):
     question: Annotated[str, Field(min_length=1, max_length=2_000)]
     task: dict[str, object]
@@ -71,6 +90,7 @@ class _EvaluationServices:
     canvas: CanvasAdaptiveSubmissionService
     tutor: TutorService
     rubric: SessionRubricEvaluator
+    leser: HandschriftLeser
 
 
 @lru_cache(maxsize=1)
@@ -94,6 +114,7 @@ def _services() -> _EvaluationServices:
             gateway=gateway,
         ),
         rubric=SessionRubricEvaluator(build_openfang_model_gateway),
+        leser=HandschriftLeser(build_openfang_model_gateway),
     )
 
 
@@ -204,12 +225,44 @@ async def sequence_explain(
 
 @app.post("/internal/rubric/evaluate")
 def evaluate_rubric(
-    payload: RubricEvaluationRequest,
+    payload: RubricEvaluateRequest,
     key: Annotated[str, Header(alias=KEY_HEADER, max_length=512)] = "",
 ) -> dict[str, object]:
     _require_key(key)
-    decision: RubricDecision = _services().rubric.evaluate(payload)
+    request = RubricEvaluationRequest.model_validate(
+        payload.model_dump(exclude={"bild_png_base64"})
+    )
+    services = _services()
+    if payload.bild_png_base64 is None:
+        decision: RubricDecision = services.rubric.evaluate(request)
+    else:
+        bild = _bild(payload.bild_png_base64)
+        decision = services.rubric.evaluate(request, bild=bild)
     return {"decision": decision.model_dump(mode="json")}
+
+
+def _bild(png_base64: str):
+    try:
+        return png_bild(base64.b64decode(png_base64, validate=True))
+    except (binascii.Error, ValueError) as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid handwriting image") from error
+
+
+@app.post("/internal/handschrift/lesen")
+def handschrift_lesen(
+    payload: HandschriftLesenRequest,
+    key: Annotated[str, Header(alias=KEY_HEADER, max_length=512)] = "",
+) -> dict[str, object]:
+    """Reads the learner's handwriting; a model error is an evaluation error, never a reading."""
+    _require_key(key)
+    png = _bild(payload.png_base64).content
+    try:
+        gelesen, antwort = _services().leser.lesen(payload.task, png)
+    except ValueError as error:  # includes GatewayInputError
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    except ModelGatewayError as error:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "handwriting reading failed") from error
+    return {"gelesen": gelesen.model_dump(mode="json"), "antwort": antwort}
 
 
 @app.get("/internal/evaluations/{evaluation_id}")

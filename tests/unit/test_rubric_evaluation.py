@@ -310,3 +310,26 @@ async def test_accepted_rubric_decision_names_the_outcome(points, outcome) -> No
     decision = await evaluator.evaluate(_request())
 
     assert decision.rationale_codes == ["rubric_accepted", outcome]
+
+
+def test_session_rubric_mit_bild_reicht_bild_durch() -> None:
+    import hashlib
+
+    from spaces.learning.services.course_factory.model_gateway import ModelImageInput
+    from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
+
+    png = b"\x89PNG\r\n\x1a\nrubric-bild"
+    bild = ModelImageInput(
+        media_type="image/png", content=png, sha256=hashlib.sha256(png).hexdigest()
+    )
+    seen = []
+
+    class _Seen(_Gateway):
+        async def generate(self, invocation, output_model):
+            seen.append(invocation.image_inputs)
+            return await super().generate(invocation, output_model)
+
+    SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(_request(), bild=bild)
+    SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(_request())
+
+    assert seen == [(bild,), ()]

@@ -59,6 +59,7 @@ ROLE_CONTRACTS = {
         "sequence-explain-prompt-v1",
         "sequence-explain-v1",
     ),
+    "handschrift_leser": ("reading", "handschrift-lesen-v1", "handschrift-gelesen-v1"),
     "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
     "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"),
     "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v1", "werkstatt-pruefer-v1"),
@@ -175,6 +176,7 @@ _WERKSTATT_PRUEFER_MATHE = (
     "no source. Do not rewrite. Each issue: a short code and one German sentence."
 )
 ROLE_PROMPTS = {
+    "handschrift_leser": "Read what the learner handwrote on the image and report it as JSON; do not solve, check or correct the task. The input names the task type, the task text and the labels printed on the canvas (etiketten). Report only labels from etiketten, never option ids or option texts. Put the reading in roh by task type: single_choice and multiple_choice {\"auswahl\": [labels]}; ordering {\"reihenfolge\": [labels in the written order]}; matching {\"paare\": {left label: right label}}; numeric {\"wert\": the number exactly as written, as a string}; fill_in {\"text\": the text as written}. In text give a short German rendering of what you read (at most 200 characters, for example \"x = -1,5\" or \"B\"). If you are unsure, the writing is ambiguous, crossed out, empty or does not fit the task type, set lesbar to false and leave roh empty instead of guessing. Never invent a value that is not on the image.",
     "werkstatt_grobentwurf_mathe": _WERKSTATT_GROBENTWURF_MATHE,
     "werkstatt_aufgabe_mathe": _WERKSTATT_AUFGABE_MATHE,
     "werkstatt_pruefer_mathe": _WERKSTATT_PRUEFER_MATHE,
@@ -198,7 +200,9 @@ _MAX_REQUEST_BYTES = 500_000
 _MAX_RESPONSE_BYTES = 1_000_000
 _MAX_IMAGE_BYTES = 5_000_000
 _PROMPT_TRANSPORTS = ("system", "inline")
-_IMAGE_ROLES = frozenset({"rubric_evaluator", "learning_tutor", "sequence_explainer"})
+_IMAGE_ROLES = frozenset(
+    {"rubric_evaluator", "learning_tutor", "sequence_explainer", "handschrift_leser"}
+)
 # 30 s, then 60 s for 429/5xx answers.
 _RETRY_BASE_SECONDS = 30
 # A dropped connection usually means the watchdog restarted OpenFang; live the
@@ -245,6 +249,13 @@ class ModelImageInput:
             or hashlib.sha256(self.content).hexdigest() != self.sha256
         ):
             raise GatewayInputError("model image input failed integrity validation")
+
+
+def png_bild(png: bytes) -> ModelImageInput:
+    """The one place a raw PNG becomes a model image: signature, size cap, hash."""
+    return ModelImageInput(
+        media_type="image/png", content=png, sha256=hashlib.sha256(png).hexdigest()
+    )
 
 
 @dataclass(frozen=True)

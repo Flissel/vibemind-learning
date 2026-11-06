@@ -4,7 +4,11 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from spaces.learning.services.course_factory.model_gateway import ModelGateway
+from spaces.learning.services.course_factory.model_gateway import (
+    ModelGateway,
+    ModelImageInput,
+)
+from spaces.learning.services.evaluation.penecho import _ImageBoundGateway
 from spaces.learning.services.evaluation.review_queue import ReviewItem
 from spaces.learning.services.evaluation.rubric import RubricEvaluator
 from spaces.learning.services.evaluation.schemas import (
@@ -42,20 +46,25 @@ class SessionRubricEvaluator:
         # (asyncio.run), and a pooled HTTP client must not outlive its loop.
         self._gateway_factory = gateway_factory
 
-    def evaluate(self, request: RubricEvaluationRequest) -> RubricDecision:
+    def evaluate(
+        self, request: RubricEvaluationRequest, bild: ModelImageInput | None = None
+    ) -> RubricDecision:
         recorder = _DecisionRecorder()
-        decision = asyncio.run(self._evaluate(request, recorder))
+        decision = asyncio.run(self._evaluate(request, recorder, bild))
         if recorder.decision != decision:
             raise RuntimeError("rubric decision capture failed")
         return decision
 
     async def _evaluate(
-        self, request: RubricEvaluationRequest, recorder: _DecisionRecorder
+        self,
+        request: RubricEvaluationRequest,
+        recorder: _DecisionRecorder,
+        bild: ModelImageInput | None = None,
     ) -> RubricDecision:
         gateway = self._gateway_factory()
         try:
             return await RubricEvaluator(
-                gateway=gateway,
+                gateway=gateway if bild is None else _ImageBoundGateway(gateway, bild),
                 recorder=recorder,
                 review_queue=_ReviewCapture(),
                 mastery=_DeferredMastery(),

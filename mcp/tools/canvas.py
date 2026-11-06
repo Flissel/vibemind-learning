@@ -30,6 +30,7 @@ from spaces.learning.services.course_factory.repository import SessionFactory
 from spaces.learning.services.evaluation.penecho import (
     CanvasEvaluationRequest, SessionPenEchoEvaluator, canvas_locator,
 )
+from spaces.learning.services.evaluation.handschrift import GelesenV1
 from spaces.learning.services.evaluation.schemas import RubricDecision, RubricEvaluationRequest
 from spaces.learning.services.zeichnen.link import DrawingGrant
 from sqlalchemy import select
@@ -261,13 +262,28 @@ class CanvasEvaluationClient:
         )
         return TutorAnswer.model_validate(response["tutor"])
 
-    def evaluate(self, request: RubricEvaluationRequest) -> RubricDecision:
+    def evaluate(
+        self, request: RubricEvaluationRequest, bild_png: bytes | None = None
+    ) -> RubricDecision:
+        payload = request.model_dump(mode="json")
+        if bild_png is not None:
+            payload["bild_png_base64"] = base64.b64encode(bild_png).decode()
+        response = self._request("POST", "/internal/rubric/evaluate", json=payload)
+        return RubricDecision.model_validate(response["decision"])
+
+    def lesen(
+        self, task: dict[str, object], png: bytes
+    ) -> tuple[GelesenV1, dict[str, object] | None]:
         response = self._request(
             "POST",
-            "/internal/rubric/evaluate",
-            json=request.model_dump(mode="json"),
+            "/internal/handschrift/lesen",
+            json={"task": task, "png_base64": base64.b64encode(png).decode()},
         )
-        return RubricDecision.model_validate(response["decision"])
+        antwort = response.get("antwort")
+        return (
+            GelesenV1.model_validate(response["gelesen"]),
+            antwort if isinstance(antwort, dict) else None,
+        )
 
     def has_evaluation(self, evaluation_id: str) -> bool:
         response = self._request("GET", f"/internal/evaluations/{UUID(evaluation_id)}")
