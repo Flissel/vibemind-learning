@@ -95,3 +95,37 @@ def test_kein_png_wird_vor_dem_modell_abgelehnt() -> None:
 def test_text_ist_auf_200_zeichen_begrenzt() -> None:
     with pytest.raises(ValueError):
         GelesenV1(lesbar=True, roh={}, text="x" * 201)
+
+
+def test_einzelnes_etikett_als_text_ergibt_antwort() -> None:
+    (gelesen, antwort), _ = _lesen(GelesenV1(lesbar=True, roh={"auswahl": "B"}, text="B"))
+    assert gelesen.lesbar is True
+    assert antwort == {"choice_id": "b"}
+
+
+def test_matching_ende_zu_ende() -> None:
+    task = {
+        "id": "t2", "type": "matching", "prompt": "Ordnen Sie zu.", "options": [],
+        "presentation": {
+            "left": [{"id": "l1", "label": "Hund"}, {"id": "l2", "label": "Katze"}],
+            "right": [{"id": "r1", "label": "bellt"}, {"id": "r2", "label": "miaut"}],
+        },
+    }
+    (gelesen, antwort), gateway = _lesen(
+        GelesenV1(lesbar=True, roh={"paare": {"1": "A", "2": "B"}}, text="1-A, 2-B"), task
+    )
+    assert gelesen.lesbar is True
+    assert antwort == {"pairs": {"l1": "r1", "l2": "r2"}}
+    etiketten = gateway.invocations[0].input_payload["etiketten"]
+    assert etiketten["links"] == {"1": "Hund", "2": "Katze"}
+    assert etiketten["rechts"] == {"A": "bellt", "B": "miaut"}
+
+
+def test_numeric_ende_zu_ende_mit_unicode_minus() -> None:
+    task = {"id": "t3", "type": "numeric", "prompt": "Loesen Sie x + 2 = 0,5.", "options": [],
+            "presentation": {}}
+    (gelesen, antwort), _ = _lesen(
+        GelesenV1(lesbar=True, roh={"wert": "−1,5"}, text="x = −1,5"), task
+    )
+    assert gelesen.lesbar is True
+    assert antwort == {"value": -1.5}

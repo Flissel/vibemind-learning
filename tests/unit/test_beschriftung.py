@@ -107,3 +107,13 @@ def test_fill_in_text() -> None:
 def test_unbekannter_aufgabentyp_ergibt_none() -> None:
     b = beschriften("penecho_canvas", {}, [])
     assert antwort_aus_etiketten("penecho_canvas", b, {"text": "x"}) is None
+
+
+def test_einzelnes_etikett_als_text_gilt_als_einelementige_liste() -> None:
+    b = beschriften("single_choice", {}, [{"id": "a"}, {"id": "b"}])
+    assert antwort_aus_etiketten("single_choice", b, {"auswahl": "B"}) == {"choice_id": "b"}
+    assert antwort_aus_etiketten("single_choice", b, {"auswahl": " b "}) == {"choice_id": "b"}
+    assert antwort_aus_etiketten("single_choice", b, {"auswahl": ""}) is None
+    assert antwort_aus_etiketten("single_choice", b, {"auswahl": "E"}) is None
+    m = beschriften("multiple_choice", {}, _optionen(3))
+    assert antwort_aus_etiketten("multiple_choice", m, {"auswahl": "C"}) == {"choice_ids": ["o2"]}

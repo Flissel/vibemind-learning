@@ -60,7 +60,9 @@ def beschriften(
 
 
 def _etiketten(value: object) -> list[str] | None:
-    """A non-empty list of distinct labels, else None."""
+    """A non-empty list of distinct labels, else None. A lone label counts as a list of one."""
+    if isinstance(value, str):
+        value = [value]
     if not isinstance(value, list) or not value:
         return None
     labels = [item.strip().upper() if isinstance(item, str) else None for item in value]

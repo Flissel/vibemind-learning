@@ -19,6 +19,7 @@ from spaces.learning.mcp.tools.tutor import TutorService
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
 from spaces.learning.services.course_factory.model_gateway import (
     ModelGatewayError,
+    ModelImageInput,
     build_openfang_model_gateway,
     png_bild,
 )
@@ -241,7 +242,7 @@ def evaluate_rubric(
     return {"decision": decision.model_dump(mode="json")}
 
 
-def _bild(png_base64: str):
+def _bild(png_base64: str) -> ModelImageInput:
     try:
         return png_bild(base64.b64decode(png_base64, validate=True))
     except (binascii.Error, ValueError) as error:

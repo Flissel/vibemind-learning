@@ -23,7 +23,7 @@ from spaces.learning.services.course_factory.model_gateway import (
 PROMPT_VERSION = "handschrift-lesen-v1"
 
 _FORMAT = {
-    "single_choice": {"auswahl": "one label"},
+    "single_choice": {"auswahl": "list with exactly one label"},
     "multiple_choice": {"auswahl": "list of labels"},
     "ordering": {"reihenfolge": "labels in the written order"},
     "matching": {"paare": "left label -> right label"},
