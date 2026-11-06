@@ -2,12 +2,15 @@
 
 Die Etiketten auf dem Board kommen aus `contracts.beschriftung.beschriften`, demselben Aufruf,
 der die handschriftlich gelesenen Etiketten wieder auf Antwort-IDs abbildet. So steht auf dem
-Board genau das, was der Leser zurueckuebersetzt. Formeln stehen im Klartext
-(`services.werkstatt.formeltext.klartext`); in keinem Text bleibt ein "$".
+Board genau das, was der Leser zurueckuebersetzt. Formeln bleiben als LaTeX (`$...$`, `$$...$$`)
+im Text, PenEcho setzt sie (mixed-text.js / note-card.js). Nur wenn ein Text unausgewogene oder
+preisartige "$" enthaelt, wandelt `formel_oder_klartext` ihn in Klartext
+(`services.werkstatt.formeltext.klartext`), dann bleibt kein "$" darin.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 from ..contracts.beschriftung import beschriften
@@ -16,15 +19,35 @@ from ..services.werkstatt.formeltext import klartext
 # Typen, bei denen die Lernenden ein Etikett (A, B, ... / 1, 2, ...) schreiben.
 _MIT_ETIKETTEN = frozenset({"single_choice", "multiple_choice", "ordering", "matching"})
 
+# Formeln, die PenEcho sicher setzt: `$$..$$` (nur Board) und `$..$` ohne Leerraum an den Raendern,
+# nicht gefolgt von einer Ziffer (note-card.js verlangt das, sonst waere "5 $ und 6 $" Mathe).
+_ANZEIGE = re.compile(r"\$\$[^$]+?\$\$")
+_INLINE = re.compile(r"\$(?!\s)[^$\n]*?[^$\s\\]\$(?!\d)|\$[^$\s\\]\$(?!\d)")
+
+
+def formel_oder_klartext(text: object, *, anzeige: bool = True) -> str:
+    """Zeile mit LaTeX-Formeln oder, wenn ein "$" nicht sicher Mathe ist, deren Klartext.
+
+    LaTeX bleibt nur, wenn mindestens eine Formel da ist, kein `\\$` vorkommt und nach dem
+    Entfernen aller Formeln kein "$" uebrig bleibt. `anzeige=False` (Notizkarten setzen `$$`
+    nur am Zeilenanfang) lehnt `$$` ab. Sonst gilt `klartext` ohne "$"; Leerraum wird gekuerzt.
+    """
+    roh = str(text)
+    rest = roh if not anzeige else _ANZEIGE.sub("", roh)
+    ohne = _INLINE.sub("", rest)
+    if "$" in roh and "\\$" not in roh and "$" not in ohne and (anzeige or "$$" not in roh):
+        return " ".join(roh.split())
+    return klartext(roh).replace("$", "").strip()
+
 
 def _klar(text: object) -> str:
     """Klartext einer Zeile, ohne Zeilenumbruch und ohne "$"."""
     return klartext(str(text)).replace("$", "").strip()
 
 
-def _zeilen(text: object) -> list[str]:
-    """Mehrzeiligen Text zeilenweise in Klartext wandeln; die Umbrueche bleiben erhalten."""
-    return [_klar(zeile) for zeile in str(text).replace("\r\n", "\n").split("\n")]
+def _zeilen(text: object, *, anzeige: bool = True) -> list[str]:
+    """Mehrzeiligen Text zeilenweise bearbeiten (Formeln bleiben, sonst Klartext); Umbrueche bleiben."""
+    return [formel_oder_klartext(zeile, anzeige=anzeige) for zeile in str(text).replace("\r\n", "\n").split("\n")]
 
 
 def _eintraege(wert: object) -> list[Mapping[str, object]]:
@@ -33,7 +56,7 @@ def _eintraege(wert: object) -> list[Mapping[str, object]]:
 
 def _beschriftet(etiketten: Mapping[str, str], eintraege: Sequence[Mapping[str, object]]) -> list[str]:
     texte = {e.get("id"): e.get("label") for e in eintraege}
-    return [f"{etikett}) {_klar(texte.get(eintrag_id) or '')}".rstrip() for etikett, eintrag_id in etiketten.items()]
+    return [f"{etikett}) {formel_oder_klartext(texte.get(eintrag_id) or '')}".rstrip() for etikett, eintrag_id in etiketten.items()]
 
 
 def aufgabentext(task: Mapping[str, object], nummer: int) -> str:
@@ -62,7 +85,7 @@ def rueckmeldungstext(gelesen: str | None, urteil: str, text: str) -> str:
     if gelesen and _klar(gelesen):
         teile.append(f"Gelesen: {_klar(gelesen)}")
     teile.append(_klar(urteil))
-    absaetze = "\n".join(_zeilen(text)).strip()
+    absaetze = "\n".join(_zeilen(text, anzeige=False)).strip()
     if absaetze:
         teile.append(absaetze)
     return "\n\n".join(t for t in teile if t)

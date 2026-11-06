@@ -1513,7 +1513,7 @@ def test_zeigen_setzt_ergebnisfeld_nur_fuer_deterministische_typen(typ: str, mit
     else:
         # aufgabe_setzen stellt selbst „Aufgabe {nummer}: “ voran; zusammen ergibt das genau aufgabentext.
         assert "Aufgabe 1: " + text == aufgabentext(offen["task"], 1)
-        assert not text.startswith("Aufgabe") and "$" not in text
+        assert not text.startswith("Aufgabe") and "$x^2$" in text  # Formel bleibt als LaTeX
     if typ in ("single_choice", "multiple_choice", "ordering"):
         assert "A) Eins" in text.splitlines() and "B) Zwei" in text.splitlines()
 

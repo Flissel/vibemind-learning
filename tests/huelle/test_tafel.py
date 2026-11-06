@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from spaces.learning.contracts.beschriftung import beschriften
-from spaces.learning.huelle.tafel import aufgabentext, rueckmeldungstext
+from spaces.learning.huelle.tafel import aufgabentext, formel_oder_klartext, rueckmeldungstext
 
 
 def _aufgabe(typ: str, **mehr: object) -> dict[str, object]:
@@ -50,13 +50,53 @@ def test_ohne_etikettenblock(typ: str) -> None:
     assert aufgabentext(aufgabe, 7) == "Aufgabe 7: Was gilt?"
 
 
-def test_kein_dollar_und_formeln_im_klartext() -> None:
+def test_formel_bleibt_als_latex_erhalten() -> None:
     aufgabe = _aufgabe(
-        "single_choice", prompt="Wie gross ist $\\frac{1}{2}+x^2$? Preis \\$5 und $$a \\le b$$",
+        "single_choice", prompt="Wie gross ist $\\frac{1}{2}+x^2$ und $$a \\le b$$?",
         options=[{"id": "a", "label": "$x \\to \\infty$"}])
-    text = aufgabentext(aufgabe, 1)
-    assert "$" not in text
-    assert "1/2" in text and "x²" in text and "≤" in text and "A) x → ∞" in text
+    zeilen = aufgabentext(aufgabe, 1).splitlines()
+    assert zeilen[0] == "Aufgabe 1: Wie gross ist $\\frac{1}{2}+x^2$ und $$a \\le b$$?"
+    assert "A) $x \\to \\infty$" in zeilen
+
+
+def test_zuordnen_und_reihenfolge_behalten_formeln() -> None:
+    praes = {"left": [{"id": "l1", "label": "$x^2$"}], "right": [{"id": "r1", "label": "$\\sqrt{x}$"}]}
+    zeilen = aufgabentext(_aufgabe("matching", presentation=praes), 1).splitlines()
+    assert "1) $x^2$" in zeilen and "A) $\\sqrt{x}$" in zeilen
+    zeilen = aufgabentext(_aufgabe("ordering", options=[{"id": "x", "label": "$a_1$"}]), 1).splitlines()
+    assert "A) $a_1$" in zeilen
+
+
+@pytest.mark.parametrize("roh", ["Preis 5 $ und 6 $", "Nur ein $ hier", "Kosten \\$5 und $x^2$", "$x$5 und $", "$ x $"])
+def test_unausgewogenes_oder_preis_dollar_faellt_auf_klartext_zurueck(roh: str) -> None:
+    aufgabe = _aufgabe("single_choice", prompt=roh, options=[{"id": "a", "label": roh}])
+    zeilen = aufgabentext(aufgabe, 1).splitlines()
+    assert "$" not in "\n".join(zeilen)
+    assert zeilen[0].startswith("Aufgabe 1: ") and any(z.startswith("A) ") for z in zeilen)
+
+
+def test_fallback_wandelt_formel_im_selben_text_in_klartext() -> None:
+    text = aufgabentext(_aufgabe("open", prompt="Preis \\$5, $\\frac{1}{2}+x^2$ und $$a \\le b$$"), 1)
+    assert text == "Aufgabe 1: Preis 5, 1/2+x² und a ≤ b"
+
+
+@pytest.mark.parametrize("roh,erwartet,anzeige", [
+    ("Es gilt $x^2$.", "Es gilt $x^2$.", True),
+    ("$$a \\le b$$", "$$a \\le b$$", True),
+    ("$$a \\le b$$", "a ≤ b", False),
+    ("Ohne  Formel\t hier", "Ohne Formel hier", True),
+    ("Preis 5 $ und 6 $", "Preis 5 und 6", True),
+    ("$x$ und \\$5", "x und 5", True),
+])
+def test_formel_oder_klartext(roh: str, erwartet: str, anzeige: bool) -> None:
+    assert formel_oder_klartext(roh, anzeige=anzeige) == erwartet
+
+
+def test_beschriftung_unveraendert_bei_formeln() -> None:
+    optionen = [{"id": f"o{i}", "label": f"$x_{i}$"} for i in range(5)]
+    zeilen = aufgabentext(_aufgabe("multiple_choice", options=optionen), 1).splitlines()
+    for etikett, oid in beschriften("multiple_choice", {}, optionen).optionen.items():
+        assert f"{etikett}) $x_{oid[1:]}$" in zeilen
 
 
 def test_mehrzeiliger_prompt_bleibt_mehrzeilig() -> None:
@@ -76,5 +116,11 @@ def test_rueckmeldungstext_mit_und_ohne_gelesen() -> None:
     assert rueckmeldungstext("  ", "Richtig.", "") == "Richtig."
 
 
-def test_rueckmeldungstext_ohne_dollar() -> None:
-    assert "$" not in rueckmeldungstext("$x^2$", "Richtig.", "Es gilt $\\frac{1}{2}$ und \\$5.")
+def test_rueckmeldungstext_formel_in_rueckmeldung_gelesen_bleibt_klartext() -> None:
+    text = rueckmeldungstext("$x^2$", "Richtig.", "Es gilt $\\frac{1}{2}$.")
+    assert text == "Gelesen: x²\n\nRichtig.\n\nEs gilt $\\frac{1}{2}$."
+
+
+def test_rueckmeldungstext_fallback_und_kein_display() -> None:
+    assert "$" not in rueckmeldungstext(None, "Richtig.", "Es gilt $\\frac{1}{2}$ und \\$5.")
+    assert rueckmeldungstext(None, "Richtig.", "So: $$a \\le b$$ ok") == "Richtig.\n\nSo: a ≤ b ok"
