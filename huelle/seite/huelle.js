@@ -1,7 +1,10 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  antwortAus, begriffeZusammenfassen, begriffTitel, bildAus, fensterAus, flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, meldungFuer, nach409, prozent, sperrHinweis, SPERR_HINWEIS,
+  antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
+  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, KNOPF_TEXT, korrekturAntwort, leistenZustand, meldungFuer,
+  nach409, speicherHinweis, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
+import { flaecheSpeichern } from "./flaeche.js";
 
 const API = "/lernen/api";
 
@@ -18,10 +21,14 @@ const TEXT = {
   keinHinweisPruefung: "Im Prüfungsmodus gibt es keine Hinweise.",
   allgemein: "Das hat gerade nicht geklappt. Bitte versuchen Sie es noch einmal.",
   bewertungFehler: "Die Bewertung konnte nicht gespeichert werden. Bitte versuchen Sie es noch einmal.",
-  zahl: "Bitte eine Zahl eingeben, z. B. -1,5",
   rechnen: "Sie können auf der Fläche rechnen oder zeichnen.",
+  aufFlaeche: "Lösen Sie die Aufgabe auf der Fläche. „Abgeben“ finden Sie unten rechts.",
+  ueberarbeiten: "Ändern Sie Ihre Antwort auf der Fläche und drücken Sie dann erneut „Abgeben“.",
+  nichtZugeordnet: "Das konnte ich nicht zuordnen.",
+  gespeichert: "Gespeichert.",
+  wirdBewertet: "Wird bewertet …",
 };
-const SHELLS = { powershell: "Windows PowerShell", cmd: "Windows CMD", unix: "macOS / Linux" };
+const BEWERTET_NACH_MS = 4000; // Passt wartet höchstens so lange auf das Speichern, dann geht es weiter
 const SMILEYS = [
   { wert: "schlecht", zeichen: "😕" },
   { wert: "mittel", zeichen: "🙂" },
@@ -42,6 +49,9 @@ const z = {
   rueckmeldung: null, // {state, text}
   tutor: [], // [{frage, teile}] Gespraech mit dem Tutor zur aktuellen Aufgabe
   busy: false,
+  ergebnis: null, // Vorbewertung der offenen Flächenaufgabe: {vorbewertung_id, urteil, lesbar}
+  korrektur: null, // null | "falsch" | "eintippen": Eingabefeld der Leiste offen
+  hinweis: null, // ruhiger Hinweis in der Leiste
 };
 
 // ---- Hilfen -------------------------------------------------------------------------------
@@ -134,175 +144,38 @@ function hilfeZeigen(inhalt) {
   $("hilfe").replaceChildren(box);
 }
 
-function option(typ, name, wert, label, math) {
-  const eingabe = el("input", { type: typ, name, value: wert });
-  return el("label", { class: "option" }, eingabe, setzeText(el("span"), label, math));
-}
-
-function reihenfolgeFeld(items, math) {
-  let ordnung = items.map((i) => i.id);
-  const label = Object.fromEntries(items.map((i) => [i.id, i.label]));
-  const liste = el("div", { role: "list", "aria-label": "Reihenfolge" });
-  const zeichnen = () => {
-    liste.replaceChildren(...ordnung.map((id, index) => {
-      const bewege = (d) => {
-        const ziel = index + d;
-        if (ziel < 0 || ziel >= ordnung.length) return;
-        [ordnung[index], ordnung[ziel]] = [ordnung[ziel], ordnung[index]];
-        zeichnen();
-      };
-      return el("div", { class: "reihe", role: "listitem" },
-        el("span", { text: `${index + 1}.` }),
-        setzeText(el("span", { class: "titel" }), label[id], math),
-        el("button", { type: "button", "aria-label": "Nach oben", disabled: index === 0, text: "↑", onclick: () => bewege(-1) }),
-        el("button", { type: "button", "aria-label": "Nach unten", disabled: index === ordnung.length - 1, text: "↓", onclick: () => bewege(1) }),
-      );
-    }));
-  };
-  zeichnen();
-  return { knoten: liste, lesen: () => ({ reihenfolge: [...ordnung] }) };
-}
-
-function bildKnoten(bild, alt) {
-  return el("img", { class: "bild", src: bild.src, alt, width: bild.width, height: bild.height, loading: "lazy" });
-}
-
-/** Lueckentext im gezeichneten Fenster (wie TaskRenderer.tsx); laedt das Bild nicht, kommt die Textzeile. */
-function fensterFeld(task, fenster) {
-  const shell = typeof task.presentation?.shell === "string" ? task.presentation.shell : undefined;
-  const name = shell ? SHELLS[shell] ?? shell : "Terminal";
-  const eingabe = el("input", {
-    type: "text", name: "antwort", class: "fenster-luecke", "aria-label": `Lücke im Fenster von ${name}`,
-    autocomplete: "off", spellcheck: "false", required: true,
-  });
-  Object.assign(eingabe.style, prozent(fenster.rect, fenster));
-  const spiegel = fenster.more.map((r) => {
-    const s = el("span", { class: "fenster-spiegel", "aria-hidden": "true" });
-    Object.assign(s.style, prozent(r, fenster));
-    return s;
-  });
-  eingabe.addEventListener("input", () => { for (const s of spiegel) s.textContent = eingabe.value; });
-  const bild = el("img", { src: fenster.src, alt: `Fenster von ${name}`, width: fenster.width, height: fenster.height });
-  const rahmen = el("div", { class: "fenster" }, bild, eingabe, ...spiegel);
-  rahmen.style.aspectRatio = `${fenster.width} / ${fenster.height}`;
-  const knoten = el("div", {}, rahmen);
-  const feld = { knoten, lesen: () => ({ text: eingabe.value }) };
-  bild.addEventListener("error", () => {
-    const ersatz = textLuecke(task);
-    knoten.replaceChildren(ersatz.knoten);
-    feld.lesen = ersatz.lesen;
-  });
-  return feld;
-}
-
-function luckenFeld(task) {
-  const fenster = fensterAus(task.presentation);
-  return fenster ? fensterFeld(task, fenster) : textLuecke(task);
-}
-
-function textLuecke(task) {
-  const vorlage = typeof task.presentation?.template === "string" ? task.presentation.template : "{{wert}}";
-  const shell = typeof task.presentation?.shell === "string" ? task.presentation.shell : undefined;
-  const teile = vorlage.split(/(\{\{\w+\}\})/).filter(Boolean);
-  const eingabe = el("input", { type: "text", name: "antwort", "aria-label": "Lücke", autocomplete: "off", spellcheck: "false", required: true });
-  let gesetzt = false;
-  const pre = el("div", { class: "luecke" });
-  for (const teil of teile) {
-    if (/^\{\{\w+\}\}$/.test(teil)) {
-      if (gesetzt) pre.append(el("span", { text: "…" }));
-      else { gesetzt = true; pre.append(eingabe); }
-    } else {
-      pre.append(setzeText(el("span"), teil, task.presentation?.math === true));
-    }
-  }
-  const knoten = el("div", {}, shell ? el("p", { class: "hinweistext", text: `Für ${SHELLS[shell] ?? shell}` }) : null, pre);
-  return { knoten, lesen: () => ({ text: eingabe.value }) };
-}
-
-function zuordnungFeld(task, math) {
-  const links = Array.isArray(task.presentation?.left) ? task.presentation.left : [];
-  const rechts = Array.isArray(task.presentation?.right) ? task.presentation.right : [];
-  const knoten = el("div");
-  // Die rechte Seite als sichtbare Liste (Bilder wie „Graph 1“, gesetzte Formeln); ein <option> zeigt nur Text.
-  if (math || rechts.some((r) => bildAus(r))) {
-    knoten.append(el("ul", { class: "auswahlliste", "aria-label": "Zur Auswahl" }, ...rechts.map((r) => {
-      const bild = bildAus(r);
-      return el("li", {}, setzeText(el("span", { class: "titel" }), r.label, math), bild ? bildKnoten(bild, r.label) : null);
-    })));
-  }
-  const selects = new Map();
-  for (const eintrag of links) {
-    const auswahl = el("select", { name: `paar-${eintrag.id}`, required: true },
-      el("option", { value: "", disabled: true, selected: true, text: "– bitte wählen –" }),
-      ...rechts.map((r) => el("option", { value: r.id, text: math ? klartext(r.label) : r.label })));
-    selects.set(eintrag.id, auswahl);
-    const bild = bildAus(eintrag);
-    knoten.append(el("label", { class: "zeile" }, setzeText(el("span", { class: "titel" }), eintrag.label, math),
-      bild ? bildKnoten(bild, eintrag.label) : null, auswahl));
-  }
-  return { knoten, lesen: () => ({ paare: Object.fromEntries([...selects].map(([id, s]) => [id, s.value])) }) };
-}
-
-/** Das Eingabefeld je Typ; `lesen()` liefert die Eingabe fuer `antwortAus`. */
-function feldFuer(task) {
-  const math = task.presentation?.math === true;
-  switch (task.type) {
-    case "single_choice":
-    case "multiple_choice": {
-      const mehrere = task.type === "multiple_choice";
-      const satz = el("fieldset", {}, el("legend", { class: "nur-leser", text: "Antwort auswählen" }),
-        ...(task.options ?? []).map((o) => option(mehrere ? "checkbox" : "radio", "antwort", o.id, o.label, math)));
-      if (!mehrere) for (const r of satz.querySelectorAll("input")) r.required = true;
-      return { knoten: satz, lesen: () => ({ auswahl: [...satz.querySelectorAll("input:checked")].map((i) => i.value) }) };
-    }
-    case "ordering":
-      return reihenfolgeFeld(task.options ?? [], math);
-    case "matching":
-      return zuordnungFeld(task, math);
-    case "numeric": {
-      const einheit = typeof task.presentation?.unit === "string" ? task.presentation.unit : "";
-      const eingabe = el("input", { type: "text", name: "antwort", "aria-label": "Zahl eingeben", inputmode: "text", autocomplete: "off", spellcheck: "false", required: true });
-      const fehler = el("p", { class: "fehler", role: "alert", hidden: true, text: TEXT.zahl });
-      eingabe.addEventListener("input", () => { fehler.hidden = true; });
-      const knoten = el("div", {}, el("label", { class: "zeile" }, einheit ? setzeText(el("span", { class: "titel" }), einheit, math) : null, eingabe), fehler);
-      return { knoten, lesen: () => ({ text: eingabe.value }), ungueltig: () => { fehler.hidden = false; } };
-    }
-    case "fill_in":
-      return luckenFeld(task);
-    case "penecho_canvas":
-      return { knoten: el("p", { class: "hinweistext", text: TEXT.rechnen }), lesen: () => ({}) };
-    default: { // open_response, case, code
-      const feld = el("textarea", { name: "antwort", required: true, placeholder: task.type === "code" ? "Lösung und Begründung eingeben" : "Antwort ausarbeiten" });
-      const knoten = el("div", {}, feld, el("p", { class: "hinweistext", text: TEXT.rechnen }));
-      return { knoten, lesen: () => ({ text: feld.value }) };
-    }
-  }
-}
-
 function karteAufgabe() {
   const t = z.turn;
   const task = t.task;
   const math = task.presentation?.math === true;
   z.aufgabeMathe = math;
-  const feld = feldFuer(task);
-  const zeichnung = task.type === "penecho_canvas";
-  const abgeben = el("button", { type: "submit", class: "haupt-knopf", id: "abgeben", text: zeichnung ? "Zeichnung abgeben" : "Abgeben" });
   const sperrText = sperrHinweis(t);
+  const hilfeKnoepfe = [
+    el("button", { type: "button", id: "erklaeren", text: "Erklär mir das", onclick: () => erklaeren() }),
+    el("button", { type: "button", id: "hinweis", text: "Hinweis", onclick: hinweis }),
+  ];
+  const sperre = sperrText ? el("p", { class: "hinweistext sperrhinweis", text: sperrText }) : null;
+  if (task.type !== "code") {
+    // Alles andere wird auf der Fläche beantwortet; Abgeben, Passt usw. sitzen in der Leiste über der Fläche.
+    $("karte").replaceChildren(
+      setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
+      el("p", { class: "hinweistext", text: TEXT.aufFlaeche }),
+      sperre,
+      el("div", { class: "knoepfe" }, ...hilfeKnoepfe));
+    return;
+  }
+  const feld = el("textarea", { name: "antwort", required: true, placeholder: "Lösung und Begründung eingeben" });
   const form = el("form", { novalidate: false },
     setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
-    feld.knoten,
-    sperrText ? el("p", { class: "hinweistext sperrhinweis", text: sperrText }) : null,
+    el("div", {}, feld, el("p", { class: "hinweistext", text: TEXT.rechnen })),
+    sperre,
     el("div", { class: "knoepfe" },
-      abgeben,
-      el("button", { type: "button", id: "erklaeren", text: "Erklär mir das", onclick: () => erklaeren() }),
-      el("button", { type: "button", id: "hinweis", text: "Hinweis", onclick: hinweis })),
-  );
+      el("button", { type: "submit", class: "haupt-knopf", id: "abgeben", text: "Abgeben" }),
+      ...hilfeKnoepfe));
   form.addEventListener("submit", (ereignis) => {
     ereignis.preventDefault();
-    if (zeichnung) { void zeichnungAbgeben(); return; }
-    const antwort = antwortAus(task, feld.lesen());
-    if (!antwort) { feld.ungueltig?.(); return; }
-    void antwortSenden(antwort);
+    const antwort = antwortAus(task, { text: feld.value });
+    if (antwort) void antwortSenden(antwort);
   });
   $("karte").replaceChildren(form);
 }
@@ -447,6 +320,7 @@ function zeigen() {
   const t = z.turn;
   fortschrittZeigen();
   hilfeLeeren();
+  leisteZeigen();
   if (!t) { karteLeer(); return; }
   if (z.phase === "rueckmeldung") { karteRueckmeldung(); return; }
   if (t.task && t.state === "active") { z.phase = "aufgabe"; karteAufgabe(); return; }
@@ -466,6 +340,7 @@ function fehlerBehandeln(r) {
   if (r.status === 409 && r.daten?.turn) {
     z.rueckmeldung = null;
     z.phase = "aufgabe";
+    neueAufgabe();
     const abgeschlossen = r.daten.turn.progress?.completed;
     turnUebernehmen(r.daten.turn, typeof abgeschlossen === "number" ? abgeschlossen + 1 : null);
     // Flaeche und Sperre fuer eine neue Aufgabe setzt nur `weiter`.
@@ -478,6 +353,14 @@ function fehlerBehandeln(r) {
 function sperren(an) {
   z.busy = an;
   for (const b of $("karte").querySelectorAll("button")) b.disabled = an;
+  leisteZeigen();
+}
+
+// Eine andere Aufgabe (oder ein neuer Kurs): Ergebnis, Eingabefeld und Hinweis der Leiste gehören zur alten.
+function neueAufgabe(hinweisBehalten = false) {
+  z.ergebnis = null;
+  z.korrektur = null;
+  if (!hinweisBehalten) z.hinweis = null;
 }
 
 // `aktion` "neu" startet nach dem Kursende bewusst einen frischen Durchlauf.
@@ -488,6 +371,7 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
   z.turn = null;
   z.phase = "aufgabe";
   z.rueckmeldung = null;
+  neueAufgabe();
   zeigen();
   begriffeZeigen([]);
   $("notizen-box").hidden = true;
@@ -507,15 +391,6 @@ async function antwortSenden(antwort) {
   sperren(true);
   banner("");
   const r = await api("POST", `/sitzungen/${t.session_id}/antwort`, { revision: t.session_revision, answer: antwort });
-  if (!r.ok) { sperren(false); fehlerBehandeln(r); return; }
-  rueckmeldungZeigen(r.daten);
-}
-
-async function zeichnungAbgeben() {
-  const t = z.turn;
-  sperren(true);
-  banner("");
-  const r = await api("POST", `/sitzungen/${t.session_id}/zeichnung`, { revision: t.session_revision });
   if (!r.ok) { sperren(false); fehlerBehandeln(r); return; }
   rueckmeldungZeigen(r.daten);
 }
@@ -544,8 +419,10 @@ async function weiter(bannerBehalten = false) {
   if (!r.ok) { sperren(false); fehlerBehandeln(r); return; }
   z.rueckmeldung = null;
   z.phase = "aufgabe";
+  neueAufgabe(bannerBehalten === true);
   turnUebernehmen(r.daten.turn, r.daten.nummer);
   zeigen();
+  void speichern(false);
 }
 
 // "Erklär mir das" beginnt ein Gespraech, Rueckfragen fuehren es fort (die Bruecke gibt den Verlauf mit).
@@ -591,10 +468,145 @@ async function hinweis() {
   if (typeof r.daten.hinweis === "string" && r.daten.hinweis) { z.tutor = []; hilfeZeigen([r.daten.hinweis]); }
 }
 
+// ---- Leiste über der Fläche: Speichern, Abgeben, Passt, Überarbeiten, Falsch gelesen ---------------------
+const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
+
+/** Speichern über PenEchos eigenen Knopf (R7); schweigt bei Erfolg, sonst nur ein ruhiger Hinweis in der Leiste. */
+async function speichern(manuell) {
+  const r = await speichernMitWiederholung(() => flaecheSpeichern($("rahmen")));
+  const text = speicherHinweis(r, manuell);
+  if (text) {
+    z.hinweis = text;
+  } else if (manuell && r.ok) {
+    z.hinweis = TEXT.gespeichert;
+    setTimeout(() => { if (z.hinweis === TEXT.gespeichert) { z.hinweis = null; leisteZeigen(); } }, 3000);
+  }
+  leisteZeigen();
+  return r;
+}
+
+function leisteZeigen() {
+  const leiste = $("flaechenleiste");
+  const t = z.turn;
+  const zustand = z.phase === "aufgabe" && t?.state === "active"
+    ? leistenZustand(t.task, z.ergebnis)
+    : { sichtbar: false, knoepfe: [] };
+  leiste.hidden = !zustand.sichtbar;
+  if (!zustand.sichtbar) return;
+  const aktion = {
+    speichern: () => void speichern(true),
+    abgeben: () => void abgeben(),
+    passt: () => void passt(),
+    ueberarbeiten: () => ueberarbeiten(),
+    falsch: () => korrekturOeffnen("falsch"),
+    eintippen: () => korrekturOeffnen("eintippen"),
+  };
+  $("leisten-knoepfe").replaceChildren(...zustand.knoepfe.map((id) => el("button", {
+    type: "button", id: `leiste-${id}`, class: id === "abgeben" ? "haupt-knopf" : "",
+    disabled: z.busy, text: KNOPF_TEXT[id], onclick: aktion[id],
+  })));
+  const text = z.busy ? TEXT.wirdBewertet : (z.hinweis ?? ergebnisHinweis(z.ergebnis));
+  $("leisten-hinweis").textContent = text ?? "";
+  $("leisten-hinweis").hidden = !text;
+  const offen = z.korrektur !== null && z.ergebnis !== null && zustand.knoepfe.includes(z.korrektur === "falsch" ? "falsch" : "eintippen");
+  $("korrektur").hidden = !offen;
+  if (offen) $("korrektur-text").textContent = eingabeHinweis(t.task.type) ?? "";
+  $("neu-bewerten").disabled = z.busy;
+}
+
+function korrekturOeffnen(art) {
+  z.korrektur = art;
+  z.hinweis = null;
+  $("korrektur-feld").value = "";
+  leisteZeigen();
+  $("korrektur-feld").focus();
+}
+
+function ueberarbeiten() {
+  z.ergebnis = null;
+  z.korrektur = null;
+  z.hinweis = TEXT.ueberarbeiten;
+  leisteZeigen();
+}
+
+// Eine Fehlerantwort der Leiste: ruhiger Hinweis; bei veralteter Karte der aktuelle Stand aus `turn`.
+function leistenFehler(r) {
+  const f = fehlerText(r);
+  if (f.veraltet) {
+    neueAufgabe(true);
+    z.rueckmeldung = null;
+    z.phase = "aufgabe";
+    const abgeschlossen = r.daten.turn.progress?.completed;
+    turnUebernehmen(r.daten.turn, typeof abgeschlossen === "number" ? abgeschlossen + 1 : null);
+    z.hinweis = f.text;
+    if (nach409(r.daten.turn) === "weiter") void weiter(true);
+    else zeigen();
+    return;
+  }
+  z.hinweis = f.text;
+  leisteZeigen();
+}
+
+// Antwort von abgeben/korrektur: Vorbewertung merken, Knöpfe nach Urteil, danach speichern.
+function ergebnisUebernehmen(r) {
+  sperren(false);
+  if (!r.ok) { leistenFehler(r); return; }
+  if (r.daten.turn) z.turn = r.daten.turn;
+  z.ergebnis = ergebnisAus(r.daten);
+  z.korrektur = null;
+  z.hinweis = null;
+  leisteZeigen();
+  void speichern(false);
+}
+
+async function abgeben() {
+  const t = z.turn;
+  if (!t || z.busy) return;
+  z.hinweis = null;
+  banner("");
+  sperren(true);
+  ergebnisUebernehmen(await api("POST", `/sitzungen/${t.session_id}/abgeben`, { revision: t.session_revision }));
+}
+
+async function korrekturSenden() {
+  const t = z.turn;
+  const ergebnis = z.ergebnis;
+  if (!t || !ergebnis || z.busy) return;
+  const antwort = korrekturAntwort(t.task, $("korrektur-feld").value);
+  if (!antwort) {
+    z.hinweis = `${TEXT.nichtZugeordnet} ${eingabeHinweis(t.task.type) ?? ""}`.trim();
+    leisteZeigen();
+    return;
+  }
+  z.hinweis = null;
+  sperren(true);
+  ergebnisUebernehmen(await api("POST", `/sitzungen/${t.session_id}/korrektur`,
+    { revision: t.session_revision, vorbewertung_id: ergebnis.vorbewertung_id, answer: antwort }));
+}
+
+async function passt() {
+  const t = z.turn;
+  const ergebnis = z.ergebnis;
+  if (!t || !ergebnis || z.busy) return;
+  z.hinweis = null;
+  banner("");
+  sperren(true);
+  const r = await api("POST", `/sitzungen/${t.session_id}/passt`, { revision: t.session_revision, vorbewertung_id: ergebnis.vorbewertung_id });
+  if (!r.ok) { sperren(false); leistenFehler(r); return; }
+  neueAufgabe();
+  turnUebernehmen(r.daten.turn, r.daten.nummer ?? null);
+  if (Array.isArray(r.daten.begriffe)) begriffeZeigen(r.daten.begriffe);
+  // Erst die fertige Aufgabe sichern, bevor `weiter` das Board umstellt; höchstens kurz warten.
+  await Promise.race([speichern(false), pause(BEWERTET_NACH_MS)]);
+  await weiter();
+  void notizenLaden();
+}
+
 // ---- Start --------------------------------------------------------------------------------------------
 async function start() {
   layoutSetzen(speicher("lesen", "huelle-layout"));
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
+  $("korrektur").addEventListener("submit", (ereignis) => { ereignis.preventDefault(); void korrekturSenden(); });
   $("layout-a").addEventListener("click", () => layoutSetzen("a"));
   $("layout-c").addEventListener("click", () => layoutSetzen("c"));
   const r = await api("GET", "/kurse");

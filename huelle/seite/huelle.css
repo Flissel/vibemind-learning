@@ -28,8 +28,28 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .haupt { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: 320px minmax(0, 1fr); }
 .layout-c .haupt { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .leiste { min-width: 0; overflow-y: auto; padding: .75rem; background: #fff; border-right: 1px solid #c9c6bc; overflow-wrap: anywhere; }
-.flaeche { min-width: 0; min-height: 0; background: #fff; }
+.flaeche { position: relative; min-width: 0; min-height: 0; background: #fff; }
 .flaeche iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+
+/* Leiste unten rechts über der Fläche: nur die Leiste selbst fängt Zeigerereignisse, der Rest gehört dem Stift. */
+.flaechenleiste {
+  position: absolute; right: .5rem; bottom: .5rem; z-index: 2; max-width: calc(100% - 1rem);
+  display: flex; flex-direction: column; align-items: flex-end; gap: .35rem; pointer-events: none;
+}
+.flaechenleiste > * { pointer-events: auto; }
+.leisten-knoepfe { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
+.leisten-knoepfe button, .korrektur button {
+  min-height: 2.5rem; padding: 0 .9rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+}
+.leisten-knoepfe button.haupt-knopf { background: #17191c; color: #fff; }
+.leisten-hinweis, .korrektur {
+  margin: 0; max-width: 22rem; padding: .4rem .6rem; border: 1px solid #c9c6bc; border-radius: .5rem;
+  background: #fff; font-size: .9rem; box-shadow: 0 1px 4px rgba(0, 0, 0, .25); overflow-wrap: anywhere;
+}
+.korrektur-text { display: block; margin: 0 0 .3rem; color: #55524a; }
+.korrektur-zeile { display: flex; flex-wrap: wrap; gap: .35rem; }
+.korrektur-zeile input { flex: 1 1 8rem; min-width: 0; min-height: 2.5rem; padding: 0 .5rem; border: 1px solid #c9c6bc; border-radius: .5rem; }
 
 .karte h1, .karte h2, .block h2 { margin: 0 0 .5rem; font-size: 1.05rem; line-height: 1.4; }
 .karte .aufgabe { margin: 0 0 .75rem; font-weight: 600; }
@@ -102,6 +122,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   body { height: auto; min-height: 100%; overflow-y: auto; }
   .haupt, .layout-c .haupt { display: flex; flex-direction: column; }
   .leiste { overflow: visible; border-right: 0; border-bottom: 1px solid #c9c6bc; }
-  .flaeche { height: 70vh; flex: 0 0 70vh; }
+  .flaeche { height: 70vh; flex: 0 0 70vh; overflow: hidden; }
+  .flaechenleiste { left: .5rem; align-items: flex-end; }
+  .leisten-hinweis, .korrektur { max-width: 100%; }
   .kurswahl select { max-width: 100%; }
 }

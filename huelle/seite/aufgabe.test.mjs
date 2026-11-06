@@ -195,3 +195,171 @@ test("flaechenHinweis: nur bei flaeche false und offener Aufgabe", () => {
   assert.equal(flaechenHinweis({ flaeche: false }), false);
   assert.equal(flaechenHinweis(null), false);
 });
+
+// ---- Flaeche zuerst: Etiketten, Korrektur, Leiste ---------------------------------------------------
+import { readFileSync } from "node:fs";
+import {
+  eingabeHinweis, ergebnisAus, ergebnisHinweis, etiketten, fehlerText, korrekturAntwort, KNOPF_TEXT,
+  leistenZustand, speicherHinweis, speichernMitWiederholung,
+} from "./aufgabe.js";
+
+const FIXTURE = JSON.parse(readFileSync(new URL("../../tests/huelle/etiketten_fixture.json", import.meta.url), "utf8"));
+
+test("etiketten: gleiche Etiketten wie contracts/beschriftung.py (gemeinsame Fixture)", () => {
+  for (const f of FIXTURE.etiketten) assert.deepEqual(etiketten(f.task), f.erwartet, f.name);
+});
+
+test("korrekturAntwort: gleiche Antworten wie antwort_aus_etiketten (gemeinsame Fixture)", () => {
+  for (const f of FIXTURE.antworten) assert.deepEqual(korrekturAntwort(f.task, f.text), f.antwort, f.name);
+});
+
+test("korrekturAntwort: Brief-Faelle", () => {
+  const drei = { type: "single_choice", options: [{ id: "x" }, { id: "y" }, { id: "z" }] };
+  assert.deepEqual(korrekturAntwort({ type: "numeric" }, "−1,5"), { value: -1.5 });
+  assert.equal(korrekturAntwort({ type: "numeric" }, ""), null);
+  assert.deepEqual(korrekturAntwort(drei, "b"), { choice_id: "y" });
+  assert.equal(korrekturAntwort(drei, "E"), null);
+  assert.equal(korrekturAntwort(null, "A"), null);
+});
+
+test("korrekturAntwort: Trenner, Pfeile und doppelte linke Seite", () => {
+  const m = { type: "matching", presentation: { left: [{ id: "l1" }, { id: "l2" }], right: [{ id: "r1" }, { id: "r2" }] } };
+  assert.deepEqual(korrekturAntwort(m, "1=B; 2: a"), { pairs: { l1: "r2", l2: "r1" } });
+  assert.equal(korrekturAntwort(m, "1-A, 1-B"), null);
+  assert.equal(korrekturAntwort(m, "1 A"), null);
+  const o = { type: "ordering", options: [{ id: "i1" }, { id: "i2" }] };
+  assert.deepEqual(korrekturAntwort(o, "b a"), { order: ["i2", "i1"] });
+});
+
+test("korrekturAntwort: mehr als 26 Eintraege -> null (wie der ValueError der Bruecke)", () => {
+  const options = Array.from({ length: 27 }, (_, i) => ({ id: `o${i}` }));
+  assert.equal(korrekturAntwort({ type: "single_choice", options }, "A"), null);
+  assert.throws(() => etiketten({ type: "single_choice", options }));
+});
+
+test("eingabeHinweis: je Typ ein Beispiel", () => {
+  assert.equal(eingabeHinweis("multiple_choice"), "Buchstaben eingeben, z. B. A, C");
+  assert.equal(eingabeHinweis("single_choice"), "Einen Buchstaben eingeben, z. B. B");
+  assert.equal(eingabeHinweis("ordering"), "Reihenfolge eingeben, z. B. C, A, B");
+  assert.equal(eingabeHinweis("matching"), "Paare eingeben, z. B. 1-B, 2-A");
+  assert.equal(eingabeHinweis("numeric"), "Zahl eingeben, z. B. -1,5");
+  assert.equal(eingabeHinweis("fill_in"), "Text eingeben");
+  assert.equal(eingabeHinweis("code"), null);
+});
+
+const ERG = (urteil, lesbar = urteil !== "Nicht lesbar.") => ({ vorbewertung_id: "v1", urteil, lesbar });
+
+test("leistenZustand: ohne Ergebnis Speichern und Abgeben, bei code keine Leiste", () => {
+  assert.deepEqual(leistenZustand({ type: "numeric" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
+  assert.deepEqual(leistenZustand({ type: "open_response" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
+  assert.deepEqual(leistenZustand({ type: "code" }, null), { sichtbar: false, knoepfe: [] });
+  assert.deepEqual(leistenZustand(null, null), { sichtbar: false, knoepfe: [] });
+  assert.deepEqual(leistenZustand({ type: "unbekannt" }, null), { sichtbar: false, knoepfe: [] });
+});
+
+test("leistenZustand: lesbares Urteil -> Passt, Ueberarbeiten, Falsch gelesen (nur deterministisch)", () => {
+  for (const urteil of ["Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Wird noch geprüft."]) {
+    assert.deepEqual(leistenZustand({ type: "numeric" }, ERG(urteil)),
+      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "falsch", "speichern", "abgeben"] }, urteil);
+    assert.deepEqual(leistenZustand({ type: "case" }, ERG(urteil)),
+      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "speichern", "abgeben"] }, urteil);
+  }
+});
+
+test("leistenZustand: nicht lesbar -> Selbst eintippen statt Passt", () => {
+  assert.deepEqual(leistenZustand({ type: "matching" }, ERG("Nicht lesbar.")),
+    { sichtbar: true, knoepfe: ["ueberarbeiten", "eintippen", "speichern", "abgeben"] });
+  // das lesbar-Flag allein reicht ebenfalls
+  assert.deepEqual(leistenZustand({ type: "numeric" }, { vorbewertung_id: "v", urteil: "Richtig.", lesbar: false }).knoepfe,
+    ["ueberarbeiten", "eintippen", "speichern", "abgeben"]);
+  // Rubrik-Typ: nichts zum Eintippen
+  assert.deepEqual(leistenZustand({ type: "open_response" }, ERG("Nicht lesbar.")).knoepfe,
+    ["ueberarbeiten", "speichern", "abgeben"]);
+});
+
+test("KNOPF_TEXT: feste Beschriftungen", () => {
+  assert.deepEqual(KNOPF_TEXT, {
+    speichern: "Speichern", abgeben: "Abgeben", passt: "Passt", ueberarbeiten: "Überarbeiten",
+    falsch: "Falsch gelesen", eintippen: "Selbst eintippen", neuBewerten: "Neu bewerten",
+  });
+});
+
+test("ergebnisAus: Antwort der Bruecke -> Ergebnis, sonst null", () => {
+  assert.deepEqual(ergebnisAus({ urteil: "Richtig.", vorbewertung: { id: "v9", lesbar: true } }),
+    { vorbewertung_id: "v9", urteil: "Richtig.", lesbar: true });
+  assert.equal(ergebnisAus({ urteil: "Nicht lesbar.", vorbewertung: { id: "v9", lesbar: false } }).lesbar, false);
+  assert.equal(ergebnisAus({ urteil: "Richtig." }), null);
+  assert.equal(ergebnisAus({ vorbewertung: { id: "v" } }), null);
+  assert.equal(ergebnisAus(null), null);
+});
+
+test("ergebnisHinweis: nur bei nicht lesbar, mit Neuschreiben, Selbst eintippen und Wiederholungs-Warnung", () => {
+  const t = ergebnisHinweis(ERG("Nicht lesbar."));
+  assert.match(t, /Abgeben/);
+  assert.match(t, /Selbst eintippen/);
+  assert.match(t, /unverändert/i);
+  assert.equal(ergebnisHinweis(ERG("Richtig.")), null);
+  assert.equal(ergebnisHinweis(null), null);
+});
+
+test("speichernMitWiederholung: ok ohne Wiederholung", async () => {
+  let n = 0;
+  const r = await speichernMitWiederholung(async () => { n += 1; return { ok: true, grund: null }; });
+  assert.deepEqual(r, { ok: true, art: "ok" });
+  assert.equal(n, 1);
+});
+
+test("speichernMitWiederholung: bei edited genau eine Wiederholung", async () => {
+  for (const grund of ["edited", "PenEcho hat nicht gespeichert (ungespeicherte Änderungen)"]) {
+    const antworten = [{ ok: false, grund }, { ok: true, grund: null }];
+    let n = 0;
+    const r = await speichernMitWiederholung(async () => antworten[n++]);
+    assert.deepEqual(r, { ok: true, art: "ok" });
+    assert.equal(n, 2);
+  }
+  let m = 0;
+  const r2 = await speichernMitWiederholung(async () => { m += 1; return { ok: false, grund: "edited" }; });
+  assert.deepEqual(r2, { ok: false, art: "fehler" });
+  assert.equal(m, 2);
+});
+
+test("speichernMitWiederholung: leere Flaeche und andere Fehler ohne Wiederholung, wirft nie", async () => {
+  let n = 0;
+  const leer = await speichernMitWiederholung(async () => { n += 1; return { ok: false, grund: "PenEcho hat nicht gespeichert (leere Fläche oder Fehler)" }; });
+  assert.deepEqual(leer, { ok: false, art: "leer" });
+  const keine = await speichernMitWiederholung(async () => { n += 1; return { ok: false, grund: "keine Antwort" }; });
+  assert.deepEqual(keine, { ok: false, art: "fehler" });
+  assert.equal(n, 2);
+  const wirft = await speichernMitWiederholung(async () => { throw new Error("x"); });
+  assert.deepEqual(wirft, { ok: false, art: "fehler" });
+});
+
+test("speicherHinweis: ruhige Hinweise, nichts bei Erfolg", () => {
+  assert.equal(speicherHinweis({ ok: true, art: "ok" }, true), null);
+  assert.equal(speicherHinweis({ ok: false, art: "leer" }, true), "Auf der Fläche gibt es noch nichts zu speichern.");
+  assert.equal(speicherHinweis({ ok: false, art: "fehler" }, true), "Nicht gespeichert – bitte „Speichern“ drücken.");
+  assert.equal(speicherHinweis({ ok: false, art: "fehler" }, false), "Nicht gespeichert – bitte „Speichern“ drücken.");
+  assert.equal(speicherHinweis({ ok: false, art: "leer" }, false), null);
+});
+
+test("fehlerText: 409 veraltet, 503 wiederholen, sonst feste Meldung oder allgemein", () => {
+  const veraltet = fehlerText({ status: 409, daten: { turn: { state: "active" }, meldung: "x" } });
+  assert.equal(veraltet.veraltet, true);
+  assert.match(veraltet.text, /veraltet/);
+  const bw = "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab.";
+  assert.deepEqual(fehlerText({ status: 503, daten: { meldung: bw } }), { text: bw, veraltet: false });
+  assert.deepEqual(fehlerText({ status: 503, daten: { meldung: "Die Fläche ist gerade nicht erreichbar." } }),
+    { text: "Die Fläche ist gerade nicht erreichbar.", veraltet: false });
+  assert.equal(fehlerText({ status: 0, daten: {} }).text, ALLGEMEIN);
+  assert.equal(fehlerText({ status: 409, daten: {} }).veraltet, false);
+});
+
+test("FESTE_MELDUNGEN kennt die neuen Meldungen der Bruecke", () => {
+  for (const m of [
+    "Diese Aufgabe beantworten Sie in der Seitenleiste.",
+    "Bei dieser Aufgabe gibt es nichts Gelesenes zu korrigieren.",
+    "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab.",
+    "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vorbewertung zu.",
+    "Diese Rückmeldung lässt sich nicht bestätigen. Bitte überarbeiten Sie Ihr Ergebnis oder tippen Sie es selbst ein.",
+  ]) assert.ok(FESTE_MELDUNGEN.has(m), m);
+});

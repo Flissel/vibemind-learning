@@ -1,0 +1,42 @@
+{
+  "etiketten": [
+    {
+      "name": "single_choice drei Optionen",
+      "task": {"type": "single_choice", "presentation": {}, "options": [{"id": "o1", "label": "x"}, {"id": "o2", "label": "y"}, {"id": "o3", "label": "z"}]},
+      "erwartet": {"optionen": {"A": "o1", "B": "o2", "C": "o3"}, "links": {}, "rechts": {}}
+    },
+    {
+      "name": "matching links Zahlen rechts Buchstaben",
+      "task": {"type": "matching", "presentation": {"left": [{"id": "l1", "label": "a"}, {"id": "l2", "label": "b"}], "right": [{"id": "r1", "label": "c"}, {"id": "r2", "label": "d"}, {"id": "r3", "label": "e"}]}, "options": []},
+      "erwartet": {"optionen": {}, "links": {"1": "l1", "2": "l2"}, "rechts": {"A": "r1", "B": "r2", "C": "r3"}}
+    },
+    {
+      "name": "ordering Positionen",
+      "task": {"type": "ordering", "presentation": {}, "options": [{"id": "i1", "label": "a"}, {"id": "i2", "label": "b"}, {"id": "i3", "label": "c"}]},
+      "erwartet": {"optionen": {"A": "i1", "B": "i2", "C": "i3"}, "links": {}, "rechts": {}}
+    },
+    {
+      "name": "numeric ohne Etiketten",
+      "task": {"type": "numeric", "presentation": {}, "options": []},
+      "erwartet": {"optionen": {}, "links": {}, "rechts": {}}
+    }
+  ],
+  "antworten": [
+    {"name": "numeric Unicode-Minus und Komma", "task": {"type": "numeric", "presentation": {}, "options": []}, "text": "−1,5", "roh": {"wert": "−1,5"}, "antwort": {"value": -1.5}},
+    {"name": "numeric Tausenderpunkt", "task": {"type": "numeric", "presentation": {}, "options": []}, "text": "1.234,5", "roh": {"wert": "1.234,5"}, "antwort": {"value": 1234.5}},
+    {"name": "numeric leer", "task": {"type": "numeric", "presentation": {}, "options": []}, "text": "", "roh": {"wert": ""}, "antwort": null},
+    {"name": "numeric Unsinn", "task": {"type": "numeric", "presentation": {}, "options": []}, "text": "abc", "roh": {"wert": "abc"}, "antwort": null},
+    {"name": "numeric ohne Exponent", "task": {"type": "numeric", "presentation": {}, "options": []}, "text": "1e3", "roh": {"wert": "1e3"}, "antwort": null},
+    {"name": "single_choice klein geschrieben", "task": {"type": "single_choice", "presentation": {}, "options": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}, "text": "b", "roh": {"auswahl": "b"}, "antwort": {"choice_id": "o2"}},
+    {"name": "single_choice unbekanntes Etikett", "task": {"type": "single_choice", "presentation": {}, "options": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}, "text": "E", "roh": {"auswahl": "E"}, "antwort": null},
+    {"name": "single_choice zwei Etiketten", "task": {"type": "single_choice", "presentation": {}, "options": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}, "text": "A, B", "roh": {"auswahl": ["A", "B"]}, "antwort": null},
+    {"name": "multiple_choice A, C", "task": {"type": "multiple_choice", "presentation": {}, "options": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}, "text": "A, C", "roh": {"auswahl": ["A", "C"]}, "antwort": {"choice_ids": ["o1", "o3"]}},
+    {"name": "multiple_choice doppeltes Etikett", "task": {"type": "multiple_choice", "presentation": {}, "options": [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]}, "text": "A, A", "roh": {"auswahl": ["A", "A"]}, "antwort": null},
+    {"name": "ordering C, A, B", "task": {"type": "ordering", "presentation": {}, "options": [{"id": "i1"}, {"id": "i2"}, {"id": "i3"}]}, "text": "C, A, B", "roh": {"reihenfolge": ["C", "A", "B"]}, "antwort": {"order": ["i3", "i1", "i2"]}},
+    {"name": "matching 1-B, 2-A", "task": {"type": "matching", "presentation": {"left": [{"id": "l1"}, {"id": "l2"}], "right": [{"id": "r1"}, {"id": "r2"}, {"id": "r3"}]}, "options": []}, "text": "1-B, 2-A", "roh": {"paare": {"1": "B", "2": "A"}}, "antwort": {"pairs": {"l1": "r2", "l2": "r1"}}},
+    {"name": "matching unbekannte rechte Seite", "task": {"type": "matching", "presentation": {"left": [{"id": "l1"}, {"id": "l2"}], "right": [{"id": "r1"}, {"id": "r2"}, {"id": "r3"}]}, "options": []}, "text": "1-Z", "roh": {"paare": {"1": "Z"}}, "antwort": null},
+    {"name": "fill_in getrimmt", "task": {"type": "fill_in", "presentation": {}, "options": []}, "text": "  Hallo ", "roh": {"text": "  Hallo "}, "antwort": {"text": "Hallo"}},
+    {"name": "fill_in leer", "task": {"type": "fill_in", "presentation": {}, "options": []}, "text": "   ", "roh": {"text": "   "}, "antwort": null},
+    {"name": "code ist keine Korrektur", "task": {"type": "code", "presentation": {}, "options": []}, "text": "x = 1", "roh": {"text": "x = 1"}, "antwort": null}
+  ]
+}

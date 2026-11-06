@@ -117,3 +117,19 @@ def test_einzelnes_etikett_als_text_gilt_als_einelementige_liste() -> None:
     assert antwort_aus_etiketten("single_choice", b, {"auswahl": "E"}) is None
     m = beschriften("multiple_choice", {}, _optionen(3))
     assert antwort_aus_etiketten("multiple_choice", m, {"auswahl": "C"}) == {"choice_ids": ["o2"]}
+
+
+def test_gemeinsame_fixture_mit_der_seite() -> None:
+    """Dieselbe Datei prueft huelle/seite/aufgabe.test.mjs: Etiketten und Korrektur-Antworten."""
+    import json
+    from pathlib import Path
+
+    daten = json.loads((Path(__file__).parent.parent / "huelle" / "etiketten_fixture.json").read_text(encoding="utf-8"))
+    for fall in daten["etiketten"]:
+        task = fall["task"]
+        b = beschriften(task["type"], task["presentation"], task["options"])
+        assert {"optionen": b.optionen, "links": b.links, "rechts": b.rechts} == fall["erwartet"], fall["name"]
+    for fall in daten["antworten"]:
+        task = fall["task"]
+        b = beschriften(task["type"], task["presentation"], task["options"])
+        assert antwort_aus_etiketten(task["type"], b, fall["roh"]) == fall["antwort"], fall["name"]

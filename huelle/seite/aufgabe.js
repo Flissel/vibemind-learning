@@ -131,6 +131,12 @@ export const FESTE_MELDUNGEN = new Set([
   "Ungültige Eingabe.",
   "Die aktuelle Aufgabe ist keine Zeichenaufgabe.",
   "Während der Aufgabe hilft „Erklär mir das“.",
+  // Fläche zuerst (bruecke.py).
+  "Diese Aufgabe beantworten Sie in der Seitenleiste.",
+  "Bei dieser Aufgabe gibt es nichts Gelesenes zu korrigieren.",
+  "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab.",
+  "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vorbewertung zu.",
+  "Diese Rückmeldung lässt sich nicht bestätigen. Bitte überarbeiten Sie Ihr Ergebnis oder tippen Sie es selbst ein.",
 ]);
 
 /** Der Banner-Text zu einer Fehlerantwort: feste Texte der Bruecke, sonst der allgemeine Text. */
@@ -220,4 +226,217 @@ export const FLAECHEN_HINWEIS =
 /** Ob der Hinweis zur nicht verbundenen Flaeche gezeigt wird: Antwort mit flaeche false und offene Aufgabe. */
 export function flaechenHinweis(daten) {
   return !!daten && daten.flaeche === false && daten.turn?.state === "active" && !!daten.turn?.task;
+}
+
+// ---- Fläche zuerst: Etiketten und Korrektur (Spiegel von contracts/beschriftung.py) -----------------
+// Die gemeinsame Fixture tests/huelle/etiketten_fixture.json prüft beide Seiten.
+const BUCHSTABEN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const MAX_TEXT = 2000;
+export const DETERMINISTISCH = new Set(["single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"]);
+const FLAECHENTYPEN = new Set([...DETERMINISTISCH, "open_response", "case", "penecho_canvas"]);
+
+function ids(eintraege) {
+  return eintraege.map((e) => {
+    const wert = e && typeof e === "object" ? e.id : e;
+    if (typeof wert !== "string" || !wert) throw new Error("labelled entry has no id");
+    return wert;
+  });
+}
+
+function buchstaben(liste) {
+  if (liste.length > BUCHSTABEN.length) throw new Error("too many entries to label (at most 26)");
+  return Object.fromEntries(liste.map((id, i) => [BUCHSTABEN[i], id]));
+}
+
+/** Etiketten der Aufgabe in angezeigter Reihenfolge: `{optionen, links, rechts}`. Wirft bei mehr als 26 Einträgen. */
+export function etiketten(task) {
+  const optionen = buchstaben(ids(Array.isArray(task?.options) ? task.options : []));
+  let links = {};
+  let rechts = {};
+  if (task?.type === "matching") {
+    const l = task.presentation?.left;
+    const r = task.presentation?.right;
+    if (Array.isArray(l)) links = Object.fromEntries(ids(l).map((id, i) => [String(i + 1), id]));
+    if (Array.isArray(r)) rechts = buchstaben(ids(r));
+  }
+  return { optionen, links, rechts };
+}
+
+function etikettListe(text) {
+  const teile = String(text ?? "").split(/[\s,;]+/).filter(Boolean).map((t) => t.toUpperCase());
+  return teile.length > 0 && new Set(teile).size === teile.length ? teile : null;
+}
+
+function aufloesen(liste, tabelle) {
+  if (!liste || liste.some((e) => !Object.hasOwn(tabelle, e))) return null;
+  return liste.map((e) => tabelle[e]);
+}
+
+/** Wie `_zahl` der Brücke: Unicode-Minus, Komma als Dezimaltrenner, Tausenderzeichen; kein Exponent. */
+function zahlAus(wert) {
+  let text = String(wert ?? "").replace(/[−–—]/g, "-").replace(/\s+/g, "");
+  if (text.includes(",") && text.includes(".")) {
+    const dezimal = text.lastIndexOf(",") > text.lastIndexOf(".") ? "," : ".";
+    const gruppe = dezimal === "," ? "." : ",";
+    text = text.split(gruppe).join("").replace(dezimal, ".");
+  } else if ((text.match(/,/g) ?? []).length === 1) {
+    text = text.replace(",", ".");
+  }
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(text)) return null;
+  const zahl = Number(text);
+  return Number.isFinite(zahl) ? zahl : null;
+}
+
+function paareAus(text, tabelle) {
+  const paare = {};
+  const teile = String(text ?? "").split(/[,;\n]+/).map((t) => t.trim()).filter(Boolean);
+  if (teile.length === 0) return null;
+  for (const teil of teile) {
+    const m = /^(\S+?)\s*[-−–—:=>→]+\s*(\S+)$/.exec(teil);
+    if (!m) return null;
+    const links = tabelle.links[m[1]];
+    const rechts = tabelle.rechts[m[2].toUpperCase()];
+    if (links === undefined || rechts === undefined || Object.hasOwn(paare, links)) return null;
+    paare[links] = rechts;
+  }
+  return paare;
+}
+
+/**
+ * Die getippte Korrektur („B“, „A, C“, „C, A, B“, „1-B, 2-A“, Zahl, Text) als Antwort im Format der
+ * deterministischen Bewertung; null, wenn nichts sicher zu lesen ist. Spiegel von `antwort_aus_etiketten`.
+ */
+export function korrekturAntwort(task, text) {
+  if (!task || !DETERMINISTISCH.has(task.type)) return null;
+  let t;
+  try {
+    t = etiketten(task);
+  } catch {
+    return null;
+  }
+  switch (task.type) {
+    case "single_choice": {
+      const aus = aufloesen(etikettListe(text), t.optionen);
+      return aus && aus.length === 1 ? { choice_id: aus[0] } : null;
+    }
+    case "multiple_choice": {
+      const aus = aufloesen(etikettListe(text), t.optionen);
+      return aus ? { choice_ids: aus } : null;
+    }
+    case "ordering": {
+      const aus = aufloesen(etikettListe(text), t.optionen);
+      return aus ? { order: aus } : null;
+    }
+    case "matching": {
+      const pairs = paareAus(text, t);
+      return pairs ? { pairs } : null;
+    }
+    case "numeric": {
+      const value = zahlAus(text);
+      return value === null ? null : { value };
+    }
+    default: { // fill_in
+      const roh = String(text ?? "");
+      return roh.trim() && roh.length <= MAX_TEXT ? { text: roh.trim() } : null;
+    }
+  }
+}
+
+const EINGABE_HINWEIS = {
+  single_choice: "Einen Buchstaben eingeben, z. B. B",
+  multiple_choice: "Buchstaben eingeben, z. B. A, C",
+  ordering: "Reihenfolge eingeben, z. B. C, A, B",
+  matching: "Paare eingeben, z. B. 1-B, 2-A",
+  numeric: "Zahl eingeben, z. B. -1,5",
+  fill_in: "Text eingeben",
+};
+
+/** Der Hinweis zum Eingabefeld von „Falsch gelesen“ / „Selbst eintippen“; null für Typen ohne Korrektur. */
+export function eingabeHinweis(typ) {
+  return Object.hasOwn(EINGABE_HINWEIS, typ) ? EINGABE_HINWEIS[typ] : null;
+}
+
+// ---- Fläche zuerst: Leiste über der Fläche ----------------------------------------------------------
+export const KNOPF_TEXT = {
+  speichern: "Speichern", abgeben: "Abgeben", passt: "Passt", ueberarbeiten: "Überarbeiten",
+  falsch: "Falsch gelesen", eintippen: "Selbst eintippen", neuBewerten: "Neu bewerten",
+};
+export const NICHT_LESBAR = "Nicht lesbar.";
+
+/** Das Ergebnis einer Vorbewertung aus der Antwort von `abgeben`/`korrektur`; null ohne Vorbewertung. */
+export function ergebnisAus(daten) {
+  const v = daten?.vorbewertung;
+  if (!v || typeof v.id !== "string" || typeof daten.urteil !== "string") return null;
+  return { vorbewertung_id: v.id, urteil: daten.urteil, lesbar: v.lesbar !== false };
+}
+
+const unlesbar = (e) => e.lesbar === false || e.urteil === NICHT_LESBAR;
+
+/**
+ * Welche Knöpfe die Leiste zeigt. Ohne Ergebnis: Speichern, Abgeben. Mit lesbarem Urteil (auch „Wird noch
+ * geprüft.“) zusätzlich Passt, Überarbeiten und bei deterministischen Typen Falsch gelesen; nicht lesbar:
+ * Selbst eintippen statt Passt. `code` hat keine Leiste (Antwortformular in der Seitenleiste).
+ */
+export function leistenZustand(task, ergebnis) {
+  if (!task || !FLAECHENTYPEN.has(task.type)) return { sichtbar: false, knoepfe: [] };
+  const knoepfe = [];
+  if (ergebnis) {
+    const deterministisch = DETERMINISTISCH.has(task.type);
+    if (unlesbar(ergebnis)) {
+      knoepfe.push("ueberarbeiten");
+      if (deterministisch) knoepfe.push("eintippen");
+    } else {
+      knoepfe.push("passt", "ueberarbeiten");
+      if (deterministisch) knoepfe.push("falsch");
+    }
+  }
+  knoepfe.push("speichern", "abgeben");
+  return { sichtbar: true, knoepfe };
+}
+
+/** Der Hinweis nach einem nicht lesbaren Ergebnis (ein unverändert erneut abgegebenes Bild bleibt nicht lesbar). */
+export function ergebnisHinweis(ergebnis) {
+  if (!ergebnis || !unlesbar(ergebnis)) return null;
+  return "Nicht lesbar. Schreiben Sie die Antwort neu und drücken Sie „Abgeben“, oder wählen Sie „Selbst eintippen“. "
+    + "Unverändert abgegeben bleibt sie nicht lesbar.";
+}
+
+// ---- Fläche zuerst: Speichern ----------------------------------------------------------------------------
+const edited = (grund) => grund === "edited" || /ungespeicherte Änderungen/.test(String(grund ?? ""));
+const leer = (grund) => /leere Fläche/.test(String(grund ?? ""));
+
+/**
+ * Speichert über `speichern()` (= `flaecheSpeichern(iframe)`); bei „edited“ genau eine Wiederholung.
+ * Löst immer auf: `{ok, art}` mit art "ok" | "leer" | "fehler".
+ */
+export async function speichernMitWiederholung(speichern) {
+  const einmal = async () => {
+    try {
+      return (await speichern()) ?? { ok: false, grund: "" };
+    } catch {
+      return { ok: false, grund: "Fehler" };
+    }
+  };
+  let r = await einmal();
+  if (!r.ok && edited(r.grund)) r = await einmal();
+  if (r.ok) return { ok: true, art: "ok" };
+  return { ok: false, art: leer(r.grund) ? "leer" : "fehler" };
+}
+
+export const NICHT_GESPEICHERT = "Nicht gespeichert – bitte „Speichern“ drücken.";
+export const NICHTS_ZU_SPEICHERN = "Auf der Fläche gibt es noch nichts zu speichern.";
+
+/** Der ruhige Hinweis zum Speichern; null bei Erfolg. „Leer“ meldet nur der Knopf selbst (`manuell`). */
+export function speicherHinweis(ergebnis, manuell) {
+  if (ergebnis.ok) return null;
+  if (ergebnis.art === "leer") return manuell ? NICHTS_ZU_SPEICHERN : null;
+  return NICHT_GESPEICHERT;
+}
+
+export const VERALTET = "Die Karte war veraltet. Ich habe den aktuellen Stand geladen.";
+
+/** Der Hinweis zu einer Fehlerantwort von abgeben/korrektur/passt; `veraltet`: Stand aus `turn` neu zeigen. */
+export function fehlerText(r) {
+  if (r?.status === 409 && r.daten?.turn) return { text: VERALTET, veraltet: true };
+  return { text: meldungFuer(r?.daten), veraltet: false };
 }

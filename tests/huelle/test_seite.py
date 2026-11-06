@@ -151,3 +151,19 @@ def test_uvicorn_ohne_proxy_header() -> None:
     from spaces.learning.huelle.server import uvicorn_settings
 
     assert uvicorn_settings("127.0.0.1", 8151)["proxy_headers"] is False
+
+
+def test_leiste_ueber_der_flaeche_ist_verdrahtet() -> None:
+    html = (SEITE / "index.html").read_text(encoding="utf-8")
+    flaeche = html.split('<section id="flaeche"')[1].split("</section>")[0]
+    for kennung in ("flaechenleiste", "leisten-hinweis", "korrektur-feld", "neu-bewerten", "leisten-knoepfe"):
+        assert f'id="{kennung}"' in flaeche, kennung
+    css = (SEITE / "huelle.css").read_text(encoding="utf-8")
+    assert ".flaechenleiste {" in css and "pointer-events: none" in css and "pointer-events: auto" in css
+    mobil = css.split("@media (max-width: 699px)")[1]
+    assert ".flaechenleiste" in mobil and "flex-wrap: wrap" in css
+    js = (SEITE / "huelle.js").read_text(encoding="utf-8")
+    assert 'from "./flaeche.js"' in js and "flaecheSpeichern(" in js
+    for route in ("/abgeben", "/korrektur", "/passt"):
+        assert route in js, route
+    assert "alert(" not in js and "confirm(" not in js

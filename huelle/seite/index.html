@@ -40,6 +40,17 @@
   </section>
   <section id="flaeche" class="flaeche" aria-label="Fläche">
     <iframe id="rahmen" src="<!--FLAECHE-->/" title="Fläche"></iframe>
+    <div id="flaechenleiste" class="flaechenleiste" role="group" aria-label="Abgabe" hidden>
+      <p id="leisten-hinweis" class="leisten-hinweis" role="status" aria-live="polite" hidden></p>
+      <form id="korrektur" class="korrektur" hidden>
+        <label for="korrektur-feld" id="korrektur-text" class="korrektur-text"></label>
+        <div class="korrektur-zeile">
+          <input id="korrektur-feld" type="text" autocomplete="off" spellcheck="false">
+          <button type="submit" id="neu-bewerten">Neu bewerten</button>
+        </div>
+      </form>
+      <div id="leisten-knoepfe" class="leisten-knoepfe"></div>
+    </div>
   </section>
 </main>
 </body>
