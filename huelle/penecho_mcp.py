@@ -176,6 +176,25 @@ def rueckmeldungsfeld(nummer: int) -> dict[str, int]:
             "w": _RUECKMELDUNG_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
 
 
+_BERICHT_ABSTAND = 80
+
+
+def berichtsplatz(nummer: int) -> dict[str, int]:
+    """Platz des Berichtsbilds (Schnappschuss) zu Aufgabe `nummer`: rechts neben ihrem Rueckmeldungsfeld.
+
+    Abnahme 06.11. (F19): mit fester region setzt PenEcho das Bild im Massstab 1; ohne region rechnete es
+    die Breite durch den Zoom der Ansicht und lehnte bei kleinem Zoom ab (INVALID_GEOMETRY).
+    Ein Schnappschuss des Bereichs (1300 x 800) ist bei Breite 900 rund 554 hoch und passt in die Zeile.
+    """
+    r = rueckmeldungsfeld(nummer)
+    return {"x": r["x"] + r["w"] + _BERICHT_ABSTAND, "y": bereich(nummer)["y"],
+            "w": BERICHT_BILD_BREITE, "h": BEREICH_HOEHE}
+
+
+def _ueberlappt(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]
+
+
 def _sitzungsschluessel(schluessel: str) -> str:
     roh = SCHLUESSEL_PRAEFIX + schluessel
     if len(roh) <= MAX_SCHLUESSEL:
@@ -883,8 +902,9 @@ class PenEchoMcp:
 
         Wiederholbar: die Karte hat eine feste artifactId, jedes Bild eine feste requestId
         `bericht-{sid}-{nummer}`. Ein Bild, das nicht passt (zu gross, schon gesetzt, PenEcho lehnt ab),
-        faellt weg; die Karte bleibt. Die Bilder setzt PenEcho selbst (ohne region, Auto-Layout), sie
-        liegen also nicht garantiert unter der Karte. Der erste Transportfehler beendet die Bildschleife,
+        faellt weg; die Karte bleibt. Jedes Bild steht an `berichtsplatz(nummer)` neben seiner Aufgabe;
+        liegt dort laut Belegung schon etwas (das Bild selbst oder ein fremdes Objekt), wird es weder
+        aufgenommen noch gesendet. Der erste Transportfehler beendet die Bildschleife,
         ebenso ein Zeitbudget von `BERICHT_BILD_ZEIT` fuer alle Bilder; die Karte steht dann schon.
         Nur verlorene Sitzung/Flaeche gehen an den Aufrufer.
         """
@@ -896,11 +916,17 @@ class PenEchoMcp:
         if not BERICHT_MIT_SCHNAPPSCHUESSEN:
             return
         ende = _uhr() + BERICHT_BILD_ZEIT
+        spalte = berichtsplatz(1)
+        belegung = self._belegung(session_id, {**spalte, "h": BEREICHE * _ZEILEN_SCHRITT})
         for position, nummer in enumerate(nummern):
             if _uhr() >= ende:
                 log.warning("Berichtsbilder: Zeitbudget erschoepft, %d uebersprungen", len(nummern) - position)
                 break
             try:
+                platz = berichtsplatz(nummer)
+                if any(_ueberlappt(e["bounds"], platz) for e in belegung):
+                    log.info("Berichtsbild %d: Platz schon belegt", nummer)
+                    continue
                 quelle = _datenurl(self.schnappschuss(session_id, nummer))
                 if quelle is None or len(quelle) > MAX_BILD_DATENURL:
                     log.warning("Berichtsbild uebersprungen: Format oder Groesse")
@@ -910,6 +936,7 @@ class PenEchoMcp:
                     "requestId": f"bericht-{sid}-{nummer}"[:MAX_SCHLUESSEL],
                     "source": quelle,
                     "width": BERICHT_BILD_BREITE,
+                    "region": platz,
                 })
             except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
                 raise

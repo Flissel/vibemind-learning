@@ -13,7 +13,7 @@ import pytest
 from spaces.learning.huelle.penecho_mcp import (
     BEREICHE, FLAECHE_GROESSE, Aufgabenbild, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar,
     PenEchoFlaecheVoll, PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
-    bildraster, textfeld,
+    berichtsplatz, bildraster, textfeld,
 )
 
 TOKEN = "ab" * 32
@@ -1321,3 +1321,27 @@ def test_belegung_nicht_lesbar_setzt_wie_bisher(zustand: Path) -> None:
     PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
         "sess-1", "t1", "Ordnen", 20, mit_ergebnisfeld=True, bilder=bilder)
     assert len(_bilder(fake)) == 4 and len(_schilder(fake)) == 4 and len(_ink(fake)) == 1
+
+
+def test_berichtsbilder_stehen_mit_fester_region_neben_ihrer_aufgabe(zustand: Path) -> None:
+    # Abnahme 06.11. (F19): Ohne region rechnet PenEcho die Bildbreite durch den Zoom der Ansicht
+    # (canvas-documents.js: w = width / viewport.scale). Bei 4 % wurden aus 900 dann 22500 > 20000,
+    # INVALID_GEOMETRY, und kein Berichtsbild kam an. Mit region gilt Massstab 1.
+    fake = Fake()
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "# Bericht: K", (1, 20))
+    bilder = [b["arguments"] for b in fake.aufrufe("penecho_place_image")]
+    assert [b["region"] for b in bilder] == [berichtsplatz(1), berichtsplatz(20)]
+    assert all(b["width"] == 900 for b in bilder)
+    for n in (1, 20):
+        p, r, b = berichtsplatz(n), rueckmeldungsfeld(n), bereich(n)
+        assert p["x"] > r["x"] + r["w"] and p["y"] == b["y"]
+        assert p["w"] == 900 and p["h"] <= b["h"] and p["x"] + p["w"] <= FLAECHE_GROESSE
+
+
+def test_vorhandenes_berichtsbild_wird_nicht_erneut_gesetzt(zustand: Path) -> None:
+    fake = Fake()
+    objekte = [("image", "image-7", {**berichtsplatz(1), "h": 554}),
+               ("widget", "widget-1", {"x": berichtsplatz(2)["x"] + 100, "y": berichtsplatz(2)["y"], "w": 300, "h": 300})]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).bericht_zeigen("sess-1", LERN_SID, "x", (1, 2, 3))
+    assert [b["arguments"]["region"] for b in fake.aufrufe("penecho_place_image")] == [berichtsplatz(3)]
+    assert len(fake.aufrufe("penecho_capture_canvas")) == 1  # nur fuer das Bild, das gesetzt wird
