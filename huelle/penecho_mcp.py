@@ -227,6 +227,16 @@ class PenEchoFlaecheVoll(PenEchoNichtErreichbar):
     """PenEchos Objektgrenze je Flaeche ist erreicht (OBJECT_LIMIT, z. B. 50 Texte)."""
 
 
+class PenEchoAnfragenStau(PenEchoSitzungUnbekannt):
+    """PenEcho meldet request_limit: zu viele gescheiterte Aenderungen in dieser Sitzung.
+
+    bound-operations.js (PenEcho 1.4.2): jeder Aenderungsaufruf, der mit einem Fehler endet, bleibt
+    "unaufgeloest" (MAX_UNRESOLVED_PATCHES = 4), bis dieselbe requestId mit denselben Argumenten gelingt.
+    Danach nimmt die Sitzung keine neue requestId mehr an. Die Huelle schliesst sie deshalb; als
+    PenEchoSitzungUnbekannt legt die Bruecke ueber denselben sessionKey eine frische an.
+    """
+
+
 class PenEchoRevisionVeraltet(PenEchoNichtErreichbar):
     """PenEcho meldet REVISION_CONFLICT: die Flaeche hat sich seit dem Lesen der Revision geaendert."""
 
@@ -412,12 +422,24 @@ class PenEchoMcp:
                 raise PenEchoRevisionVeraltet(code)
             if code == "OBJECT_LIMIT":
                 raise PenEchoFlaecheVoll(code)
+            if code == "request_limit":
+                self._sitzung_schliessen(argumente.get("sessionId"))
+                raise PenEchoAnfragenStau(code)
             if code == "REQUEST_ID_CONFLICT":
                 raise PenEchoAnfrageSchonBekannt(code)
             if code == "ACTIVE_CANVAS_REQUIRED":
                 raise PenEchoNichtSichtbar(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
+
+    def _sitzung_schliessen(self, session_id: object) -> None:
+        """penecho_close_session: die Sitzung endet, der Inhalt des Boards bleibt (schema.js)."""
+        if not isinstance(session_id, str) or not session_id:
+            return
+        try:
+            self._werkzeug("penecho_close_session", {"sessionId": session_id})
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("PenEcho-Sitzung nicht geschlossen: %s", _typ(fehler))
 
     @staticmethod
     def _struktur(ergebnis: dict[str, Any]) -> dict[str, Any]:
@@ -590,9 +612,11 @@ class PenEchoMcp:
             "text": f"Aufgabe {nummer}: {text}" + (f"\n\n{hinweis}" if hinweis else ""),
             "region": region,
         }
+        voll = False
         try:
             objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
         except PenEchoFlaecheVoll:
+            voll = True
             # PenEcho prueft die Grenze vor dem Platz: auch eine schon vorhandene Aufgabe scheitert hier.
             # Board und Rahmen trotzdem, damit die Flaeche verbunden bleibt; der Text steht in der Seitenleiste.
             log.warning("Aufgabentext nicht gesetzt: Flaeche voll")
@@ -612,8 +636,10 @@ class PenEchoMcp:
         self._zeigen(session_id, objekt_id)
         if bilder:
             # Vor dem Rahmen: dessen Tinte zaehlte sonst als Hindernis im Bildfeld.
+            # Volle Flaeche: keine Beschriftungen versuchen. Jeder gescheiterte Text bliebe in PenEchos
+            # Sitzung unaufgeloest und sperrte nach vier weiteren Fehlern alle Aenderungen (F17).
             self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
-                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld))
+                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld), beschriften=not voll)
         if mit_ergebnisfeld:
             self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer), "ergebnis")
         elif mit_arbeitsfeld:
@@ -621,11 +647,13 @@ class PenEchoMcp:
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
+        *, beschriften: bool = True,
     ) -> None:
         """Aufgabenbilder mit Beschriftung im Raster ins Bildfeld (penecho_place_image mit Region).
 
         Ist ein Platz belegt, steht das Bild meist schon da (Board nach Neustart wiederhergestellt): dann
-        nichts setzen, auch nicht anderswo. Ein fehlendes Bild bricht die Aufgabe nicht ab.
+        nichts setzen, auch nicht anderswo. Ein fehlendes Bild bricht die Aufgabe nicht ab. Ist die Flaeche
+        voll (OBJECT_LIMIT), folgen nur noch Bilder, keine Beschriftungen mehr.
         """
         for position, (bild, (schild, platz)) in enumerate(zip(bilder, bildraster(feld, bilder)), start=1):
             quelle = _datenurl(bild.daten)
@@ -640,7 +668,7 @@ class PenEchoMcp:
                     "width": platz["w"],
                     "region": platz,
                 })
-                if schild is not None and bild.beschriftung:
+                if beschriften and schild is not None and bild.beschriftung:
                     self._werkzeug("penecho_edit_canvas", {
                         "sessionId": session_id,
                         "requestId": self._feld_id("bild", aufgabe_id, nummer, f"-{position}-schild"),
@@ -652,6 +680,9 @@ class PenEchoMcp:
                 raise
             except PenEchoPlatzBelegt:
                 log.info("Aufgabenbild %d steht schon da", position)
+            except PenEchoFlaecheVoll:
+                beschriften = False
+                log.warning("Aufgabenbild %d: Flaeche voll, keine Beschriftung mehr", position)
             except PenEchoNichtErreichbar as fehler:
                 log.warning("Aufgabenbild %d nicht gesetzt: %s", position, _typ(fehler))
 

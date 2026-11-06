@@ -1198,3 +1198,64 @@ def test_volle_flaeche_bei_rueckmeldung_ist_eigener_fehler(zustand: Path) -> Non
     with pytest.raises(PenEchoFlaecheVoll):
         PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).rueckmeldung_zeigen(
             "sess-1", "t1", 4, gelesen=None, urteil="Richtig.", text="x")
+
+
+def _antwort_mit_fehler(fake: Fake, trifft) -> httpx.MockTransport:
+    """Transport: Werkzeugaufrufe, fuer die `trifft(name, args)` einen Code liefert, scheitern damit."""
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call":
+            code = trifft(body["params"]["name"], body["params"]["arguments"])
+            if code:
+                fake.anfragen.append((body, request.headers))
+                sc = {"code": code, "message": "m"}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "isError": True, "structuredContent": sc, "content": []}})
+        return fake(request)
+
+    return httpx.MockTransport(antwort)
+
+
+def _schilder(fake: Fake) -> list[dict]:
+    return [e for e in (a["arguments"] for a in fake.aufrufe("penecho_edit_canvas"))
+            if e["action"] == "create_text" and e["requestId"].startswith("bild-")]
+
+
+def test_volle_flaeche_setzt_keine_bildschilder(zustand: Path) -> None:
+    # Abnahme 06.11. (F17): Jeder gescheiterte Aenderungsaufruf bleibt in PenEchos Sitzung als
+    # "unaufgeloest" stehen (bound-operations.js MAX_UNRESOLVED_PATCHES = 4). Auf der vollen Flaeche
+    # scheiterten Aufgabentext und jede Bildbeschriftung mit OBJECT_LIMIT; danach nahm PenEcho
+    # nichts mehr an (request_limit), Bild 3 und 4 und der Rahmen fehlten.
+    fake = FeldFake()
+    bilder = [Aufgabenbild(f"Graph {c}", BILD_PNG, 480 / 360) for c in "ABCD"]
+    transport = _antwort_mit_fehler(
+        fake, lambda name, args: "OBJECT_LIMIT" if args.get("action") == "create_text" else None)
+    PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
+        "sess-1", "t1", "Ordnen", 10, mit_ergebnisfeld=True, bilder=bilder)
+    assert _schilder(fake) == []
+    assert len(_bilder(fake)) == 4 and len(_ink(fake)) == 1
+
+
+def test_erstes_volles_bildschild_beendet_die_beschriftung(zustand: Path) -> None:
+    fake = FeldFake()
+    bilder = [Aufgabenbild(f"Graph {c}", BILD_PNG, 480 / 360) for c in "ABCD"]
+    transport = _antwort_mit_fehler(fake, lambda name, args: "OBJECT_LIMIT" if args.get("action") == "create_text"
+                                    and args["requestId"].startswith("bild-") else None)
+    PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
+        "sess-1", "t1", "Ordnen", 10, mit_ergebnisfeld=True, bilder=bilder)
+    assert [s["text"] for s in _schilder(fake)] == ["Graph A"]
+    assert len(_bilder(fake)) == 4 and len(_ink(fake)) == 1
+
+
+def test_anfragestau_schliesst_die_sitzung(zustand: Path) -> None:
+    # F17: request_limit loest sich in derselben PenEcho-Sitzung nicht mehr auf. Die Huelle schliesst
+    # sie (penecho_close_session behaelt den Inhalt) und meldet sie als unbekannt; die Bruecke legt
+    # dann ueber denselben sessionKey eine frische Sitzung auf demselben Board an.
+    fake = FeldFake()
+    transport = _antwort_mit_fehler(
+        fake, lambda name, args: "request_limit" if name == "penecho_place_image" else None)
+    with pytest.raises(PenEchoSitzungUnbekannt):
+        PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
+            "sess-1", "t1", "Ordnen", 10, bilder=[Aufgabenbild("Graph A", BILD_PNG, 1.0)])
+    assert [a["arguments"] for a in fake.aufrufe("penecho_close_session")] == [{"sessionId": "sess-1"}]
