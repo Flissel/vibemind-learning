@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import socket
 import threading
@@ -10,6 +11,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
+import httpx
 import pytest
 import uvicorn
 import websockets
@@ -21,10 +23,26 @@ EIGEN = frozenset({"https://lernen.example.test", "http://127.0.0.1:8099"})
 CSP = "default-src 'self'; frame-ancestors 'none'; img-src data:"
 
 
+# Kopf von PenEchos index.html (src/server/main.js ca. Z. 4488, gekuerzt).
+CSP_INDEX = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; connect-src 'self'; "
+             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+INDEX = (b"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>PenEcho</title>\n"
+         b"<script src=\"/api/config.js\"></script>\n</head>\n<body>\n" + b"<p>Fl\xc3\xa4che</p>\n" * 200
+         + b"<script src=\"app.js\"></script>\n</body>\n</html>\n")
+SKRIPT = b"console.log('app');\n" * 100
+SEITEN = {
+    "/": (b"text/html; charset=utf-8", INDEX),
+    "/index.html": (b"text/html; charset=utf-8", INDEX),
+    "/widget-host.html": (b"text/html; charset=utf-8", INDEX),
+    "/app.js": (b"text/javascript; charset=utf-8", SKRIPT),
+}
+
+
 class FakePenEcho:
     def __init__(self) -> None:
         self.aufrufe: list[str] = []
         self.kopf: dict[str, str] = {}
+        self.immer_gzip = False
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "lifespan":
@@ -47,6 +65,20 @@ class FakePenEcho:
         pfad = scope["path"]
         self.aufrufe.append(pfad)
         self.kopf = {k.decode(): v.decode() for k, v in scope["headers"]}
+        if pfad in SEITEN:
+            # Wie PenEchos static-response.js: gzip, wenn erlaubt (oder hier erzwungen).
+            await receive()
+            art, roh = SEITEN[pfad]
+            gz = self.immer_gzip or "gzip" in self.kopf.get("accept-encoding", "")
+            body = gzip.compress(roh) if gz else roh
+            kopf = [(b"content-type", art), (b"content-security-policy", CSP_INDEX.encode()),
+                    (b"etag", b'W/"abc"'), (b"vary", b"Accept-Encoding"),
+                    (b"content-length", str(len(body)).encode())]
+            if gz:
+                kopf.append((b"content-encoding", b"gzip"))
+            await send({"type": "http.response.start", "status": 200, "headers": kopf})
+            await send({"type": "http.response.body", "body": body if scope["method"] != "HEAD" else b""})
+            return
         if pfad == "/sse":
             await send({"type": "http.response.start", "status": 200,
                         "headers": [(b"content-type", b"text/event-stream")]})
@@ -164,7 +196,7 @@ def test_andere_pfade_trotz_sperre_durchgereicht(fake: tuple[FakePenEcho, str]) 
 
 def test_csp_ohne_rahmen_herkunft_bleibt_none(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/"))
+    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/x"))
     csp = [v for k, v in headers if k == b"content-security-policy"]
     assert csp == [b"default-src 'self'; frame-ancestors 'none'; img-src data:"]
     assert (b"x-eigen", b"unveraendert") in headers
@@ -191,7 +223,7 @@ def test_origin_wird_nicht_erfunden(fake: tuple[FakePenEcho, str]) -> None:
 
 def test_set_cookie_bleibt(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/"))
+    _, headers, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/x"))
     assert (b"set-cookie", b"penecho_ai_session_x=abc; HttpOnly; SameSite=Strict") in headers
 
 
@@ -476,7 +508,7 @@ def test_frame_ancestors_auf_seitenherkunft(fake: tuple[FakePenEcho, str]) -> No
     _, url = fake
     seite = ("https://lernen.example.test", "http://127.0.0.1:8150")
     app = Durchreicher(url, _frei(), EIGEN, rahmen_herkuenfte=seite)
-    _, headers, _ = asyncio.run(_lauf(app, "/"))
+    _, headers, _ = asyncio.run(_lauf(app, "/x"))
     csp = [v for k, v in headers if k == b"content-security-policy"]
     assert csp == [b"default-src 'self'; frame-ancestors https://lernen.example.test http://127.0.0.1:8150; "
                    b"img-src data:"]
@@ -503,3 +535,163 @@ def test_frame_ancestors_self_ohne_seitenherkunft_unveraendert() -> None:
 def test_frame_ancestors_self_keine_doppelten_herkuenfte() -> None:
     app = Durchreicher("http://127.0.0.1:1", _frei(), EIGEN, rahmen_herkuenfte=("http://a.test",))
     assert _csp_nach(app, "frame-ancestors 'self' http://a.test") == "frame-ancestors 'self' http://a.test"
+
+
+# ---- Speichern ueber PenEchos eigenen Knopf: Skript in PenEchos Seite ----------------------
+
+SEITE_HERKUNFT = ("https://lernen.example.test", "http://127.0.0.1:8150")
+TAG = (b'<meta name="huelle-herkuenfte" content="https://lernen.example.test http://127.0.0.1:8150">'
+       b'<script type="module" src="/__huelle/speichern.js"></script>')
+
+
+def _mit_seite(url: str) -> Durchreicher:
+    return Durchreicher(url, _frei(), EIGEN, rahmen_herkuenfte=SEITE_HERKUNFT)
+
+
+def _kopf(headers: list[tuple[bytes, bytes]]) -> dict[bytes, bytes]:
+    return {k.lower(): v for k, v in headers}
+
+
+@pytest.mark.parametrize("pfad", ["/", "/index.html"])
+@pytest.mark.parametrize("annahme", [b"", b"gzip, deflate, br"])
+def test_html_seite_bekommt_das_skript_einmal(fake: tuple[FakePenEcho, str], pfad: str, annahme: bytes) -> None:
+    upstream, url = fake
+    status, headers, teile = asyncio.run(_lauf(_mit_seite(url), pfad, headers=[(b"accept-encoding", annahme)]))
+    body = b"".join(t for _, t in teile)
+    kopf = _kopf(headers)
+    assert status == 200
+    assert upstream.kopf.get("accept-encoding") == "identity"  # nie komprimiert holen
+    assert body.count(b"/__huelle/speichern.js") == 1
+    assert body == INDEX.replace(b"</head>", TAG + b"</head>", 1)
+    assert kopf[b"content-length"] == str(len(body)).encode()
+    assert b"content-encoding" not in kopf and b"etag" not in kopf
+    assert kopf[b"content-type"] == b"text/html; charset=utf-8"
+    # PenEchos script-src 'self' erlaubt das Skript der eigenen Herkunft; frame-ancestors wie bisher.
+    csp = kopf[b"content-security-policy"].decode()
+    assert "script-src 'self' https://cdn.jsdelivr.net;" in csp
+    assert "frame-ancestors https://lernen.example.test http://127.0.0.1:8150" in csp
+
+
+def test_html_trotz_identity_gzip_wird_entpackt(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.immer_gzip = True
+    try:
+        _, headers, teile = asyncio.run(_lauf(_mit_seite(url), "/"))
+    finally:
+        upstream.immer_gzip = False
+    body = b"".join(t for _, t in teile)
+    kopf = _kopf(headers)
+    assert body == INDEX.replace(b"</head>", TAG + b"</head>", 1)
+    assert b"content-encoding" not in kopf
+    assert kopf[b"content-length"] == str(len(body)).encode()
+
+
+def test_html_head_ohne_falsche_laenge(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    status, headers, teile = asyncio.run(_lauf(_mit_seite(url), "/", methode="HEAD"))
+    assert status == 200 and teile == []
+    assert b"content-length" not in _kopf(headers)
+
+
+def test_nicht_html_bleibt_bytegleich(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    _, headers, teile = asyncio.run(_lauf(_mit_seite(url), "/app.js", headers=[(b"accept-encoding", b"gzip")]))
+    assert upstream.kopf.get("accept-encoding") == "gzip"  # unveraendert weitergereicht
+    kopf = _kopf(headers)
+    body = b"".join(t for _, t in teile)
+    assert kopf[b"content-encoding"] == b"gzip" and kopf[b"etag"] == b'W/"abc"'
+    assert body == gzip.compress(SKRIPT) or gzip.decompress(body) == SKRIPT
+    assert kopf[b"content-length"] == str(len(body)).encode()
+
+
+def test_andere_html_seiten_bleiben_unberuehrt(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    _, _, teile = asyncio.run(_lauf(_mit_seite(url), "/widget-host.html"))
+    assert b"".join(t for _, t in teile) == INDEX
+    assert upstream.kopf.get("accept-encoding") is None
+
+
+def test_ohne_seitenherkunft_kein_skript(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    _, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/"))
+    assert b"".join(t for _, t in teile) == INDEX
+
+
+def test_ki_sperre_bleibt_423_mit_seitenherkunft(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    app = Durchreicher(url, Sperre(), EIGEN, rahmen_herkuenfte=SEITE_HERKUNFT)
+    status, _, _ = asyncio.run(_lauf(app, "/api/ai/command", methode="POST", body=b"{}"))
+    assert status == 423 and upstream.aufrufe == []
+
+
+@pytest.mark.parametrize("methode", ["GET", "HEAD"])
+def test_skript_kommt_vom_durchreicher(fake: tuple[FakePenEcho, str], methode: str) -> None:
+    from spaces.learning.huelle.durchreicher import SPEICHERN_SKRIPT
+
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, headers, teile = asyncio.run(_lauf(_mit_seite(url), "/__huelle/speichern.js", methode=methode))
+    kopf = _kopf(headers)
+    assert status == 200 and upstream.aufrufe == []
+    assert kopf[b"content-type"] == b"text/javascript; charset=utf-8"
+    assert kopf[b"x-content-type-options"] == b"nosniff"
+    assert kopf[b"content-length"] == str(SPEICHERN_SKRIPT.stat().st_size).encode()
+    assert b"".join(t for _, t in teile) == (SPEICHERN_SKRIPT.read_bytes() if methode == "GET" else b"")
+
+
+@pytest.mark.parametrize("pfad", ["/__huelle/", "/__huelle/x.js", "/__HUELLE/speichern.js", "/__huelle/../app.js"])
+def test_andere_huelle_pfade_404_ohne_upstream(fake: tuple[FakePenEcho, str], pfad: str) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, _, _ = asyncio.run(_lauf(_mit_seite(url), pfad))
+    assert status == 404 and upstream.aufrufe == []
+
+
+def test_skript_nur_lesen(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, _, _ = asyncio.run(_lauf(_mit_seite(url), "/__huelle/speichern.js", methode="POST", body=b"x"))
+    assert status == 405 and upstream.aufrufe == []
+
+
+def test_einfuegen_kopf_dann_body_sonst_nichts() -> None:
+    from spaces.learning.huelle.durchreicher import skript_einfuegen
+
+    t = b"<x>"
+    assert skript_einfuegen(b"<html><HEAD></HEAD><body></body>", t) == b"<html><HEAD><x></HEAD><body></body>"
+    assert skript_einfuegen(b"<html><body>a</body></html>", t) == b"<html><body>a<x></body></html>"
+    assert skript_einfuegen(b"kein html", t) is None
+    schon = b"<head><script src=\"/__huelle/speichern.js\"></script></head>"
+    assert skript_einfuegen(schon, t) is None  # nie doppelt
+
+
+def test_csp_ohne_self_bekommt_self_fuer_skripte() -> None:
+    from spaces.learning.huelle.durchreicher import skript_erlauben
+
+    assert skript_erlauben("default-src 'self'; script-src 'self' https://cdn") == \
+        "default-src 'self'; script-src 'self' https://cdn"
+    assert skript_erlauben("script-src https://cdn; img-src data:") == "script-src https://cdn 'self'; img-src data:"
+    assert skript_erlauben("script-src 'none'") == "script-src 'self'"
+    assert skript_erlauben("default-src 'none'") == "default-src 'none'; script-src 'self'"
+    assert skript_erlauben("default-src 'self'") == "default-src 'self'"
+    assert skript_erlauben("script-src-elem https://cdn; script-src 'self'") == \
+        "script-src-elem https://cdn 'self'; script-src 'self'"
+
+
+@pytest.mark.parametrize("kodierung,daten", [("br", b"\x1b\x00brotli"), ("gzip", b"\x1f\x8bkaputt"),
+                                             ("gzip", gzip.compress(INDEX)[:-20])])
+def test_unlesbare_kompression_geht_unveraendert_weiter(kodierung: str, daten: bytes) -> None:
+    app = _mit_seite("http://127.0.0.1:1")
+
+    async def roh() -> Any:
+        yield daten[:5]
+        yield daten[5:]
+
+    async def lauf() -> Any:
+        antwort = httpx.Response(200, headers={"content-type": "text/html", "content-encoding": kodierung})
+        return await app._seite_mit_skript(antwort, roh(), [(b"content-encoding", kodierung.encode())])
+
+    fertig, vorab = asyncio.run(lauf())
+    assert fertig is None
+    assert b"".join(vorab) == daten  # nichts verloren, nichts veraendert

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import inspect
 import json
+import logging
 import posixpath
 import re
+import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -20,6 +24,8 @@ from .zugang import COOKIE
 Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+log = logging.getLogger(__name__)
 
 SPERR_TEXT = "Während der Aufgabe hilft „Erklär mir das“."
 NICHT_ERREICHBAR = "Die Fläche ist gerade nicht erreichbar."
@@ -41,6 +47,53 @@ _FRAME_SELF = re.compile(r"(frame-ancestors)([^;]*)", re.IGNORECASE)
 
 
 _VERBOTEN = (chr(92).encode(), bytes([9]), bytes([13]), bytes([10]))  # Backslash, Tab, CR, LF
+
+# Speichern ueber PenEchos eigenen Knopf: der Durchreicher liefert das Skript selbst aus (gleiche
+# Herkunft wie PenEchos Seite, also von deren `script-src 'self'` gedeckt) und traegt es in PenEchos
+# Hauptseite ein. Der Namensraum `/__huelle/` geht nie an PenEcho.
+HUELLE_PRAEFIX = "/__huelle/"
+SPEICHERN_PFAD = "/__huelle/speichern.js"
+SPEICHERN_SKRIPT = Path(__file__).parent / "flaeche" / "speichern.js"
+# Nur PenEchos Hauptseite (main.js: `/` -> index.html, sonst access.html); Widget-Rahmen bleiben unberuehrt.
+_SEITEN_PFADE = frozenset({"/", "/index.html"})
+_MAX_SEITE = 16 * 1024 * 1024
+_KOPF_ENDE = re.compile(rb"</head\s*>", re.IGNORECASE)
+_BODY_ENDE = re.compile(rb"</body\s*>", re.IGNORECASE)
+_SKRIPT_SRC = re.compile(r"(?<![\w-])(script-src(?:-elem)?)(\s[^;]*)?(?=;|$)", re.IGNORECASE)
+_DEFAULT_SRC = re.compile(r"(?<![\w-])default-src(\s[^;]*)?(?=;|$)", re.IGNORECASE)
+
+
+def skript_einfuegen(html: bytes, tag: bytes) -> bytes | None:
+    """`tag` vor `</head>` (sonst vor dem letzten `</body>`); None, wenn das nicht geht oder schon drin ist."""
+    if SPEICHERN_PFAD.encode() in html:
+        return None
+    treffer = _KOPF_ENDE.search(html)
+    if treffer is None:
+        alle = list(_BODY_ENDE.finditer(html))
+        treffer = alle[-1] if alle else None
+    if treffer is None:
+        return None
+    return html[:treffer.start()] + tag + html[treffer.start():]
+
+
+def skript_erlauben(csp: str) -> str:
+    """Sorgt dafuer, dass `script-src` (und `script-src-elem`) Skripte der eigenen Herkunft erlaubt.
+
+    PenEcho 1.4.2 erlaubt sie schon (`script-src 'self' ...`); dann bleibt die Richtlinie gleich.
+    """
+    def ergaenzt(m: re.Match[str]) -> str:
+        quellen = (m.group(2) or "").split()
+        if "'self'" in (q.lower() for q in quellen):
+            return m.group(0)
+        quellen = [q for q in quellen if q.lower() != "'none'"] + ["'self'"]
+        return m.group(1) + " " + " ".join(quellen)
+
+    neu = _SKRIPT_SRC.sub(ergaenzt, csp)
+    if not _SKRIPT_SRC.search(csp):
+        m = _DEFAULT_SRC.search(csp)
+        if m and "'self'" not in (m.group(1) or "").lower():
+            neu = csp.rstrip().rstrip(";") + "; script-src 'self'"
+    return neu
 
 
 def pfad_unzulaessig(scope: Scope) -> bool:
@@ -127,6 +180,12 @@ class Durchreicher:
         self._eigene = frozenset(h.lower() for h in eigene_herkuenfte)
         self._seiten = tuple(rahmen_herkuenfte)
         self._rahmen = "frame-ancestors " + (" ".join(rahmen_herkuenfte) if rahmen_herkuenfte else "'none'")
+        # Ohne einbettende Seite gibt es niemanden, der „Speichern“ anfragt: dann kein Skript.
+        self._tag: bytes | None = None
+        if self._seiten:
+            erlaubt = html.escape(" ".join(self._seiten), quote=True)
+            self._tag = (f'<meta name="huelle-herkuenfte" content="{erlaubt}">'
+                         f'<script type="module" src="{SPEICHERN_PFAD}"></script>').encode("utf-8")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -148,7 +207,7 @@ class Durchreicher:
         """Exakter Vergleich (scheme://host[:port], Host klein); `null` und Pfadanhaenge fallen durch."""
         return origin.lower() in self._eigene
 
-    def _anfrage_kopf(self, scope: Scope) -> list[tuple[str, str]]:
+    def _anfrage_kopf(self, scope: Scope, *, unkomprimiert: bool = False) -> list[tuple[str, str]]:
         kopf: list[tuple[str, str]] = []
         hat_origin = False
         for roh_name, roh_wert in scope["headers"]:
@@ -156,6 +215,8 @@ class Durchreicher:
             if name == "origin":
                 hat_origin = True
             if name in _HOP or name in ("host", "origin"):
+                continue
+            if unkomprimiert and name == "accept-encoding":
                 continue
             if name == "cookie":
                 rest = _ohne_zugang(wert)
@@ -166,6 +227,8 @@ class Durchreicher:
         kopf.append(("host", self._netloc))
         if hat_origin:
             kopf.append(("origin", self._basis))
+        if unkomprimiert:
+            kopf.append(("accept-encoding", "identity"))
         return kopf
 
     def _mit_seiten(self, m: re.Match[str]) -> str:
@@ -185,6 +248,70 @@ class Durchreicher:
                 wert = _FRAME_SELF.sub(self._mit_seiten, text).encode("latin-1")
             aus.append((name, wert))
         return aus
+
+    async def _eigene_datei(self, scope: Scope, send: Send) -> None:
+        """`/__huelle/speichern.js` aus `huelle/flaeche/`; alles andere unter `/__huelle` ist 404."""
+        roh = (scope.get("raw_path") or scope["path"].encode("utf-8"))
+        if roh != SPEICHERN_PFAD.encode():
+            await _klartext(send, 404, "Nicht gefunden")
+            return
+        if scope["method"] not in ("GET", "HEAD"):
+            await _klartext(send, 405, "Nicht erlaubt.")
+            return
+        body = SPEICHERN_SKRIPT.read_bytes()
+        await send({"type": "http.response.start", "status": 200, "headers": [
+            (b"content-type", b"text/javascript; charset=utf-8"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"cache-control", b"no-store"),
+            (b"x-content-type-options", b"nosniff"),
+        ]})
+        await send({"type": "http.response.body", "body": body if scope["method"] == "GET" else b""})
+
+    async def _seite_mit_skript(
+        self, antwort: httpx.Response, roh: AsyncIterator[bytes], kopf: list[tuple[bytes, bytes]],
+    ) -> tuple[tuple[list[tuple[bytes, bytes]], bytes] | None, list[bytes]]:
+        """Liest PenEchos Seite und traegt das Skript ein.
+
+        Ergebnis: ((neuer Kopf, neuer Body) oder None, schon gelesene Rohstuecke). Bei None geht die Seite
+        unveraendert weiter: zu gross, unbekannte Kompression, kaputtes gzip oder keine Einfuegestelle.
+        """
+        stuecke: list[bytes] = []
+        groesse = 0
+        async for stueck in roh:
+            stuecke.append(stueck)
+            groesse += len(stueck)
+            if groesse > _MAX_SEITE:
+                log.warning("PenEcho-Seite zu gross, Speichern-Skript nicht eingetragen")
+                return None, stuecke
+        kodierung = antwort.headers.get("content-encoding", "identity").strip().lower()
+        daten = b"".join(stuecke)
+        if kodierung == "gzip":
+            entpacker = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            try:
+                daten = entpacker.decompress(daten, _MAX_SEITE)
+            except zlib.error:
+                log.warning("PenEcho-Seite: gzip unlesbar, Speichern-Skript nicht eingetragen")
+                return None, stuecke
+            if entpacker.unconsumed_tail or not entpacker.eof:
+                log.warning("PenEcho-Seite: gzip zu gross oder unvollstaendig, Skript nicht eingetragen")
+                return None, stuecke
+        elif kodierung not in ("", "identity"):
+            log.warning("PenEcho-Seite mit Kompression %s, Speichern-Skript nicht eingetragen", kodierung[:20])
+            return None, stuecke
+        neu = skript_einfuegen(daten, self._tag) if self._tag is not None else None
+        if neu is None:
+            log.warning("PenEcho-Seite ohne </head> und </body>, Speichern-Skript nicht eingetragen")
+            return None, stuecke
+        aus: list[tuple[bytes, bytes]] = []
+        for name, wert in kopf:
+            klein = name.lower()
+            if klein in (b"content-length", b"content-encoding", b"etag"):
+                continue
+            if klein == b"content-security-policy":
+                wert = skript_erlauben(wert.decode("latin-1")).encode("latin-1")
+            aus.append((name, wert))
+        aus.append((b"content-length", str(len(neu)).encode("ascii")))
+        return (aus, neu), stuecke
 
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
         for roh_name, roh_wert in scope["headers"]:
@@ -206,6 +333,11 @@ class Durchreicher:
             ]})
             await send({"type": "http.response.body", "body": body})
             return
+        if _trifft(scope["path"], ("/__huelle",)):
+            await self._eigene_datei(scope, send)
+            return
+        einfuegen = (self._tag is not None and scope["method"] in ("GET", "HEAD")
+                     and scope["path"] in _SEITEN_PFADE)
 
         async def koerper() -> AsyncIterator[bytes]:
             while True:
@@ -221,16 +353,34 @@ class Durchreicher:
         gestartet = False
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10.0), follow_redirects=False) as client:
+                # Nur weiterreichen, was der Browser angeboten hat (httpx setzte sonst eigenes gzip).
+                client.headers.pop("accept-encoding", None)
                 anfrage = client.build_request(
-                    scope["method"], url, headers=self._anfrage_kopf(scope),
+                    scope["method"], url, headers=self._anfrage_kopf(scope, unkomprimiert=einfuegen),
                     content=koerper() if scope["method"] not in ("GET", "HEAD") else None,
                 )
                 antwort = await client.send(anfrage, stream=True)
                 try:
-                    await send({"type": "http.response.start", "status": antwort.status_code,
-                                "headers": self._antwort_kopf(antwort.headers.raw)})
+                    kopf = self._antwort_kopf(antwort.headers.raw)
+                    roh = antwort.aiter_raw()
+                    vorab: list[bytes] = []
+                    art = antwort.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                    if einfuegen and antwort.status_code == 200 and art == "text/html":
+                        if scope["method"] == "HEAD":  # Laenge der veraenderten Seite ist hier unbekannt
+                            kopf = [(n, w) for n, w in kopf if n.lower() not in (b"content-length", b"etag")]
+                        else:
+                            fertig, vorab = await self._seite_mit_skript(antwort, roh, kopf)
+                            if fertig is not None:
+                                neu_kopf, body = fertig
+                                await send({"type": "http.response.start", "status": 200, "headers": neu_kopf})
+                                gestartet = True
+                                await send({"type": "http.response.body", "body": body})
+                                return
+                    await send({"type": "http.response.start", "status": antwort.status_code, "headers": kopf})
                     gestartet = True
-                    async for stueck in antwort.aiter_raw():
+                    for stueck in vorab:
+                        await send({"type": "http.response.body", "body": stueck, "more_body": True})
+                    async for stueck in roh:
                         await send({"type": "http.response.body", "body": stueck, "more_body": True})
                     await send({"type": "http.response.body", "body": b""})
                 finally:

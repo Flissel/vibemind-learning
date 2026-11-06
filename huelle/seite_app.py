@@ -30,6 +30,7 @@ DATEIEN = {
     "huelle.css": ("huelle.css", "text/css; charset=utf-8"),
     "huelle.js": ("huelle.js", "text/javascript; charset=utf-8"),
     "aufgabe.js": ("aufgabe.js", "text/javascript; charset=utf-8"),
+    "flaeche.js": ("flaeche.js", "text/javascript; charset=utf-8"),
 }
 
 

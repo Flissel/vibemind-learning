@@ -86,9 +86,56 @@ Probe wurde sie mit dem Temp-Ordner der eigenen Instanz entfernt.
   jeden verbundenen Browser (`penecho_list_canvases`, dann `penecho_open_canvas`). Öffnet
   einer das Dokument, bindet `penecho_start_session` mit dieser `documentId` die Sitzung
   daran. Erst wenn kein Browser das Dokument hat, entsteht wie bisher eine Ersatzfläche.
-- `speichern(session_id)` ruft `penecho_inspect_session` und merkt die `documentId`.
-  Gespeichert wird dabei nichts, denn PenEcho sichert die Arbeitsfläche selbst. Eine
-  Server-Kopie entsteht nur über PenEchos eigenen Knopf „Speichern“.
+- `dokument_merken(session_id)` ruft `penecho_inspect_session` und merkt die `documentId`.
+  Gespeichert wird dabei nichts, daher der Name (früher `speichern`).
+  - Rückgabe `True`: gemerkt.
+  - Rückgabe `False`: PenEcho kennt die Sitzung, die Hülle hat aber keine Lernsitzung dazu.
+    Es wird nichts gemerkt.
+  - Fehler von PenEcho und eine Antwort ohne `documentId` kommen als `PenEchoNichtErreichbar`.
+
+## Speichern über PenEchos eigenen Knopf (Festlegung des Inhabers: Option 3)
+
+Eine Server-Kopie entsteht nur über PenEchos Knopf „Speichern“. Die Hülle drückt ihn selbst,
+ohne PenEcho zu ändern:
+
+1. Der Durchreicher trägt in PenEchos Hauptseite (`/` und `/index.html`, HTML mit Status
+   200) vor `</head>` ein Meta-Tag mit den erlaubten Seiten-Herkünften und
+   `<script type="module" src="/__huelle/speichern.js">` ein, genau einmal.
+   - Ersatzstelle ist das letzte `</body>`.
+   - Diese Seiten holt er unkomprimiert (`accept-encoding: identity`). Kommt trotzdem gzip,
+     entpackt er es.
+   - Bei unbekannter Kompression, kaputtem gzip, mehr als 16 MB oder ohne Einfügestelle geht
+     die Seite unverändert weiter.
+   - `content-length` wird neu berechnet, `etag` entfällt.
+   - Widget-Rahmen, andere Antworten, Websockets und die KI-Sperre bleiben wie bisher.
+   - Ohne Seiten-Herkunft (`rahmen_herkuenfte` leer) wird nichts eingetragen.
+2. `/__huelle/speichern.js` liefert der Durchreicher selbst aus (`huelle/flaeche/speichern.js`).
+   - Damit hat das Skript dieselbe Herkunft wie PenEchos Seite, und PenEchos
+     `script-src 'self'` erlaubt es.
+   - Fehlt `'self'` in einer CSP, ergänzt der Durchreicher nur das.
+   - Alles andere unter `/__huelle` ist 404 und geht nie an PenEcho.
+3. Das Skript in PenEchos Seite nimmt nur Nachrichten an, die zwei Bedingungen erfüllen:
+   - Sie kommen vom Elternfenster.
+   - Sie stammen von einer erlaubten Herkunft, verglichen wird exakt, nie `*`.
+
+   Auf `{typ: "huelle-speichern", id}` klickt es `#saveCanvasBtn` und beobachtet
+   `#canvasDocumentSaveState` (`data-state`: `unsaved`, `saving`, `saved`, `edited`). Die Antwort
+   `{typ: "huelle-gespeichert", id, ok, grund}` geht nur an die anfragende Herkunft.
+   - `ok: true` nur bei `saving` und danach `saved`.
+   - Sonst `ok: false` mit Grund: Knopf oder Anzeige fehlt (PenEcho geändert), Knopf gesperrt,
+     Speichern nicht begonnen, nicht gespeichert (z. B. leere Fläche) oder Zeitlimit nach 10 s.
+4. Die Seite ruft `flaecheSpeichern(iframe)` aus `seite/flaeche.js`. Das liefert immer
+   `{ok, grund}`. Ohne passende Antwort kommt nach 15 s `ok: false, grund: "keine Antwort"`.
+   Knöpfe und Abgabe-Haken rufen nur diese Funktion.
+
+Gemessen an einer eigenen Instanz: Chromium ohne CSP-Umgehung, Durchreicher und Elternseite
+auf eigenen Ports.
+
+- Die Seite trägt das Tag genau einmal, die Länge stimmt.
+- Leere Fläche: `ok: false` mit Grund.
+- Mit Aufgabentext: `ok: true` nach 0,2 s. Danach zeigt PenEcho „Saved“, und in
+  `canvases/shared` liegen `.json` und `.meta.json`.
+- Es gab keine CSP-Meldung.
 
 ## Urheberschaft im Dokument (für den Bericht)
 

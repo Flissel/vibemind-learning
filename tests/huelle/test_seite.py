@@ -99,8 +99,11 @@ def test_seite_nur_mit_cookie() -> None:
 
 
 def test_seitendateien_vollstaendig() -> None:
-    for name in ("index.html", "huelle.css", "huelle.js", "aufgabe.js", "aufgabe.test.mjs"):
+    for name in ("index.html", "huelle.css", "huelle.js", "aufgabe.js", "aufgabe.test.mjs", "flaeche.js",
+                 "flaeche.test.mjs"):
         assert (Path(SEITE) / name).is_file()
+    # flaecheSpeichern() muss fuer huelle.js ladbar sein.
+    assert DATEIEN["flaeche.js"] == ("flaeche.js", "text/javascript; charset=utf-8")
 
 
 def test_build_apps_zwei_herkuenfte_eine_sperre() -> None:
