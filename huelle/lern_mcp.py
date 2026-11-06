@@ -22,7 +22,15 @@ _FRISCHE_SITZUNG = "learning_session_start"
 
 
 class LearningWeg(Exception):
-    """Learning antwortet nicht (Netz, 5xx, keine oder kaputte Antwort, Dienst meldet `unavailable`)."""
+    """Learning antwortet nicht (Netz, 5xx, keine oder kaputte Antwort, Dienst meldet `unavailable`).
+
+    `code` traegt Learnings Fehlercode, wenn der Dienst ihn bei `unavailable` nennt
+    (etwa `session_grading_unavailable`: Leser/Rubrik gerade nicht verfuegbar, wiederholbar).
+    """
+
+    def __init__(self, *args: object, code: str | None = None) -> None:
+        super().__init__(*args)
+        self.code = code
 
 
 class LearningAbgelehnt(Exception):
@@ -117,7 +125,7 @@ class LernMcp:
                 text = code
             if inhalt.get("state") == "unavailable":
                 log.warning("Learning-Aufruf %s: Dienst nicht verfuegbar", tool)
-                raise LearningWeg(tool)
+                raise LearningWeg(tool, code=code[:60])
             raise LearningAbgelehnt(text[:300], code[:60])
         result = inhalt.get("result")
         if result is None:

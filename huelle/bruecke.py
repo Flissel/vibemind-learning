@@ -2,8 +2,13 @@
 
 Starlette mit async Handlern; die Clients (LernMcp, PenEchoMcp, httpx.Client) sind
 synchron und laufen im Threadpool. Routen, die Sitzung, Flaeche oder Sperre veraendern
-(oeffnen, antwort, weiter, zeichnung), laufen nacheinander unter einer Sperre des
-Ablaufs; PenEchoMcp ist nicht fuer parallele Aufrufe gebaut.
+(oeffnen, antwort, weiter, zeichnung, abgeben, korrektur, passt), laufen nacheinander unter
+einer Sperre des Ablaufs; PenEchoMcp ist nicht fuer parallele Aufrufe gebaut.
+
+Flaeche zuerst: `abgeben` (Schnappschuss -> Vorbewertung -> Karte), `korrektur` („Falsch
+gelesen“/„Selbst eintippen“: getippte Antwort mit `korrigiert_aus`) und `passt` (Vorbewertung
+buchen). „Ueberarbeiten“ braucht keine Route. Die Bruecke merkt sich keine Vorbewertung: ihre
+Kennung kommt von der Seite, Learning prueft sie (auch nach einem Neustart der Huelle).
 
 Die Lernenden-ID kommt nur aus der Einstellung. Geloggt werden nur Typnamen.
 """
@@ -36,6 +41,7 @@ from .einstellung import Einstellung, Kurs
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import BEREICH_BREITE, BEREICH_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
 from .sperre import Sperre
+from .tafel import aufgabentext
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +71,29 @@ UNBEKANNTER_KURS = "Diesen Kurs gibt es hier nicht."
 UNGUELTIG = "Ungültige Eingabe."
 KEINE_ZEICHENAUFGABE = "Die aktuelle Aufgabe ist keine Zeichenaufgabe."
 ERKLAER_FRAGE = "Erklär mir das."
+# Flaeche zuerst (Abgeben, Falsch gelesen, Passt).
+KEINE_FLAECHENAUFGABE = "Diese Aufgabe beantworten Sie in der Seitenleiste."
+KEINE_KORREKTUR = "Bei dieser Aufgabe gibt es nichts Gelesenes zu korrigieren."
+BEWERTUNG_WEG = "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab."
+NUR_UEBEN = "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vorbewertung zu."
+NICHT_BESTAETIGT = (
+    "Diese Rückmeldung lässt sich nicht bestätigen. Bitte überarbeiten Sie Ihr Ergebnis oder tippen Sie es selbst ein."
+)
+# Text der Rueckmeldungskarte unter dem Urteil (nur Richtigkeit, nie die Zahl der Versuche).
+KARTE_RICHTIG = "Gut gemacht."
+KARTE_NOCH_NICHT = (
+    "Sie können Ihr Ergebnis überarbeiten und noch einmal abgeben. Die KI auf der Fläche erklärt Ihnen gern den Weg."
+)
+KARTE_NICHT_LESBAR = (
+    "Ihr Ergebnis war nicht sicher lesbar. Bitte schreiben Sie es deutlicher in das Feld oder tippen Sie es selbst ein."
+)
+
+# Wie services/adaptive_engine/session_service.py: deterministisch bewertete Typen lesen das
+# Ergebnisfeld, Rubrik-Typen den ganzen Aufgabenbereich. `code` bleibt in der Seitenleiste.
+DETERMINISTISCHE_TYPEN = frozenset({"single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"})
+BEREICHS_TYPEN = frozenset({"open", "case", "penecho_canvas"})
+_FLAECHEN_TYPEN = DETERMINISTISCHE_TYPEN | BEREICHS_TYPEN
+_BEWERTUNG_WEG_CODE = "session_grading_unavailable"
 
 TRAINING_BLUEPRINT = {"max_attempts": 20}
 MAX_BODY = 256 * 1024
@@ -183,6 +212,13 @@ def rueckmeldung_text(turn: dict[str, Any]) -> str | None:
     kopf = _RUECKMELDUNG.get(str(feedback.get("state")))
     if kopf:
         zeilen.append(kopf)
+    zeilen += _kriterien_zeilen(feedback)
+    return "\n\n".join(zeilen) or None
+
+
+def _kriterien_zeilen(feedback: dict[str, Any]) -> list[str]:
+    """Die nicht voll erfuellten Kriterien als „Beschreibung: Rueckmeldung“, ohne Quellenmarken."""
+    zeilen = []
     for k in feedback.get("criteria") or []:
         if not isinstance(k, dict):
             continue
@@ -192,7 +228,41 @@ def rueckmeldung_text(turn: dict[str, Any]) -> str | None:
             beschreibung = beschreibung.rstrip(" .:") if isinstance(beschreibung, str) else ""
             text = _ohne_quellenmarken(text)
             zeilen.append(f"{beschreibung}: {text}" if beschreibung else text)
-    return "\n\n".join(zeilen) or None
+    return zeilen
+
+
+def _punkte(vorbewertung: dict[str, Any]) -> float | None:
+    score = vorbewertung.get("score")
+    return float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None
+
+
+def urteil_aus(vorbewertung: dict[str, Any]) -> str:
+    """Urteil der Rueckmeldungskarte aus Learnings Vorbewertung, nur nach Richtigkeit (Punkte).
+
+    Nicht lesbar -> „Nicht lesbar.“; 1 -> „Richtig.“; zwischen 0 und 1 -> „Teilweise richtig.“;
+    sonst „Noch nicht richtig.“. Rubrik-Typen nach derselben Regel.
+    """
+    if vorbewertung.get("lesbar") is not True:
+        return "Nicht lesbar."
+    score = _punkte(vorbewertung)
+    if score is None:
+        return "Noch nicht richtig."
+    if score >= 1:
+        return "Richtig."
+    if score > 0:
+        return "Teilweise richtig."
+    return "Noch nicht richtig."
+
+
+def kartentext(vorbewertung: dict[str, Any]) -> str:
+    """Rueckmeldung unter dem Urteil: Kriterien (Rubrik), sonst ein kurzer Satz je Urteil."""
+    urteil = urteil_aus(vorbewertung)
+    if urteil == "Nicht lesbar.":
+        return KARTE_NICHT_LESBAR
+    feedback = vorbewertung.get("feedback")
+    zeilen = _kriterien_zeilen(feedback) if isinstance(feedback, dict) else []
+    zeilen.append(KARTE_RICHTIG if urteil == "Richtig." else KARTE_NOCH_NICHT)
+    return "\n\n".join(zeilen)
 
 
 # mcp/tools/tutor.py nummeriert die Quellen als S1, S2, ...; die Huelle zeigt sie nicht an.
@@ -219,6 +289,30 @@ def _mit_verlauf(verlauf: list[tuple[str, str]], frage: str) -> str:
         zeilen += [f"Lernende Person: {alt}", f"Tutor: {antwort[:_TUTOR_ANTWORT_MAX]}"]
     zeilen += ["", f"Neue Frage der lernenden Person: {frage}"]
     return "\n".join(zeilen)
+
+
+def _tafeltext(task: dict[str, Any], nummer: int) -> str:
+    """`tafel.aufgabentext` ohne den Kopf „Aufgabe {nummer}: “, den `aufgabe_setzen` selbst voranstellt.
+
+    So steht auf dem Board genau `aufgabentext(task, nummer)` und der Kopf nicht doppelt.
+    """
+    return aufgabentext(task, nummer).removeprefix(f"Aufgabe {nummer}: ")
+
+
+def _revision_aus(body: dict[str, Any]) -> int:
+    revision = body.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise _Antwort(400, {"meldung": UNGUELTIG})
+    return revision
+
+
+def _vorbewertung_id_aus(body: dict[str, Any]) -> str:
+    """Kennung der Vorbewertung aus dem Body, als normierte UUID (Learning vergibt uuid4)."""
+    kennung = body.get("vorbewertung_id")
+    norm = _uuid(kennung) if isinstance(kennung, str) and len(kennung) <= 64 else None
+    if norm is None:
+        raise _Antwort(400, {"meldung": UNGUELTIG})
+    return norm
 
 
 def _als_png(bild: bytes) -> bytes:
@@ -265,6 +359,9 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/antwort", self._r_antwort, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/weiter", self._r_weiter, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/zeichnung", self._r_zeichnung, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/abgeben", self._r_abgeben, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/korrektur", self._r_korrektur, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/passt", self._r_passt, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/erklaeren", self._r_erklaeren, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/hinweis", self._r_hinweis, methods=["POST"]),
             Route(f"{p}/notizen", self._r_notizen, methods=["GET"]),
@@ -288,8 +385,11 @@ class Bruecke:
                 body = await run_in_threadpool(arbeit)
         except _Antwort as antwort:
             return self._json(antwort.status, antwort.body)
-        except LearningWeg:
+        except LearningWeg as fehler:
             # Die Sperre bleibt, wie sie ist.
+            if fehler.code == _BEWERTUNG_WEG_CODE:
+                # Leser oder Rubrik gerade nicht verfuegbar; nichts wurde gespeichert, erneut abgeben geht.
+                return self._json(503, {"meldung": BEWERTUNG_WEG, "code": fehler.code})
             return self._json(503, {"meldung": NICHT_ERREICHBAR})
         except LearningAbgelehnt as fehler:
             return self._json(409, {"meldung": fehler.nachricht, "code": fehler.code})
@@ -422,12 +522,24 @@ class Bruecke:
             self._frei(sitzung)
         if sitzung.aufgabe_id == aufgabe_id and sitzung.nummer == nummer and sitzung.auf_flaeche:
             return nummer, True
-        text = str(task.get("prompt") or "")
+        typ = task.get("type")
+        text = str(task.get("prompt") or "") if typ == "code" else _tafeltext(task, nummer)
+        feld = typ in DETERMINISTISCHE_TYPEN
         ok = self._flaeche_still(
-            sitzung, lambda s: self._penecho.aufgabe_setzen(s, aufgabe_id, text, nummer)
+            sitzung, lambda s: self._penecho.aufgabe_setzen(s, aufgabe_id, text, nummer, mit_ergebnisfeld=feld)
         )
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
         return nummer, ok
+
+    def _board_merken(self, sitzung: _Sitzung) -> None:
+        """documentId des Boards merken (`dokument_merken`), still: Fehler nur als Typ geloggt, nie gemeldet.
+
+        Das eigentliche Speichern in PenEcho loest die Seite aus (BOARD_SPEICHERN.md); der Server kann es nicht.
+        """
+        try:
+            self._auf_flaeche(sitzung, self._penecho.dokument_merken)
+        except Exception as fehler:  # noqa: BLE001 - Merken darf nie eine Abgabe aufhalten
+            log.warning("Board nicht gemerkt: %s", _typ(fehler))
 
     def _frei(self, sitzung: _Sitzung) -> None:
         """Die Sperre ist global: nur loesen, wenn keine andere Sitzung eine offene Pruefungsaufgabe hat.
@@ -627,10 +739,16 @@ class Bruecke:
             progress = turn.get("progress")
             beantwortet_nr = max(int(progress.get("completed") or 1), 1) if isinstance(progress, dict) else 1
         text, flaeche = self._rueckmeldung(sitzung, turn, beantwortet_id, beantwortet_nr)
+        return {"rueckmeldung": text, "flaeche": flaeche, **self._gebucht(sitzung, turn)}
+
+    def _gebucht(self, sitzung: _Sitzung, turn: dict[str, Any]) -> dict[str, Any]:
+        """Schluss nach einer gebuchten Abgabe (`antwort`, `passt`): naechste Aufgabe vormerken, Begriffe.
+
+        Die naechste Aufgabe steht noch nicht auf der Flaeche; das macht `weiter`.
+        """
         sitzung.auf_flaeche = False
         nummer = self._vormerken(sitzung, turn)
-        return {"turn": turn, "rueckmeldung": text, "nummer": nummer, "flaeche": flaeche,
-                "begriffe": self._begriffe(sitzung.kurs)}
+        return {"turn": turn, "nummer": nummer, "begriffe": self._begriffe(sitzung.kurs)}
 
     async def _r_weiter(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
@@ -641,7 +759,127 @@ class Bruecke:
         if turn is None:
             turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
         nummer, flaeche = self._zeigen(sitzung, turn)
+        if flaeche:
+            self._board_merken(sitzung)
         return {"turn": turn, "nummer": nummer, "flaeche": flaeche}
+
+    # ---- Flaeche zuerst: abgeben, korrektur, passt --------------------------
+    async def _r_abgeben(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        return await self._mit_body(request, lambda body: self._abgeben(sid, body), ablauf=True)
+
+    async def _r_korrektur(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        return await self._mit_body(request, lambda body: self._korrektur(sid, body), ablauf=True)
+
+    async def _r_passt(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        return await self._mit_body(request, lambda body: self._passt(sid, body), ablauf=True)
+
+    def _flaechenaufgabe(
+        self, sid: str, sitzung: _Sitzung, revision: int, turn: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], int]:
+        """Die offene Aufgabe laut Learning; eine veraltete Karte fuehrt wie heute zu 409 mit Turn.
+
+        Prueft vor Schnappschuss und Modellaufruf: Revision der Seite, Aufgabe auf der Flaeche.
+        """
+        if turn is None:
+            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+        task = _task(turn)
+        if task is None:
+            self._stand_neu(sid, sitzung, "session_state_conflict")
+        if turn.get("session_revision") != revision:
+            self._stand_neu(sid, sitzung, "session_revision_conflict")
+        if task.get("type") not in _FLAECHEN_TYPEN:
+            raise _Antwort(400, {"meldung": KEINE_FLAECHENAUFGABE})
+        return task, _nummer(turn)
+
+    def _abgeben(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        revision = _revision_aus(body)
+        sid, sitzung, turn = self._sitzung(sid_roh)
+        task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
+        # Deterministische Typen: nur das Ergebnisfeld (die Handschrift); Rubrik-Typen: der ganze Bereich.
+        if task.get("type") in DETERMINISTISCHE_TYPEN:
+            aufnahme = self._penecho.ergebnis_schnappschuss
+        else:
+            aufnahme = self._penecho.schnappschuss
+        try:
+            png = _als_png(self._auf_flaeche(sitzung, lambda s: aufnahme(s, nummer)))
+        except Exception as fehler:  # noqa: BLE001 - PenEcho weg oder Bild unlesbar
+            log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
+            raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
+        payload = {"handschrift_png_base64": base64.b64encode(png).decode("ascii")}
+        return self._vorbewerten(sid, sitzung, revision, task, nummer, payload)
+
+    def _korrektur(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        revision = _revision_aus(body)
+        kennung = _vorbewertung_id_aus(body)
+        answer = body.get("answer")
+        if not isinstance(answer, dict):
+            raise _Antwort(400, {"meldung": UNGUELTIG})
+        sid, sitzung, turn = self._sitzung(sid_roh)
+        task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
+        if task.get("type") not in DETERMINISTISCHE_TYPEN:
+            # Rubrik-Typen haben nichts Gelesenes (Spec): nur „Passt“ und „Überarbeiten“.
+            raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
+        return self._vorbewerten(sid, sitzung, revision, task, nummer, {"answer": answer, "korrigiert_aus": kennung})
+
+    def _vorbewerten(
+        self, sid: str, sitzung: _Sitzung, revision: int, task: dict[str, Any], nummer: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """`learning_task_preview`, dann die Karte zur Aufgabe; die Revision bleibt unveraendert."""
+        try:
+            result = self._lern.rufe(
+                "learning_task_preview", "learning.task.preview", session_id=sid, expected_revision=revision,
+                payload=payload, schreibend=True,
+            )
+        except LearningAbgelehnt as fehler:
+            self._vorbewertung_abgelehnt(sid, sitzung, fehler, bestaetigen=False)
+        turn = _turn(result)
+        vorbewertung = result.get("vorbewertung")
+        if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
+            raise LearningWeg("vorbewertung")
+        urteil = urteil_aus(vorbewertung)
+        gelesen = vorbewertung.get("gelesen_text") if urteil != "Nicht lesbar." else None
+        text = kartentext(vorbewertung)
+        flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+            s, task["id"], nummer, gelesen=gelesen if isinstance(gelesen, str) else None, urteil=urteil, text=text,
+        ))
+        if flaeche:
+            self._board_merken(sitzung)
+        return {"vorbewertung": vorbewertung, "urteil": urteil, "turn": turn, "flaeche": flaeche}
+
+    def _passt(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        revision = _revision_aus(body)
+        kennung = _vorbewertung_id_aus(body)
+        sid, sitzung, _ = self._sitzung(sid_roh)
+        try:
+            result = self._lern.rufe(
+                "learning_task_confirm", "learning.task.confirm", session_id=sid, expected_revision=revision,
+                payload={"vorbewertung_id": kennung}, schreibend=True,
+            )
+        except LearningAbgelehnt as fehler:
+            self._vorbewertung_abgelehnt(sid, sitzung, fehler, bestaetigen=True)
+        turn = _turn(result)
+        # Gebucht wie `antwort`: KI frei, naechste Aufgabe merken; die Karte steht schon auf der Flaeche.
+        self._frei(sitzung)
+        if turn.get("state") == "completed":
+            self._ende_setzen(sitzung.kurs, sitzung.sid)
+        antwort = {"rueckmeldung": None, **self._gebucht(sitzung, turn)}
+        self._board_merken(sitzung)
+        return antwort
+
+    def _vorbewertung_abgelehnt(
+        self, sid: str, sitzung: _Sitzung, fehler: LearningAbgelehnt, *, bestaetigen: bool
+    ) -> NoReturn:
+        """Pruefungssitzung 403 (die Huelle uebt nur), ungueltig 400, sonst wie heute 409 mit Turn."""
+        if fehler.code == "session_access_denied":
+            raise _Antwort(403, {"code": fehler.code, "meldung": NUR_UEBEN})
+        if fehler.code == "invalid_session_request":
+            # Bestaetigen: nicht lesbare oder unbekannte Vorbewertung. Vorbewerten: Antwortformat falsch.
+            raise _Antwort(400, {"code": fehler.code, "meldung": NICHT_BESTAETIGT if bestaetigen else NICHT_ANGENOMMEN})
+        self._stand_neu(sid, sitzung, fehler.code)
 
     async def _r_zeichnung(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]

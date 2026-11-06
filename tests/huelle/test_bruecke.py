@@ -13,12 +13,16 @@ import pytest
 from starlette.testclient import TestClient
 
 from spaces.learning.huelle.bruecke import (
-    FLAECHE_WEG, KEIN_KURS, NICHT_ANGENOMMEN, NICHT_ERREICHBAR, SCHON_ABGEGEBEN, Bruecke,
+    BEWERTUNG_WEG, FLAECHE_WEG, KEIN_KURS, KEINE_FLAECHENAUFGABE, KEINE_KORREKTUR, NICHT_ANGENOMMEN,
+    NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, Bruecke, urteil_aus,
 )
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
-from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich
+from spaces.learning.huelle.penecho_mcp import (
+    URTEILE, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
+)
 from spaces.learning.huelle.sperre import Sperre
+from spaces.learning.huelle.tafel import aufgabentext
 
 KURS = "11111111-1111-4111-8111-111111111111"
 FREMD = "22222222-2222-4222-8222-222222222222"
@@ -83,6 +87,9 @@ class FakePenEcho:
         self.bild = bild
         self.aufrufe: list[tuple[Any, ...]] = []
         self.unbekannt_einmal = False
+        # (aufgabe_id, nummer, mit_ergebnisfeld) je aufgabe_setzen; das alte Tupel bleibt fuer die alten Tests.
+        self.ergebnisfelder: list[tuple[str, int, bool]] = []
+        self.merken_fehler: Exception | None = None
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -98,10 +105,31 @@ class FakePenEcho:
     def vergessen(self, schluessel: str) -> None:
         self.aufrufe.append(("vergessen", schluessel))
 
-    def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int) -> None:
+    def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
+                       mit_ergebnisfeld: bool = False) -> None:
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
+        self.ergebnisfelder.append((aufgabe_id, nummer, mit_ergebnisfeld))
         bereich(nummer)  # wie PenEchoMcp: ausserhalb der 20 Bereiche ValueError
         self._pruefen("aufgabe_setzen")
+
+    def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
+        self.aufrufe.append(("ergebnis_schnappschuss", session_id, nummer))
+        self._pruefen("ergebnis_schnappschuss")
+        return self.bild
+
+    def rueckmeldung_zeigen(self, session_id: str, aufgabe_id: str, nummer: int, *,
+                            gelesen: str | None, urteil: str, text: str) -> None:
+        self.aufrufe.append(("rueckmeldung_zeigen", session_id, aufgabe_id, nummer, gelesen, urteil, text))
+        bereich(nummer)
+        if urteil not in URTEILE:  # wie PenEchoMcp
+            raise ValueError("unbekanntes Urteil")
+        self._pruefen("rueckmeldung_zeigen")
+
+    def dokument_merken(self, session_id: str) -> bool:
+        self.aufrufe.append(("dokument_merken", session_id))
+        if self.merken_fehler is not None:
+            raise self.merken_fehler
+        return True
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
         self.aufrufe.append(("notizkarte", session_id, aufgabe_id, titel, text))
@@ -1121,3 +1149,389 @@ def test_rueckfrage_vergisst_das_gespraech_bei_neuer_aufgabe() -> None:
     client.post(f"/lernen/api/sitzungen/{SID}/erklaeren", json={"frage": "Und jetzt?"})
     letzte = [kw["payload"]["question"] for t, kw in lern.aufrufe if t == "learning_tutor_ask"][-1]
     assert "Zu Aufgabe 1." not in letzte and letzte == "Und jetzt?"
+
+
+# ---- Flaeche zuerst: abgeben, korrektur, passt (Vorbewertung) -------------------------
+
+VOR_ID = "55555555-5555-4555-8555-555555555551"
+VOR_ID_2 = "55555555-5555-4555-8555-555555555552"
+
+
+def _vor(*, lesbar: bool = True, score: float | None = 1.0, gelesen: str | None = "-1,5",
+         art: str = "deterministic", quelle: str = "handschrift", criteria: list[dict[str, Any]] | None = None,
+         vid: str = VOR_ID) -> dict[str, Any]:
+    feedback = None
+    if lesbar:
+        zustand = "correct" if score == 1 else ("partial" if score and score > 0 else "incorrect")
+        feedback = {"state": zustand, "score": score, "rationale_codes": [], "source_refs": [],
+                    "criteria": criteria or []}
+    return {"id": vid, "attempt_id": "77777777-7777-4777-8777-777777777771", "quelle": quelle, "lesbar": lesbar,
+            "gelesen_text": gelesen, "art": art, "score": score if lesbar else None,
+            "accepted": (score == 1) if lesbar else None, "feedback": feedback}
+
+
+def _naechster() -> dict[str, Any]:
+    return turn(TASK_2, completed=1, revision=3, mode="training",
+                feedback={"state": "correct", "score": 1.0, "rationale_codes": [], "source_refs": []})
+
+
+def _flaechen_sitzung(typ: str = "numeric", *, penecho: FakePenEcho | None = None,
+                      vor: dict[str, Any] | None = None, confirm: Any = None, **kw: Any):
+    offen = turn(TASK_1, typ=typ, mode="training")
+    lern = FakeLern({
+        "learning_course_overview": _ueberblick(offen),
+        "learning_task_next": {"session": offen},
+        "learning_task_preview": {"session": offen, "vorbewertung": vor or _vor()},
+        "learning_task_confirm": confirm if confirm is not None else {"session": _naechster()},
+    })
+    client, sperre, penecho, _ = _offen(lern, penecho, **kw)
+    return lern, client, sperre, penecho
+
+
+def _aufrufe(lern: FakeLern, tool: str) -> list[dict[str, Any]]:
+    return [kw for t, kw in lern.aufrufe if t == tool]
+
+
+def _karten(penecho: FakePenEcho) -> list[tuple[Any, ...]]:
+    return [a for a in penecho.aufrufe if a[0] == "rueckmeldung_zeigen"]
+
+
+def test_abgeben_numeric_nimmt_ergebnisfeld_und_zeigt_karte() -> None:
+    lern, client, sperre, penecho = _flaechen_sitzung("numeric")
+    vorher = len(penecho.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200, r.text
+    (kw,) = _aufrufe(lern, "learning_task_preview")
+    assert kw["session_id"] == SID and kw["expected_revision"] == 1 and kw["schreibend"] is True
+    assert set(kw["payload"]) == {"handschrift_png_base64"}
+    assert base64.b64decode(kw["payload"]["handschrift_png_base64"]) == PNG
+    neu = penecho.aufrufe[vorher:]
+    assert ("ergebnis_schnappschuss", "pe-1", 1) in neu and "schnappschuss" not in [a[0] for a in neu]
+    (karte,) = _karten(penecho)
+    assert karte[:6] == ("rueckmeldung_zeigen", "pe-1", TASK_1, 1, "-1,5", "Richtig.")
+    namen = [a[0] for a in neu]
+    assert "dokument_merken" in namen and namen.index("dokument_merken") > namen.index("rueckmeldung_zeigen")
+    body = r.json()
+    assert body["turn"]["session_revision"] == 1 and body["turn"]["task"]["id"] == TASK_1
+    assert body["vorbewertung"]["id"] == VOR_ID and body["flaeche"] is True and body["urteil"] == "Richtig."
+    assert "learning_task_answer" not in lern.tools() and "learning_task_confirm" not in lern.tools()
+    assert sperre.gesperrt() is False  # Ueben bleibt KI-frei
+
+
+def test_abgeben_open_nimmt_ganzen_bereich() -> None:
+    kriterium = {"criterion_id": "c1", "description": "Nennt die Ursache", "score": 0.5,
+                 "feedback": "Die Ursache fehlt (S1)."}
+    lern, client, _, penecho = _flaechen_sitzung(
+        "open", vor=_vor(score=0.5, gelesen=None, art="rubric", criteria=[kriterium]))
+    vorher = len(penecho.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200, r.text
+    neu = [a[0] for a in penecho.aufrufe[vorher:]]
+    assert "schnappschuss" in neu and "ergebnis_schnappschuss" not in neu
+    (karte,) = _karten(penecho)
+    assert karte[4] is None and karte[5] == "Teilweise richtig."
+    assert "Nennt die Ursache: Die Ursache fehlt." in karte[6] and "S1" not in karte[6]
+    assert base64.b64decode(_aufrufe(lern, "learning_task_preview")[0]["payload"]["handschrift_png_base64"]) == PNG
+
+
+@pytest.mark.parametrize("typ", ["case", "penecho_canvas"])
+def test_abgeben_case_und_zeichnung_nehmen_den_bereich(typ: str) -> None:
+    _, client, _, penecho = _flaechen_sitzung(typ, vor=_vor(gelesen=None, art="rubric"))
+    vorher = len(penecho.aufrufe)
+    assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).status_code == 200
+    assert "schnappschuss" in [a[0] for a in penecho.aufrufe[vorher:]]
+
+
+def test_abgeben_code_400() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("code")
+    vorher = len(penecho.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 400
+    assert r.json()["meldung"] == KEINE_FLAECHENAUFGABE == "Diese Aufgabe beantworten Sie in der Seitenleiste."
+    assert "learning_task_preview" not in lern.tools()
+    assert not any("schnappschuss" in a[0] for a in penecho.aufrufe[vorher:])
+
+
+def test_abgeben_ohne_flaeche_503() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+    penecho.fehler = PenEchoNichtErreichbar("weg")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 503 and r.json() == {"meldung": FLAECHE_WEG}
+    assert "learning_task_preview" not in lern.tools()
+
+
+def test_abgeben_ungueltig_400() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    for body in ({}, {"revision": "1"}, {"revision": True}, {"revision": 0}):
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json=body).status_code == 400, body
+    assert "learning_task_preview" not in lern.tools()
+
+
+def test_abgeben_veraltete_karte_409_mit_turn() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+    vorher = len(penecho.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 7})
+    assert r.status_code == 409 and r.json()["meldung"] == SCHON_ABGEGEBEN
+    assert r.json()["turn"]["task"]["id"] == TASK_1
+    assert "learning_task_preview" not in lern.tools()
+    assert not any("schnappschuss" in a[0] for a in penecho.aufrufe[vorher:])
+    # Auch wenn erst Learning die Revision ablehnt.
+    lern.antworten["learning_task_preview"] = LearningAbgelehnt("conflict", "session_revision_conflict")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 409 and r.json()["code"] == "session_revision_conflict" and "turn" in r.json()
+    assert _karten(penecho) == []
+
+
+def test_abgeben_bewertung_nicht_erreichbar_503() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+    lern.antworten["learning_task_preview"] = LearningWeg("learning_task_preview", code="session_grading_unavailable")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 503
+    assert r.json() == {"meldung": BEWERTUNG_WEG, "code": "session_grading_unavailable"}
+    assert "Bewertung" in BEWERTUNG_WEG and "noch einmal" in BEWERTUNG_WEG
+    assert _karten(penecho) == []
+    # Ohne Code bleibt es die allgemeine Meldung.
+    lern.antworten["learning_task_preview"] = LearningWeg("learning_task_preview")
+    assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).json() == {
+        "meldung": NICHT_ERREICHBAR}
+
+
+def test_vorbewertung_in_pruefung_403() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    verweigert = LearningAbgelehnt("exam sessions have no preview grading", "session_access_denied")
+    lern.antworten["learning_task_preview"] = verweigert
+    lern.antworten["learning_task_confirm"] = verweigert
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 403 and r.json() == {"code": "session_access_denied", "meldung": NUR_UEBEN}
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 403 and r.json()["meldung"] == NUR_UEBEN
+    r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur",
+                    json={"revision": 1, "vorbewertung_id": VOR_ID, "answer": {"value": 1}})
+    assert r.status_code == 403
+
+
+def test_abgeben_unlesbar_karte_ohne_gelesen_und_passt_400() -> None:
+    lern, client, _, penecho = _flaechen_sitzung(
+        "numeric", vor=_vor(lesbar=False, gelesen="Kritzel"),
+        confirm=LearningAbgelehnt("vorbewertung is not readable", "invalid_session_request"))
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200, r.text
+    (karte,) = _karten(penecho)
+    assert karte[4] is None and karte[5] == "Nicht lesbar."
+    assert "Kritzel" not in karte[6] and "tippen Sie es selbst ein" in karte[6]
+    assert r.json()["vorbewertung"]["lesbar"] is False and r.json()["urteil"] == "Nicht lesbar."
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 400
+    assert r.json() == {"code": "invalid_session_request", "meldung": NICHT_BESTAETIGT}
+
+
+def test_korrektur_schickt_korrigiert_aus() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+    lern.antworten["learning_task_preview"] = {
+        "session": turn(TASK_1, typ="numeric", mode="training"),
+        "vorbewertung": _vor(quelle="getippt", gelesen=None, vid=VOR_ID_2),
+    }
+    vorher = len(penecho.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur",
+                    json={"revision": 1, "vorbewertung_id": VOR_ID, "answer": {"value": -1.5}})
+    assert r.status_code == 200, r.text
+    (kw,) = _aufrufe(lern, "learning_task_preview")
+    assert kw["payload"] == {"answer": {"value": -1.5}, "korrigiert_aus": VOR_ID}
+    assert kw["expected_revision"] == 1 and kw["schreibend"] is True
+    neu = [a[0] for a in penecho.aufrufe[vorher:]]
+    assert not any("schnappschuss" in n for n in neu)
+    (karte,) = _karten(penecho)
+    assert karte[2:6] == (TASK_1, 1, None, "Richtig.")
+    assert r.json()["vorbewertung"]["id"] == VOR_ID_2 and r.json()["turn"]["session_revision"] == 1
+    assert r.json()["flaeche"] is True and "dokument_merken" in neu
+
+
+def test_korrektur_ungueltig_und_nur_fuer_deterministische_typen() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    for body in ({"revision": 1, "answer": {"value": 1}},
+                 {"revision": 1, "vorbewertung_id": VOR_ID},
+                 {"revision": 1, "vorbewertung_id": VOR_ID, "answer": "x"},
+                 {"revision": 1, "vorbewertung_id": 5, "answer": {"value": 1}},
+                 {"vorbewertung_id": VOR_ID, "answer": {"value": 1}}):
+        assert client.post(f"/lernen/api/sitzungen/{SID}/korrektur", json=body).status_code == 400, body
+    assert "learning_task_preview" not in lern.tools()
+    lern2, client2, _, _ = _flaechen_sitzung("open", vor=_vor(gelesen=None, art="rubric"))
+    r = client2.post(f"/lernen/api/sitzungen/{SID}/korrektur",
+                     json={"revision": 1, "vorbewertung_id": VOR_ID, "answer": {"text": "x"}})
+    assert r.status_code == 400 and r.json()["meldung"] == KEINE_KORREKTUR
+    assert "learning_task_preview" not in lern2.tools()
+
+
+def test_korrektur_falsches_format_400_und_veraltet_409() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    lern.antworten["learning_task_preview"] = LearningAbgelehnt("answer format is invalid", "invalid_session_request")
+    body = {"revision": 1, "vorbewertung_id": VOR_ID, "answer": {"value": "x"}}
+    r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur", json=body)
+    assert r.status_code == 400 and r.json()["meldung"] == NICHT_ANGENOMMEN
+    lern.antworten["learning_task_preview"] = LearningAbgelehnt("conflict", "session_state_conflict")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur", json=body)
+    assert r.status_code == 409 and r.json()["meldung"] == SCHON_ABGEGEBEN and "turn" in r.json()
+    r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur", json={**body, "revision": 4})
+    assert r.status_code == 409 and r.json()["code"] == "session_revision_conflict"
+
+
+def test_passt_bestaetigt_und_merkt_naechste() -> None:
+    lern, client, sperre, penecho = _flaechen_sitzung("numeric")
+    nachher = _ueberblick(_naechster())
+    nachher["begriffe"] = [{"concept_key": "k1", "titel": "Begriff", "beherrschung": 0.7}]
+    lern.antworten["learning_course_overview"] = nachher
+    vorher = len(penecho.aufrufe)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 200, r.text
+    (kw,) = _aufrufe(lern, "learning_task_confirm")
+    assert kw["payload"] == {"vorbewertung_id": VOR_ID}
+    assert kw["session_id"] == SID and kw["expected_revision"] == 1 and kw["schreibend"] is True
+    body = r.json()
+    assert body["nummer"] == 2 and body["turn"]["task"]["id"] == TASK_2
+    assert body["begriffe"] == [{"concept_key": "k1", "titel": "Begriff", "beherrschung": 0.7}]
+    assert body["rueckmeldung"] is None
+    neu = [a[0] for a in penecho.aufrufe[vorher:]]
+    assert "rueckmeldung_zeigen" not in neu and "notizkarte" not in neu and "aufgabe_setzen" not in neu
+    assert "dokument_merken" in neu
+    assert sperre.gesperrt() is False
+    # weiter zeigt danach die vorgemerkte Aufgabe.
+    lern.antworten["learning_task_next"] = {"session": _naechster()}
+    r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+    assert r.status_code == 200 and r.json()["nummer"] == 2
+    assert (TASK_2, 2, True) in penecho.ergebnisfelder
+
+
+def test_passt_doppelt_409_mit_turn() -> None:
+    lern, client, _, _ = _flaechen_sitzung(
+        "numeric", confirm=[{"session": _naechster()},
+                            LearningAbgelehnt("vorbewertung not current", "session_state_conflict")])
+    body = {"revision": 1, "vorbewertung_id": VOR_ID}
+    assert client.post(f"/lernen/api/sitzungen/{SID}/passt", json=body).status_code == 200
+    lern.antworten["learning_task_next"] = {"session": _naechster()}
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json=body)
+    assert r.status_code == 409
+    assert r.json()["code"] == "session_state_conflict" and r.json()["meldung"] == SCHON_ABGEGEBEN
+    assert r.json()["turn"]["task"]["id"] == TASK_2
+    assert lern.tools().count("learning_task_confirm") == 2
+    assert lern.tools()[-1] == "learning_task_next"
+
+
+def test_passt_veraltete_revision_409_mit_turn() -> None:
+    lern, client, _, _ = _flaechen_sitzung(
+        "numeric", confirm=LearningAbgelehnt("adaptive session revision conflict", "session_revision_conflict"))
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 409 and r.json()["meldung"] == SCHON_ABGEGEBEN
+    assert r.json()["turn"]["task"]["id"] == TASK_1
+
+
+def test_passt_ungueltig_400() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    for body in ({"revision": 1}, {"revision": 1, "vorbewertung_id": ""}, {"vorbewertung_id": VOR_ID},
+                 {"revision": 1, "vorbewertung_id": ["x"]}):
+        assert client.post(f"/lernen/api/sitzungen/{SID}/passt", json=body).status_code == 400, body
+    assert "learning_task_confirm" not in lern.tools()
+
+
+def test_passt_nach_neustart_der_bruecke() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200
+    vid = r.json()["vorbewertung"]["id"]
+    # Neue Bruecke-Instanz: nichts im Speicher, die Kennung kommt nur aus dem Body.
+    client2, _, penecho2 = bauen(lern)
+    vorher = len(lern.aufrufe)
+    r = client2.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": vid})
+    assert r.status_code == 200, r.text
+    neu = lern.aufrufe[vorher:]
+    assert neu[0] == ("learning_task_next", {"session_id": SID})
+    (kw,) = [k for t, k in neu if t == "learning_task_confirm"]
+    assert kw["session_id"] == SID and kw["expected_revision"] == 1
+    assert kw["payload"] == {"vorbewertung_id": VOR_ID} and kw["schreibend"] is True
+    assert r.json()["nummer"] == 2
+    assert "dokument_merken" in penecho2.namen()
+
+
+def test_passt_am_kursende_merkt_das_ende(tmp_path) -> None:
+    datei = tmp_path / "kursende.json"
+    fertig = turn(None, completed=5, revision=9, state="completed", mode="training")
+    _, client, _, _ = _flaechen_sitzung("numeric", confirm={"session": fertig}, kursende=datei)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 200 and r.json()["nummer"] is None
+    assert json.loads(datei.read_text(encoding="utf-8")) == {f"{ACTOR}|{KURS}": SID}
+
+
+def test_merken_fehler_blockiert_nichts(caplog: pytest.LogCaptureFixture) -> None:
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+    penecho.merken_fehler = PenEchoNichtErreichbar("geheim -1,5")
+    with caplog.at_level("DEBUG"):
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).status_code == 200
+        assert client.post(f"/lernen/api/sitzungen/{SID}/passt",
+                           json={"revision": 1, "vorbewertung_id": VOR_ID}).status_code == 200
+        lern.antworten["learning_task_next"] = {"session": _naechster()}
+        assert client.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 200
+    assert penecho.namen().count("dokument_merken") == 3
+    assert "geheim" not in caplog.text and "-1,5" not in caplog.text
+    assert base64.b64encode(PNG).decode("ascii") not in caplog.text
+
+
+def test_weiter_merkt_das_board_still() -> None:
+    naechster = turn(TASK_2, completed=1, revision=2, mode="training")
+    lern, client, _, penecho = _offene_sitzung({"session": naechster})
+    lern.antworten["learning_task_next"] = [{"session": naechster}]
+    client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})
+    assert "dokument_merken" not in penecho.namen()  # die alte Route bleibt, wie sie ist
+    r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+    assert r.status_code == 200
+    namen = penecho.namen()
+    assert namen.index("dokument_merken") > max(i for i, n in enumerate(namen) if n == "aufgabe_setzen")
+
+
+@pytest.mark.parametrize("typ, mit", [
+    ("single_choice", True), ("multiple_choice", True), ("matching", True), ("ordering", True),
+    ("numeric", True), ("fill_in", True), ("open", False), ("case", False), ("penecho_canvas", False),
+    ("code", False),
+])
+def test_zeigen_setzt_ergebnisfeld_nur_fuer_deterministische_typen(typ: str, mit: bool) -> None:
+    offen = turn(TASK_1, typ=typ, mode="training")
+    offen["task"]["prompt"] = "Was gilt für $x^2$?"
+    if typ in ("single_choice", "multiple_choice", "ordering"):
+        offen["task"]["options"] = [{"id": "o1", "label": "Eins"}, {"id": "o2", "label": "Zwei"}]
+    lern = FakeLern({"learning_course_overview": _ueberblick(offen), "learning_task_next": {"session": offen}})
+    _, _, penecho, _ = _offen(lern)
+    assert penecho.ergebnisfelder == [(TASK_1, 1, mit)]
+    (gesetzt,) = [a for a in penecho.aufrufe if a[0] == "aufgabe_setzen"]
+    text = gesetzt[3]
+    if typ == "code":
+        assert text == "Was gilt für $x^2$?"  # wie bisher: nur der Prompt
+    else:
+        # aufgabe_setzen stellt selbst „Aufgabe {nummer}: “ voran; zusammen ergibt das genau aufgabentext.
+        assert "Aufgabe 1: " + text == aufgabentext(offen["task"], 1)
+        assert not text.startswith("Aufgabe") and "$" not in text
+    if typ in ("single_choice", "multiple_choice", "ordering"):
+        assert "A) Eins" in text.splitlines() and "B) Zwei" in text.splitlines()
+
+
+@pytest.mark.parametrize("vor, erwartet", [
+    ({"lesbar": True, "score": 1.0, "accepted": True}, "Richtig."),
+    ({"lesbar": True, "score": 1, "accepted": True}, "Richtig."),
+    ({"lesbar": True, "score": 0.5, "accepted": False}, "Teilweise richtig."),
+    ({"lesbar": True, "score": 0.01, "accepted": False}, "Teilweise richtig."),
+    ({"lesbar": True, "score": 0.0, "accepted": False}, "Noch nicht richtig."),
+    ({"lesbar": True, "score": None, "accepted": None}, "Noch nicht richtig."),
+    ({"lesbar": True, "score": True, "accepted": True}, "Noch nicht richtig."),
+    ({"lesbar": False, "score": None, "accepted": None}, "Nicht lesbar."),
+    ({"lesbar": False, "score": 1.0, "accepted": True}, "Nicht lesbar."),
+    ({}, "Nicht lesbar."),
+])
+def test_urteil_aus_score(vor: dict[str, Any], erwartet: str) -> None:
+    assert urteil_aus(vor) == erwartet
+    assert erwartet in URTEILE
+
+
+def test_lern_mcp_nicht_verfuegbar_behaelt_den_code() -> None:
+    with pytest.raises(LearningWeg) as weg:
+        LernMcp("http://m.test/mcp", ACTOR, transport=_mcp_antwort(
+            {"state": "unavailable", "error": {"code": "session_grading_unavailable", "message": "x"}}, fehler=True,
+        )).rufe("learning_task_preview", "learning.task.preview")
+    assert weg.value.code == "session_grading_unavailable"
+    assert LearningWeg("x").code is None
