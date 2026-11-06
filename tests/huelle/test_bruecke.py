@@ -89,6 +89,7 @@ class FakePenEcho:
         self.unbekannt_einmal = False
         # (aufgabe_id, nummer, mit_ergebnisfeld) je aufgabe_setzen; das alte Tupel bleibt fuer die alten Tests.
         self.ergebnisfelder: list[tuple[str, int, bool]] = []
+        self.arbeitsfelder: list[tuple[str, int, bool]] = []
         self.merken_fehler: Exception | None = None
 
     def _pruefen(self, name: str) -> None:
@@ -106,9 +107,10 @@ class FakePenEcho:
         self.aufrufe.append(("vergessen", schluessel))
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
-                       mit_ergebnisfeld: bool = False) -> None:
+                       mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False) -> None:
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
         self.ergebnisfelder.append((aufgabe_id, nummer, mit_ergebnisfeld))
+        self.arbeitsfelder.append((aufgabe_id, nummer, mit_arbeitsfeld))
         bereich(nummer)  # wie PenEchoMcp: ausserhalb der 20 Bereiche ValueError
         self._pruefen("aufgabe_setzen")
 
@@ -1507,6 +1509,8 @@ def test_zeigen_setzt_ergebnisfeld_nur_fuer_deterministische_typen(typ: str, mit
     lern = FakeLern({"learning_course_overview": _ueberblick(offen), "learning_task_next": {"session": offen}})
     _, _, penecho, _ = _offen(lern)
     assert penecho.ergebnisfelder == [(TASK_1, 1, mit)]
+    # Offene und Zeichenaufgaben bekommen ein sichtbares Arbeitsfeld, code bleibt in der Seitenleiste.
+    assert penecho.arbeitsfelder == [(TASK_1, 1, typ in ("open", "case", "penecho_canvas"))]
     (gesetzt,) = [a for a in penecho.aufrufe if a[0] == "aufgabe_setzen"]
     text = gesetzt[3]
     if typ == "code":

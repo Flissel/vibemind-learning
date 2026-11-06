@@ -12,7 +12,7 @@ import pytest
 
 from spaces.learning.huelle.penecho_mcp import (
     BEREICHE, FLAECHE_GROESSE, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar, PenEchoPlatzBelegt,
-    PenEchoSitzungUnbekannt, bereich, ergebnisfeld, rueckmeldungsfeld, textfeld,
+    PenEchoSitzungUnbekannt, arbeitsfeld, bereich, ergebnisfeld, rueckmeldungsfeld, textfeld,
 )
 
 TOKEN = "ab" * 32
@@ -999,3 +999,29 @@ def test_unsichtbares_board_wird_gezeigt_und_der_rahmen_neu_gezeichnet(zustand: 
     aktionen = [a["arguments"]["action"] for a in fake.aufrufe("penecho_edit_canvas")]
     assert aktionen[-3:] == ["draw_ink", "show", "draw_ink"]
     assert fake.gezeichnet == 1
+
+
+# ---- Abnahme 06.11.: Arbeitsfeld fuer offene und Zeichenaufgaben -----------------------------
+
+@pytest.mark.parametrize("nummer", range(1, 21))
+def test_arbeitsfeld_rechts_neben_dem_text_mit_rahmen_im_bereich(nummer: int) -> None:
+    # Ohne sichtbare Grenze ragte eine Skizze in den Bereich darueber und an den Rueckmeldungsplatz.
+    b, a, t = bereich(nummer), arbeitsfeld(nummer), textfeld(nummer)
+    assert a["w"] >= 700 and a["h"] >= 600
+    assert _innen({"x": a["x"] - 16, "y": a["y"] - 60, "w": a["w"] + 32, "h": a["h"] + 76}, b)
+    assert a["x"] - 16 >= t["x"] + t["w"]
+
+
+def test_aufgabe_mit_arbeitsfeld_zeichnet_rahmen_und_schild(zustand: Path) -> None:
+    fake = FeldFake(revision=4)
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Skizzieren", 8, mit_arbeitsfeld=True)
+    edits = [e["arguments"] for e in fake.aufrufe("penecho_edit_canvas")]
+    schild = [e for e in edits if e["action"] == "create_text" and e["text"] == "Ihre Lösung zu Aufgabe 8"]
+    assert len(schild) == 1 and schild[0]["requestId"] == "arbeit-t1-8-schild"
+    (rahmen,) = _ink(fake)
+    assert rahmen["requestId"] == "arbeit-t1-8" and rahmen["baseRevision"] == 4
+    a = arbeitsfeld(8)
+    punkte = [q for s in rahmen["strokes"] for q in s["points"]]
+    assert min(q["x"] for q in punkte) < a["x"] and max(q["x"] for q in punkte) > a["x"] + a["w"]
+    assert min(q["y"] for q in punkte) < a["y"] and max(q["y"] for q in punkte) > a["y"] + a["h"]
+    assert fake.aufrufe("penecho_capture_canvas") == []

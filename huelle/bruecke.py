@@ -543,10 +543,9 @@ class Bruecke:
             return nummer, True
         typ = task.get("type")
         text = str(task.get("prompt") or "") if typ == "code" else _tafeltext(task, nummer)
-        feld = typ in DETERMINISTISCHE_TYPEN
-        ok = self._flaeche_still(
-            sitzung, lambda s: self._penecho.aufgabe_setzen(s, aufgabe_id, text, nummer, mit_ergebnisfeld=feld)
-        )
+        feld, arbeit = typ in DETERMINISTISCHE_TYPEN, typ in BEREICHS_TYPEN
+        ok = self._flaeche_still(sitzung, lambda s: self._penecho.aufgabe_setzen(
+            s, aufgabe_id, text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit))
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
         return nummer, ok
 

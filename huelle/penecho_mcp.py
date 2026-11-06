@@ -96,6 +96,17 @@ def ergebnisfeld(nummer: int) -> dict[str, int]:
     }
 
 
+def arbeitsfeld(nummer: int) -> dict[str, int]:
+    """Platz fuer Skizze oder freie Antwort (offene/Zeichenaufgaben): rechts neben dem Text, bis unten.
+
+    Nur eine sichtbare Grenze; bewertet wird weiter der ganze Bereich (`schnappschuss`).
+    """
+    b, t = bereich(nummer), textfeld(nummer)
+    x = t["x"] + t["w"] + _TEXT_RAND
+    return {"x": x, "y": b["y"] + _FELD_RAND_OBEN, "w": b["x"] + b["w"] - _FELD_RAND_RECHTS - x,
+            "h": b["h"] - _FELD_RAND_OBEN - _TEXT_RAND}
+
+
 def rueckmeldungsfeld(nummer: int) -> dict[str, int]:
     """Platz der Rueckmeldung rechts neben `bereich(nummer)`, nicht im Schnappschuss des Bereichs."""
     b = bereich(nummer)
@@ -491,7 +502,8 @@ class PenEchoMcp:
         return True
 
     def aufgabe_setzen(
-        self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False
+        self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
+        mit_arbeitsfeld: bool = False,
     ) -> None:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
@@ -513,7 +525,11 @@ class PenEchoMcp:
         # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
         self._zeigen(session_id, self._struktur(ergebnis).get("objectId"))
         if mit_ergebnisfeld:
-            self._ergebnisfeld_zeichnen(session_id, aufgabe_id, nummer)
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer),
+                                f"Ihr Ergebnis zu Aufgabe {nummer}", "ergebnis")
+        elif mit_arbeitsfeld:
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, arbeitsfeld(nummer),
+                                f"Ihre Lösung zu Aufgabe {nummer}", "arbeit")
 
     def _zeigen(self, session_id: str, objekt_id: object = None) -> None:
         """Board sichtbar machen und die Aufgabe ins Bild holen (show). Ab Aufgabe 2 laege sie sonst
@@ -533,13 +549,15 @@ class PenEchoMcp:
             log.warning("Aufgabe nicht gezeigt: %s", _typ(fehler))
 
     @staticmethod
-    def _ergebnis_id(aufgabe_id: str, nummer: int, zusatz: str = "") -> str:
+    def _feld_id(praefix: str, aufgabe_id: str, nummer: int, zusatz: str = "") -> str:
         # Der Zusatz bleibt immer erhalten, nur die aufgabe_id wird bei Bedarf gekuerzt.
-        rest = MAX_SCHLUESSEL - len(f"ergebnis--{nummer}{zusatz}")
-        return f"ergebnis-{aufgabe_id[:rest]}-{nummer}{zusatz}"
+        rest = MAX_SCHLUESSEL - len(f"{praefix}--{nummer}{zusatz}")
+        return f"{praefix}-{aufgabe_id[:rest]}-{nummer}{zusatz}"
 
-    def _ergebnisfeld_zeichnen(self, session_id: str, aufgabe_id: str, nummer: int) -> None:
-        """Schild "Ihr Ergebnis zu Aufgabe N" ueber dem Feld und ein Tintenrahmen um das Feld.
+    def _feld_zeichnen(
+        self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], schild: str, praefix: str
+    ) -> None:
+        """Schild (z. B. "Ihr Ergebnis zu Aufgabe N") ueber dem Feld und ein Tintenrahmen um das Feld.
 
         Der Rahmen ist Tinte (penecho_edit_canvas draw_ink), kein Objekt: Tinte ist nur Pixel in der
         Zeichenebene, faengt also keine Stifteingabe ab, und die Lernenden schreiben ungehindert
@@ -548,20 +566,19 @@ class PenEchoMcp:
         ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab (der Schnappschuss gilt
         ohnehin dem festen Feld).
         """
-        feld = ergebnisfeld(nummer)
         try:
             self._werkzeug("penecho_edit_canvas", {
                 "sessionId": session_id,
-                "requestId": self._ergebnis_id(aufgabe_id, nummer, "-schild"),
+                "requestId": self._feld_id(praefix, aufgabe_id, nummer, "-schild"),
                 "action": "create_text",
                 # Mit Nummer: PenEcho verschiebt Aufgabentexte, die Felder bleiben im festen Raster.
-                "text": f"Ihr Ergebnis zu Aufgabe {nummer}",
+                "text": schild,
                 "region": {"x": feld["x"], "y": feld["y"] - _SCHILD_HOEHE, "w": 360, "h": 40},
             })
         except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
             raise
         except PenEchoNichtErreichbar as fehler:  # u. a. PenEchoPlatzBelegt: Schild fehlt, Aufgabe laeuft weiter
-            log.warning("Ergebnisfeld-Schild nicht gesetzt: %s", _typ(fehler))
+            log.warning("Feld-Schild nicht gesetzt: %s", _typ(fehler))
         a = _RAHMEN_ABSTAND
         links, oben = feld["x"] - a, feld["y"] - a
         rechts, unten = feld["x"] + feld["w"] + a, feld["y"] + feld["h"] + a
@@ -575,7 +592,7 @@ class PenEchoMcp:
                 # versuch nach REVISION_CONFLICT bekommt eine abgeleitete frische Kennung.
                 self._werkzeug("penecho_edit_canvas", {
                     "sessionId": session_id,
-                    "requestId": self._ergebnis_id(aufgabe_id, nummer, "" if versuch == 1 else "-r2"),
+                    "requestId": self._feld_id(praefix, aufgabe_id, nummer, "" if versuch == 1 else "-r2"),
                     "action": "draw_ink",
                     "baseRevision": self._revision(session_id),
                     "strokes": [{"points": rahmen, "color": _RAHMEN_FARBE, "width": _RAHMEN_STAERKE}],
@@ -586,21 +603,21 @@ class PenEchoMcp:
                     # Nur beim Erstversuch heisst REQUEST_ID_CONFLICT "schon gezeichnet": dieselbe feste
                     # Kennung kam in dieser Sitzung schon an (Wiederholung der Aufgabe, andere Revision).
                     return
-                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: REQUEST_ID_CONFLICT")
+                log.warning("Feld-Rahmen nicht gezeichnet: REQUEST_ID_CONFLICT")
                 return
             except PenEchoRevisionVeraltet:
                 if versuch == 1:
                     continue  # Flaeche hat sich geaendert: Revision neu lesen, einmal wiederholen
-                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: Revision veraltet")
+                log.warning("Feld-Rahmen nicht gezeichnet: Revision veraltet")
             except PenEchoNichtSichtbar:
                 if versuch == 1:
                     self._zeigen(session_id)  # Board inzwischen verdeckt: zeigen, einmal wiederholen
                     continue
-                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: Board nicht sichtbar")
+                log.warning("Feld-Rahmen nicht gezeichnet: Board nicht sichtbar")
             except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
                 raise
             except PenEchoNichtErreichbar as fehler:
-                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: %s", _typ(fehler))
+                log.warning("Feld-Rahmen nicht gezeichnet: %s", _typ(fehler))
                 return
 
     def _revision(self, session_id: str) -> int:
