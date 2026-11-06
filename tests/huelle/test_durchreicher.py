@@ -43,6 +43,9 @@ class FakePenEcho:
         self.aufrufe: list[str] = []
         self.kopf: dict[str, str] = {}
         self.immer_gzip = False
+        # PenEcho 1.4.x: nach jedem Neustart "undecided", bis jemand Code oder "offen" waehlt.
+        self.zugang = "open"
+        self.geoeffnet: list[tuple[str | None, str | None, bytes]] = []
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "lifespan":
@@ -65,6 +68,16 @@ class FakePenEcho:
         pfad = scope["path"]
         self.aufrufe.append(pfad)
         self.kopf = {k.decode(): v.decode() for k, v in scope["headers"]}
+        if pfad in ("/api/local-access/status", "/api/local-access/open"):
+            m = await receive()
+            if pfad.endswith("/open"):
+                self.geoeffnet.append((self.kopf.get("origin"), self.kopf.get("content-type"), m.get("body", b"")))
+                self.zugang = "open"
+            body = json.dumps({"mode": self.zugang, "setupRequired": self.zugang == "undecided"}).encode()
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": body})
+            return
         if pfad in SEITEN:
             # Wie PenEchos static-response.js: gzip, wenn erlaubt (oder hier erzwungen).
             await receive()
@@ -695,3 +708,32 @@ def test_unlesbare_kompression_geht_unveraendert_weiter(kodierung: str, daten: b
     fertig, vorab = asyncio.run(lauf())
     assert fertig is None
     assert b"".join(vorab) == daten  # nichts verloren, nichts veraendert
+
+def test_seite_oeffnet_unentschiedenen_zugang_selbst(fake: tuple[FakePenEcho, str]) -> None:
+    """Nach einem PenEcho-Neustart fragt PenEcho nach Code oder „offen“; die Huelle waehlt offen (Lernende sehen nichts)."""
+    upstream, url = fake
+    upstream.zugang, upstream.geoeffnet = "undecided", []
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", headers=[(b"host", b"lernen.example.test")]))
+    assert status == 200
+    assert len(upstream.geoeffnet) == 1
+    origin, art, body = upstream.geoeffnet[0]
+    assert origin == url
+    assert (art or "").startswith("application/json")
+    assert json.loads(body) == {"acknowledgeRisk": True}
+    assert upstream.zugang == "open"
+
+
+def test_offener_zugang_wird_nicht_nochmal_geoeffnet(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.zugang, upstream.geoeffnet = "open", []
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/index.html"))
+    assert upstream.geoeffnet == []
+
+
+def test_andere_pfade_fragen_den_zugang_nicht(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.zugang, upstream.geoeffnet = "undecided", []
+    upstream.aufrufe.clear()
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/app.js"))
+    assert upstream.aufrufe == ["/app.js"] and upstream.geoeffnet == []
+    upstream.zugang = "open"

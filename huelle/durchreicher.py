@@ -57,6 +57,10 @@ SPEICHERN_SKRIPT = Path(__file__).parent / "flaeche" / "speichern.js"
 # Nur PenEchos Hauptseite (main.js: `/` -> index.html, sonst access.html); Widget-Rahmen bleiben unberuehrt.
 _SEITEN_PFADE = frozenset({"/", "/index.html"})
 _MAX_SEITE = 16 * 1024 * 1024
+# PenEcho fragt nach jedem Neustart einmal, ob es mit Code oder offen laufen soll (nur im Speicher).
+# Die Huelle waehlt offen: PenEcho lauscht nur auf 127.0.0.1, den Zugang regelt die Huelle selbst.
+_ZUGANG_STATUS = "/api/local-access/status"
+_ZUGANG_OFFEN = "/api/local-access/open"
 _KOPF_ENDE = re.compile(rb"</head\s*>", re.IGNORECASE)
 _BODY_ENDE = re.compile(rb"</body\s*>", re.IGNORECASE)
 _SKRIPT_SRC = re.compile(r"(?<![\w-])(script-src(?:-elem)?)(\s[^;]*)?(?=;|$)", re.IGNORECASE)
@@ -313,6 +317,20 @@ class Durchreicher:
         aus.append((b"content-length", str(len(neu)).encode("ascii")))
         return (aus, neu), stuecke
 
+    async def _zugang_oeffnen(self) -> None:
+        """Steht PenEchos Zugang auf „unentschieden“, waehlt die Huelle „offen“; Fehler nur protokollieren."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                stand = await client.get(self._basis + _ZUGANG_STATUS)
+                if stand.status_code != 200 or stand.json().get("mode") != "undecided":
+                    return
+                antwort = await client.post(self._basis + _ZUGANG_OFFEN, json={"acknowledgeRisk": True},
+                                            headers={"origin": self._basis})
+                if antwort.status_code != 200:
+                    log.warning("PenEcho-Zugang nicht geoeffnet: HTTP %s", antwort.status_code)
+        except (httpx.HTTPError, ValueError, AttributeError) as fehler:
+            log.warning("PenEcho-Zugang nicht geprueft: %s", type(fehler).__name__)
+
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
         for roh_name, roh_wert in scope["headers"]:
             if roh_name.lower() == b"origin" and not self._origin_erlaubt(roh_wert.decode("latin-1")):
@@ -338,6 +356,8 @@ class Durchreicher:
             return
         einfuegen = (self._tag is not None and scope["method"] in ("GET", "HEAD")
                      and scope["path"] in _SEITEN_PFADE)
+        if scope["method"] in ("GET", "HEAD") and scope["path"] in _SEITEN_PFADE:
+            await self._zugang_oeffnen()
 
         async def koerper() -> AsyncIterator[bytes]:
             while True:
