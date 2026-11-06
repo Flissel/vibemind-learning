@@ -22,7 +22,7 @@ const TEXT = {
   allgemein: "Das hat gerade nicht geklappt. Bitte versuchen Sie es noch einmal.",
   bewertungFehler: "Die Bewertung konnte nicht gespeichert werden. Bitte versuchen Sie es noch einmal.",
   rechnen: "Sie können auf der Fläche rechnen oder zeichnen.",
-  aufFlaeche: "Lösen Sie die Aufgabe auf der Fläche. „Abgeben“ finden Sie unten rechts.",
+  aufFlaeche: "Lösen Sie die Aufgabe auf der Fläche. „Abgeben“ finden Sie oben rechts.",
   ueberarbeiten: "Ändern Sie Ihre Antwort auf der Fläche und drücken Sie dann erneut „Abgeben“.",
   nichtZugeordnet: "Das konnte ich nicht zuordnen.",
   wirdBewertet: "Wird bewertet …",

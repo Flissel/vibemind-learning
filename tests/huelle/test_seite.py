@@ -153,6 +153,16 @@ def test_uvicorn_ohne_proxy_header() -> None:
     assert uvicorn_settings("127.0.0.1", 8151)["proxy_headers"] is False
 
 
+def test_leiste_sitzt_oben_rechts_unter_der_penecho_kopfzeile() -> None:
+    # Abnahme 06.11.: unten rechts verdeckte die Leiste mit Passt/Ueberarbeiten/Falsch gelesen
+    # PenEchos Werkzeugleiste (Stift, Radierer) und das KI-Feld unten rechts.
+    css = (SEITE / "huelle.css").read_text(encoding="utf-8")
+    regel = css.split(".flaechenleiste {")[1].split("}")[0]
+    assert "top:" in regel and "bottom:" not in regel
+    js = (SEITE / "huelle.js").read_text(encoding="utf-8")
+    assert "finden Sie oben rechts" in js and "unten rechts" not in js
+
+
 def test_leiste_ueber_der_flaeche_ist_verdrahtet() -> None:
     html = (SEITE / "index.html").read_text(encoding="utf-8")
     flaeche = html.split('<section id="flaeche"')[1].split("</section>")[0]
