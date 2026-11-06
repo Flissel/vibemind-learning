@@ -15,6 +15,7 @@ import os
 import re
 import ssl
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -52,6 +53,14 @@ _RAHMEN_FARBE = "#2b6cb0"
 # "Wird noch geprüft.": Learnings Zustand needs_review (Rubrik-Bewertung nicht angenommen).
 URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.", "Wird noch geprüft.")
 _SCHILD_HOEHE = 56  # Abstand der Schild-Oberkante ueber dem Feld
+
+# Bericht am Kursende. Urheberschafts-Befund (Task 1, BOARD_SPEICHERN.md): PenEchos KI-Tinte landet in
+# denselben Raster-Kacheln wie die Striche der Lernenden, nur Plots und Widgets sind trennbar. Darum
+# kommt unter die Berichtskarte je Aufgabe der Schnappschuss des Bereichs. Trennt PenEcho die KI-Objekte
+# einmal sauber, hier auf False stellen; kein Laufzeit-Test.
+BERICHT_MIT_SCHNAPPSCHUESSEN = True
+MAX_BILD_DATENURL = 800_000  # schema.js penecho_place_image/upload_image: Data-URL inkl. Praefix, UTF-8-Bytes
+BERICHT_BILD_BREITE = 900
 
 
 def bereich(nummer: int) -> dict[str, int]:
@@ -125,6 +134,19 @@ class _HttpFehler(PenEchoNichtErreichbar):
 
 def _typ(fehler: BaseException) -> str:
     return type(fehler).__name__
+
+
+def _datenurl(daten: bytes) -> str | None:
+    """Data-URL fuer penecho_place_image (PNG/JPEG/WebP); anderes Format None."""
+    if daten.startswith(b"\x89PNG\r\n\x1a\n"):
+        art = "png"
+    elif daten.startswith(b"\xff\xd8\xff"):
+        art = "jpeg"
+    elif daten[:4] == b"RIFF" and daten[8:12] == b"WEBP":
+        art = "webp"
+    else:
+        return None
+    return f"data:image/{art};base64," + base64.b64encode(daten).decode("ascii")
 
 
 class PenEchoMcp:
@@ -530,16 +552,19 @@ class PenEchoMcp:
         return revision
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
+        self._karte(session_id, f"rueckmeldung-{aufgabe_id}", titel, text)
+
+    def _karte(self, session_id: str, artifact_id: str, titel: str, text: str) -> None:
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines
         # aus html/architecture/sequence/workflow/scene/note
         # schema.js:703: requestId ist Pflicht und "nur fuer identische Argumente wiederverwenden";
         # daher traegt sie einen Kurz-Hash der Argumente (deterministisch, <= 128 Zeichen).
         pruefsumme = hashlib.sha256(f"{titel}\n{text}".encode("utf-8")).hexdigest()[:12]
-        rest = MAX_SCHLUESSEL - len("rueckmeldung--") - len(pruefsumme)
+        rest = MAX_SCHLUESSEL - len(pruefsumme) - 1
         self._werkzeug("penecho_present_widget", {
             "sessionId": session_id,
-            "requestId": f"rueckmeldung-{aufgabe_id[:rest]}-{pruefsumme}",
-            "artifactId": f"rueckmeldung-{aufgabe_id}"[:MAX_SCHLUESSEL],
+            "requestId": f"{artifact_id[:rest]}-{pruefsumme}",
+            "artifactId": artifact_id[:MAX_SCHLUESSEL],
             "title": titel,
             "note": {
                 "title": titel,
@@ -548,6 +573,37 @@ class PenEchoMcp:
                 "blocks": [{"type": "markdown", "text": text}],
             },
         })
+
+    def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: Sequence[int] = ()) -> None:
+        """Berichtskarte `bericht-{sid}` und, je Aufgabe, der Schnappschuss ihres Bereichs darunter.
+
+        Wiederholbar: die Karte hat eine feste artifactId, jedes Bild eine feste requestId
+        `bericht-{sid}-{nummer}`. Ein Bild, das nicht passt (zu gross, schon gesetzt, PenEcho lehnt ab),
+        faellt weg; die Karte bleibt. Nur verlorene Sitzung/Flaeche gehen an den Aufrufer.
+        """
+        erste = text.splitlines()[0] if text.strip() else ""
+        titel = erste.lstrip("# ").strip() or "Bericht"
+        self._karte(session_id, f"bericht-{sid}", titel, text)
+        if not BERICHT_MIT_SCHNAPPSCHUESSEN:
+            return
+        for nummer in nummern:
+            try:
+                quelle = _datenurl(self.schnappschuss(session_id, nummer))
+                if quelle is None or len(quelle) > MAX_BILD_DATENURL:
+                    log.warning("Berichtsbild uebersprungen: Format oder Groesse")
+                    continue
+                self._werkzeug("penecho_place_image", {
+                    "sessionId": session_id,
+                    "requestId": f"bericht-{sid}-{nummer}"[:MAX_SCHLUESSEL],
+                    "source": quelle,
+                    "width": BERICHT_BILD_BREITE,
+                })
+            except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+                raise
+            except PenEchoAnfrageSchonBekannt:
+                continue  # dieses Bild steht schon (andere Pixel unter derselben requestId)
+            except (PenEchoNichtErreichbar, ValueError) as fehler:
+                log.warning("Berichtsbild uebersprungen: %s", _typ(fehler))
 
     def rueckmeldung_zeigen(
         self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str

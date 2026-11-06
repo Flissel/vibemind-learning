@@ -140,6 +140,10 @@ class FakePenEcho:
         self._pruefen("schnappschuss")
         return self.bild
 
+    def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: tuple[int, ...] = ()) -> None:
+        self.aufrufe.append(("bericht_zeigen", session_id, sid, text, tuple(nummern)))
+        self._pruefen("bericht_zeigen")
+
     def namen(self) -> list[str]:
         return [a[0] for a in self.aufrufe]
 
@@ -1601,3 +1605,75 @@ def test_lern_mcp_nicht_verfuegbar_behaelt_den_code() -> None:
         )).rufe("learning_task_preview", "learning.task.preview")
     assert weg.value.code == "session_grading_unavailable"
     assert LearningWeg("x").code is None
+
+
+# ---- Bericht am Kursende --------------------------------------------------------
+
+BERICHT = {"attempted": 3, "correct": 2, "score": 0.63, "results": [
+    {"ordinal": 1, "item_id": "a", "score": 1.0}, {"ordinal": 2, "item_id": "b", "score": 0.7},
+    {"ordinal": 3, "item_id": "c", "score": 0.2}]}
+ENDE_MIT_BERICHT = {**ENDE, "summary": BERICHT}
+
+
+def _berichte(penecho: FakePenEcho) -> list[tuple[Any, ...]]:
+    return [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
+
+
+def test_kursende_zeigt_bericht_einmal() -> None:
+    lern = FakeLern({
+        "learning_course_overview": _ueberblick(turn()),
+        "learning_task_next": [{"session": turn()}],
+    })
+    client, _, penecho = bauen(lern)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    lern.antworten["learning_task_next"] = [{"session": ENDE_MIT_BERICHT}]
+    assert client.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 200
+    assert len(_berichte(penecho)) == 1
+    _, board, sid, text, nummern = _berichte(penecho)[0]
+    assert board == "pe-1" and sid == SID and nummern == (1, 2, 3)
+    assert "# Bericht: Testkurs" in text and "2 von 3 richtig" in text and "Aufgabe 2: teilweise" in text
+    assert "Anl" not in text and "Versuch" not in text
+    # Zweites Oeffnen des beendeten Kurses: Kursende-Seite wie bisher, keine zweite Karte.
+    lern.antworten["learning_course_overview"] = _ueberblick(None)
+    body = client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()
+    assert body["abgeschlossen"] is True and body["turn"]["state"] == "completed"
+    assert len(_berichte(penecho)) == 1
+
+
+def test_kursende_bericht_bei_erstem_oeffnen_nach_neustart(tmp_path) -> None:
+    datei = tmp_path / "kursende.json"
+    datei.write_text(json.dumps({f"{ACTOR}|{KURS}": SID}), encoding="utf-8")
+    lern = FakeLern({"learning_course_overview": _ueberblick(None),
+                     "learning_task_next": {"session": ENDE_MIT_BERICHT}})
+    client, _, penecho = bauen(lern, kursende=datei)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()["abgeschlossen"] is True
+    assert len(_berichte(penecho)) == 1 and _berichte(penecho)[0][2] == SID
+
+
+def test_bericht_nach_passt() -> None:
+    fertig = {**turn(None, completed=5, revision=9, state="completed", mode="training"), "summary": BERICHT}
+    _, client, _, penecho = _flaechen_sitzung("numeric", confirm={"session": fertig})
+    r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 200 and r.json()["nummer"] is None
+    assert len(_berichte(penecho)) == 1
+
+
+def test_bericht_fehler_blockiert_kursende_nicht() -> None:
+    lern = FakeLern({
+        "learning_course_overview": _ueberblick(turn()),
+        "learning_task_next": [{"session": turn()}],
+    })
+    client, _, penecho = bauen(lern, FakePenEcho(fehler=PenEchoNichtErreichbar("x")))
+    client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    lern.antworten["learning_task_next"] = [{"session": ENDE_MIT_BERICHT}]
+    r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+    assert r.status_code == 200 and r.json()["turn"]["state"] == "completed"
+
+
+def test_ende_ohne_summary_zeigt_keinen_bericht() -> None:
+    lern = FakeLern({"learning_course_overview": _ueberblick(turn()), "learning_task_next": [{"session": turn()}]})
+    client, _, penecho = bauen(lern)
+    client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    lern.antworten["learning_task_next"] = [{"session": ENDE}]
+    assert client.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 200
+    assert _berichte(penecho) == []

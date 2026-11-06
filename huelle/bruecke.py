@@ -37,9 +37,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
-from .penecho_mcp import BEREICH_BREITE, BEREICH_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
+from .penecho_mcp import BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
 from .sperre import Sperre
 from .tafel import aufgabentext
 
@@ -141,6 +142,7 @@ class _Sitzung:
     # Gespraech mit dem Tutor zur aktuellen Aufgabe: (Frage, Antwort); der Tutor selbst merkt sich nichts.
     tutor: list[tuple[str, str]] = field(default_factory=list)
     tutor_aufgabe: str | None = None
+    bericht_gezeigt: bool = False   # Bericht dieser Sitzung steht auf dem Board
 
 
 def _uuid(wert: str) -> str | None:
@@ -528,6 +530,7 @@ class Bruecke:
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
             if turn.get("state") == "completed":
                 self._ende_setzen(sitzung.kurs, sitzung.sid)
+                self._bericht(sitzung, turn)
             self._frei(sitzung)
             return None, False
         nummer = _nummer(turn)
@@ -635,6 +638,24 @@ class Bruecke:
             sitzung, lambda s: self._penecho.notizkarte(s, aufgabe_id, titel, text)
         )
         return text, ok
+
+    def _bericht(self, sitzung: _Sitzung, turn: dict[str, Any]) -> None:
+        """Berichtskarte am Kursende auf das Board; hoechstens einmal je Sitzung, nie ein Abbruch.
+
+        Feste Kennungen (Karte `bericht-{sid}`, Bild `bericht-{sid}-{nummer}`) machen auch ein erneutes
+        Oeffnen nach einem Neustart der Bruecke wiederholbar. Die Kursende-Seite bleibt die letzte Seite.
+        """
+        summary = turn.get("summary")
+        if sitzung.bericht_gezeigt or not isinstance(summary, dict):
+            return
+        try:
+            text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung.kurs) or [])
+            nummern = tuple(n for n, _ in bericht_aufgaben(summary) if 1 <= n <= BEREICHE)
+            sitzung.bericht_gezeigt = self._flaeche_still(
+                sitzung, lambda s: self._penecho.bericht_zeigen(s, sitzung.sid, text, nummern)
+            )
+        except Exception as fehler:  # noqa: BLE001 - der Bericht darf das Kursende nie blockieren
+            log.warning("Bericht nicht gezeigt: %s", _typ(fehler))
 
     def _begriffe(self, kurs: Any) -> list[Any] | None:
         """Aktuelle Beherrschung nach einer Abgabe; None, wenn Learning sie gerade nicht liefert."""
@@ -887,6 +908,7 @@ class Bruecke:
         self._frei(sitzung)
         if turn.get("state") == "completed":
             self._ende_setzen(sitzung.kurs, sitzung.sid)
+            self._bericht(sitzung, turn)
         antwort = {"rueckmeldung": None, **self._gebucht(sitzung, turn)}
         self._board_merken(sitzung)
         return antwort

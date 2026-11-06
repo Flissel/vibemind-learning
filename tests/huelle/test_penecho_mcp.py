@@ -774,3 +774,32 @@ def test_rueckmeldung_unbekanntes_urteil_wirft_ohne_penecho(zustand: Path) -> No
     with pytest.raises(ValueError):
         _client(zustand, fake).rueckmeldung_zeigen("s", "t", 1, gelesen=None, urteil="Super!", text="x")
     assert fake.aufrufe("penecho_present_widget") == []
+
+
+def test_bericht_zeigt_karte_und_schnappschuesse_mit_festen_kennungen(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K", (1, 2))
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K", (1, 2))
+    karte = fake.aufrufe("penecho_present_widget")
+    assert [k["arguments"]["artifactId"] for k in karte] == [f"bericht-{LERN_SID}"] * 2
+    assert karte[0]["arguments"] == karte[1]["arguments"]
+    bilder = fake.aufrufe("penecho_place_image")
+    assert [b["arguments"]["requestId"] for b in bilder] == [f"bericht-{LERN_SID}-{n}" for n in (1, 2, 1, 2)]
+    assert bilder[0]["arguments"]["source"].startswith("data:image/png;base64,")
+    assert len(fake.aufrufe("penecho_capture_canvas")) == 4
+
+
+def test_bericht_ohne_nummern_nur_karte(zustand: Path) -> None:
+    fake = Fake()
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "x")
+    assert len(fake.aufrufe("penecho_present_widget")) == 1 and fake.aufrufe("penecho_place_image") == []
+
+
+def test_bericht_ein_bild_scheitert_karte_bleibt(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.schnappschuss = lambda *a, **k: bytes.fromhex("89504e470d0a1a0a") + b"0" * 900_000  # type: ignore[method-assign]
+    c.bericht_zeigen("sess-1", LERN_SID, "x", (1,))
+    assert len(fake.aufrufe("penecho_present_widget")) == 1 and fake.aufrufe("penecho_place_image") == []
+
