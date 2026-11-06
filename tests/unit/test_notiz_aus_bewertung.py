@@ -236,7 +236,7 @@ def test_migration_0019_head(tmp_path: Path) -> None:
     engine = create_learning_engine(url)
     try:
         with engine.begin() as c:
-            assert c.exec_driver_sql("SELECT version_num FROM learning_alembic_version").scalar_one() == "0019_notiz_quelle"
+            assert c.exec_driver_sql("SELECT version_num FROM learning_alembic_version").scalar_one() == "0020_vorbewertungen"
             c.exec_driver_sql(
                 "INSERT INTO learning_notes (id, actor_id, course_id, sequence_id, anchor, selection, explanation,"
                 " extra, extra_sources, own_text, created_at, updated_at)"

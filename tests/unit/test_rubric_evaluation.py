@@ -333,3 +333,24 @@ def test_session_rubric_mit_bild_reicht_bild_durch() -> None:
     SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(_request())
 
     assert seen == [(bild,), ()]
+
+
+def test_session_rubric_nimmt_rohes_png_ueber_bild_png() -> None:
+    from spaces.learning.services.course_factory.model_gateway import png_bild
+    from spaces.learning.services.evaluation.session_rubric import SessionRubricEvaluator
+
+    png = b"\x89PNG\r\n\x1a\nrubric-roh"
+    seen = []
+
+    class _Seen(_Gateway):
+        async def generate(self, invocation, output_model):
+            seen.append(invocation.image_inputs)
+            return await super().generate(invocation, output_model)
+
+    SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(_request(), bild_png=png)
+
+    assert seen == [(png_bild(png),)]
+    with pytest.raises(ValueError, match="one image"):
+        SessionRubricEvaluator(lambda: _Seen([_output()])).evaluate(
+            _request(), bild=png_bild(png), bild_png=png
+        )

@@ -245,6 +245,56 @@ class LearningEvaluation(Base):
     )
 
 
+class LearningVorbewertung(Base):
+    """A preview grading of the current attempt; append-only, changes no learning state.
+
+    Only a confirmed one becomes a response and an evaluation (with the ids stored
+    here). Unreadable handwriting is kept too, without grading fields.
+    """
+
+    __tablename__ = "learning_vorbewertungen"
+    __table_args__ = (
+        CheckConstraint("quelle IN ('handschrift','getippt')"),
+        CheckConstraint(
+            "evaluator_type IS NULL OR evaluator_type IN ('deterministic','rubric')"
+        ),
+        CheckConstraint("score IS NULL OR (score >= 0 AND score <= 1)"),
+        CheckConstraint("confidence IS NULL OR (confidence >= 0 AND confidence <= 1)"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("learning_adaptive_attempts.id"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("learning_adaptive_sessions.id"), nullable=False
+    )
+    quelle: Mapped[str] = mapped_column(String(16), nullable=False)
+    korrigiert_aus: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("learning_vorbewertungen.id")
+    )
+    bild_sha256: Mapped[str | None] = mapped_column(String(64))
+    gelesen: Mapped[dict | None] = mapped_column(JSON)
+    answer: Mapped[dict | None] = mapped_column(JSON)
+    lesbar: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # The fields of the pending grading (session_service._Bewertung); NULL if unreadable.
+    response_id: Mapped[str | None] = mapped_column(String(36))
+    evaluation_id: Mapped[str | None] = mapped_column(String(36))
+    evaluator_type: Mapped[str | None] = mapped_column(String(24))
+    score: Mapped[float | None] = mapped_column(Float)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    accepted: Mapped[bool | None] = mapped_column(Boolean)
+    rationale_codes: Mapped[list[str] | None] = mapped_column(JSON)
+    evaluator_versions: Mapped[dict | None] = mapped_column(JSON)
+    source_refs: Mapped[list[str] | None] = mapped_column(JSON)
+    criteria: Mapped[list[dict] | None] = mapped_column(JSON)
+    review_reason: Mapped[str | None] = mapped_column(String(64))
+    review_details: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
 class ConceptMastery(Base):
     __tablename__ = "learning_adaptive_mastery"
     __table_args__ = (

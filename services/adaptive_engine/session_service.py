@@ -4,10 +4,10 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
-from typing import Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,7 @@ from spaces.learning.services.adaptive_engine.models import (
     LearningEvaluation,
     LearningResponse,
     LearningSession,
+    LearningVorbewertung,
     MasteryEvidence,
     Misconception,
     ReviewSchedule,
@@ -51,18 +52,34 @@ from spaces.learning.services.evaluation.schemas import (
 )
 from spaces.learning.services import zufall
 
+if TYPE_CHECKING:
+    from spaces.learning.services.evaluation.handschrift import GelesenV1
+
 
 _DETERMINISTIC_TYPES = frozenset(
     {"single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"}
 )
 _RUBRIC_TYPES = frozenset({"open", "case", "code"})
+# Rubric types a handwritten preview is graded for. penecho_canvas belongs here even when
+# its drawing submission runs through the external canvas path.
+_HANDSCHRIFT_RUBRIC_TYPES = frozenset({"open", "case", "penecho_canvas"})
+# Review reason when an unaccepted rubric decision carries no rationale code.
+_FALLBACK_REVIEW_REASON = "rubric_not_accepted"
 # From this best score an item counts as solved for selection (a sketch graded 0.97 must
 # not be re-served). Feedback bands in _feedback stay at 0.999 / 0.65.
 _SOLVED_SCORE = 0.9
 
 
 class SessionRubricBoundary(Protocol):
-    def evaluate(self, request: RubricEvaluationRequest) -> RubricDecision: ...
+    def evaluate(
+        self, request: RubricEvaluationRequest, *, bild_png: bytes | None = None
+    ) -> RubricDecision: ...
+
+
+class SessionLeseBoundary(Protocol):
+    def lesen(
+        self, task: dict[str, object], png: bytes
+    ) -> tuple[GelesenV1, dict[str, object] | None]: ...
 
 
 class _Command(BaseModel):
@@ -92,6 +109,39 @@ class AnswerCommand(_Command):
     @classmethod
     def validate_session_id(cls, value: str) -> str:
         return str(UUID(value))
+
+
+class VorbewertungCommand(_Command):
+    """A preview grading: exactly one of a typed answer and a handwriting PNG.
+
+    `korrigiert_aus` ("Falsch gelesen") is a typed answer that replaces the reading of
+    an earlier preview of the same attempt.
+    """
+
+    session_id: str
+    actor_id: str = Field(min_length=1, max_length=128)
+    expected_session_revision: int = Field(ge=1)
+    answer: dict[str, object] | None = None
+    handschrift_png: bytes | None = Field(default=None, min_length=1)
+    korrigiert_aus: str | None = None
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, value: str) -> str:
+        return str(UUID(value))
+
+    @field_validator("korrigiert_aus")
+    @classmethod
+    def validate_korrigiert_aus(cls, value: str | None) -> str | None:
+        return None if value is None else str(UUID(value))
+
+    @model_validator(mode="after")
+    def validate_antwortform(self) -> "VorbewertungCommand":
+        if (self.answer is None) == (self.handschrift_png is None):
+            raise ValueError("give exactly one of answer and handschrift_png")
+        if self.korrigiert_aus is not None and self.answer is None:
+            raise ValueError("korrigiert_aus needs a typed answer")
+        return self
 
 
 class PublicTask(BaseModel):
@@ -134,6 +184,22 @@ class TurnFeedback(BaseModel):
     # Per-criterion verdicts of rubric types; empty for deterministic types and not
     # persisted (a resumed session carries no feedback at all).
     criteria: tuple[CriterionFeedback, ...] = ()
+
+
+class Vorbewertung(BaseModel):
+    """A stored preview grading; nothing of it counts until it is confirmed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    attempt_id: str
+    quelle: Literal["handschrift", "getippt"]
+    lesbar: bool
+    gelesen_text: str | None
+    art: Literal["deterministic", "rubric"]
+    score: float | None
+    accepted: bool | None
+    feedback: TurnFeedback | None
 
 
 class AuditReceipt(BaseModel):
@@ -212,10 +278,12 @@ class AdaptiveSessionService:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         rubric_evaluator: SessionRubricBoundary | None = None,
         external_rubric_types: frozenset[str] = frozenset(),
+        handschrift_leser: SessionLeseBoundary | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
         self._rubric_evaluator = rubric_evaluator
+        self._handschrift_leser = handschrift_leser
         if not external_rubric_types <= {"penecho_canvas"}:
             raise ValueError("adaptive external rubric type is not authorized")
         self._external_rubric_types = external_rubric_types
@@ -339,44 +407,225 @@ class AdaptiveSessionService:
 
     def answer(self, command: AnswerCommand) -> SessionTurn:
         now = self._aware_now()
-        audit: _AnswerAudit
         with self._session_factory() as db, db.begin():
-            row = db.get(LearningSession, command.session_id, with_for_update=True)
-            self._assert_owned_active(row, command.actor_id)
-            assert row is not None
-            if row.revision != command.expected_session_revision:
-                raise PersistenceConflict("adaptive session revision conflict")
-            attempt = self._current_attempt(db, row.id)
-            if attempt is None:
-                raise PersistenceConflict("adaptive session has no current task")
-            existing = db.scalar(
-                select(LearningResponse.id).where(
-                    LearningResponse.attempt_id == attempt.id
-                )
+            row = self._active_session(db, command.session_id, command.actor_id, lock=True)
+            attempt, item = self._open_attempt(db, row, command.expected_session_revision)
+            bewertung = self._bewerten(item, command.answer)
+            turn = self._book(db, row, attempt, item, bewertung, now)
+        return self._with_readback(turn)
+
+    def vorbewerten(self, command: VorbewertungCommand) -> Vorbewertung:
+        """Grade the current attempt as a preview: stored, but no learning state changes.
+
+        The model call (reader or rubric) runs outside any transaction; the session is
+        checked again before the preview is stored. The revision is never changed here.
+        """
+        with self._session_factory() as db:
+            row = self._active_session(db, command.session_id, command.actor_id, lock=False)
+            if row.mode == "exam":
+                raise PermissionError("exam sessions have no preview grading")
+            attempt, item = self._open_attempt(db, row, command.expected_session_revision)
+            rubrik = self._vorschau_rubrik(item, command)
+            if command.korrigiert_aus is not None:
+                korrigiert = db.get(LearningVorbewertung, command.korrigiert_aus)
+                if korrigiert is None or korrigiert.attempt_id != attempt.id:
+                    raise ValueError("korrigiert_aus must name a preview of this attempt")
+            attempt_id = attempt.id
+            task = self._public_task(item, row.id).model_dump(mode="json")
+        png = command.handschrift_png
+        gelesen: GelesenV1 | None = None
+        bewertung: _Bewertung | None = None
+        if rubrik:
+            bewertung = self._bewerten(item, {"kind": "handschrift"}, bild_png=png)
+        elif png is not None:
+            if self._handschrift_leser is None:
+                raise RuntimeError("handwriting reader is not configured")
+            gelesen, antwort = self._handschrift_leser.lesen(task, png)
+            if gelesen.lesbar and antwort is not None:
+                bewertung = self._bewerten(item, antwort)
+        else:
+            assert command.answer is not None
+            bewertung = self._bewerten(item, command.answer)
+        now = self._aware_now()
+        with self._session_factory() as db, db.begin():
+            row = self._active_session(db, command.session_id, command.actor_id, lock=True)
+            attempt, _ = self._open_attempt(db, row, command.expected_session_revision)
+            if attempt.id != attempt_id:
+                raise PersistenceConflict("vorbewertung not current")
+            stored = LearningVorbewertung(
+                id=str(uuid4()),
+                attempt_id=attempt.id,
+                session_id=row.id,
+                quelle="handschrift" if png is not None else "getippt",
+                korrigiert_aus=command.korrigiert_aus,
+                bild_sha256=hashlib.sha256(png).hexdigest() if png is not None else None,
+                gelesen=gelesen.model_dump(mode="json") if gelesen is not None else None,
+                lesbar=bewertung is not None,
+                created_at=now,
+                **self._bewertung_spalten(bewertung),
             )
-            if existing is not None:
-                raise PersistenceConflict("adaptive task was already answered")
+            db.add(stored)
+            db.flush()
+        return Vorbewertung(
+            id=stored.id,
+            attempt_id=stored.attempt_id,
+            quelle=stored.quelle,
+            lesbar=stored.lesbar,
+            gelesen_text=gelesen.text if gelesen is not None else None,
+            art="rubric" if rubrik else "deterministic",
+            score=bewertung.score if bewertung is not None else None,
+            accepted=bewertung.accepted if bewertung is not None else None,
+            feedback=self._feedback_aus(bewertung) if bewertung is not None else None,
+        )
+
+    def bestaetigen(
+        self,
+        *,
+        session_id: str,
+        actor_id: str,
+        expected_session_revision: int,
+        vorbewertung_id: str,
+    ) -> SessionTurn:
+        """Book exactly the stored preview ("Passt"): no new model call, the same ids."""
+        now = self._aware_now()
+        with self._session_factory() as db, db.begin():
+            row = self._active_session(db, str(UUID(session_id)), actor_id, lock=True)
+            if row.mode == "exam":
+                raise PermissionError("exam sessions have no preview grading")
+            if row.revision != expected_session_revision:
+                raise PersistenceConflict("adaptive session revision conflict")
+            stored = db.get(LearningVorbewertung, str(UUID(vorbewertung_id)))
+            if stored is None or stored.session_id != row.id:
+                raise LookupError("vorbewertung is unknown")
+            attempt = self._current_attempt(db, row.id)
+            if (
+                attempt is None
+                or stored.attempt_id != attempt.id
+                or self._answered(db, attempt.id)
+            ):
+                raise PersistenceConflict("vorbewertung not current")
+            if not stored.lesbar:
+                raise ValueError("vorbewertung is not readable")
             item = db.get(AdaptiveItem, attempt.item_id)
             if item is None:
                 raise LookupError("adaptive item is unavailable")
-            bewertung = self._bewerten(item, command.answer)
-            evaluation, audit = self._uebernehmen(db, row, attempt, item, bewertung, now)
-            row.revision += 1
-            row.updated_at = now
-            total = self._total(row)
-            if attempt.ordinal >= total:
-                row.state = "completed"
-                row.completed_at = now
-            else:
-                self._append_next(db, row, self._catalog(db, row.course_id, row.course_revision))
-            db.flush()
-            feedback = (
-                self._feedback(evaluation, audit.criteria)
-                if row.mode == "training"
-                else None
-            )
-            turn = self._turn(db, row, feedback=feedback, answer_audit=audit)
+            turn = self._book(db, row, attempt, item, self._bewertung_aus(stored), now)
         return self._with_readback(turn)
+
+    def _active_session(
+        self, db: Session, session_id: str, actor_id: str, *, lock: bool
+    ) -> LearningSession:
+        row = db.get(LearningSession, session_id, with_for_update=lock)
+        self._assert_owned_active(row, actor_id)
+        assert row is not None
+        return row
+
+    def _open_attempt(
+        self, db: Session, row: LearningSession, expected_revision: int
+    ) -> tuple[LearningAttempt, AdaptiveItem]:
+        """The current, unanswered attempt of a session at the expected revision."""
+        if row.revision != expected_revision:
+            raise PersistenceConflict("adaptive session revision conflict")
+        attempt = self._current_attempt(db, row.id)
+        if attempt is None:
+            raise PersistenceConflict("adaptive session has no current task")
+        if self._answered(db, attempt.id):
+            raise PersistenceConflict("adaptive task was already answered")
+        item = db.get(AdaptiveItem, attempt.item_id)
+        if item is None:
+            raise LookupError("adaptive item is unavailable")
+        return attempt, item
+
+    @staticmethod
+    def _answered(db: Session, attempt_id: str) -> bool:
+        return (
+            db.scalar(
+                select(LearningResponse.id).where(LearningResponse.attempt_id == attempt_id)
+            )
+            is not None
+        )
+
+    def _book(
+        self,
+        db: Session,
+        row: LearningSession,
+        attempt: LearningAttempt,
+        item: AdaptiveItem,
+        bewertung: _Bewertung,
+        now: datetime,
+    ) -> SessionTurn:
+        """Persist a graded answer, advance the session and build the turn (answer/confirm)."""
+        evaluation, audit = self._uebernehmen(db, row, attempt, item, bewertung, now)
+        row.revision += 1
+        row.updated_at = now
+        total = self._total(row)
+        if attempt.ordinal >= total:
+            row.state = "completed"
+            row.completed_at = now
+        else:
+            self._append_next(db, row, self._catalog(db, row.course_id, row.course_revision))
+        db.flush()
+        feedback = (
+            self._feedback(evaluation, audit.criteria)
+            if row.mode == "training"
+            else None
+        )
+        return self._turn(db, row, feedback=feedback, answer_audit=audit)
+
+    @staticmethod
+    def _vorschau_rubrik(item: AdaptiveItem, command: VorbewertungCommand) -> bool:
+        """Whether a preview of this item goes to the rubric; rejects what has no preview."""
+        if item.item_type in _DETERMINISTIC_TYPES:
+            return False
+        if item.item_type in _HANDSCHRIFT_RUBRIC_TYPES:
+            if command.handschrift_png is None:
+                raise ValueError("rubric tasks are previewed from handwriting only")
+            return True
+        raise ValueError(f"{item.item_type} tasks have no preview grading")
+
+    @staticmethod
+    def _bewertung_spalten(bewertung: _Bewertung | None) -> dict[str, object]:
+        """The columns of a stored preview grading; empty when nothing was graded."""
+        if bewertung is None:
+            return {}
+        return {
+            "answer": bewertung.answer,
+            "response_id": bewertung.response_id,
+            "evaluation_id": bewertung.evaluation_id,
+            "evaluator_type": bewertung.evaluator_type,
+            "score": bewertung.score,
+            "confidence": bewertung.confidence,
+            "accepted": bewertung.accepted,
+            "rationale_codes": list(bewertung.rationale_codes),
+            "evaluator_versions": bewertung.evaluator_versions,
+            "source_refs": list(bewertung.source_refs),
+            "criteria": [value.model_dump(mode="json") for value in bewertung.criteria],
+            "review_reason": bewertung.review_reason,
+            "review_details": bewertung.review_details,
+        }
+
+    @staticmethod
+    def _bewertung_aus(stored: LearningVorbewertung) -> _Bewertung:
+        """The grading exactly as it was stored with the preview."""
+        if not stored.lesbar or stored.response_id is None or stored.evaluation_id is None:
+            raise ValueError("vorbewertung is not readable")
+        return _Bewertung(
+            response_id=stored.response_id,
+            evaluation_id=stored.evaluation_id,
+            answer=dict(stored.answer or {}),
+            evaluator_type=str(stored.evaluator_type),
+            score=float(stored.score),
+            confidence=float(stored.confidence),
+            accepted=bool(stored.accepted),
+            rationale_codes=tuple(stored.rationale_codes or ()),
+            evaluator_versions=dict(stored.evaluator_versions or {}),
+            source_refs=tuple(stored.source_refs or ()),
+            criteria=tuple(
+                CriterionFeedback.model_validate(value) for value in stored.criteria or ()
+            ),
+            review_reason=stored.review_reason,
+            review_details=dict(stored.review_details or {}),
+        )
 
     def hint(self, session_id: str, *, actor_id: str) -> str:
         with self._session_factory() as db:
@@ -577,18 +826,23 @@ class AdaptiveSessionService:
         *,
         bild_png: bytes | None = None,
     ) -> _Bewertung:
-        """Grade an answer without writing anything; creates the response/evaluation ids."""
-        del bild_png
+        """Grade an answer without writing anything; creates the response/evaluation ids.
+
+        `bild_png` (handwriting) goes to the rubric with the answer; for a handwritten
+        preview penecho_canvas is graded here even when its drawing path is external.
+        """
         if item.item_type in _DETERMINISTIC_TYPES:
             return self._bewerten_deterministic(item, answer)
+        handschrift = bild_png is not None and item.item_type in _HANDSCHRIFT_RUBRIC_TYPES
         if (
-            item.item_type in _RUBRIC_TYPES
+            handschrift
+            or item.item_type in _RUBRIC_TYPES
             or (
                 item.item_type == "penecho_canvas"
                 and "penecho_canvas" not in self._external_rubric_types
             )
         ) and self._rubric_evaluator is not None:
-            return self._bewerten_rubric(item, answer)
+            return self._bewerten_rubric(item, answer, bild_png=bild_png)
         raise ValueError("adaptive item has no admitted evaluator")
 
     def _bewerten_deterministic(
@@ -622,7 +876,11 @@ class AdaptiveSessionService:
         )
 
     def _bewerten_rubric(
-        self, item: AdaptiveItem, answer: dict[str, object]
+        self,
+        item: AdaptiveItem,
+        answer: dict[str, object],
+        *,
+        bild_png: bytes | None = None,
     ) -> _Bewertung:
         assert self._rubric_evaluator is not None
         response_id = str(uuid4())
@@ -632,18 +890,22 @@ class AdaptiveSessionService:
             raise ValueError("rubric item expected answer is invalid")
         source_refs = self._string_list(item.scoring_config.get("source_refs", []))
         criteria = [RubricCriterion.model_validate(value) for value in item.rubric]
-        decision = self._rubric_evaluator.evaluate(
-            RubricEvaluationRequest(
-                evaluation_id=evaluation_id,
-                response_id=response_id,
-                response=answer,
-                expected_answer=expected,
-                rubric=criteria,
-                source_refs=list(source_refs),
-                model_version=self._version(item, "model_version", "openfang-learning"),
-                prompt_version=self._version(item, "prompt_version", "rubric-prompt-v1"),
-                source_version=self._version(item, "source_version", "course-revision"),
-            )
+        request = RubricEvaluationRequest(
+            evaluation_id=evaluation_id,
+            response_id=response_id,
+            response=answer,
+            expected_answer=expected,
+            rubric=criteria,
+            source_refs=list(source_refs),
+            model_version=self._version(item, "model_version", "openfang-learning"),
+            prompt_version=self._version(item, "prompt_version", "rubric-prompt-v1"),
+            source_version=self._version(item, "source_version", "course-revision"),
+        )
+        # Without an image the call is exactly the old one (boundaries without the keyword).
+        decision = (
+            self._rubric_evaluator.evaluate(request)
+            if bild_png is None
+            else self._rubric_evaluator.evaluate(request, bild_png=bild_png)
         )
         points = {value.criterion_id: value for value in criteria}
         shown: list[CriterionFeedback] = []
@@ -675,7 +937,11 @@ class AdaptiveSessionService:
             },
             source_refs=tuple(decision.source_refs),
             criteria=tuple(shown),
-            review_reason=None if decision.accepted else decision.rationale_codes[0],
+            review_reason=(
+                None
+                if decision.accepted
+                else (decision.rationale_codes or [_FALLBACK_REVIEW_REASON])[0]
+            ),
             review_details={
                 "confidence": decision.confidence,
                 "evidence_ref": decision.evidence_ref,
@@ -1344,21 +1610,23 @@ class AdaptiveSessionService:
         evaluation: LearningEvaluation,
         criteria: tuple[CriterionFeedback, ...],
     ) -> TurnFeedback:
-        state = (
-            "needs_review"
-            if not evaluation.accepted
-            else "correct"
-            if evaluation.score >= 0.999
-            else "partial"
-            if evaluation.score >= 0.65
-            else "incorrect"
-        )
-        return TurnFeedback(
-            state=state,
+        return _turn_feedback(
+            accepted=evaluation.accepted,
             score=evaluation.score,
             rationale_codes=tuple(evaluation.rationale_codes),
             source_refs=tuple(evaluation.source_refs),
             criteria=criteria,
+        )
+
+    @staticmethod
+    def _feedback_aus(bewertung: _Bewertung) -> TurnFeedback:
+        """The feedback a preview shows: the same bands as a booked answer."""
+        return _turn_feedback(
+            accepted=bewertung.accepted,
+            score=bewertung.score,
+            rationale_codes=bewertung.rationale_codes,
+            source_refs=bewertung.source_refs,
+            criteria=bewertung.criteria,
         )
 
     @staticmethod
@@ -1388,6 +1656,32 @@ class AdaptiveSessionService:
     @staticmethod
     def _aware(value: datetime) -> datetime:
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _turn_feedback(
+    *,
+    accepted: bool,
+    score: float,
+    rationale_codes: tuple[str, ...],
+    source_refs: tuple[str, ...],
+    criteria: tuple[CriterionFeedback, ...],
+) -> TurnFeedback:
+    state = (
+        "needs_review"
+        if not accepted
+        else "correct"
+        if score >= 0.999
+        else "partial"
+        if score >= 0.65
+        else "incorrect"
+    )
+    return TurnFeedback(
+        state=state,
+        score=score,
+        rationale_codes=rationale_codes,
+        source_refs=source_refs,
+        criteria=criteria,
+    )
 
 
 def _review_entry(review, evaluation, response, item, session_row) -> dict[str, object]:

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from spaces.learning.services.course_factory.model_gateway import (
     ModelGateway,
     ModelImageInput,
+    png_bild,
 )
 from spaces.learning.services.evaluation.penecho import _ImageBoundGateway
 from spaces.learning.services.evaluation.review_queue import ReviewItem
@@ -47,8 +48,18 @@ class SessionRubricEvaluator:
         self._gateway_factory = gateway_factory
 
     def evaluate(
-        self, request: RubricEvaluationRequest, bild: ModelImageInput | None = None
+        self,
+        request: RubricEvaluationRequest,
+        bild: ModelImageInput | None = None,
+        *,
+        bild_png: bytes | None = None,
     ) -> RubricDecision:
+        # `bild_png` is the session-service contract (raw PNG); `bild` stays for the
+        # evaluation API, which validates the image itself.
+        if bild is not None and bild_png is not None:
+            raise ValueError("rubric evaluation takes one image")
+        if bild_png is not None:
+            bild = png_bild(bild_png)
         recorder = _DecisionRecorder()
         decision = asyncio.run(self._evaluate(request, recorder, bild))
         if recorder.decision != decision:
