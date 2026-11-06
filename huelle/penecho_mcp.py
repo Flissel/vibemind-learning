@@ -214,6 +214,15 @@ def _eigene_texte(hindernisse: Sequence[dict[str, Any]], platz: dict[str, int]) 
             and abs(h["x"] - platz["x"]) < 1 and abs(h["y"] - platz["y"]) < 1]
 
 
+def _an_ecke(belegung: Sequence[dict[str, Any]], platz: dict[str, int], art: str) -> str | None:
+    """objectId des ersten Objekts der Art `art`, dessen linke obere Ecke auf der von `platz` liegt."""
+    for e in belegung:
+        b = e["bounds"]
+        if e["kind"] == art and abs(b["x"] - platz["x"]) < 1 and abs(b["y"] - platz["y"]) < 1:
+            return e["objectId"]
+    return None
+
+
 def _hindernisse(struktur: dict[str, Any]) -> list[dict[str, Any]]:
     details = struktur.get("details")
     roh = details.get("obstacles") if isinstance(details, dict) else None
@@ -432,6 +441,33 @@ class PenEchoMcp:
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
+    def _belegung(self, session_id: str, region: dict[str, int]) -> list[dict[str, Any]]:
+        """Objekte in `region` (penecho_list_files, nur lesend), je {objectId, kind, bounds}.
+
+        Abnahme 06.11. (F18): "steht schon da" per LAYOUT_CONFLICT zu erkennen hinterliess je Probe einen
+        unaufgeloesten Eintrag in PenEchos Sitzung (siehe PenEchoAnfragenStau). Lesen zaehlt dort nicht.
+        Nicht lesbar: leere Liste, dann gilt wie bisher die Probe beim Setzen. Hoechstens 5 Seiten.
+        """
+        belegung: list[dict[str, Any]] = []
+        versatz: object = 0
+        try:
+            for _ in range(5):
+                seite = self._struktur(self._werkzeug("penecho_list_files", {
+                    "sessionId": session_id, "region": region, "offset": versatz}))
+                for e in seite.get("entries") or []:
+                    b = e.get("bounds") if isinstance(e, dict) else None
+                    if (isinstance(e.get("objectId"), str) and isinstance(e.get("kind"), str) and isinstance(b, dict)
+                            and all(isinstance(b.get(k), (int, float)) and not isinstance(b.get(k), bool) for k in "xywh")):
+                        belegung.append({"objectId": e["objectId"], "kind": e["kind"], "bounds": b})
+                versatz = seite.get("nextOffset")
+                if not isinstance(versatz, int) or isinstance(versatz, bool):
+                    break
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("Belegung nicht gelesen: %s", _typ(fehler))
+        return belegung
+
     def _sitzung_schliessen(self, session_id: object) -> None:
         """penecho_close_session: die Sitzung endet, der Inhalt des Boards bleibt (schema.js)."""
         if not isinstance(session_id, str) or not session_id:
@@ -613,8 +649,11 @@ class PenEchoMcp:
             "region": region,
         }
         voll = False
+        belegung = self._belegung(session_id, bereich(nummer))
         try:
-            objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
+            objekt_id = _an_ecke(belegung, region, "text")
+            if objekt_id is None:
+                objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
         except PenEchoFlaecheVoll:
             voll = True
             # PenEcho prueft die Grenze vor dem Platz: auch eine schon vorhandene Aufgabe scheitert hier.
@@ -639,7 +678,8 @@ class PenEchoMcp:
             # Volle Flaeche: keine Beschriftungen versuchen. Jeder gescheiterte Text bliebe in PenEchos
             # Sitzung unaufgeloest und sperrte nach vier weiteren Fehlern alle Aenderungen (F17).
             self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
-                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld), beschriften=not voll)
+                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld), beschriften=not voll,
+                                belegung=belegung)
         if mit_ergebnisfeld:
             self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer), "ergebnis")
         elif mit_arbeitsfeld:
@@ -647,13 +687,15 @@ class PenEchoMcp:
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
-        *, beschriften: bool = True,
+        *, beschriften: bool = True, belegung: Sequence[dict[str, Any]] = (),
     ) -> None:
         """Aufgabenbilder mit Beschriftung im Raster ins Bildfeld (penecho_place_image mit Region).
 
         Ist ein Platz belegt, steht das Bild meist schon da (Board nach Neustart wiederhergestellt): dann
         nichts setzen, auch nicht anderswo. Ein fehlendes Bild bricht die Aufgabe nicht ab. Ist die Flaeche
-        voll (OBJECT_LIMIT), folgen nur noch Bilder, keine Beschriftungen mehr.
+        voll (OBJECT_LIMIT), folgen nur noch Bilder, keine Beschriftungen mehr. Was laut `belegung`
+        (siehe _belegung) schon an seinem Platz liegt, wird nicht erneut gesendet; ein fehlendes Schild
+        zu einem vorhandenen Bild wird ergaenzt.
         """
         for position, (bild, (schild, platz)) in enumerate(zip(bilder, bildraster(feld, bilder)), start=1):
             quelle = _datenurl(bild.daten)
@@ -661,14 +703,16 @@ class PenEchoMcp:
                 log.warning("Aufgabenbild %d uebersprungen: Format oder Groesse", position)
                 continue
             try:
-                self._werkzeug("penecho_place_image", {
-                    "sessionId": session_id,
-                    "requestId": self._feld_id("bild", aufgabe_id, nummer, f"-{position}"),
-                    "source": quelle,
-                    "width": platz["w"],
-                    "region": platz,
-                })
-                if beschriften and schild is not None and bild.beschriftung:
+                if _an_ecke(belegung, platz, "image") is None:
+                    self._werkzeug("penecho_place_image", {
+                        "sessionId": session_id,
+                        "requestId": self._feld_id("bild", aufgabe_id, nummer, f"-{position}"),
+                        "source": quelle,
+                        "width": platz["w"],
+                        "region": platz,
+                    })
+                if (beschriften and schild is not None and bild.beschriftung
+                        and _an_ecke(belegung, schild, "text") is None):
                     self._werkzeug("penecho_edit_canvas", {
                         "sessionId": session_id,
                         "requestId": self._feld_id("bild", aufgabe_id, nummer, f"-{position}-schild"),

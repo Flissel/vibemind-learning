@@ -13,7 +13,7 @@ import pytest
 from spaces.learning.huelle.penecho_mcp import (
     BEREICHE, FLAECHE_GROESSE, Aufgabenbild, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar,
     PenEchoFlaecheVoll, PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
-    textfeld,
+    bildraster, textfeld,
 )
 
 TOKEN = "ab" * 32
@@ -188,18 +188,19 @@ def test_schnappschuss_liefert_png(zustand: Path) -> None:
 
 
 def test_404_auf_werkzeugaufruf_reconnect_und_einmal_wiederholen(zustand: Path) -> None:
+    # Ueber sitzung(): aufgabe_setzen liest seit F18 zuerst (optional) die Belegung.
     fake = Fake(tool_404=1)
-    _client(zustand, fake).aufgabe_setzen("sess-1", "t", "x", 1)
+    assert _client(zustand, fake).sitzung(LERN_SID, TITEL) == "sess-1"
     methoden = [b["method"] for b, _ in fake.anfragen]
     assert methoden.count("initialize") == 2
-    texte = [a for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] == "create_text"]
-    assert len(texte) == 2  # 404-Versuch + Wiederholung
-    assert texte[0]["arguments"]["requestId"] == texte[1]["arguments"]["requestId"]
+    starts = fake.aufrufe("penecho_start_session")
+    assert len(starts) == 2  # 404-Versuch + Wiederholung
+    assert starts[0]["arguments"] == starts[1]["arguments"]
 
 
 def test_zweites_404_wird_nicht_erreichbar(zustand: Path) -> None:
     with pytest.raises(PenEchoNichtErreichbar):
-        _client(zustand, Fake(tool_404=2)).aufgabe_setzen("sess-1", "t", "x", 1)
+        _client(zustand, Fake(tool_404=2)).sitzung(LERN_SID, TITEL)
 
 
 def test_vergessen_entfernt_eintrag(zustand: Path) -> None:
@@ -1259,3 +1260,64 @@ def test_anfragestau_schliesst_die_sitzung(zustand: Path) -> None:
         PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
             "sess-1", "t1", "Ordnen", 10, bilder=[Aufgabenbild("Graph A", BILD_PNG, 1.0)])
     assert [a["arguments"] for a in fake.aufrufe("penecho_close_session")] == [{"sessionId": "sess-1"}]
+
+
+def _mit_belegung(fake: Fake, objekte: list[tuple[str, str, dict]]) -> httpx.MockTransport:
+    """Transport: penecho_list_files liefert `objekte` (Art, objectId, Platz) wie PenEchos virtuelle Dateien."""
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_list_files":
+            fake.anfragen.append((body, request.headers))
+            eintraege = [{"objectId": oid, "kind": art, "bounds": platz, "path": f"objects/{oid}/geometry.json"}
+                         for art, oid, platz in objekte]
+            sc = {"documentId": "d", "entries": eintraege, "total": len(eintraege)}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "structuredContent": sc, "content": []}})
+        return fake(request)
+
+    return httpx.MockTransport(antwort)
+
+
+def _graphen() -> tuple[list[Aufgabenbild], list[tuple[dict | None, dict]]]:
+    bilder = [Aufgabenbild(f"Graph {c}", BILD_PNG, 480 / 360) for c in "ABCD"]
+    return bilder, bildraster(bildfeld(20, unter_ergebnisfeld=True), bilder)
+
+
+def test_vorhandene_bilder_werden_gelesen_nicht_geprobt(zustand: Path) -> None:
+    # Abnahme 06.11. (F18): Auf einem wiederhergestellten Board erkannte die Huelle "Bild steht schon da"
+    # an LAYOUT_CONFLICT. Jeder solche Fehlversuch bleibt in PenEchos Sitzung unaufgeloest; bei vier
+    # Bildern lief danach jeder Rahmen in request_limit, auch in einer frischen Sitzung. Jetzt liest die
+    # Huelle die Belegung (penecho_list_files, nur lesend) und setzt nur, was fehlt.
+    fake = FeldFake()
+    bilder, plaetze = _graphen()
+    objekte = [("text", "text-box-76", {**textfeld(20), "w": 393, "h": 518})]
+    objekte += [("image", f"image-{i}", platz) for i, (_, platz) in enumerate(plaetze)]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).aufgabe_setzen(
+        "sess-1", "t1", "Ordnen", 20, mit_ergebnisfeld=True, bilder=bilder)
+    assert _bilder(fake) == []
+    texte = [e for e in (a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")) if e["action"] == "create_text"]
+    assert [t["text"] for t in texte] == ["Graph A", "Graph B", "Graph C", "Graph D"]  # fehlende Schilder ja
+    assert len(_ink(fake)) == 1
+    zeigen = [e for e in (a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")) if e["action"] == "show"]
+    assert zeigen[0]["objectId"] == "text-box-76"
+
+
+def test_vorhandene_bildschilder_werden_nicht_doppelt_gesetzt(zustand: Path) -> None:
+    fake = FeldFake()
+    bilder, plaetze = _graphen()
+    objekte = [("image", f"image-{i}", platz) for i, (_, platz) in enumerate(plaetze)]
+    objekte += [("text", f"text-box-{i}", schild) for i, (schild, _) in enumerate(plaetze) if schild]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).aufgabe_setzen(
+        "sess-1", "t1", "Ordnen", 20, mit_ergebnisfeld=True, bilder=bilder)
+    assert _bilder(fake) == [] and _schilder(fake) == []
+    assert len(_ink(fake)) == 1
+
+
+def test_belegung_nicht_lesbar_setzt_wie_bisher(zustand: Path) -> None:
+    fake = FeldFake()
+    bilder, _ = _graphen()
+    transport = _antwort_mit_fehler(fake, lambda name, args: "invalid_arguments" if name == "penecho_list_files" else None)
+    PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
+        "sess-1", "t1", "Ordnen", 20, mit_ergebnisfeld=True, bilder=bilder)
+    assert len(_bilder(fake)) == 4 and len(_schilder(fake)) == 4 and len(_ink(fake)) == 1
