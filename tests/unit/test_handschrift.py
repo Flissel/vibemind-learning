@@ -129,3 +129,34 @@ def test_numeric_ende_zu_ende_mit_unicode_minus() -> None:
     )
     assert gelesen.lesbar is True
     assert antwort == {"value": -1.5}
+
+
+class _PruefenderGateway:
+    """Runs the real OpenFang response check on the raw model text, like the live gateway."""
+
+    def __init__(self, inhalt: str) -> None:
+        self.inhalt = inhalt
+
+    async def generate(self, invocation, output_model):
+        import json
+
+        from spaces.learning.services.course_factory.model_gateway import _validated_result
+
+        umschlag = {"id": "hs-echt", "choices": [{"message": {"content": self.inhalt}}]}
+        return _validated_result(
+            json.dumps(umschlag).encode(), invocation, output_model, inline=True
+        )
+
+
+def test_echte_modellantwort_besteht_die_gateway_pruefung() -> None:
+    # Live 06.11.: every reading failed with GatewaySchemaError, because the gateway
+    # demands schema_version == "handschrift-gelesen-v1" and the output model had none.
+    inhalt = (
+        '```json\n{"schema_version": "handschrift-gelesen-v1", "lesbar": true, '
+        '"roh": {"auswahl": ["B"]}, "text": "B"}\n```'
+    )
+    gelesen, antwort = HandschriftLeser(lambda: _PruefenderGateway(inhalt)).lesen(TASK, PNG)
+    assert isinstance(gelesen, GelesenV1)
+    assert gelesen.lesbar is True
+    assert gelesen.text == "B"
+    assert antwort == {"choice_id": "b"}

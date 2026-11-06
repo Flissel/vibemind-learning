@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +40,17 @@ class GelesenV1(BaseModel):
     # Labels or the value as read; the system turns them into an answer.
     roh: dict[str, object]
     # A short rendering for the confirmation card, e.g. "x = -1,5".
+    text: str = Field(max_length=200)
+
+
+class _ModellLesungV1(BaseModel):
+    """What the reading model returns; the gateway demands the schema version."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["handschrift-gelesen-v1"]
+    lesbar: bool
+    roh: dict[str, object]
     text: str = Field(max_length=200)
 
 
@@ -120,8 +132,9 @@ class HandschriftLeser:
     async def _lesen(self, invocation: ModelInvocation) -> GelesenV1:
         gateway = self._gateway_factory()
         try:
-            result = await gateway.generate(invocation, GelesenV1)
-            return result.output
+            result = await gateway.generate(invocation, _ModellLesungV1)
+            output = result.output
+            return GelesenV1(lesbar=output.lesbar, roh=dict(output.roh), text=output.text)
         finally:
             close = getattr(gateway, "aclose", None)
             if close is not None:
