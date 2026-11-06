@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from collections.abc import Mapping
 from uuid import UUID
@@ -24,12 +26,18 @@ from spaces.learning.services.adaptive_engine.session_service import (
     PublicTask,
     SessionStartCommand,
     SessionTurn,
+    VorbewertungCommand,
 )
+from spaces.learning.services.course_factory.model_gateway import png_bild
 from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.services.notizen.aus_bewertung import notiz_aus_bewertung
 from spaces.learning.services.notizen.store import NoteStore
 
 logger = logging.getLogger(__name__)
+
+# 5 MB of PNG (model_gateway cap) is 4 * ceil(5_000_000 / 3) base64 characters.
+_MAX_PNG_BASE64_CHARS = 6_666_668
+_PREVIEW_KEYS = frozenset({"handschrift_png_base64", "answer", "korrigiert_aus"})
 
 
 SESSION_TOOL_NAMES = frozenset(
@@ -39,6 +47,8 @@ SESSION_TOOL_NAMES = frozenset(
         LearningToolName.COURSE_OVERVIEW,
         LearningToolName.TASK_NEXT,
         LearningToolName.TASK_ANSWER,
+        LearningToolName.TASK_PREVIEW,
+        LearningToolName.TASK_CONFIRM,
         LearningToolName.HINT_REQUEST,
         LearningToolName.PROGRESS_SHOW,
     }
@@ -100,6 +110,10 @@ class AdaptiveSessionGateway:
             if request.tool is LearningToolName.TASK_ANSWER:
                 turn = self._answer(request)
                 return self._turn_outcome(turn)
+            if request.tool is LearningToolName.TASK_PREVIEW:
+                return self._preview(request)
+            if request.tool is LearningToolName.TASK_CONFIRM:
+                return self._turn_outcome(self._confirm(request))
             if request.tool is LearningToolName.TASK_NEXT:
                 return self._turn_outcome(self._current(request))
             if request.tool is LearningToolName.HINT_REQUEST:
@@ -253,6 +267,68 @@ class AdaptiveSessionGateway:
             self._note_from_feedback(turn, answered, actor_id)
         return turn
 
+    def _preview(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        session_id = request.event.session_id
+        revision = request.event.expected_revision
+        if session_id is None or revision is None:
+            raise ValueError("task preview requires session and revision")
+        actor_id = request.event.actor.actor_id
+        answer, png, korrigiert_aus = _preview_payload(request.event.payload)
+        try:
+            vorbewertung = self._service.vorbewerten(
+                VorbewertungCommand(
+                    session_id=str(session_id),
+                    actor_id=actor_id,
+                    expected_session_revision=revision,
+                    answer=answer,
+                    handschrift_png=png,
+                    korrigiert_aus=korrigiert_aus,
+                )
+            )
+        except PersistenceConflict:
+            raise  # a RuntimeError subclass, mapped by execute()
+        except RuntimeError as error:
+            # Reader or rubric evaluator is not configured / not reachable: retry later.
+            logger.warning("learning_preview_unavailable", extra={"error_type": type(error).__name__})
+            return ApplicationOutcomeV1(
+                state="unavailable",
+                error=ToolErrorV1(
+                    code="session_grading_unavailable",
+                    message="the preview grading is unavailable",
+                    retryable=True,
+                ),
+            )
+        turn = self._service.current(str(session_id), actor_id=actor_id)
+        return self._turn_outcome(
+            turn,
+            extra={"vorbewertung": vorbewertung.model_dump(mode="json")},
+            intent=False,
+        )
+
+    def _confirm(self, request: ToolRequestV1) -> SessionTurn:
+        session_id = request.event.session_id
+        revision = request.event.expected_revision
+        payload = request.event.payload
+        vorbewertung_id = payload.get("vorbewertung_id")
+        if (
+            session_id is None
+            or revision is None
+            or set(payload) != {"vorbewertung_id"}
+            or not isinstance(vorbewertung_id, str)
+        ):
+            raise ValueError("task confirm requires session, revision, and vorbewertung_id")
+        actor_id = request.event.actor.actor_id
+        answered = self._notes.vorher(str(session_id), actor_id) if self._notes else None
+        turn = self._service.bestaetigen(
+            session_id=str(session_id),
+            actor_id=actor_id,
+            expected_session_revision=revision,
+            vorbewertung_id=vorbewertung_id,
+        )
+        if answered is not None:
+            self._note_from_feedback(turn, answered, actor_id)
+        return turn
+
     def _note_from_feedback(
         self, turn: SessionTurn, task: PublicTask, actor_id: str
     ) -> None:
@@ -319,6 +395,40 @@ def build_session_gateways(
 ) -> Mapping[LearningToolName, ApplicationGateway]:
     gateway = AdaptiveSessionGateway(service, notes)
     return {tool: gateway for tool in SESSION_TOOL_NAMES}
+
+
+def _preview_payload(
+    payload: Mapping[str, object],
+) -> tuple[dict[str, object] | None, bytes | None, str | None]:
+    """Exactly one of a typed answer and a handwriting PNG; anything else is invalid."""
+    if not set(payload) <= _PREVIEW_KEYS:
+        raise ValueError("task preview payload has unknown fields")
+    encoded = payload.get("handschrift_png_base64")
+    answer = payload.get("answer")
+    korrigiert_aus = payload.get("korrigiert_aus")
+    if korrigiert_aus is not None and not isinstance(korrigiert_aus, str):
+        raise ValueError("korrigiert_aus must be a string")
+    if (encoded is None) == (answer is None):
+        raise ValueError("task preview needs exactly one of handschrift_png_base64 and answer")
+    if encoded is not None:
+        if korrigiert_aus is not None:
+            raise ValueError("korrigiert_aus belongs to a typed answer")
+        return None, _decode_png(encoded), None
+    if not isinstance(answer, dict):
+        raise ValueError("answer must be an object")
+    return answer, None, korrigiert_aus
+
+
+def _decode_png(encoded: object) -> bytes:
+    """Length cap first, strict decode, then the shared PNG check; the image is never logged."""
+    if not isinstance(encoded, str) or not encoded or len(encoded) > _MAX_PNG_BASE64_CHARS:
+        raise ValueError("handschrift_png_base64 is invalid")
+    try:
+        png = base64.b64decode(encoded, validate=True)
+        png_bild(png)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("handschrift_png_base64 is not a valid PNG") from error
+    return png
 
 
 def _rejected(code: str, message: str) -> ApplicationOutcomeV1:

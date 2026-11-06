@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
@@ -18,6 +20,7 @@ from spaces.learning.services.adaptive_engine.models import (
 )
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
 from spaces.learning.services.db.models import Base
+from spaces.learning.services.notizen.store import NoteStore
 
 
 def _store(tmp_path: Path):
@@ -192,3 +195,186 @@ def test_session_tool_rejects_stale_revision_without_success_intent(tmp_path: Pa
     assert rejected["error"]["code"] == "session_revision_conflict"
     assert "ui_intent" not in rejected
     engine.dispose()
+
+
+# ---- task_preview / task_confirm -------------------------------------------------------
+
+PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\nhandschrift-test").decode("ascii")
+
+
+def _start(dispatcher: LearningDispatcher, course_id: str, mode: str = "training") -> dict:
+    blueprint = (
+        {"max_attempts": 2}
+        if mode == "training"
+        else {"item_count": 1, "item_types": ["single_choice"], "difficulty_bands": []}
+    )
+    started = _call(
+        dispatcher,
+        LearningToolName.SESSION_START.value,
+        _event(
+            "learning.session.start",
+            course_id=course_id,
+            idempotency_key=f"start-{uuid4()}",
+            payload={"course_revision": 1, "mode": mode, "blueprint": blueprint},
+        ),
+    )
+    return started["result"]["session"]
+
+
+def _preview(dispatcher, turn, payload, *, revision=None):
+    return _call(
+        dispatcher,
+        "learning_task_preview",
+        _event(
+            "learning.task.preview",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"] if revision is None else revision,
+            idempotency_key=f"preview-{uuid4()}",
+            payload=payload,
+        ),
+    )
+
+
+def _confirm(dispatcher, turn, vorbewertung_id, *, revision=None):
+    return _call(
+        dispatcher,
+        "learning_task_confirm",
+        _event(
+            "learning.task.confirm",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"] if revision is None else revision,
+            idempotency_key=f"confirm-{uuid4()}",
+            payload={"vorbewertung_id": vorbewertung_id},
+        ),
+    )
+
+
+def _setup(tmp_path: Path, **service_args):
+    engine, factory, course_id = _store(tmp_path)
+    service = AdaptiveSessionService(factory, **service_args)
+    notes = NoteStore(factory)
+    dispatcher = LearningDispatcher(
+        gateways=build_session_gateways(service, notes), receipts=InMemoryReceiptStore()
+    )
+    return engine, dispatcher, course_id, notes
+
+
+def test_preview_liefert_vorbewertung_ohne_revision(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    preview = _preview(dispatcher, turn, {"answer": {"choice_id": "b"}})
+    assert preview["state"] == "completed", preview
+    vor = preview["result"]["vorbewertung"]
+    assert vor["quelle"] == "getippt" and vor["lesbar"] is True and vor["art"] == "deterministic"
+    assert vor["feedback"]["state"] == "incorrect"
+    assert preview["result"]["session"]["session_revision"] == turn["session_revision"]
+    assert preview["result"]["session"]["task"]["id"] == turn["task"]["id"]
+    assert preview["aggregate"]["revision"] == turn["session_revision"]
+    engine.dispose()
+
+
+def test_confirm_wie_answer(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, notes = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    vor = _preview(dispatcher, turn, {"answer": {"choice_id": "b"}})["result"]["vorbewertung"]
+    confirmed = _confirm(dispatcher, turn, vor["id"])
+    assert confirmed["state"] == "completed", confirmed
+    session = confirmed["result"]["session"]
+    assert session["session_revision"] == turn["session_revision"] + 2
+    assert session["feedback"] is not None
+    # a wrong training answer leaves a rating note, like task_answer
+    assert len(notes.list_for("student-mcp", quelle="bewertung")) == 1
+    engine.dispose()
+
+
+def test_confirm_doppelt_session_state_conflict(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    vor = _preview(dispatcher, turn, {"answer": {"choice_id": "a"}})["result"]["vorbewertung"]
+    first = _confirm(dispatcher, turn, vor["id"])
+    assert first["state"] == "completed", first
+    again = _confirm(
+        dispatcher, turn, vor["id"], revision=first["result"]["session"]["session_revision"]
+    )
+    assert again["state"] == "rejected"
+    assert again["error"]["code"] == "session_state_conflict"
+    engine.dispose()
+
+
+def test_preview_und_confirm_stale_revision(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    stale = _preview(dispatcher, turn, {"answer": {"choice_id": "a"}}, revision=99)
+    assert stale["error"]["code"] == "session_revision_conflict"
+    vor = _preview(dispatcher, turn, {"answer": {"choice_id": "a"}})["result"]["vorbewertung"]
+    stale_confirm = _confirm(dispatcher, turn, vor["id"], revision=99)
+    assert stale_confirm["error"]["code"] == "session_revision_conflict"
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"handschrift_png_base64": "***not base64***"},
+        {"handschrift_png_base64": base64.b64encode(b"GIF89a-not-a-png").decode()},
+        {"handschrift_png_base64": "A" * 6_800_000},
+        {"handschrift_png_base64": 5},
+        {"handschrift_png_base64": PNG_B64, "answer": {"choice_id": "a"}},
+        {},
+        {"answer": {"choice_id": "a"}, "unbekannt": 1},
+        {"answer": "kein objekt"},
+        {"handschrift_png_base64": PNG_B64, "korrigiert_aus": str(uuid4())},
+    ],
+)
+def test_preview_payload_streng(tmp_path: Path, payload: dict[str, object]) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    result = _preview(dispatcher, turn, payload)
+    assert result["state"] == "rejected", result
+    assert result["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
+def test_confirm_payload_streng_und_unbekannte_id(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    bad = _call(
+        dispatcher,
+        "learning_task_confirm",
+        _event(
+            "learning.task.confirm",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"],
+            idempotency_key="confirm-bad",
+            payload={"vorbewertung_id": str(uuid4()), "extra": 1},
+        ),
+    )
+    assert bad["error"]["code"] == "invalid_session_request"
+    unknown = _confirm(dispatcher, turn, str(uuid4()))
+    assert unknown["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
+def test_preview_und_confirm_in_pruefung_verweigert(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id, mode="exam")
+    preview = _preview(dispatcher, turn, {"answer": {"choice_id": "a"}})
+    assert preview["error"]["code"] == "session_access_denied"
+    confirm = _confirm(dispatcher, turn, str(uuid4()))
+    assert confirm["error"]["code"] == "session_access_denied"
+    engine.dispose()
+
+
+def test_preview_handschrift_ohne_leser_ist_nicht_verfuegbar(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    result = _preview(dispatcher, turn, {"handschrift_png_base64": PNG_B64})
+    assert result["state"] == "unavailable"
+    assert result["error"]["code"] == "session_grading_unavailable"
+    engine.dispose()
+
+
+def test_server_verdrahtet_den_leser() -> None:
+    import inspect
+
+    assert "handschrift_leser=evaluation_client" in inspect.getsource(server)

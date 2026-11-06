@@ -69,6 +69,8 @@
         "learning.course.overview",
         "learning.task.next",
         "learning.task.answer",
+        "learning.task.preview",
+        "learning.task.confirm",
         "learning.hint.request",
         "learning.tutor.ask",
         "learning.progress.show",

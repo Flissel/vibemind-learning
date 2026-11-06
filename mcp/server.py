@@ -182,6 +182,7 @@ def build_default_dispatcher(
         adaptive_sessions = AdaptiveSessionService(
             session_factory,
             rubric_evaluator=evaluation_client,
+            handschrift_leser=evaluation_client,
             external_rubric_types=(
                 frozenset({"penecho_canvas"})
                 if evaluation_client is not None

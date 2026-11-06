@@ -51,6 +51,8 @@ EXPECTED_EVENTS = {
     "learning.course.overview",
     "learning.task.next",
     "learning.task.answer",
+    "learning.task.preview",
+    "learning.task.confirm",
     "learning.hint.request",
     "learning.tutor.ask",
     "learning.progress.show",
@@ -77,6 +79,8 @@ EXPECTED_TOOLS = {
     "learning_course_overview",
     "learning_task_next",
     "learning_task_answer",
+    "learning_task_preview",
+    "learning_task_confirm",
     "learning_hint_request",
     "learning_tutor_ask",
     "learning_progress_show",
@@ -128,6 +132,8 @@ def test_models_reject_extra_fields_and_mismatched_tool_event() -> None:
         LearningEventType.COURSE_REVIEW,
         LearningEventType.SESSION_START,
         LearningEventType.TASK_ANSWER,
+        LearningEventType.TASK_PREVIEW,
+        LearningEventType.TASK_CONFIRM,
         LearningEventType.CANVAS_SAVE,
         LearningEventType.CANVAS_SUBMIT,
         LearningEventType.CANVAS_REVIEW,
@@ -136,6 +142,15 @@ def test_models_reject_extra_fields_and_mismatched_tool_event() -> None:
 def test_write_events_require_an_idempotency_key(event_type: LearningEventType) -> None:
     with pytest.raises(ValidationError, match="idempotency_key"):
         _event(event_type, idempotency_key=None)
+
+
+def test_neue_werkzeuge_sind_schreibend() -> None:
+    from spaces.learning.contracts.events import WRITE_EVENTS
+
+    assert LearningEventType.TASK_PREVIEW in WRITE_EVENTS
+    assert LearningEventType.TASK_CONFIRM in WRITE_EVENTS
+    assert EVENT_TOOL_MAP[LearningEventType.TASK_PREVIEW].value == "learning_task_preview"
+    assert EVENT_TOOL_MAP[LearningEventType.TASK_CONFIRM].value == "learning_task_confirm"
 
 
 def test_publish_requires_confirmation_and_expected_revision() -> None:

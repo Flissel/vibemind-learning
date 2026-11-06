@@ -19,6 +19,8 @@ class LearningEventType(StrEnum):
     COURSE_OVERVIEW = "learning.course.overview"
     TASK_NEXT = "learning.task.next"
     TASK_ANSWER = "learning.task.answer"
+    TASK_PREVIEW = "learning.task.preview"
+    TASK_CONFIRM = "learning.task.confirm"
     HINT_REQUEST = "learning.hint.request"
     TUTOR_ASK = "learning.tutor.ask"
     PROGRESS_SHOW = "learning.progress.show"
@@ -45,6 +47,8 @@ class LearningToolName(StrEnum):
     COURSE_OVERVIEW = "learning_course_overview"
     TASK_NEXT = "learning_task_next"
     TASK_ANSWER = "learning_task_answer"
+    TASK_PREVIEW = "learning_task_preview"
+    TASK_CONFIRM = "learning_task_confirm"
     HINT_REQUEST = "learning_hint_request"
     TUTOR_ASK = "learning_tutor_ask"
     PROGRESS_SHOW = "learning_progress_show"
@@ -71,6 +75,8 @@ EVENT_TOOL_MAP: dict[LearningEventType, LearningToolName] = {
     LearningEventType.COURSE_OVERVIEW: LearningToolName.COURSE_OVERVIEW,
     LearningEventType.TASK_NEXT: LearningToolName.TASK_NEXT,
     LearningEventType.TASK_ANSWER: LearningToolName.TASK_ANSWER,
+    LearningEventType.TASK_PREVIEW: LearningToolName.TASK_PREVIEW,
+    LearningEventType.TASK_CONFIRM: LearningToolName.TASK_CONFIRM,
     LearningEventType.HINT_REQUEST: LearningToolName.HINT_REQUEST,
     LearningEventType.TUTOR_ASK: LearningToolName.TUTOR_ASK,
     LearningEventType.PROGRESS_SHOW: LearningToolName.PROGRESS_SHOW,
@@ -91,6 +97,8 @@ WRITE_EVENTS = frozenset(
         LearningEventType.COURSE_PUBLISH,
         LearningEventType.SESSION_START,
         LearningEventType.TASK_ANSWER,
+        LearningEventType.TASK_PREVIEW,
+        LearningEventType.TASK_CONFIRM,
         LearningEventType.CANVAS_SAVE,
         LearningEventType.CANVAS_SUBMIT,
         LearningEventType.CANVAS_REVIEW,
