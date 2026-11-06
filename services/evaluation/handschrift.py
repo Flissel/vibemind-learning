@@ -80,6 +80,42 @@ def _etiketten(beschriftung: Beschriftung, task: Mapping[str, object]) -> dict[s
     }
 
 
+def _zurueck(wert: object, tabelle: Mapping[str, object]) -> object:
+    """A displayed text that matches exactly one entry becomes that entry's label; else unchanged.
+
+    The model sometimes reports the printed texts ("Graph A") instead of the labels ("1").
+    """
+    if not isinstance(wert, str):
+        return wert
+    gesucht = wert.strip().casefold()
+    if not gesucht or wert.strip().upper() in tabelle or wert.strip() in tabelle:
+        return wert
+    treffer = [label for label, text in tabelle.items() if isinstance(text, str) and text.strip().casefold() == gesucht]
+    return treffer[0] if len(treffer) == 1 else wert
+
+
+def _auf_etiketten(task_type: str, roh: dict[str, object], etiketten: Mapping[str, object]) -> dict[str, object]:
+    """The reading with texts mapped back to labels where that is unambiguous (deterministic)."""
+    links, rechts, optionen = (etiketten.get(k) for k in ("links", "rechts", "optionen"))
+    links = links if isinstance(links, Mapping) else {}
+    rechts = rechts if isinstance(rechts, Mapping) else {}
+    optionen = optionen if isinstance(optionen, Mapping) else {}
+    if task_type == "matching":
+        paare = roh.get("paare")
+        if not isinstance(paare, Mapping):
+            return roh
+        neu = {_zurueck(k, links): _zurueck(v, rechts) for k, v in paare.items()}
+        # Two entries naming the same label stay as read, and the conversion rejects them.
+        return {**roh, "paare": neu} if len(neu) == len(paare) else roh
+    schluessel = {"single_choice": "auswahl", "multiple_choice": "auswahl", "ordering": "reihenfolge"}.get(task_type)
+    if schluessel is None:
+        return roh
+    wert = roh.get(schluessel)
+    if isinstance(wert, list):
+        return {**roh, schluessel: [_zurueck(w, optionen) for w in wert]}
+    return {**roh, schluessel: _zurueck(wert, optionen)}
+
+
 def _id_of(entry: object) -> str:
     value = entry.get("id") if isinstance(entry, Mapping) else None
     return value if isinstance(value, str) else ""
@@ -104,10 +140,11 @@ class HandschriftLeser:
             [o for o in _entries(task.get("options")) if isinstance(o, dict)],
         )
         # Whitelist: only what the learner sees. Nothing else of the task is forwarded.
+        etiketten = _etiketten(beschriftung, task)
         payload: dict[str, object] = {
             "aufgabentyp": task_type,
             "aufgabentext": str(task.get("prompt", ""))[:5_000],
-            "etiketten": _etiketten(beschriftung, task),
+            "etiketten": etiketten,
             "antwortformat": _FORMAT.get(task_type, {}),
         }
         invocation = ModelInvocation(
@@ -121,7 +158,7 @@ class HandschriftLeser:
         )
         gelesen = asyncio.run(self._lesen(invocation))
         antwort = (
-            antwort_aus_etiketten(task_type, beschriftung, gelesen.roh)
+            antwort_aus_etiketten(task_type, beschriftung, _auf_etiketten(task_type, gelesen.roh, etiketten))
             if gelesen.lesbar
             else None
         )

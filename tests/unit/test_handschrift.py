@@ -128,6 +128,55 @@ def test_matching_ende_zu_ende() -> None:
     assert etiketten["rechts"] == {"A": "bellt", "B": "miaut"}
 
 
+MATCHING = {
+    "id": "t2", "type": "matching", "prompt": "Ordnen Sie zu.", "options": [],
+    "presentation": {
+        "left": [{"id": "l1", "label": "Hund"}, {"id": "l2", "label": "Katze"}],
+        "right": [{"id": "r1", "label": "bellt"}, {"id": "r2", "label": "miaut"}],
+    },
+}
+
+
+def test_matching_mit_texten_statt_etiketten() -> None:
+    # Abnahme 06.11.: "1-C, 2-D, ..." richtig gelesen, das Modell meldete aber die Texte
+    # ({"Graph A": "Polstelle ..."}) statt der Etiketten; das ergab "nicht lesbar".
+    (gelesen, antwort), _ = _lesen(
+        GelesenV1(lesbar=True, roh={"paare": {"Hund": "miaut", " katze ": "Bellt"}}, text="1-B, 2-A"), MATCHING
+    )
+    assert gelesen.lesbar is True
+    assert antwort == {"pairs": {"l1": "r2", "l2": "r1"}}
+
+
+def test_matching_gemischt_etikett_und_text() -> None:
+    (_, antwort), _ = _lesen(GelesenV1(lesbar=True, roh={"paare": {"1": "miaut", "Katze": "A"}}, text="x"), MATCHING)
+    assert antwort == {"pairs": {"l1": "r2", "l2": "r1"}}
+
+
+def test_mehrdeutiger_text_bleibt_unlesbar() -> None:
+    task = {**MATCHING, "presentation": {
+        "left": [{"id": "l1", "label": "Graph"}, {"id": "l2", "label": "Graph"}],
+        "right": [{"id": "r1", "label": "bellt"}, {"id": "r2", "label": "miaut"}],
+    }}
+    (gelesen, antwort), _ = _lesen(GelesenV1(lesbar=True, roh={"paare": {"Graph": "A", "2": "B"}}, text="x"), task)
+    assert gelesen.lesbar is False and antwort is None
+
+
+def test_zwei_texte_auf_dasselbe_etikett_bleiben_unlesbar() -> None:
+    (gelesen, antwort), _ = _lesen(GelesenV1(lesbar=True, roh={"paare": {"1": "A", "Hund": "B"}}, text="x"), MATCHING)
+    assert gelesen.lesbar is False and antwort is None
+
+
+def test_auswahl_mit_optionstext() -> None:
+    (gelesen, antwort), _ = _lesen(GelesenV1(lesbar=True, roh={"auswahl": ["zwei"]}, text="Zwei"))
+    assert gelesen.lesbar is True and antwort == {"choice_id": "b"}
+
+
+def test_reihenfolge_mit_optionstexten() -> None:
+    task = {**TASK, "type": "ordering"}
+    (_, antwort), _ = _lesen(GelesenV1(lesbar=True, roh={"reihenfolge": ["Zwei", "A"]}, text="x"), task)
+    assert antwort == {"order": ["b", "a"]}
+
+
 def test_numeric_ende_zu_ende_mit_unicode_minus() -> None:
     task = {"id": "t3", "type": "numeric", "prompt": "Loesen Sie x + 2 = 0,5.", "options": [],
             "presentation": {}}
