@@ -232,28 +232,28 @@ def _kriterien_zeilen(feedback: dict[str, Any]) -> list[str]:
     return zeilen
 
 
-def _punkte(vorbewertung: dict[str, Any]) -> float | None:
-    score = vorbewertung.get("score")
-    return float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None
+# Learnings Urteil (`session_service._turn_feedback`: correct / partial / incorrect / needs_review)
+# auf die Karte; so sagt die Karte dasselbe wie der Turn nach „Passt“.
+_URTEIL_AUS_ZUSTAND = {"correct": "Richtig.", "partial": "Teilweise richtig.", "incorrect": "Noch nicht richtig."}
+_ZUSTANDSNAME = re.compile(r"^[a-z_]{1,40}$")
 
 
 def urteil_aus(vorbewertung: dict[str, Any]) -> str:
-    """Urteil der Rueckmeldungskarte aus Learnings Vorbewertung, nur nach Richtigkeit.
+    """Urteil der Rueckmeldungskarte, vollstaendig aus Learnings `feedback.state`; keine eigene Schwelle.
 
-    „Richtig.“ folgt Learnings eigenem Urteil: `feedback.state == "correct"` (gesetzt von
-    `session_service._turn_feedback`, dieselben Baender wie bei einer gebuchten Antwort).
-    Sonst nach Punkten: ueber 0 -> „Teilweise richtig.“, sonst „Noch nicht richtig.“.
-    Nicht lesbar -> „Nicht lesbar.“. Rubrik-Typen nach derselben Regel.
+    Nicht lesbar -> „Nicht lesbar.“. Fehlt der Zustand oder ist er hier unbekannt (auch
+    `needs_review`), „Noch nicht richtig.“; geloggt wird nur der Zustandsname.
     """
     if vorbewertung.get("lesbar") is not True:
         return "Nicht lesbar."
     feedback = vorbewertung.get("feedback")
-    if isinstance(feedback, dict) and feedback.get("state") == "correct":
-        return "Richtig."
-    score = _punkte(vorbewertung)
-    if score is not None and score > 0:
-        return "Teilweise richtig."
-    return "Noch nicht richtig."
+    zustand = feedback.get("state") if isinstance(feedback, dict) else None
+    urteil = _URTEIL_AUS_ZUSTAND.get(zustand) if isinstance(zustand, str) else None
+    if urteil is None:
+        name = zustand if isinstance(zustand, str) and _ZUSTANDSNAME.fullmatch(zustand) else type(zustand).__name__
+        log.warning("Vorbewertung ohne bekanntes Urteil: %s", name)
+        return "Noch nicht richtig."
+    return urteil
 
 
 def kartentext(vorbewertung: dict[str, Any]) -> str:

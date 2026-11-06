@@ -1224,7 +1224,7 @@ def test_abgeben_open_nimmt_ganzen_bereich() -> None:
     kriterium = {"criterion_id": "c1", "description": "Nennt die Ursache", "score": 0.5,
                  "feedback": "Die Ursache fehlt (S1)."}
     lern, client, _, penecho = _flaechen_sitzung(
-        "open", vor=_vor(score=0.5, gelesen=None, art="rubric", criteria=[kriterium]))
+        "open", vor=_vor(score=0.8, gelesen=None, art="rubric", criteria=[kriterium]))
     vorher = len(penecho.aufrufe)
     r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
     assert r.status_code == 200, r.text
@@ -1515,17 +1515,12 @@ def test_zeigen_setzt_ergebnisfeld_nur_fuer_deterministische_typen(typ: str, mit
 
 
 @pytest.mark.parametrize("vor, erwartet", [
+    # _vor setzt feedback.state mit Learnings Baendern (>= 0.999 correct, >= 0.65 partial).
     (_vor(score=1.0), "Richtig."),
-    (_vor(score=0.9995), "Richtig."),  # Learnings Richtig-Regel (feedback.state), nicht score == 1
+    (_vor(score=0.9995), "Richtig."),
     (_vor(score=0.8), "Teilweise richtig."),
-    (_vor(score=0.5), "Teilweise richtig."),
-    (_vor(score=0.01), "Teilweise richtig."),
+    (_vor(score=0.5), "Noch nicht richtig."),  # Learning: incorrect, wie der Turn nach „Passt“
     (_vor(score=0.0), "Noch nicht richtig."),
-    ({"lesbar": True, "score": None, "accepted": None, "feedback": None}, "Noch nicht richtig."),
-    ({"lesbar": True, "score": True, "accepted": True, "feedback": None}, "Noch nicht richtig."),
-    # Ohne Learnings „correct“ kein „Richtig.“, auch bei vollen Punkten (nicht angenommen: needs_review).
-    ({"lesbar": True, "score": 1.0, "accepted": False,
-      "feedback": {"state": "needs_review", "score": 1.0}}, "Teilweise richtig."),
     (_vor(lesbar=False), "Nicht lesbar."),
     ({"lesbar": False, "score": 1.0, "accepted": True, "feedback": {"state": "correct"}}, "Nicht lesbar."),
     ({}, "Nicht lesbar."),
@@ -1533,6 +1528,33 @@ def test_zeigen_setzt_ergebnisfeld_nur_fuer_deterministische_typen(typ: str, mit
 def test_urteil_aus_score(vor: dict[str, Any], erwartet: str) -> None:
     assert urteil_aus(vor) == erwartet
     assert erwartet in URTEILE
+
+
+@pytest.mark.parametrize("zustand, score, erwartet", [
+    ("correct", 0.2, "Richtig."),            # nur der Zustand zaehlt, nicht die Punkte
+    ("partial", 1.0, "Teilweise richtig."),
+    ("incorrect", 0.9, "Noch nicht richtig."),
+])
+def test_urteil_je_zustand_von_learning(zustand: str, score: float, erwartet: str) -> None:
+    vor = {"lesbar": True, "score": score, "accepted": True, "feedback": {"state": zustand, "score": score}}
+    assert urteil_aus(vor) == erwartet
+
+
+@pytest.mark.parametrize("feedback, geloggt", [
+    ({"state": "needs_review", "score": 1.0}, "needs_review"),
+    ({"state": "neu_erfunden"}, "neu_erfunden"),
+    ({"state": "Geheim -1,5 <x>"}, "str"),
+    ({}, "NoneType"),
+    (None, "NoneType"),
+])
+def test_urteil_unbekannter_zustand_noch_nicht_richtig_und_geloggt(
+    feedback: dict[str, Any] | None, geloggt: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING", logger="spaces.learning.huelle.bruecke"):
+        assert urteil_aus({"lesbar": True, "score": 1.0, "accepted": False, "feedback": feedback}) == (
+            "Noch nicht richtig.")
+    assert caplog.messages == [f"Vorbewertung ohne bekanntes Urteil: {geloggt}"]
+    assert "Geheim" not in caplog.text
 
 
 def test_abgeben_zwei_bilder_zwei_vorbewertungen() -> None:
