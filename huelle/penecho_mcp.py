@@ -327,7 +327,9 @@ class PenEchoMcp:
         """Oeffnet das gemerkte Dokument im ersten verbundenen Browser, der es hat, und bindet die Sitzung.
 
         schema.js penecho_list_canvases (ohne Argumente) und penecho_open_canvas
-        (instanceId, canvasId, requestId Pflicht; documentId). Ohne Treffer None.
+        (instanceId, canvasId, requestId Pflicht; documentId). Ohne Treffer None, ebenso wenn
+        die Bindung an das gefundene Dokument scheitert; sitzung() legt dann eine Ersatzflaeche an.
+        Ein Fehler in einem Browser bricht die Suche nicht ab, es folgt der naechste.
         """
         if not dokument:
             return None
@@ -347,9 +349,12 @@ class PenEchoMcp:
                     "documentId": dokument,
                     "requestId": "oeffnen-" + uuid4().hex,
                 })
-            except PenEchoFlaecheVerloren:
+            except PenEchoNichtErreichbar:  # auch PenEchoFlaecheVerloren
                 continue
-            return self._werkzeug("penecho_start_session", {**argumente, "documentId": dokument})
+            try:
+                return self._werkzeug("penecho_start_session", {**argumente, "documentId": dokument})
+            except PenEchoNichtErreichbar:
+                return None
         return None
 
     def _dokument_merken(self, schluessel: str, dokument: Any, dokumente: dict[str, str] | None = None) -> None:

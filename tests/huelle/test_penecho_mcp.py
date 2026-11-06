@@ -313,7 +313,8 @@ def test_speichern_fehler_kommen_als_nicht_erreichbar(zustand: Path) -> None:
     assert _merkdatei(zustand, DOKUMENTE) == {}
 
 
-def _verlust_fake(fake: Fake, *, browser_mit_dokument: str | None):
+def _verlust_fake(fake: Fake, *, browser_mit_dokument: str | None, open_fehler: str = "STORAGE_UNAVAILABLE",
+                  start_mit_dokument_fehler: str | None = None):
     """start_session ohne documentId: Flaeche verloren. open_canvas klappt nur im genannten Browser."""
     echt = fake.__call__
 
@@ -325,6 +326,8 @@ def _verlust_fake(fake: Fake, *, browser_mit_dokument: str | None):
         if name == "penecho_start_session":
             fake.anfragen.append((body, request.headers))
             if args.get("documentId") == DOK:
+                if start_mit_dokument_fehler:
+                    return _fehler(body, start_mit_dokument_fehler)
                 return _ok(body, {"sessionId": "sess-2", "documentId": DOK, "reused": True})
             if args.get("sessionKey") == "learning-huelle:" + LERN_SID:
                 return _fehler(body, "STORAGE_UNAVAILABLE")
@@ -340,7 +343,7 @@ def _verlust_fake(fake: Fake, *, browser_mit_dokument: str | None):
             fake.anfragen.append((body, request.headers))
             if args["canvasId"] == browser_mit_dokument and args.get("documentId") == DOK:
                 return _ok(body, {"documentId": DOK, "title": "t", "active": False})
-            return _fehler(body, "STORAGE_UNAVAILABLE")
+            return _fehler(body, open_fehler)
         return echt(request)
 
     return antwort
@@ -396,6 +399,31 @@ def test_sitzung_gespeichertes_board_in_keinem_browser_dann_ersatz(zustand: Path
     assert len(fake.aufrufe("penecho_open_canvas")) == 2
     starts = [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")]
     assert starts[-1].startswith("learning-huelle:" + LERN_SID + "#")
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-neu"}
+
+
+def test_sitzung_anderer_fehler_in_einem_browser_sucht_im_naechsten(zustand: Path) -> None:
+    # Ein Browser antwortet mit einem anderen Fehler (z. B. beschaeftigt): weiter zum naechsten.
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(
+        _verlust_fake(fake, browser_mit_dokument="cv-b", open_fehler="CANVAS_BUSY")))
+    assert c.sitzung(LERN_SID, TITEL) == "sess-2"
+    assert [a["arguments"]["canvasId"] for a in fake.aufrufe("penecho_open_canvas")] == ["cv-a", "cv-b"]
+    assert _merkdatei(zustand, "flaechen.json") == {}
+
+
+@pytest.mark.parametrize("code", ["STORAGE_UNAVAILABLE", "session_key_conflict"])
+def test_sitzung_bindung_an_gefundenes_board_scheitert_dann_ersatz(zustand: Path, code: str) -> None:
+    # open_canvas findet das Dokument, aber die Bindung daran schlaegt fehl: Ersatzflaeche statt Abbruch.
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(
+        _verlust_fake(fake, browser_mit_dokument="cv-b", start_mit_dokument_fehler=code)))
+    assert c.sitzung(LERN_SID, TITEL) == "sess-neu"
+    starts = [a["arguments"]["sessionKey"] for a in fake.aufrufe("penecho_start_session")]
+    assert len(starts) == 3 and starts[-1].startswith("learning-huelle:" + LERN_SID + "#")
+    assert _merkdatei(zustand, "flaechen.json") == {LERN_SID: starts[-1]}
     assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-neu"}
 
 
