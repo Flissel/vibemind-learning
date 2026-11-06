@@ -200,7 +200,7 @@ test("flaechenHinweis: nur bei flaeche false und offener Aufgabe", () => {
 import { readFileSync } from "node:fs";
 import {
   eingabeHinweis, ergebnisAus, ergebnisHinweis, etiketten, fehlerText, korrekturAntwort, KNOPF_TEXT,
-  leistenZustand, speicherHinweis, speichernMitWiederholung,
+  leistenZustand, speicherAusgang, speicherHinweis, speichernMitWiederholung,
 } from "./aufgabe.js";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("../../tests/huelle/etiketten_fixture.json", import.meta.url), "utf8"));
@@ -304,32 +304,37 @@ test("ergebnisHinweis: nur bei nicht lesbar, mit Neuschreiben, Selbst eintippen 
 
 test("speichernMitWiederholung: ok ohne Wiederholung", async () => {
   let n = 0;
-  const r = await speichernMitWiederholung(async () => { n += 1; return { ok: true, grund: null }; });
+  const r = await speichernMitWiederholung(async () => { n += 1; return { ok: true, grund: null, code: "gespeichert" }; });
   assert.deepEqual(r, { ok: true, art: "ok" });
   assert.equal(n, 1);
 });
 
-test("speichernMitWiederholung: bei edited genau eine Wiederholung", async () => {
-  for (const grund of ["edited", "PenEcho hat nicht gespeichert (ungespeicherte Änderungen)"]) {
-    const antworten = [{ ok: false, grund }, { ok: true, grund: null }];
-    let n = 0;
-    const r = await speichernMitWiederholung(async () => antworten[n++]);
-    assert.deepEqual(r, { ok: true, art: "ok" });
-    assert.equal(n, 2);
-  }
+test("speichernMitWiederholung: nur der code geaendert wiederholt, genau einmal", async () => {
+  const antworten = [{ ok: false, grund: "egal", code: "geaendert" }, { ok: true, grund: null, code: "gespeichert" }];
+  let n = 0;
+  const r = await speichernMitWiederholung(async () => antworten[n++]);
+  assert.deepEqual(r, { ok: true, art: "ok" });
+  assert.equal(n, 2);
   let m = 0;
-  const r2 = await speichernMitWiederholung(async () => { m += 1; return { ok: false, grund: "edited" }; });
+  const r2 = await speichernMitWiederholung(async () => { m += 1; return { ok: false, code: "geaendert" }; });
   assert.deepEqual(r2, { ok: false, art: "fehler" });
   assert.equal(m, 2);
+  // Klartext allein löst nichts mehr aus.
+  let k = 0;
+  const r3 = await speichernMitWiederholung(async () => { k += 1; return { ok: false, grund: "edited ungespeicherte Änderungen" }; });
+  assert.deepEqual(r3, { ok: false, art: "fehler" });
+  assert.equal(k, 1);
 });
 
-test("speichernMitWiederholung: leere Flaeche und andere Fehler ohne Wiederholung, wirft nie", async () => {
+test("speichernMitWiederholung: leer und andere Codes ohne Wiederholung, wirft nie", async () => {
   let n = 0;
-  const leer = await speichernMitWiederholung(async () => { n += 1; return { ok: false, grund: "PenEcho hat nicht gespeichert (leere Fläche oder Fehler)" }; });
+  const leer = await speichernMitWiederholung(async () => { n += 1; return { ok: false, grund: "x", code: "leer" }; });
   assert.deepEqual(leer, { ok: false, art: "leer" });
-  const keine = await speichernMitWiederholung(async () => { n += 1; return { ok: false, grund: "keine Antwort" }; });
-  assert.deepEqual(keine, { ok: false, art: "fehler" });
-  assert.equal(n, 2);
+  for (const code of ["kein_knopf", "zeitueberschreitung", "fehler", "keine_flaeche", "keine_antwort"]) {
+    const r = await speichernMitWiederholung(async () => { n += 1; return { ok: false, grund: "x", code }; });
+    assert.deepEqual(r, { ok: false, art: "fehler" }, code);
+  }
+  assert.equal(n, 6);
   const wirft = await speichernMitWiederholung(async () => { throw new Error("x"); });
   assert.deepEqual(wirft, { ok: false, art: "fehler" });
 });
@@ -362,4 +367,29 @@ test("FESTE_MELDUNGEN kennt die neuen Meldungen der Bruecke", () => {
     "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vorbewertung zu.",
     "Diese Rückmeldung lässt sich nicht bestätigen. Bitte überarbeiten Sie Ihr Ergebnis oder tippen Sie es selbst ein.",
   ]) assert.ok(FESTE_MELDUNGEN.has(m), m);
+});
+
+test("speicherAusgang: Fehler vor 'Weiter' setzt den Dauerhinweis, der danach stehen bleibt", () => {
+  const fehler = { ok: false, art: "fehler" };
+  const nachPasst = speicherAusgang(fehler, { manuell: false, token: 1, aktuell: 1, alt: null });
+  assert.deepEqual(nachPasst, { speicher: "Nicht gespeichert – bitte „Speichern“ drücken.", meldung: null });
+  // Ein späteres automatisches „leer“ oder ein fremdes Ergebnis lässt ihn unverändert.
+  assert.equal(speicherAusgang({ ok: false, art: "leer" }, { manuell: false, token: 1, aktuell: 1, alt: nachPasst.speicher }).speicher, nachPasst.speicher);
+});
+
+test("speicherAusgang: Fehler nach der Wartezeit von Passt landet ebenfalls im Dauerhinweis (Token noch aktuell)", () => {
+  assert.equal(speicherAusgang({ ok: false, art: "fehler" }, { manuell: false, token: 3, aktuell: 3 }).speicher, "Nicht gespeichert – bitte „Speichern“ drücken.");
+});
+
+test("speicherAusgang: Ergebnis eines anderen Kurses wird verworfen", () => {
+  assert.deepEqual(speicherAusgang({ ok: false, art: "fehler" }, { manuell: true, token: 1, aktuell: 2, alt: null }), { speicher: null, meldung: null });
+  assert.deepEqual(speicherAusgang({ ok: true, art: "ok" }, { manuell: true, token: 1, aktuell: 2, alt: "alt" }), { speicher: "alt", meldung: null });
+});
+
+test("speicherAusgang: Erfolg löscht den Dauerhinweis; Meldung nur beim Knopf; leer nur beim Knopf", () => {
+  assert.deepEqual(speicherAusgang({ ok: true, art: "ok" }, { manuell: false, token: 1, aktuell: 1, alt: "x" }), { speicher: null, meldung: null });
+  assert.deepEqual(speicherAusgang({ ok: true, art: "ok" }, { manuell: true, token: 1, aktuell: 1, alt: "x" }), { speicher: null, meldung: "Gespeichert." });
+  assert.deepEqual(speicherAusgang({ ok: false, art: "leer" }, { manuell: true, token: 1, aktuell: 1 }),
+    { speicher: null, meldung: "Auf der Fläche gibt es noch nichts zu speichern." });
+  assert.deepEqual(speicherAusgang({ ok: false, art: "leer" }, { manuell: false, token: 1, aktuell: 1 }), { speicher: null, meldung: null });
 });

@@ -62,23 +62,24 @@ test("anfrageAus: nur erlaubte Herkunft, nur das Elternfenster, nur gueltige Nac
 
 test("zustandBewerten: saving laeuft, saved ok, sonst ein Grund", () => {
   assert.equal(zustandBewerten("saving"), null);
-  assert.deepEqual(zustandBewerten("saved"), { ok: true, grund: null });
-  for (const z of ["unsaved", "edited", undefined, "neu"]) {
+  assert.deepEqual(zustandBewerten("saved"), { ok: true, grund: null, code: "gespeichert" });
+  for (const [z, code] of [["unsaved", "leer"], ["edited", "geaendert"], [undefined, "fehler"], ["neu", "fehler"]]) {
     const e = zustandBewerten(z);
     assert.equal(e.ok, false);
     assert.ok(e.grund.length > 0, z);
+    assert.equal(e.code, code, String(z));
   }
 });
 
 test("speichernAusloesen: klickt PenEchos Knopf und wartet auf Saved", async () => {
   const p = penecho();
-  assert.deepEqual(await speichernAusloesen(p.dok, p.optionen), { ok: true, grund: null });
+  assert.deepEqual(await speichernAusloesen(p.dok, p.optionen), { ok: true, grund: null, code: "gespeichert" });
   assert.equal(p.knopf.klicks, 1);
 });
 
 test("speichernAusloesen: auch wenn schon gespeichert war (ueberschreiben)", async () => {
   const p = penecho({ start: "saved" });
-  assert.deepEqual(await speichernAusloesen(p.dok, p.optionen), { ok: true, grund: null });
+  assert.deepEqual(await speichernAusloesen(p.dok, p.optionen), { ok: true, grund: null, code: "gespeichert" });
 });
 
 test("speichernAusloesen: PenEcho speichert nichts (leere Flaeche) -> ok false", async () => {
@@ -86,6 +87,7 @@ test("speichernAusloesen: PenEcho speichert nichts (leere Flaeche) -> ok false",
   const e = await speichernAusloesen(p.dok, p.optionen);
   assert.equal(e.ok, false);
   assert.match(e.grund, /nicht gespeichert/);
+  assert.equal(e.code, "leer");
 });
 
 test("speichernAusloesen: Klick ohne Wirkung -> ok false, nicht still", async () => {
@@ -93,6 +95,7 @@ test("speichernAusloesen: Klick ohne Wirkung -> ok false, nicht still", async ()
   const e = await speichernAusloesen(p.dok, p.optionen);
   assert.equal(e.ok, false);
   assert.match(e.grund, /nicht begonnen/);
+  assert.equal(e.code, "fehler");
 });
 
 test("speichernAusloesen: Zeitlimit", async () => {
@@ -100,15 +103,16 @@ test("speichernAusloesen: Zeitlimit", async () => {
   const e = await speichernAusloesen(p.dok, p.optionen);
   assert.equal(e.ok, false);
   assert.match(e.grund, /Zeitlimit/);
+  assert.equal(e.code, "zeitueberschreitung");
 });
 
 test("speichernAusloesen: Knopf oder Anzeige fehlt (PenEcho geaendert) -> klarer Grund", async () => {
   const ohneKnopf = penecho({ ohne: ["knopf"] });
   assert.deepEqual(await speichernAusloesen(ohneKnopf.dok, ohneKnopf.optionen),
-    { ok: false, grund: "PenEcho-Knopf #saveCanvasBtn fehlt" });
+    { ok: false, grund: "PenEcho-Knopf #saveCanvasBtn fehlt", code: "kein_knopf" });
   const ohneAnzeige = penecho({ ohne: ["anzeige"] });
   assert.deepEqual(await speichernAusloesen(ohneAnzeige.dok, ohneAnzeige.optionen),
-    { ok: false, grund: "PenEcho-Anzeige #canvasDocumentSaveState fehlt" });
+    { ok: false, grund: "PenEcho-Anzeige #canvasDocumentSaveState fehlt", code: "kein_knopf" });
 });
 
 test("speichernAusloesen: gesperrter Knopf -> ok false", async () => {
@@ -116,6 +120,7 @@ test("speichernAusloesen: gesperrter Knopf -> ok false", async () => {
   const e = await speichernAusloesen(p.dok, p.optionen);
   assert.equal(e.ok, false);
   assert.match(e.grund, /gesperrt/);
+  assert.equal(e.code, "kein_knopf");
   assert.equal(p.knopf.klicks, 0);
 });
 
@@ -123,7 +128,7 @@ test("speichernAusloesen: laeuft schon ein Speichern, wird nicht erneut geklickt
   const p = penecho({ start: "saving", gesperrt: true });
   let schritt = 0;
   p.optionen.schlaf = async () => { schritt += 1; if (schritt === 2) p.anzeige.dataset.state = "saved"; };
-  assert.deepEqual(await speichernAusloesen(p.dok, p.optionen), { ok: true, grund: null });
+  assert.deepEqual(await speichernAusloesen(p.dok, p.optionen), { ok: true, grund: null, code: "gespeichert" });
   assert.equal(p.knopf.klicks, 0);
 });
 
@@ -147,7 +152,7 @@ test("installieren: beantwortet eine erlaubte Anfrage an die anfragende Herkunft
   f.parent = quelle;
   installieren(f, [SEITE], p.optionen);
   await f.senden({ origin: SEITE, source: quelle, data: { typ: ANFRAGE, id: "r1" } });
-  assert.deepEqual(post, [[{ typ: ANTWORT, id: "r1", ok: true, grund: null }, SEITE]]);
+  assert.deepEqual(post, [[{ typ: ANTWORT, id: "r1", ok: true, grund: null, code: "gespeichert" }, SEITE]]);
 });
 
 test("installieren: fremde Herkunft bekommt keine Antwort und loest nichts aus", async () => {
@@ -172,6 +177,7 @@ test("installieren: Fehler im Ausloesen wird als ok false beantwortet", async ()
   assert.equal(post.length, 1);
   assert.equal(post[0][0].ok, false);
   assert.match(post[0][0].grund, /kaputt/);
+  assert.equal(post[0][0].code, "fehler");
 });
 
 test("installieren: liefert eine Abmeldung", () => {

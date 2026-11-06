@@ -8,6 +8,14 @@
 export const ANFRAGE = "huelle-speichern";
 export const ANTWORT = "huelle-gespeichert";
 export const ZEITLIMIT_MS = 10000;
+// Maschinenlesbarer `code` jeder Antwort (neben dem Klartext `grund`). Die Seite entscheidet nur nach `code`:
+//   gespeichert         PenEcho zeigt „Saved“
+//   geaendert           die Flaeche wurde waehrend des Speicherns veraendert (ein Wiederholen lohnt)
+//   leer                PenEcho hat nichts gespeichert (leere Flaeche oder Fehler)
+//   kein_knopf          PenEchos Knopf oder Anzeige fehlt oder ist gesperrt
+//   zeitueberschreitung PenEcho speichert noch nach dem Zeitlimit
+//   fehler              alles andere (unbekannter Zustand, Ausnahme, Speichern nicht begonnen)
+// Nur auf der Seite entstehen: keine_flaeche (kein Rahmen) und keine_antwort (Zeitlimit ohne Antwort).
 const MAX_ID = 128;
 const TAKT_MS = 100;
 
@@ -40,13 +48,13 @@ export function zustandBewerten(zustand) {
     case "saving":
       return null;
     case "saved":
-      return { ok: true, grund: null };
+      return { ok: true, grund: null, code: "gespeichert" };
     case "unsaved":
-      return { ok: false, grund: "PenEcho hat nicht gespeichert (leere Fläche oder Fehler)" };
+      return { ok: false, grund: "PenEcho hat nicht gespeichert (leere Fläche oder Fehler)", code: "leer" };
     case "edited":
-      return { ok: false, grund: "PenEcho hat nicht gespeichert (ungespeicherte Änderungen)" };
+      return { ok: false, grund: "PenEcho hat nicht gespeichert (ungespeicherte Änderungen)", code: "geaendert" };
     default:
-      return { ok: false, grund: `PenEcho meldet einen unbekannten Zustand: ${String(zustand)}` };
+      return { ok: false, grund: `PenEcho meldet einen unbekannten Zustand: ${String(zustand)}`, code: "fehler" };
   }
 }
 
@@ -57,21 +65,21 @@ export async function speichernAusloesen(dokument, {
   zeitlimitMs = ZEITLIMIT_MS, schlaf = warten, jetzt = () => Date.now(),
 } = {}) {
   const knopf = dokument.querySelector("#saveCanvasBtn");
-  if (!knopf) return { ok: false, grund: "PenEcho-Knopf #saveCanvasBtn fehlt" };
+  if (!knopf) return { ok: false, grund: "PenEcho-Knopf #saveCanvasBtn fehlt", code: "kein_knopf" };
   const anzeige = dokument.querySelector("#canvasDocumentSaveState");
-  if (!anzeige || !anzeige.dataset) return { ok: false, grund: "PenEcho-Anzeige #canvasDocumentSaveState fehlt" };
+  if (!anzeige || !anzeige.dataset) return { ok: false, grund: "PenEcho-Anzeige #canvasDocumentSaveState fehlt", code: "kein_knopf" };
   // Laeuft schon ein Speichern, wird auf dessen Ergebnis gewartet statt erneut zu klicken.
   if (anzeige.dataset.state !== "saving") {
-    if (knopf.disabled) return { ok: false, grund: "PenEcho-Knopf ist gesperrt" };
+    if (knopf.disabled) return { ok: false, grund: "PenEcho-Knopf ist gesperrt", code: "kein_knopf" };
     knopf.click();
     // PenEcho setzt „saving“ synchron im Klick (setHistorySaveBusy(true)).
-    if (anzeige.dataset.state !== "saving") return { ok: false, grund: "PenEcho hat das Speichern nicht begonnen" };
+    if (anzeige.dataset.state !== "saving") return { ok: false, grund: "PenEcho hat das Speichern nicht begonnen", code: "fehler" };
   }
   const ende = jetzt() + zeitlimitMs;
   for (;;) {
     const ergebnis = zustandBewerten(anzeige.dataset.state);
     if (ergebnis) return ergebnis;
-    if (jetzt() >= ende) return { ok: false, grund: "Zeitlimit: PenEcho speichert noch" };
+    if (jetzt() >= ende) return { ok: false, grund: "Zeitlimit: PenEcho speichert noch", code: "zeitueberschreitung" };
     await schlaf(TAKT_MS);
   }
 }
@@ -85,9 +93,9 @@ export function installieren(fenster, erlaubt, optionen = {}) {
     try {
       ergebnis = await speichernAusloesen(fenster.document, optionen);
     } catch (fehler) {
-      ergebnis = { ok: false, grund: `Fehler beim Speichern: ${String(fehler?.message ?? fehler)}` };
+      ergebnis = { ok: false, grund: `Fehler beim Speichern: ${String(fehler?.message ?? fehler)}`, code: "fehler" };
     }
-    ereignis.source.postMessage({ typ: ANTWORT, id: anfrage.id, ok: ergebnis.ok, grund: ergebnis.grund }, anfrage.origin);
+    ereignis.source.postMessage({ typ: ANTWORT, id: anfrage.id, ok: ergebnis.ok, grund: ergebnis.grund, code: ergebnis.code }, anfrage.origin);
   };
   fenster.addEventListener("message", hoerer);
   return () => fenster.removeEventListener("message", hoerer);

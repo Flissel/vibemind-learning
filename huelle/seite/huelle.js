@@ -2,7 +2,7 @@
 import {
   antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, KNOPF_TEXT, korrekturAntwort, leistenZustand, meldungFuer,
-  nach409, speicherHinweis, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
+  nach409, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import { flaecheSpeichern } from "./flaeche.js";
 
@@ -25,7 +25,6 @@ const TEXT = {
   aufFlaeche: "Lösen Sie die Aufgabe auf der Fläche. „Abgeben“ finden Sie unten rechts.",
   ueberarbeiten: "Ändern Sie Ihre Antwort auf der Fläche und drücken Sie dann erneut „Abgeben“.",
   nichtZugeordnet: "Das konnte ich nicht zuordnen.",
-  gespeichert: "Gespeichert.",
   wirdBewertet: "Wird bewertet …",
 };
 const BEWERTET_NACH_MS = 4000; // Passt wartet höchstens so lange auf das Speichern, dann geht es weiter
@@ -51,7 +50,10 @@ const z = {
   busy: false,
   ergebnis: null, // Vorbewertung der offenen Flächenaufgabe: {vorbewertung_id, urteil, lesbar}
   korrektur: null, // null | "falsch" | "eintippen": Eingabefeld der Leiste offen
-  hinweis: null, // ruhiger Hinweis in der Leiste
+  hinweis: null, // ruhiger Hinweis in der Leiste (gehört zur Aufgabe)
+  speicherHinweis: null, // „Nicht gespeichert“: bleibt über „Weiter“ stehen, bis ein Speichern klappt
+  speichert: null, // laufendes Speichern (Promise); es läuft nie mehr als eines
+  token: 0, // zählt Kurswechsel: Ergebnisse eines früheren Kurses werden verworfen
 };
 
 // ---- Hilfen -------------------------------------------------------------------------------
@@ -368,6 +370,8 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
   banner("");
   $("flaechen-hinweis").hidden = true;
   z.kurs = kurs;
+  z.token += 1;
+  z.speicherHinweis = null;
   z.turn = null;
   z.phase = "aufgabe";
   z.rueckmeldung = null;
@@ -471,18 +475,28 @@ async function hinweis() {
 // ---- Leiste über der Fläche: Speichern, Abgeben, Passt, Überarbeiten, Falsch gelesen ---------------------
 const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
 
-/** Speichern über PenEchos eigenen Knopf (R7); schweigt bei Erfolg, sonst nur ein ruhiger Hinweis in der Leiste. */
-async function speichern(manuell) {
-  const r = await speichernMitWiederholung(() => flaecheSpeichern($("rahmen")));
-  const text = speicherHinweis(r, manuell);
-  if (text) {
-    z.hinweis = text;
-  } else if (manuell && r.ok) {
-    z.hinweis = TEXT.gespeichert;
-    setTimeout(() => { if (z.hinweis === TEXT.gespeichert) { z.hinweis = null; leisteZeigen(); } }, 3000);
-  }
+/**
+ * Speichern über PenEchos eigenen Knopf (R7). Läuft schon eines, wird dessen Ergebnis geteilt statt ein
+ * zweites zu starten. Bei Erfolg bleibt es still; sonst steht ein ruhiger Dauerhinweis in der Leiste.
+ */
+function speichern(manuell) {
+  if (z.speichert) return z.speichert;
+  const token = z.token;
+  const lauf = (async () => {
+    const r = await speichernMitWiederholung(() => flaecheSpeichern($("rahmen")));
+    z.speichert = null;
+    const aus = speicherAusgang(r, { manuell, token, aktuell: z.token, alt: z.speicherHinweis });
+    z.speicherHinweis = aus.speicher;
+    if (aus.meldung) {
+      z.hinweis = aus.meldung;
+      setTimeout(() => { if (z.hinweis === aus.meldung) { z.hinweis = null; leisteZeigen(); } }, 3000);
+    }
+    leisteZeigen();
+    return r;
+  })();
+  z.speichert = lauf;
   leisteZeigen();
-  return r;
+  return lauf;
 }
 
 function leisteZeigen() {
@@ -494,7 +508,7 @@ function leisteZeigen() {
   leiste.hidden = !zustand.sichtbar;
   if (!zustand.sichtbar) return;
   const aktion = {
-    speichern: () => void speichern(true),
+    speichern: () => { if (!z.speichert) void speichern(true); },
     abgeben: () => void abgeben(),
     passt: () => void passt(),
     ueberarbeiten: () => ueberarbeiten(),
@@ -503,9 +517,9 @@ function leisteZeigen() {
   };
   $("leisten-knoepfe").replaceChildren(...zustand.knoepfe.map((id) => el("button", {
     type: "button", id: `leiste-${id}`, class: id === "abgeben" ? "haupt-knopf" : "",
-    disabled: z.busy, text: KNOPF_TEXT[id], onclick: aktion[id],
+    disabled: z.busy || (id === "speichern" && z.speichert !== null), text: KNOPF_TEXT[id], onclick: aktion[id],
   })));
-  const text = z.busy ? TEXT.wirdBewertet : (z.hinweis ?? ergebnisHinweis(z.ergebnis));
+  const text = z.busy ? TEXT.wirdBewertet : (z.hinweis ?? z.speicherHinweis ?? ergebnisHinweis(z.ergebnis));
   $("leisten-hinweis").textContent = text ?? "";
   $("leisten-hinweis").hidden = !text;
   const offen = z.korrektur !== null && z.ergebnis !== null && zustand.knoepfe.includes(z.korrektur === "falsch" ? "falsch" : "eintippen");

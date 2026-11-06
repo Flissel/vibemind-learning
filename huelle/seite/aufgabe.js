@@ -402,25 +402,23 @@ export function ergebnisHinweis(ergebnis) {
 }
 
 // ---- Fläche zuerst: Speichern ----------------------------------------------------------------------------
-const edited = (grund) => grund === "edited" || /ungespeicherte Änderungen/.test(String(grund ?? ""));
-const leer = (grund) => /leere Fläche/.test(String(grund ?? ""));
-
 /**
- * Speichert über `speichern()` (= `flaecheSpeichern(iframe)`); bei „edited“ genau eine Wiederholung.
- * Löst immer auf: `{ok, art}` mit art "ok" | "leer" | "fehler".
+ * Speichert über `speichern()` (= `flaecheSpeichern(iframe)`); entschieden wird nur nach `code`:
+ * bei "geaendert" genau eine Wiederholung, "leer" meldet nichts zu speichern. Löst immer auf:
+ * `{ok, art}` mit art "ok" | "leer" | "fehler".
  */
 export async function speichernMitWiederholung(speichern) {
   const einmal = async () => {
     try {
-      return (await speichern()) ?? { ok: false, grund: "" };
+      return (await speichern()) ?? { ok: false, code: "fehler" };
     } catch {
-      return { ok: false, grund: "Fehler" };
+      return { ok: false, code: "fehler" };
     }
   };
   let r = await einmal();
-  if (!r.ok && edited(r.grund)) r = await einmal();
+  if (!r.ok && r.code === "geaendert") r = await einmal();
   if (r.ok) return { ok: true, art: "ok" };
-  return { ok: false, art: leer(r.grund) ? "leer" : "fehler" };
+  return { ok: false, art: r.code === "leer" ? "leer" : "fehler" };
 }
 
 export const NICHT_GESPEICHERT = "Nicht gespeichert – bitte „Speichern“ drücken.";
@@ -431,6 +429,21 @@ export function speicherHinweis(ergebnis, manuell) {
   if (ergebnis.ok) return null;
   if (ergebnis.art === "leer") return manuell ? NICHTS_ZU_SPEICHERN : null;
   return NICHT_GESPEICHERT;
+}
+
+export const GESPEICHERT = "Gespeichert.";
+
+/**
+ * Was ein fertiges Speichern in der Leiste ändert. `alt`: der bisherige Dauerhinweis „nicht gespeichert“.
+ * Gehört das Ergebnis zu einem anderen Kurs (`token` ≠ `aktuell`), wird es verworfen. Sonst:
+ * ok löscht den Dauerhinweis; ein Fehler setzt ihn (er bleibt über „Weiter“ stehen, bis ein Speichern klappt);
+ * „leer“ meldet nur der Knopf selbst. `meldung` ist ein kurzer Hinweis für den Knopf, sonst null.
+ */
+export function speicherAusgang(ergebnis, { manuell, token, aktuell, alt = null }) {
+  if (token !== aktuell) return { speicher: alt, meldung: null };
+  if (ergebnis.ok) return { speicher: null, meldung: manuell ? GESPEICHERT : null };
+  if (ergebnis.art === "leer") return { speicher: alt, meldung: manuell ? NICHTS_ZU_SPEICHERN : null };
+  return { speicher: NICHT_GESPEICHERT, meldung: null };
 }
 
 export const VERALTET = "Die Karte war veraltet. Ich habe den aktuellen Stand geladen.";

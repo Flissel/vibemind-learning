@@ -4,7 +4,16 @@
 
 export const ZEITLIMIT_MS = 15000; // laenger als das Zeitlimit der Flaeche (10 s)
 
-const KEINE_FLAECHE = { ok: false, grund: "keine Fläche" };
+// `code` (maschinenlesbar, die Seite entscheidet nur danach): gespeichert | geaendert | leer | kein_knopf |
+// zeitueberschreitung | fehler (von der Flaeche, siehe huelle/flaeche/speichern.js) sowie keine_flaeche
+// (kein Rahmen) und keine_antwort (Zeitlimit ohne Antwort) von hier. `grund` bleibt Klartext.
+export const CODES = new Set(["gespeichert", "geaendert", "leer", "kein_knopf", "zeitueberschreitung", "fehler", "keine_flaeche", "keine_antwort"]);
+const KEINE_FLAECHE = { ok: false, grund: "keine Fläche", code: "keine_flaeche" };
+
+function codeAus(d) {
+  if (d.ok === true) return "gespeichert";
+  return typeof d.code === "string" && CODES.has(d.code) && d.code !== "gespeichert" ? d.code : "fehler";
+}
 
 function herkunftVon(iframe) {
   try {
@@ -37,14 +46,14 @@ export function flaecheSpeichern(iframe, {
       if (ereignis.source !== kind || ereignis.origin !== ziel) return;
       const d = ereignis.data;
       if (!d || typeof d !== "object" || d.typ !== "huelle-gespeichert" || d.id !== id) return;
-      ende(d.ok === true ? { ok: true, grund: null } : { ok: false, grund: String(d.grund || "PenEcho hat nicht gespeichert") });
+      ende(d.ok === true ? { ok: true, grund: null, code: "gespeichert" } : { ok: false, grund: String(d.grund || "PenEcho hat nicht gespeichert"), code: codeAus(d) });
     }
     fenster.addEventListener("message", hoerer);
-    uhr = setTimeout(() => ende({ ok: false, grund: "keine Antwort" }), zeitlimitMs);
+    uhr = setTimeout(() => ende({ ok: false, grund: "keine Antwort", code: "keine_antwort" }), zeitlimitMs);
     try {
       kind.postMessage({ typ: "huelle-speichern", id }, ziel);
     } catch (fehler) {
-      ende({ ok: false, grund: `Senden fehlgeschlagen: ${String(fehler?.message ?? fehler)}` });
+      ende({ ok: false, grund: `Senden fehlgeschlagen: ${String(fehler?.message ?? fehler)}`, code: "fehler" });
     }
   });
 }
