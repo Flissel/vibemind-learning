@@ -223,6 +223,10 @@ def _hindernisse(struktur: dict[str, Any]) -> list[dict[str, Any]]:
             and all(isinstance(h.get(k), (int, float)) and not isinstance(h.get(k), bool) for k in "xywh")]
 
 
+class PenEchoFlaecheVoll(PenEchoNichtErreichbar):
+    """PenEchos Objektgrenze je Flaeche ist erreicht (OBJECT_LIMIT, z. B. 50 Texte)."""
+
+
 class PenEchoRevisionVeraltet(PenEchoNichtErreichbar):
     """PenEcho meldet REVISION_CONFLICT: die Flaeche hat sich seit dem Lesen der Revision geaendert."""
 
@@ -406,6 +410,8 @@ class PenEchoMcp:
                 raise PenEchoPlatzBelegt(code, _hindernisse(struktur))
             if code == "REVISION_CONFLICT":
                 raise PenEchoRevisionVeraltet(code)
+            if code == "OBJECT_LIMIT":
+                raise PenEchoFlaecheVoll(code)
             if code == "REQUEST_ID_CONFLICT":
                 raise PenEchoAnfrageSchonBekannt(code)
             if code == "ACTIVE_CANVAS_REQUIRED":
@@ -586,6 +592,11 @@ class PenEchoMcp:
         }
         try:
             objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
+        except PenEchoFlaecheVoll:
+            # PenEcho prueft die Grenze vor dem Platz: auch eine schon vorhandene Aufgabe scheitert hier.
+            # Board und Rahmen trotzdem, damit die Flaeche verbunden bleibt; der Text steht in der Seitenleiste.
+            log.warning("Aufgabentext nicht gesetzt: Flaeche voll")
+            objekt_id = None
         except PenEchoPlatzBelegt as fehler:
             eigene = _eigene_texte(fehler.hindernisse, region)
             if eigene:

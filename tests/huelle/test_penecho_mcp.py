@@ -12,7 +12,7 @@ import pytest
 
 from spaces.learning.huelle.penecho_mcp import (
     BEREICHE, FLAECHE_GROESSE, Aufgabenbild, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar,
-    PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
+    PenEchoFlaecheVoll, PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
     textfeld,
 )
 
@@ -1157,3 +1157,44 @@ def test_lange_rueckmeldung_wird_fuer_die_flaeche_gekuerzt(zustand: Path) -> Non
     assert len(text) <= 2000 and _zeilen_bedarf(text) <= 28
     assert text.startswith("Rückmeldung zu Aufgabe 4\n\nTeilweise richtig.\n\nSatz 0:")
     assert text.endswith(" …") and not text.endswith(": …")
+
+
+def test_volle_flaeche_zeigt_aufgabe_trotzdem(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # Abnahme 06.11. (F15): PenEcho prueft die Textgrenze vor dem Platz. Auf einer vollen Flaeche
+    # scheiterte selbst das erneute Setzen einer vorhandenen Aufgabe mit OBJECT_LIMIT, und die Huelle
+    # meldete dauerhaft "nicht verbunden". Der Aufgabentext entfaellt dann, Board und Rahmen bleiben.
+    fake = FeldFake()
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        args = body.get("params", {}).get("arguments", {}) if body.get("method") == "tools/call" else {}
+        if args.get("action") == "create_text":
+            fake.anfragen.append((body, request.headers))
+            sc = {"code": "OBJECT_LIMIT", "message": "m", "details": {"kind": "text", "limit": 50}}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": []}})
+        return echt(request)
+
+    with caplog.at_level(logging.WARNING):
+        PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen(
+            "sess-1", "t1", "x", 4, mit_ergebnisfeld=True)
+    aktionen = [a["arguments"]["action"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert aktionen[0] == "create_text" and "show" in aktionen and len(_ink(fake)) == 1
+    assert "Aufgabentext nicht gesetzt: Flaeche voll" in caplog.text
+
+
+def test_volle_flaeche_bei_rueckmeldung_ist_eigener_fehler(zustand: Path) -> None:
+    fake = FeldFake()
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call":
+            sc = {"code": "OBJECT_LIMIT", "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": []}})
+        return fake(request)
+
+    with pytest.raises(PenEchoFlaecheVoll):
+        PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).rueckmeldung_zeigen(
+            "sess-1", "t1", 4, gelesen=None, urteil="Richtig.", text="x")
