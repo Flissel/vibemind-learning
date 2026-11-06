@@ -21,6 +21,8 @@ from uuid import uuid4
 
 import httpx
 
+from .tafel import rueckmeldungstext
+
 log = logging.getLogger(__name__)
 
 PROTOKOLL = "2025-11-25"
@@ -38,6 +40,17 @@ _SPALTEN_SCHRITT = 10000
 _ZEILEN_SCHRITT = 1950
 _ZEILEN = 10
 
+# Ergebnisfeld (Task 6): unteres rechtes Viertel des Bereichs. Rahmen und Schild liegen AUSSERHALB
+# des Feldes, damit der Schnappschuss des Feldes nur die Handschrift der Lernenden enthaelt.
+FELD_BREITE = 2000
+FELD_HOEHE = 700
+_FELD_RAND_RECHTS = 150
+_FELD_RAND_UNTEN = 100
+_RAHMEN_ABSTAND = 8
+_RAHMEN_STAERKE = 4
+_RAHMEN_FARBE = "#2b6cb0"
+_SCHILD_HOEHE = 56  # Abstand der Schild-Oberkante ueber dem Feld
+
 
 def bereich(nummer: int) -> dict[str, int]:
     """Weltregion des Aufgabenbereichs `nummer` (1..20); ausserhalb ValueError."""
@@ -49,6 +62,17 @@ def bereich(nummer: int) -> dict[str, int]:
         "y": _RAND + zeile * _ZEILEN_SCHRITT,
         "w": BEREICH_BREITE,
         "h": BEREICH_HOEHE,
+    }
+
+
+def ergebnisfeld(nummer: int) -> dict[str, int]:
+    """Weltrechteck des Ergebnisfelds im unteren rechten Viertel von `bereich(nummer)` (>= 360x140)."""
+    b = bereich(nummer)
+    return {
+        "x": b["x"] + b["w"] - _FELD_RAND_RECHTS - FELD_BREITE,
+        "y": b["y"] + b["h"] - _FELD_RAND_UNTEN - FELD_HOEHE,
+        "w": FELD_BREITE,
+        "h": FELD_HOEHE,
     }
 
 
@@ -75,6 +99,14 @@ class PenEchoFlaecheVerloren(PenEchoNichtErreichbar):
 
 class PenEchoPlatzBelegt(PenEchoNichtErreichbar):
     """Der gewuenschte Bereich ist schon belegt (PenEcho LAYOUT_CONFLICT)."""
+
+
+class PenEchoRevisionVeraltet(PenEchoNichtErreichbar):
+    """PenEcho meldet REVISION_CONFLICT: die Flaeche hat sich seit dem Lesen der Revision geaendert."""
+
+
+class PenEchoAnfrageSchonBekannt(PenEchoNichtErreichbar):
+    """PenEcho meldet REQUEST_ID_CONFLICT: die requestId wurde mit anderen Argumenten schon benutzt."""
 
 
 _SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
@@ -232,6 +264,10 @@ class PenEchoMcp:
                 raise PenEchoFlaecheVerloren(code)
             if code == "LAYOUT_CONFLICT":
                 raise PenEchoPlatzBelegt(code)
+            if code == "REVISION_CONFLICT":
+                raise PenEchoRevisionVeraltet(code)
+            if code == "REQUEST_ID_CONFLICT":
+                raise PenEchoAnfrageSchonBekannt(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -391,7 +427,9 @@ class PenEchoMcp:
             self._dokument_merken(k, dokument, dokumente)
         return True
 
-    def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int) -> None:
+    def aufgabe_setzen(
+        self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False
+    ) -> None:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
         region = bereich(nummer)
@@ -409,6 +447,76 @@ class PenEchoMcp:
             del argumente["region"]
             argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
             self._werkzeug("penecho_edit_canvas", argumente)
+        if mit_ergebnisfeld:
+            self._ergebnisfeld_zeichnen(session_id, aufgabe_id, nummer)
+
+    @staticmethod
+    def _ergebnis_id(aufgabe_id: str, nummer: int, zusatz: str = "") -> str:
+        # Der Zusatz bleibt immer erhalten, nur die aufgabe_id wird bei Bedarf gekuerzt.
+        rest = MAX_SCHLUESSEL - len(f"ergebnis--{nummer}{zusatz}")
+        return f"ergebnis-{aufgabe_id[:rest]}-{nummer}{zusatz}"
+
+    def _ergebnisfeld_zeichnen(self, session_id: str, aufgabe_id: str, nummer: int) -> None:
+        """Schild "Ihr Ergebnis" ueber dem Feld und ein Tintenrahmen um das Feld.
+
+        Der Rahmen ist Tinte (penecho_edit_canvas draw_ink), kein Objekt: Tinte ist nur Pixel in der
+        Zeichenebene, faengt also keine Stifteingabe ab, und die Lernenden schreiben ungehindert
+        darueber. penecho_draw/Widgets sind eigene Objekte und wuerden Eingaben aufnehmen; zudem
+        platziert der Host sie selbst, nicht an Weltkoordinaten. Rahmen und Schild sind Zierde: Fehler
+        ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab (der Schnappschuss gilt
+        ohnehin dem festen Feld).
+        """
+        feld = ergebnisfeld(nummer)
+        try:
+            self._werkzeug("penecho_edit_canvas", {
+                "sessionId": session_id,
+                "requestId": self._ergebnis_id(aufgabe_id, nummer, "-schild"),
+                "action": "create_text",
+                "text": "Ihr Ergebnis",
+                "region": {"x": feld["x"], "y": feld["y"] - _SCHILD_HOEHE, "w": 360, "h": 40},
+            })
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("Ergebnisfeld-Schild nicht gesetzt: %s", _typ(fehler))
+        a = _RAHMEN_ABSTAND
+        links, oben = feld["x"] - a, feld["y"] - a
+        rechts, unten = feld["x"] + feld["w"] + a, feld["y"] + feld["h"] + a
+        rahmen = [{"x": links, "y": oben}, {"x": rechts, "y": oben}, {"x": rechts, "y": unten},
+                  {"x": links, "y": unten}, {"x": links, "y": oben}]
+        for versuch in (1, 2):
+            try:
+                self._werkzeug("penecho_edit_canvas", {
+                    "sessionId": session_id,
+                    "requestId": self._ergebnis_id(aufgabe_id, nummer),
+                    "action": "draw_ink",
+                    "baseRevision": self._revision(session_id),
+                    "strokes": [{"points": rahmen, "color": _RAHMEN_FARBE, "width": _RAHMEN_STAERKE}],
+                })
+                return
+            except PenEchoAnfrageSchonBekannt:
+                return  # derselbe Rahmen wurde in dieser Sitzung schon gezeichnet
+            except PenEchoRevisionVeraltet:
+                if versuch == 1:
+                    continue  # Flaeche hat sich geaendert: Revision neu lesen, einmal wiederholen
+                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: Revision veraltet")
+            except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+                raise
+            except PenEchoNichtErreichbar as fehler:
+                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: %s", _typ(fehler))
+                return
+
+    def _revision(self, session_id: str) -> int:
+        """Aktuelle Revision der Flaeche (canvas.json), Pflicht fuer draw_ink als baseRevision."""
+        ergebnis = self._werkzeug("penecho_read_file", {"sessionId": session_id, "path": "canvas.json"})
+        inhalt = self._struktur(ergebnis).get("content")
+        try:
+            revision = json.loads(inhalt)["revision"] if isinstance(inhalt, str) else None
+        except (ValueError, KeyError, TypeError):
+            revision = None
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise PenEchoNichtErreichbar("revision")
+        return revision
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines
@@ -430,10 +538,27 @@ class PenEchoMcp:
             },
         })
 
+    def rueckmeldung_zeigen(
+        self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str
+    ) -> None:
+        """Rueckmeldungskarte zur Aufgabe; gleiche artifactId, jede neue Vorbewertung ersetzt sie.
+
+        PenEchos Host platziert Widgets selbst (presentation.relativeTo verlangt eine artifactId, die
+        Aufgabentext und Ergebnisfeld nicht haben); `nummer` prueft nur den Bereich.
+        """
+        bereich(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
+        self.notizkarte(session_id, aufgabe_id, "Rückmeldung", rueckmeldungstext(gelesen, urteil, text))
+
+    def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
+        """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; Rahmen und Schild liegen ausserhalb)."""
+        return self._aufnahme(session_id, ergebnisfeld(nummer))
+
     def schnappschuss(self, session_id: str, nummer: int) -> bytes:
+        return self._aufnahme(session_id, bereich(nummer))
+
+    def _aufnahme(self, session_id: str, region: dict[str, int]) -> bytes:
         # schema.js:666 penecho_capture_canvas: target "region" verlangt region {x,y,w,h};
         # das Bild kommt als content-Eintrag type "image" (base64 in data), protocol.js:28-37.
-        region = bereich(nummer)
         ergebnis = self._werkzeug("penecho_capture_canvas", {
             "sessionId": session_id,
             "target": "region",

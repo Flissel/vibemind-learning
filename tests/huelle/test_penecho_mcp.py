@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from spaces.learning.huelle.penecho_mcp import (
-    BEREICHE, FLAECHE_GROESSE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
+    BEREICHE, FLAECHE_GROESSE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich, ergebnisfeld,
 )
 
 TOKEN = "ab" * 32
@@ -543,3 +543,167 @@ def test_widget_request_id_deterministisch_und_gueltig(zustand: Path) -> None:
     assert ids[0] == ids[1] != ids[2]  # gleiche Argumente gleiche Id, geaenderte Argumente neue Id
     assert ids[0].startswith("rueckmeldung-t1")
     assert all(1 <= len(i) <= 128 for i in ids)
+
+
+# ---- Task 6: Ergebnisfeld, Schild, Rueckmeldung ---------------------------------------------
+
+class FeldFake(Fake):
+    """Wie Fake, beantwortet penecho_read_file mit canvas.json und einer Revision."""
+
+    def __init__(self, revision: int = 7) -> None:
+        super().__init__()
+        self.revision = revision
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/call" and body["params"]["name"] == "penecho_read_file":
+            self.anfragen.append((body, request.headers))
+            sc = {"content": json.dumps({"revision": self.revision}), "contentHash": "h"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"structuredContent": sc, "content": []}})
+        return super().__call__(request)
+
+
+def _ink(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] == "draw_ink"]
+
+
+def _fehler_bei_ink(fake: FeldFake, code: str, wie_oft: int = 1) -> httpx.MockTransport:
+    original = fake.__call__
+    zaehler = {"n": 0}
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/call" and body["params"]["arguments"].get("action") == "draw_ink":
+            zaehler["n"] += 1
+            if zaehler["n"] <= wie_oft:
+                fake.anfragen.append((body, request.headers))
+                fake.revision += 1
+                sc = {"code": code, "message": "m"}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "isError": True, "structuredContent": sc, "content": []}})
+        return original(request)
+
+    return httpx.MockTransport(antwort)
+
+
+@pytest.mark.parametrize("nummer", range(1, 21))
+def test_ergebnisfeld_liegt_im_bereich(nummer: int) -> None:
+    b, f = bereich(nummer), ergebnisfeld(nummer)
+    assert f["w"] >= 360 and f["h"] >= 140
+    # Rahmen (8 aussen) und Schild (60 darueber) bleiben ebenfalls im Bereich.
+    assert f["x"] - 16 >= b["x"] and f["x"] + f["w"] + 16 <= b["x"] + b["w"]
+    assert f["y"] - 60 >= b["y"] and f["y"] + f["h"] + 16 <= b["y"] + b["h"]
+    # unteres rechtes Viertel
+    assert f["x"] >= b["x"] + b["w"] / 2 and f["y"] >= b["y"] + b["h"] / 2
+
+
+def test_ergebnisfeld_ausserhalb_wirft() -> None:
+    with pytest.raises(ValueError):
+        ergebnisfeld(21)
+
+
+def test_aufgabe_setzen_ohne_ergebnisfeld_bleibt_wie_bisher(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 3)
+    assert len(fake.aufrufe("penecho_edit_canvas")) == 1 and fake.aufrufe("penecho_read_file") == []
+
+
+def test_aufgabe_setzen_mit_ergebnisfeld_zwei_aufrufe_feste_ids(zustand: Path) -> None:
+    fake = FeldFake(revision=7)
+    c = _client(zustand, fake)
+    c.aufgabe_setzen("sess-1", "t1", "x", 3, mit_ergebnisfeld=True)
+    c.aufgabe_setzen("sess-1", "t1", "x", 3, mit_ergebnisfeld=True)
+    edits = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert len(edits) == 6
+    erste, zweite = edits[:3], edits[3:]
+    assert [e["requestId"] for e in erste] == [e["requestId"] for e in zweite]
+    assert len({e["requestId"] for e in erste}) == 3
+    rahmen = [e for e in erste if e["action"] == "draw_ink"]
+    assert len(rahmen) == 1 and rahmen[0]["requestId"] == "ergebnis-t1-3"
+    assert rahmen[0]["baseRevision"] == 7
+    schild = [e for e in erste if e["action"] == "create_text" and e["text"] == "Ihr Ergebnis"]
+    assert len(schild) == 1 and schild[0]["requestId"] == "ergebnis-t1-3-schild"
+    f = ergebnisfeld(3)
+    assert f["x"] <= schild[0]["region"]["x"] <= f["x"] + f["w"]
+    assert schild[0]["region"]["y"] < f["y"]  # ueber dem Feld, nicht im Schnappschuss
+
+
+def test_rahmen_ist_tinte_um_das_feld_ohne_widget(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 12, mit_ergebnisfeld=True)
+    arg = _ink(fake)[0]
+    f = ergebnisfeld(12)
+    punkte = [p for s in arg["strokes"] for p in s["points"]]
+    xs, ys = [p["x"] for p in punkte], [p["y"] for p in punkte]
+    assert max(xs) - min(xs) <= 2048 and max(ys) - min(ys) <= 2048
+    # Tinte liegt ausserhalb des Feldes, der Schnappschuss enthaelt nur Handschrift.
+    assert min(xs) < f["x"] and max(xs) > f["x"] + f["w"] and min(ys) < f["y"] and max(ys) > f["y"] + f["h"]
+    assert all(s["points"][0] == s["points"][-1] for s in arg["strokes"])
+    assert fake.aufrufe("penecho_draw") == [] and fake.aufrufe("penecho_present_widget") == []
+
+
+def test_rahmen_veraltete_revision_wird_einmal_neu_gelesen(zustand: Path) -> None:
+    fake = FeldFake(revision=1)
+    transport = _fehler_bei_ink(fake, "REVISION_CONFLICT")
+    PenEchoMcp(zustand, transport=transport).aufgabe_setzen("s", "t", "x", 1, mit_ergebnisfeld=True)
+    assert [i["baseRevision"] for i in _ink(fake)] == [1, 2]  # nach dem Konflikt wird canvas.json neu gelesen
+
+
+def test_rahmen_dauerhaft_veraltet_gibt_auf_ohne_fehler(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    fake = FeldFake()
+    transport = _fehler_bei_ink(fake, "REVISION_CONFLICT", wie_oft=5)
+    with caplog.at_level(logging.WARNING):
+        PenEchoMcp(zustand, transport=transport).aufgabe_setzen("s", "t", "x", 1, mit_ergebnisfeld=True)
+    assert len(_ink(fake)) == 2  # genau ein Wiederholungsversuch
+
+
+def test_rahmen_bereits_gezeichnet_ist_kein_fehler(zustand: Path) -> None:
+    """Gleiche requestId, andere Revision: PenEcho meldet REQUEST_ID_CONFLICT, der Rahmen steht schon."""
+    fake = FeldFake()
+    PenEchoMcp(zustand, transport=_fehler_bei_ink(fake, "REQUEST_ID_CONFLICT")).aufgabe_setzen(
+        "s", "t", "x", 1, mit_ergebnisfeld=True)
+    assert len(_ink(fake)) == 1
+
+
+def test_sitzung_unbekannt_beim_rahmen_wird_nicht_verschluckt(zustand: Path) -> None:
+    fake = FeldFake()
+    with pytest.raises(PenEchoSitzungUnbekannt):
+        PenEchoMcp(zustand, transport=_fehler_bei_ink(fake, "session_closed")).aufgabe_setzen(
+            "s", "t", "x", 1, mit_ergebnisfeld=True)
+
+
+def test_ergebnis_schnappschuss_ist_png_des_feldes(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    assert c.ergebnis_schnappschuss("sess-1", 5).startswith(b"\x89PNG")
+    arg = fake.aufrufe("penecho_capture_canvas")[0]["arguments"]
+    assert arg["target"] == "region" and arg["region"] == ergebnisfeld(5) and "requestId" not in arg
+    with pytest.raises(ValueError):
+        c.ergebnis_schnappschuss("sess-1", 21)
+
+
+@pytest.mark.parametrize("urteil", ["Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar."])
+def test_rueckmeldung_zeigen_inhalt(zustand: Path, urteil: str) -> None:
+    fake = Fake()
+    _client(zustand, fake).rueckmeldung_zeigen("sess-1", "t1", 4, gelesen="B", urteil=urteil, text="Gut gemacht.")
+    inhalt = fake.aufrufe("penecho_present_widget")[0]["arguments"]["note"]["blocks"][0]["text"]
+    assert inhalt.splitlines()[0] == "Gelesen: B" and urteil in inhalt and "Gut gemacht." in inhalt
+
+
+def test_rueckmeldung_ohne_gelesen_hat_keine_gelesen_zeile(zustand: Path) -> None:
+    fake = Fake()
+    _client(zustand, fake).rueckmeldung_zeigen(
+        "sess-1", "t1", 4, gelesen=None, urteil="Nicht lesbar.", text="Bitte deutlicher schreiben.")
+    inhalt = fake.aufrufe("penecho_present_widget")[0]["arguments"]["note"]["blocks"][0]["text"]
+    assert "Gelesen" not in inhalt and inhalt.startswith("Nicht lesbar.")
+
+
+def test_rueckmeldung_zeigen_ersetzt_gleiche_karte(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.rueckmeldung_zeigen("sess-1", "t1", 4, gelesen="A", urteil="Noch nicht richtig.", text="Erste.")
+    c.rueckmeldung_zeigen("sess-1", "t1", 4, gelesen="B", urteil="Richtig.", text="Zweite.")
+    a1, a2 = [a["arguments"] for a in fake.aufrufe("penecho_present_widget")]
+    assert a1["artifactId"] == a2["artifactId"] == "rueckmeldung-t1"
+    assert a1["requestId"] != a2["requestId"]  # neuer Inhalt, neue requestId
+    assert len(a1["requestId"]) <= 128
