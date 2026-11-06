@@ -2,7 +2,7 @@
 import {
   antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, KNOPF_TEXT, korrekturAntwort, leistenZustand, meldungFuer,
-  nach409, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
+  nach409, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import { flaecheSpeichern } from "./flaeche.js";
 
@@ -159,11 +159,11 @@ function karteAufgabe() {
   const sperre = sperrText ? el("p", { class: "hinweistext sperrhinweis", text: sperrText }) : null;
   if (task.type !== "code") {
     // Alles andere wird auf der Fläche beantwortet; Abgeben, Passt usw. sitzen in der Leiste über der Fläche.
-    $("karte").replaceChildren(
+    $("karte").replaceChildren(...ohneLeere(
       setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
       el("p", { class: "hinweistext", text: TEXT.aufFlaeche }),
       sperre,
-      el("div", { class: "knoepfe" }, ...hilfeKnoepfe));
+      el("div", { class: "knoepfe" }, ...hilfeKnoepfe)));
     return;
   }
   const feld = el("textarea", { name: "antwort", required: true, placeholder: "Lösung und Begründung eingeben" });

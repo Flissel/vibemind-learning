@@ -150,6 +150,11 @@ export function nach409(turn) {
   return turn && turn.state === "active" && turn.task ? "weiter" : "zeigen";
 }
 
+/** Kinder fuer replaceChildren: null/undefined fallen weg (sonst steht "null" als Text da). */
+export function ohneLeere(...kinder) {
+  return kinder.filter((kind) => kind != null);
+}
+
 // ---- KI-Sperre ---------------------------------------------------------------------------------
 export const SPERR_HINWEIS = "Während der Aufgabe hilft „Erklär mir das“.";
 

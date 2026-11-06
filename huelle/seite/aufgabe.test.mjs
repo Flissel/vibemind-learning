@@ -412,3 +412,18 @@ test("speicherAusgang: Erfolg löscht den Dauerhinweis; Meldung nur beim Knopf; 
     { speicher: null, meldung: "Auf der Fläche gibt es noch nichts zu speichern." });
   assert.deepEqual(speicherAusgang({ ok: false, art: "leer" }, { manuell: false, token: 1, aktuell: 1 }), { speicher: null, meldung: null });
 });
+
+import { ohneLeere } from "./aufgabe.js";
+
+test("ohneLeere: null und undefined fallen weg, sonst bleibt die Reihenfolge", () => {
+  // Live 06.11.: ohne Sperrhinweis stand "null" als Text in der Aufgabenkarte.
+  const a = { n: 1 };
+  const b = { n: 2 };
+  assert.deepEqual(ohneLeere(a, null, b, undefined), [a, b]);
+  assert.deepEqual(ohneLeere(null), []);
+});
+
+test("huelle.js gibt die Aufgabenkarte nur ohne leere Teile weiter", () => {
+  const quelle = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(quelle, /\$\("karte"\)\.replaceChildren\(\.\.\.ohneLeere\(/);
+});
