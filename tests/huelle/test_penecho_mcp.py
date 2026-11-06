@@ -279,7 +279,7 @@ def _merkdatei(zustand: Path, name: str) -> dict:
     return json.loads(datei.read_text(encoding="utf-8")) if datei.exists() else {}
 
 
-def test_speichern_ruft_das_gefundene_werkzeug(zustand: Path) -> None:
+def test_dokument_merken_ruft_inspect_und_merkt_die_id(zustand: Path) -> None:
     fake = Fake()
     echt = fake.__call__
 
@@ -293,24 +293,46 @@ def test_speichern_ruft_das_gefundene_werkzeug(zustand: Path) -> None:
     c = PenEchoMcp(zustand, transport=httpx.MockTransport(antwort))
     sid = c.sitzung(LERN_SID, TITEL)
     vorher = len([b for b, _ in fake.anfragen if b["method"] == "tools/call"])
-    c.speichern(sid)
+    assert c.dokument_merken(sid) is True
     aufrufe = [b["params"] for b, _ in fake.anfragen if b["method"] == "tools/call"][vorher:]
     assert aufrufe == [{"name": "penecho_inspect_session", "arguments": {"sessionId": "sess-1"}}]
     # Die Dokument-ID ist zum Lernsitzungs-Schluessel gemerkt, neben flaechen.json.
     assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: DOK}
-    c.speichern(sid)  # wiederholbar
+    assert c.dokument_merken(sid) is True  # wiederholbar
     assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: DOK}
 
 
-def test_speichern_fehler_kommen_als_nicht_erreichbar(zustand: Path) -> None:
+def test_dokument_merken_fehler_kommen_als_nicht_erreichbar(zustand: Path) -> None:
     with pytest.raises(PenEchoNichtErreichbar):
-        _client(zustand, Fake(tool_fehler="session_not_found")).speichern("alt")
+        _client(zustand, Fake(tool_fehler="session_not_found")).dokument_merken("alt")
     with pytest.raises(PenEchoNichtErreichbar):
-        _client(zustand, Fake(fehler=True)).speichern("sess-1")
+        _client(zustand, Fake(fehler=True)).dokument_merken("sess-1")
     # Antwort ohne Dokument-ID: nichts merken, Fehler melden.
     with pytest.raises(PenEchoNichtErreichbar):
-        _client(zustand, Fake()).speichern("sess-1")
+        _client(zustand, Fake()).dokument_merken("sess-1")
     assert _merkdatei(zustand, DOKUMENTE) == {}
+
+
+def test_dokument_merken_fremde_sitzung_gibt_false(zustand: Path) -> None:
+    """PenEcho kennt die Sitzung, die Huelle hat dazu keine Lernsitzung: False, nichts gemerkt."""
+    fake = Fake()
+    echt = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_inspect_session":
+            return _ok(body, {"sessionId": "fremd", "documentId": DOK, "canvasId": "cv-1"})
+        return echt(request)
+
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(antwort))
+    c.sitzung(LERN_SID, TITEL)  # eigene Sitzung sess-1 ist gemerkt, "fremd" nicht
+    assert c.dokument_merken("fremd") is False
+    assert _merkdatei(zustand, DOKUMENTE) == {}
+
+
+def test_speichern_gibt_es_nicht_mehr() -> None:
+    # Der Server kann nicht speichern (BOARD_SPEICHERN.md); der alte Name versprach das.
+    assert not hasattr(PenEchoMcp, "speichern")
 
 
 def _verlust_fake(fake: Fake, *, browser_mit_dokument: str | None, open_fehler: str = "STORAGE_UNAVAILABLE",

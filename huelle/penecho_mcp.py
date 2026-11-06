@@ -365,23 +365,31 @@ class PenEchoMcp:
             karte[schluessel] = dokument
             self._merken(karte, self._dokumentdatei)
 
-    def speichern(self, session_id: str) -> None:
-        """Sichert das Board der Sitzung als PenEcho-Dokument (BOARD_SPEICHERN.md). Wiederholbar.
+    def dokument_merken(self, session_id: str) -> bool:
+        """Merkt die documentId des Boards dieser Sitzung in `dokumente.json`. Speichert NICHTS.
 
-        PenEcho schreibt jedes MCP-Board laufend selbst in die Arbeitsflaeche des Browsers
-        (IndexedDB); ein MCP-Werkzeug zum Speichern an einen Ablageort gibt es in PenEcho 1.4.2
-        nicht. speichern() fragt PenEcho nach dem Dokument der Sitzung (schema.js
-        penecho_inspect_session: nur sessionId) und merkt dessen ID, damit sitzung() genau dieses
-        Board wieder oeffnet. Fehler kommen als PenEchoNichtErreichbar.
+        PenEcho 1.4.2 hat kein MCP-Werkzeug zum Speichern (BOARD_SPEICHERN.md). Gespeichert wird
+        nur ueber PenEchos eigenen Knopf; den loest die Seite ueber `flaecheSpeichern()` aus
+        (`seite/flaeche.js`, Skript `flaeche/speichern.js` im Durchreicher). Diese Methode fragt
+        PenEcho nur nach dem Dokument der Sitzung (`penecho_inspect_session`) und merkt dessen ID,
+        damit sitzung() nach einem Verlust genau dieses Board in den Browsern sucht. Wiederholbar.
+
+        True: gemerkt. False: PenEcho kennt die Sitzung, die Huelle hat aber keine Lernsitzung mit
+        dieser session_id (nichts gemerkt). Fehler von PenEcho und eine Antwort ohne documentId
+        kommen als PenEchoNichtErreichbar.
         """
         ergebnis = self._werkzeug("penecho_inspect_session", {"sessionId": session_id})
         dokument = self._struktur(ergebnis).get("documentId")
         if not isinstance(dokument, str) or not dokument:
             raise PenEchoNichtErreichbar("documentId")
+        schluessel = [k for k, sid in self._gemerkt().items() if sid == session_id]
+        if not schluessel:
+            log.info("dokument_merken: keine Lernsitzung zu dieser Sitzung, nichts gemerkt")
+            return False
         dokumente = self._gemerkt(self._dokumentdatei)
-        for schluessel, sid in self._gemerkt().items():
-            if sid == session_id:
-                self._dokument_merken(schluessel, dokument, dokumente)
+        for k in schluessel:
+            self._dokument_merken(k, dokument, dokumente)
+        return True
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int) -> None:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
