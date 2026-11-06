@@ -146,6 +146,12 @@ class PenEchoPlatzBelegt(PenEchoNichtErreichbar):
         self.hindernisse = list(hindernisse)
 
 
+def _eigene_texte(hindernisse: Sequence[dict[str, Any]], platz: dict[str, int]) -> list[dict[str, Any]]:
+    """Texte, die exakt an der Ecke von `platz` stehen: dort setzt nur die Huelle selbst Text."""
+    return [h for h in hindernisse if h["id"].startswith("text-box-")
+            and abs(h["x"] - platz["x"]) < 1 and abs(h["y"] - platz["y"]) < 1]
+
+
 def _hindernisse(struktur: dict[str, Any]) -> list[dict[str, Any]]:
     details = struktur.get("details")
     roh = details.get("obstacles") if isinstance(details, dict) else None
@@ -516,14 +522,20 @@ class PenEchoMcp:
             "region": region,
         }
         try:
-            ergebnis = self._werkzeug("penecho_edit_canvas", argumente)
-        except PenEchoPlatzBelegt:
-            # Jemand hat den Textplatz belegt (z. B. PenEchos KI nach einer Abgabe): PenEcho waehlt frei.
-            del argumente["region"]
-            argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
-            ergebnis = self._werkzeug("penecho_edit_canvas", argumente)
+            objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
+        except PenEchoPlatzBelegt as fehler:
+            eigene = _eigene_texte(fehler.hindernisse, region)
+            if eigene:
+                # Die Aufgabe steht schon da (Board nach Neustart wiederhergestellt, neue PenEcho-Sitzung
+                # kennt die feste requestId nicht): nicht doppelt setzen.
+                objekt_id = eigene[0]["id"]
+            else:
+                # Jemand hat den Textplatz belegt (z. B. PenEchos KI nach einer Abgabe): PenEcho waehlt frei.
+                del argumente["region"]
+                argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
+                objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
         # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
-        self._zeigen(session_id, self._struktur(ergebnis).get("objectId"))
+        self._zeigen(session_id, objekt_id)
         if mit_ergebnisfeld:
             self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer),
                                 f"Ihr Ergebnis zu Aufgabe {nummer}", "ergebnis")
@@ -657,8 +669,7 @@ class PenEchoMcp:
             self._werkzeug("penecho_edit_canvas", argumente)
             return
         except PenEchoPlatzBelegt as fehler:
-            alte = [h for h in fehler.hindernisse if h["id"].startswith("text-box-")
-                    and abs(h["x"] - feld["x"]) < 1 and abs(h["y"] - feld["y"]) < 1]
+            alte = _eigene_texte(fehler.hindernisse, feld)
             if not alte or len(alte) != len(fehler.hindernisse):
                 raise
         for h in alte:

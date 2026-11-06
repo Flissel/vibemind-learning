@@ -1025,3 +1025,26 @@ def test_aufgabe_mit_arbeitsfeld_zeichnet_rahmen_und_schild(zustand: Path) -> No
     assert min(q["x"] for q in punkte) < a["x"] and max(q["x"] for q in punkte) > a["x"] + a["w"]
     assert min(q["y"] for q in punkte) < a["y"] and max(q["y"] for q in punkte) > a["y"] + a["h"]
     assert fake.aufrufe("penecho_capture_canvas") == []
+
+
+def test_aufgabe_schon_auf_dem_board_wird_nicht_doppelt_gesetzt(zustand: Path) -> None:
+    # Abnahme 06.11.: nach Neustart (neue PenEcho-Sitzung, feste requestId unbekannt) stand der eigene
+    # Aufgabentext an der Textfeld-Ecke; die Huelle wich aus und setzte ihn ein zweites Mal.
+    fake = Fake()
+    echt = fake.__call__
+    t = textfeld(8)
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        args = body.get("params", {}).get("arguments", {}) if body.get("method") == "tools/call" else {}
+        if args.get("action") == "create_text" and "region" in args:
+            fake.anfragen.append((body, request.headers))
+            sc = {"code": "LAYOUT_CONFLICT", "message": "m", "details": {"obstacles": [
+                {"id": "text-box-3", "x": t["x"], "y": t["y"], "w": 400, "h": 300}]}}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"isError": True, "structuredContent": sc}})
+        return echt(request)
+
+    PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen("sess-1", "t1", "Skizzieren", 8)
+    edits = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert [e["action"] for e in edits] == ["create_text", "show"]
+    assert edits[1]["objectId"] == "text-box-3"
