@@ -23,6 +23,13 @@ _MIT_ETIKETTEN = frozenset({"single_choice", "multiple_choice", "ordering", "mat
 # nicht gefolgt von einer Ziffer (note-card.js verlangt das, sonst waere "5 $ und 6 $" Mathe).
 _ANZEIGE = re.compile(r"\$\$[^$]+?\$\$")
 _INLINE = re.compile(r"\$(?!\s)[^$\n]*?[^$\s\\]\$(?!\d)|\$[^$\s\\]\$(?!\d)")
+# Luecken wie "___" in einer Formel sind kein TeX (doppelter Index); PenEcho zeigte die Formel dann roh.
+_LUECKE = re.compile(r"(?<!\\)_{2,}")
+_LUECKE_TEX = r"\underline{\qquad}"
+
+
+def _luecken_setzen(m: re.Match[str]) -> str:
+    return _LUECKE.sub(lambda _l: _LUECKE_TEX, m.group(0))
 
 
 def formel_oder_klartext(text: object, *, anzeige: bool = True) -> str:
@@ -36,7 +43,10 @@ def formel_oder_klartext(text: object, *, anzeige: bool = True) -> str:
     rest = roh if not anzeige else _ANZEIGE.sub("", roh)
     ohne = _INLINE.sub("", rest)
     if "$" in roh and "\\$" not in roh and "$" not in ohne and (anzeige or "$$" not in roh):
-        return " ".join(roh.split())
+        text = " ".join(roh.split())
+        if anzeige:
+            text = _ANZEIGE.sub(_luecken_setzen, text)
+        return _INLINE.sub(_luecken_setzen, text)
     return klartext(roh).replace("$", "").strip()
 
 

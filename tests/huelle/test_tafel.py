@@ -124,3 +124,15 @@ def test_rueckmeldungstext_formel_in_rueckmeldung_gelesen_bleibt_klartext() -> N
 def test_rueckmeldungstext_fallback_und_kein_display() -> None:
     assert "$" not in rueckmeldungstext(None, "Richtig.", "Es gilt $\\frac{1}{2}$ und \\$5.")
     assert rueckmeldungstext(None, "Richtig.", "So: $$a \\le b$$ ok") == "Richtig.\n\nSo: a ≤ b ok"
+
+
+def test_luecken_in_formeln_werden_gueltiges_tex() -> None:
+    # Abnahme 06.11.: "___" in $..$ ist kein TeX (doppelter Index), PenEcho zeigte die Formel roh.
+    roh = "zu $u^2 - ___ u + ___ = 0$ mit $u_1 = ___$ und Text ___ ohne Formel."
+    text = formel_oder_klartext(roh)
+    assert text == (
+        r"zu $u^2 - \underline{\qquad} u + \underline{\qquad} = 0$ mit $u_1 = \underline{\qquad}$"
+        " und Text ___ ohne Formel."
+    )
+    assert formel_oder_klartext(r"$a\_\_ = b_1$") == r"$a\_\_ = b_1$"
+    assert formel_oder_klartext("$$x = ___$$") == r"$$x = \underline{\qquad}$$"
