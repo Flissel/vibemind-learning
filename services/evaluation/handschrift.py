@@ -44,14 +44,14 @@ class GelesenV1(BaseModel):
 
 
 class _ModellLesungV1(BaseModel):
-    """What the reading model returns; the gateway demands the schema version."""
-
+    # The model's reply. No top-level "text" field: OpenFang's claude-code driver
+    # unwraps a one-line JSON reply with a "text" key to that value alone.
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["handschrift-gelesen-v1"]
     lesbar: bool
     roh: dict[str, object]
-    text: str = Field(max_length=200)
+    anzeige: str = Field(max_length=200)
 
 
 def _text_of(entry: object) -> str:
@@ -134,7 +134,7 @@ class HandschriftLeser:
         try:
             result = await gateway.generate(invocation, _ModellLesungV1)
             output = result.output
-            return GelesenV1(lesbar=output.lesbar, roh=dict(output.roh), text=output.text)
+            return GelesenV1(lesbar=output.lesbar, roh=dict(output.roh), text=output.anzeige)
         finally:
             close = getattr(gateway, "aclose", None)
             if close is not None:

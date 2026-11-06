@@ -27,7 +27,14 @@ class _Gateway:
         self.invocations.append(invocation)
         if isinstance(self.outcome, Exception):
             raise self.outcome
-        return GatewayResult(output=self.outcome, evidence_ref="openfang://completion/hs-1")
+        # Like the real gateway: the output is always an instance of the requested model.
+        output = output_model(
+            schema_version=invocation.output_schema_version,
+            lesbar=self.outcome.lesbar,
+            roh=self.outcome.roh,
+            anzeige=self.outcome.text,
+        )
+        return GatewayResult(output=output, evidence_ref="openfang://completion/hs-1")
 
 
 def _lesen(outcome, task=TASK):
@@ -153,10 +160,23 @@ def test_echte_modellantwort_besteht_die_gateway_pruefung() -> None:
     # demands schema_version == "handschrift-gelesen-v1" and the output model had none.
     inhalt = (
         '```json\n{"schema_version": "handschrift-gelesen-v1", "lesbar": true, '
-        '"roh": {"auswahl": ["B"]}, "text": "B"}\n```'
+        '"roh": {"auswahl": ["B"]}, "anzeige": "B"}\n```'
     )
     gelesen, antwort = HandschriftLeser(lambda: _PruefenderGateway(inhalt)).lesen(TASK, PNG)
     assert isinstance(gelesen, GelesenV1)
     assert gelesen.lesbar is True
     assert gelesen.text == "B"
     assert antwort == {"choice_id": "b"}
+
+
+def test_modellausgabe_hat_kein_oberes_feld_text() -> None:
+    # Live 06.11.: OpenFang's claude-code driver unwraps a one-line JSON reply that has a
+    # top-level "text" key and returns only that value ("x = 7" instead of the object).
+    from spaces.learning.services.evaluation import handschrift
+
+    assert "text" not in handschrift._ModellLesungV1.model_json_schema()["properties"]
+    assert "anzeige" in handschrift._ModellLesungV1.model_json_schema()["properties"]
+    from spaces.learning.services.course_factory.model_gateway import ROLE_PROMPTS
+
+    assert "In anzeige " in ROLE_PROMPTS["handschrift_leser"]
+    assert "In text " not in ROLE_PROMPTS["handschrift_leser"]
