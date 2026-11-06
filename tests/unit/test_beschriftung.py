@@ -133,3 +133,24 @@ def test_gemeinsame_fixture_mit_der_seite() -> None:
         task = fall["task"]
         b = beschriften(task["type"], task["presentation"], task["options"])
         assert antwort_aus_etiketten(task["type"], b, fall["roh"]) == fall["antwort"], fall["name"]
+
+
+def test_typenlisten_der_seite_stimmen_mit_learning_ueberein() -> None:
+    """Die Typen der Fixture (von der Seite getestet) gleichen Learning und der Bruecke: kein stiller Drift."""
+    import json
+    import re
+    from pathlib import Path
+
+    from spaces.learning.huelle.bruecke import BEREICHS_TYPEN, DETERMINISTISCHE_TYPEN
+    from spaces.learning.services.adaptive_engine import models
+
+    typen = json.loads((Path(__file__).parent.parent / "huelle" / "etiketten_fixture.json").read_text(encoding="utf-8"))["typen"]
+    quelle = Path(models.__file__).read_text(encoding="utf-8")
+    # Die CHECK-Zeichenkette ist ueber zwei Literale verteilt: ab "item_type IN (" bis zur schliessenden Klammer.
+    check = re.search(r"item_type IN \((.*?)\)\"", quelle, re.DOTALL)
+    assert check is not None
+    learning = set(re.findall(r"'([a-z_]+)'", check.group(1)))
+    assert set(typen["alle"]) == learning
+    assert set(typen["deterministisch"]) == set(DETERMINISTISCHE_TYPEN)
+    assert set(typen["bereich"]) == set(BEREICHS_TYPEN)
+    assert set(typen["seitenleiste"]) == learning - set(DETERMINISTISCHE_TYPEN) - set(BEREICHS_TYPEN)

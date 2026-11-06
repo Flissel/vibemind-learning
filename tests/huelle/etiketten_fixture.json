@@ -1,4 +1,10 @@
 {
+  "typen": {
+    "alle": ["single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in", "open", "case", "code", "penecho_canvas"],
+    "deterministisch": ["single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"],
+    "bereich": ["open", "case", "penecho_canvas"],
+    "seitenleiste": ["code"]
+  },
   "etiketten": [
     {
       "name": "single_choice drei Optionen",

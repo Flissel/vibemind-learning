@@ -27,8 +27,8 @@ test("matching: pairs ueber alle linken Eintraege", () => {
   assert.deepEqual(antwortAus(task, { paare: { l1: "r2" } }), { pairs: { l1: "r2", l2: "" } });
 });
 
-test("fill_in, open_response, case, code: text", () => {
-  for (const type of ["fill_in", "open_response", "case", "code"]) {
+test("fill_in, open, case, code: text", () => {
+  for (const type of ["fill_in", "open", "case", "code"]) {
     assert.deepEqual(antwortAus({ type }, { text: "abc" }), { text: "abc" });
   }
 });
@@ -203,7 +203,21 @@ import {
   leistenZustand, speicherAusgang, speicherHinweis, speichernMitWiederholung,
 } from "./aufgabe.js";
 
+const SCHON = "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.";
 const FIXTURE = JSON.parse(readFileSync(new URL("../../tests/huelle/etiketten_fixture.json", import.meta.url), "utf8"));
+
+test("leistenZustand: alle zehn Learning-Typen (gemeinsame Fixture mit Python)", () => {
+  const { alle, deterministisch, seitenleiste } = FIXTURE.typen;
+  assert.equal(alle.length, 10);
+  for (const type of alle) {
+    const z = leistenZustand({ type }, null);
+    if (seitenleiste.includes(type)) { assert.equal(z.sichtbar, false, type); continue; }
+    assert.equal(z.sichtbar, true, type);
+    assert.ok(z.knoepfe.includes("abgeben"), type);
+    const mitErgebnis = leistenZustand({ type }, ERG("Richtig."));
+    assert.equal(mitErgebnis.knoepfe.includes("falsch"), deterministisch.includes(type), type);
+  }
+});
 
 test("etiketten: gleiche Etiketten wie contracts/beschriftung.py (gemeinsame Fixture)", () => {
   for (const f of FIXTURE.etiketten) assert.deepEqual(etiketten(f.task), f.erwartet, f.name);
@@ -251,7 +265,7 @@ const ERG = (urteil, lesbar = urteil !== "Nicht lesbar.") => ({ vorbewertung_id:
 
 test("leistenZustand: ohne Ergebnis Speichern und Abgeben, bei code keine Leiste", () => {
   assert.deepEqual(leistenZustand({ type: "numeric" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
-  assert.deepEqual(leistenZustand({ type: "open_response" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
+  assert.deepEqual(leistenZustand({ type: "open" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
   assert.deepEqual(leistenZustand({ type: "code" }, null), { sichtbar: false, knoepfe: [] });
   assert.deepEqual(leistenZustand(null, null), { sichtbar: false, knoepfe: [] });
   assert.deepEqual(leistenZustand({ type: "unbekannt" }, null), { sichtbar: false, knoepfe: [] });
@@ -273,7 +287,7 @@ test("leistenZustand: nicht lesbar -> Selbst eintippen statt Passt", () => {
   assert.deepEqual(leistenZustand({ type: "numeric" }, { vorbewertung_id: "v", urteil: "Richtig.", lesbar: false }).knoepfe,
     ["ueberarbeiten", "eintippen", "speichern", "abgeben"]);
   // Rubrik-Typ: nichts zum Eintippen
-  assert.deepEqual(leistenZustand({ type: "open_response" }, ERG("Nicht lesbar.")).knoepfe,
+  assert.deepEqual(leistenZustand({ type: "open" }, ERG("Nicht lesbar.")).knoepfe,
     ["ueberarbeiten", "speichern", "abgeben"]);
 });
 
@@ -347,8 +361,13 @@ test("speicherHinweis: ruhige Hinweise, nichts bei Erfolg", () => {
   assert.equal(speicherHinweis({ ok: false, art: "leer" }, false), null);
 });
 
+test("fehlerText: 409 mit Turn aber anderer Ablehnung zeigt die Meldung der Bruecke", () => {
+  const nicht = "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe.";
+  assert.deepEqual(fehlerText({ status: 409, daten: { turn: { state: "active" }, meldung: nicht } }), { text: nicht, veraltet: false });
+});
+
 test("fehlerText: 409 veraltet, 503 wiederholen, sonst feste Meldung oder allgemein", () => {
-  const veraltet = fehlerText({ status: 409, daten: { turn: { state: "active" }, meldung: "x" } });
+  const veraltet = fehlerText({ status: 409, daten: { turn: { state: "active" }, meldung: SCHON } });
   assert.equal(veraltet.veraltet, true);
   assert.match(veraltet.text, /veraltet/);
   const bw = "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab.";

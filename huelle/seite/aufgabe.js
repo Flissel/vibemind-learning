@@ -36,7 +36,7 @@ export function antwortAus(task, eingabe) {
     }
     case "penecho_canvas":
       return null;
-    default: // fill_in, open_response, case, code
+    default: // fill_in, open, case, code
       return { text: String(e.text ?? "") };
   }
 }
@@ -233,7 +233,7 @@ export function flaechenHinweis(daten) {
 const BUCHSTABEN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const MAX_TEXT = 2000;
 export const DETERMINISTISCH = new Set(["single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"]);
-const FLAECHENTYPEN = new Set([...DETERMINISTISCH, "open_response", "case", "penecho_canvas"]);
+const FLAECHENTYPEN = new Set([...DETERMINISTISCH, "open", "case", "penecho_canvas"]);
 
 function ids(eintraege) {
   return eintraege.map((e) => {
@@ -446,10 +446,12 @@ export function speicherAusgang(ergebnis, { manuell, token, aktuell, alt = null 
   return { speicher: NICHT_GESPEICHERT, meldung: null };
 }
 
+const SCHON_ABGEGEBEN = "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.";
 export const VERALTET = "Die Karte war veraltet. Ich habe den aktuellen Stand geladen.";
 
 /** Der Hinweis zu einer Fehlerantwort von abgeben/korrektur/passt; `veraltet`: Stand aus `turn` neu zeigen. */
 export function fehlerText(r) {
-  if (r?.status === 409 && r.daten?.turn) return { text: VERALTET, veraltet: true };
+  // Nur die Meldung „schon abgegeben“ heisst: Karte veraltet. Andere Ablehnungen zeigen ihre eigene Meldung.
+  if (r?.status === 409 && r.daten?.turn && r.daten.meldung === SCHON_ABGEGEBEN) return { text: VERALTET, veraltet: true };
   return { text: meldungFuer(r?.daten), veraltet: false };
 }
