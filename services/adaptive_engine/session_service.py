@@ -185,6 +185,25 @@ class _AnswerAudit:
     criteria: tuple[CriterionFeedback, ...] = ()
 
 
+@dataclass(frozen=True)
+class _Bewertung:
+    """A graded answer that is not persisted yet; the ids are fixed at grading time."""
+
+    response_id: str
+    evaluation_id: str
+    answer: dict[str, object]
+    evaluator_type: str
+    score: float
+    confidence: float
+    accepted: bool
+    rationale_codes: tuple[str, ...]
+    evaluator_versions: dict[str, object]
+    source_refs: tuple[str, ...]
+    criteria: tuple[CriterionFeedback, ...]
+    review_reason: str | None
+    review_details: dict[str, object]
+
+
 class AdaptiveSessionService:
     def __init__(
         self,
@@ -340,25 +359,8 @@ class AdaptiveSessionService:
             item = db.get(AdaptiveItem, attempt.item_id)
             if item is None:
                 raise LookupError("adaptive item is unavailable")
-            if item.item_type in _DETERMINISTIC_TYPES:
-                evaluation, audit = self._evaluate_deterministic(
-                    db, row, attempt, item, command.answer, now
-                )
-            elif (
-                (
-                    item.item_type in _RUBRIC_TYPES
-                    or (
-                        item.item_type == "penecho_canvas"
-                        and "penecho_canvas" not in self._external_rubric_types
-                    )
-                )
-                and self._rubric_evaluator is not None
-            ):
-                evaluation, audit = self._evaluate_rubric(
-                    db, row, attempt, item, command.answer, now
-                )
-            else:
-                raise ValueError("adaptive item has no admitted evaluator")
+            bewertung = self._bewerten(item, command.answer)
+            evaluation, audit = self._uebernehmen(db, row, attempt, item, bewertung, now)
             row.revision += 1
             row.updated_at = now
             total = self._total(row)
@@ -450,7 +452,8 @@ class AdaptiveSessionService:
             answer: dict[str, object] = (
                 {"choice_id": selected[0]} if item.item_type == "single_choice" else {"choice_ids": list(selected)}
             )
-            evaluation, audit = self._evaluate_deterministic(db, row, attempt, item, answer, now)
+            bewertung = self._bewerten(item, answer)
+            evaluation, audit = self._uebernehmen(db, row, attempt, item, bewertung, now)
             return {
                 "score": evaluation.score,
                 "mastery_applied": audit.mastery_applied,
@@ -567,93 +570,62 @@ class AdaptiveSessionService:
             assert row is not None
             return self._progress(db, row)
 
-    def _evaluate_deterministic(
+    def _bewerten(
         self,
-        db: Session,
-        session_row: LearningSession,
-        attempt: LearningAttempt,
         item: AdaptiveItem,
         answer: dict[str, object],
-        now: datetime,
-    ) -> tuple[LearningEvaluation, _AnswerAudit]:
-        prompt = self._string_config(item, "prompt")
-        options = self._options(item)
+        *,
+        bild_png: bytes | None = None,
+    ) -> _Bewertung:
+        """Grade an answer without writing anything; creates the response/evaluation ids."""
+        del bild_png
+        if item.item_type in _DETERMINISTIC_TYPES:
+            return self._bewerten_deterministic(item, answer)
+        if (
+            item.item_type in _RUBRIC_TYPES
+            or (
+                item.item_type == "penecho_canvas"
+                and "penecho_canvas" not in self._external_rubric_types
+            )
+        ) and self._rubric_evaluator is not None:
+            return self._bewerten_rubric(item, answer)
+        raise ValueError("adaptive item has no admitted evaluator")
+
+    def _bewerten_deterministic(
+        self, item: AdaptiveItem, answer: dict[str, object]
+    ) -> _Bewertung:
         scored = score_response(
             DeterministicItem(
                 item_id=item.id,
                 item_type=item.item_type,
-                prompt=prompt,
-                options=options,
+                prompt=self._string_config(item, "prompt"),
+                options=self._options(item),
                 expected_answer=item.expected_answer,
                 scoring_config=item.scoring_config,
             ),
             answer,
         )
-        encoded = json.dumps(answer, sort_keys=True, separators=(",", ":"))
-        response = LearningResponse(
-            id=str(uuid4()),
-            attempt_id=attempt.id,
-            response_revision=1,
+        return _Bewertung(
+            response_id=str(uuid4()),
+            evaluation_id=str(uuid4()),
             answer=answer,
-            answer_hash=hashlib.sha256(encoded.encode()).hexdigest(),
-            created_at=now,
-        )
-        db.add(response)
-        db.flush()
-        source_refs = self._string_list(item.scoring_config.get("source_refs", []))
-        evaluation = LearningEvaluation(
-            id=str(uuid4()),
-            response_id=response.id,
             evaluator_type="deterministic",
             score=scored.score,
             confidence=scored.confidence,
             accepted=True,
-            rationale_codes=list(scored.rationale_codes),
+            rationale_codes=tuple(scored.rationale_codes),
             evaluator_versions={"scorer": "deterministic-v1"},
-            source_refs=list(source_refs),
-            created_at=now,
+            source_refs=self._string_list(item.scoring_config.get("source_refs", [])),
+            criteria=(),
+            review_reason=None,
+            review_details={},
         )
-        db.add(evaluation)
-        db.flush()
-        applied = self._apply_mastery_and_review(
-            db,
-            actor_id=session_row.actor_id,
-            attempt=attempt,
-            evaluation=evaluation,
-            successful=scored.score >= 0.65,
-            now=now,
-        )
-        self._update_misconceptions(
-            db,
-            actor_id=session_row.actor_id,
-            item=item,
-            evaluation=evaluation,
-            successful=scored.score >= 0.65,
-        )
-        return evaluation, _AnswerAudit(response.id, evaluation.id, applied)
 
-    def _evaluate_rubric(
-        self,
-        db: Session,
-        session_row: LearningSession,
-        attempt: LearningAttempt,
-        item: AdaptiveItem,
-        answer: dict[str, object],
-        now: datetime,
-    ) -> tuple[LearningEvaluation, _AnswerAudit]:
+    def _bewerten_rubric(
+        self, item: AdaptiveItem, answer: dict[str, object]
+    ) -> _Bewertung:
         assert self._rubric_evaluator is not None
-        response = LearningResponse(
-            id=str(uuid4()),
-            attempt_id=attempt.id,
-            response_revision=1,
-            answer=answer,
-            answer_hash=hashlib.sha256(
-                json.dumps(answer, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest(),
-            created_at=now,
-        )
-        db.add(response)
-        db.flush()
+        response_id = str(uuid4())
         evaluation_id = str(uuid4())
         expected = item.expected_answer.get("text")
         if not isinstance(expected, str) or not expected:
@@ -663,7 +635,7 @@ class AdaptiveSessionService:
         decision = self._rubric_evaluator.evaluate(
             RubricEvaluationRequest(
                 evaluation_id=evaluation_id,
-                response_id=response.id,
+                response_id=response_id,
                 response=answer,
                 expected_answer=expected,
                 rubric=criteria,
@@ -672,56 +644,6 @@ class AdaptiveSessionService:
                 prompt_version=self._version(item, "prompt_version", "rubric-prompt-v1"),
                 source_version=self._version(item, "source_version", "course-revision"),
             )
-        )
-        evaluation = LearningEvaluation(
-            id=decision.evaluation_id,
-            response_id=response.id,
-            evaluator_type="rubric",
-            score=decision.score,
-            confidence=decision.confidence,
-            accepted=decision.accepted,
-            rationale_codes=list(decision.rationale_codes),
-            evaluator_versions={
-                **decision.evaluator_versions,
-                "evidence": decision.evidence_ref,
-            },
-            source_refs=list(decision.source_refs),
-            created_at=now,
-        )
-        db.add(evaluation)
-        db.flush()
-        applied = False
-        if decision.accepted:
-            applied = self._apply_mastery_and_review(
-                db,
-                actor_id=session_row.actor_id,
-                attempt=attempt,
-                evaluation=evaluation,
-                successful=decision.score >= 0.65,
-                now=now,
-            )
-        else:
-            db.add(
-                LearningReviewItem(
-                    id=str(uuid4()),
-                    request_ref=f"session:{session_row.id}:{attempt.ordinal}",
-                    evaluation_id=evaluation.id,
-                    reason_code=decision.rationale_codes[0],
-                    status="pending",
-                    details={
-                        "confidence": decision.confidence,
-                        "evidence_ref": decision.evidence_ref,
-                    },
-                    created_at=now,
-                    resolved_at=None,
-                )
-            )
-        self._update_misconceptions(
-            db,
-            actor_id=session_row.actor_id,
-            item=item,
-            evaluation=evaluation,
-            successful=decision.accepted and decision.score >= 0.65,
         )
         points = {value.criterion_id: value for value in criteria}
         shown: list[CriterionFeedback] = []
@@ -738,7 +660,98 @@ class AdaptiveSessionService:
                     feedback=result.feedback,
                 )
             )
-        return evaluation, _AnswerAudit(response.id, evaluation.id, applied, tuple(shown))
+        return _Bewertung(
+            response_id=response_id,
+            evaluation_id=decision.evaluation_id,
+            answer=answer,
+            evaluator_type="rubric",
+            score=decision.score,
+            confidence=decision.confidence,
+            accepted=decision.accepted,
+            rationale_codes=tuple(decision.rationale_codes),
+            evaluator_versions={
+                **decision.evaluator_versions,
+                "evidence": decision.evidence_ref,
+            },
+            source_refs=tuple(decision.source_refs),
+            criteria=tuple(shown),
+            review_reason=None if decision.accepted else decision.rationale_codes[0],
+            review_details={
+                "confidence": decision.confidence,
+                "evidence_ref": decision.evidence_ref,
+            },
+        )
+
+    def _uebernehmen(
+        self,
+        db: Session,
+        row: LearningSession,
+        attempt: LearningAttempt,
+        item: AdaptiveItem,
+        bewertung: _Bewertung,
+        now: datetime,
+    ) -> tuple[LearningEvaluation, _AnswerAudit]:
+        """Persist a graded answer and apply mastery, misconceptions and the review queue."""
+        encoded = json.dumps(bewertung.answer, sort_keys=True, separators=(",", ":"))
+        response = LearningResponse(
+            id=bewertung.response_id,
+            attempt_id=attempt.id,
+            response_revision=1,
+            answer=bewertung.answer,
+            answer_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+            created_at=now,
+        )
+        db.add(response)
+        db.flush()
+        evaluation = LearningEvaluation(
+            id=bewertung.evaluation_id,
+            response_id=response.id,
+            evaluator_type=bewertung.evaluator_type,
+            score=bewertung.score,
+            confidence=bewertung.confidence,
+            accepted=bewertung.accepted,
+            rationale_codes=list(bewertung.rationale_codes),
+            evaluator_versions=bewertung.evaluator_versions,
+            source_refs=list(bewertung.source_refs),
+            created_at=now,
+        )
+        db.add(evaluation)
+        db.flush()
+        successful = bewertung.score >= 0.65
+        applied = False
+        if bewertung.accepted:
+            applied = self._apply_mastery_and_review(
+                db,
+                actor_id=row.actor_id,
+                attempt=attempt,
+                evaluation=evaluation,
+                successful=successful,
+                now=now,
+            )
+        else:
+            assert bewertung.review_reason is not None
+            db.add(
+                LearningReviewItem(
+                    id=str(uuid4()),
+                    request_ref=f"session:{row.id}:{attempt.ordinal}",
+                    evaluation_id=evaluation.id,
+                    reason_code=bewertung.review_reason,
+                    status="pending",
+                    details=bewertung.review_details,
+                    created_at=now,
+                    resolved_at=None,
+                )
+            )
+        self._update_misconceptions(
+            db,
+            actor_id=row.actor_id,
+            item=item,
+            evaluation=evaluation,
+            successful=bewertung.accepted and successful,
+        )
+        return evaluation, _AnswerAudit(
+            response.id, evaluation.id, applied, bewertung.criteria
+        )
 
     def _apply_mastery_and_review(
         self,
