@@ -184,3 +184,12 @@ def test_leisten_hinweis_ist_in_der_hoehe_begrenzt() -> None:
     css = (SEITE / "huelle.css").read_text(encoding="utf-8")
     regel = css.split(".leisten-hinweis, .korrektur {")[1].split("}")[0]
     assert "max-height:" in regel and "overflow-y: auto" in regel
+
+
+def test_seitenleiste_haelt_katex_hilfstext_drinnen() -> None:
+    # Abnahme 06.11. (F16): KaTeX setzt .katex-mathml absolut. Ohne positionierte Seitenleiste lag der
+    # Hilfstext von Formeln weit unten in der Leiste ausserhalb ihres Scrollbereichs, und die ganze Seite
+    # bekam einen Scrollbalken (Kopfzeile verschoben).
+    css = (SEITE / "huelle.css").read_text(encoding="utf-8")
+    regel = css.split("\n.leiste {")[1].split("}")[0]
+    assert "position: relative" in regel
