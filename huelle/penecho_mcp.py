@@ -23,7 +23,7 @@ from uuid import uuid4
 
 import httpx
 
-from .tafel import rueckmeldungstext
+from .tafel import kuerzen, rueckmeldungstext
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,12 @@ _TEXT_RAND = 20
 _TEXT_BREITE = 460
 _RUECKMELDUNG_ABSTAND = 40
 _RUECKMELDUNG_BREITE = 420
+# Abnahme 06.11. (F14): PenEcho rendert hoechstens 2000 Zeichen (core.js TEXT_INPUT_MAX_LENGTH, sonst
+# INVALID_TEXT), Schrift 20 px mit Zeilenhoehe 1,35 (27 px), Umbruch bei 400 px. Ein laengerer Text ragte ueber
+# das Rueckmeldungsfeld in den naechsten Bereich. 36 Zeichen je Zeile ist vorsichtig geschaetzt.
+_TEXT_HOECHSTENS = 2000
+_RUECKMELDUNG_ZEILEN = (BEREICH_HOEHE - 2 * _TEXT_RAND) // 27
+_ZEICHEN_JE_ZEILE = 36
 
 # Ergebnisfeld (Task 6): oben rechts im Bereich, darunter bleibt Platz fuer Rechenweg oder Skizze.
 # Rahmen und Schild liegen AUSSERHALB des Feldes, damit der Schnappschuss des Feldes nur die
@@ -745,7 +751,9 @@ class PenEchoMcp:
         Widget, Text der Lernenden) bleibt; dann PenEchoPlatzBelegt, die Bruecke zeigt die Leiste.
         """
         feld = rueckmeldungsfeld(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
-        inhalt = f"{titel}\n\n{text}"
+        # Zu lang fuer das Feld: gekuerzt; die volle Rueckmeldung bleibt in Learning (Bericht).
+        inhalt = kuerzen(f"{titel}\n\n{text}", zeichen=_TEXT_HOECHSTENS, zeilen=_RUECKMELDUNG_ZEILEN,
+                         je_zeile=_ZEICHEN_JE_ZEILE)
         pruefsumme = hashlib.sha256(inhalt.encode("utf-8")).hexdigest()[:12]
         rest = MAX_SCHLUESSEL - len(f"rueckmeldung--{nummer}-{pruefsumme}")
         argumente = {

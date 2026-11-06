@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from spaces.learning.contracts.beschriftung import beschriften
-from spaces.learning.huelle.tafel import aufgabentext, formel_oder_klartext, rueckmeldungstext
+from spaces.learning.huelle.tafel import aufgabentext, formel_oder_klartext, kuerzen, leistentext, rueckmeldungstext
 
 
 def _aufgabe(typ: str, **mehr: object) -> dict[str, object]:
@@ -136,3 +136,17 @@ def test_luecken_in_formeln_werden_gueltiges_tex() -> None:
     )
     assert formel_oder_klartext(r"$a\_\_ = b_1$") == r"$a\_\_ = b_1$"
     assert formel_oder_klartext("$$x = ___$$") == r"$$x = \underline{\qquad}$$"
+
+
+def test_leistentext_bleibt_kurz() -> None:
+    # Abnahme 06.11. (F14): die volle Rubrik-Rueckmeldung ueberdeckte in der Leiste die Flaeche und "Passt".
+    lang = 'Satz 0: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 1: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 2: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 3: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 4: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 5: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 6: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 7: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 8: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 9: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 10: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 11: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 12: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 13: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 14: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 15: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 16: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 17: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 18: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 19: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 20: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 21: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 22: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 23: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 24: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 25: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 26: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 27: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 28: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 29: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 30: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 31: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 32: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 33: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 34: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 35: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 36: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 37: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 38: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 39: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet.'
+    text = leistentext("x", "Teilweise richtig.", lang)
+    assert len(text) <= 240 and text.startswith("Gelesen: x Teilweise richtig. Satz 0:") and text.endswith(" …")
+    assert leistentext(None, "Richtig.", "Gut.") == "Richtig. Gut."
+
+
+def test_kuerzen_laesst_passenden_text_und_schneidet_an_wortgrenzen() -> None:
+    assert kuerzen("kurz genug", zeichen=20) == "kurz genug"
+    assert kuerzen("eins zwei drei vier", zeichen=12) == "eins zwei …"
+    assert kuerzen("a\nb\nc\nd", zeichen=100, zeilen=2, je_zeile=10) == "a\nb …"

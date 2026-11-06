@@ -177,3 +177,10 @@ def test_leiste_ueber_der_flaeche_ist_verdrahtet() -> None:
     for route in ("/abgeben", "/korrektur", "/passt"):
         assert route in js, route
     assert "alert(" not in js and "confirm(" not in js
+
+
+def test_leisten_hinweis_ist_in_der_hoehe_begrenzt() -> None:
+    # Abnahme 06.11. (F14): ein langer Hinweis schob "Passt" unter den Bildschirmrand.
+    css = (SEITE / "huelle.css").read_text(encoding="utf-8")
+    regel = css.split(".leisten-hinweis, .korrektur {")[1].split("}")[0]
+    assert "max-height:" in regel and "overflow-y: auto" in regel

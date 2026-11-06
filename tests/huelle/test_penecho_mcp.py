@@ -1147,3 +1147,22 @@ def test_bild_in_fremdem_format_wird_ausgelassen(zustand: Path, caplog: pytest.L
                                                       Aufgabenbild("B", BILD_PNG, 1.0)])
     assert [b["requestId"] for b in _bilder(fake)] == ["bild-t1-10-2"]
     assert "Aufgabenbild" in caplog.text
+
+
+_LANG = 'Satz 0: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 1: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 2: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 3: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 4: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 5: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 6: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 7: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 8: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 9: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 10: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 11: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 12: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 13: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 14: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 15: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 16: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 17: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 18: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 19: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 20: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 21: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 22: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 23: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 24: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 25: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 26: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 27: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 28: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 29: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 30: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 31: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 32: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 33: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 34: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 35: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 36: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 37: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 38: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet. Satz 39: Die Ableitung ist an dieser Stelle noch nicht vollständig begründet.'
+
+
+def _zeilen_bedarf(text: str, je_zeile: int = 36) -> int:
+    return sum(max(1, -(-len(z) // je_zeile)) for z in text.split("\n"))
+
+
+def test_lange_rueckmeldung_wird_fuer_die_flaeche_gekuerzt(zustand: Path) -> None:
+    # Abnahme 06.11. (F14): Rubrik-Rueckmeldung ~2400 Zeichen -> PenEcho INVALID_TEXT (max. 2000), und
+    # selbst darunter ragte der Text ueber das Rueckmeldungsfeld in den naechsten Bereich.
+    fake = Fake()
+    _client(zustand, fake).rueckmeldung_zeigen("sess-1", "t1", 4, gelesen=None, urteil="Teilweise richtig.",
+                                                text=_LANG)
+    text = fake.aufrufe("penecho_edit_canvas")[0]["arguments"]["text"]
+    assert len(text) <= 2000 and _zeilen_bedarf(text) <= 28
+    assert text.startswith("Rückmeldung zu Aufgabe 4\n\nTeilweise richtig.\n\nSatz 0:")
+    assert text.endswith(" …") and not text.endswith(": …")

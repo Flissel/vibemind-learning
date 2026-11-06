@@ -89,11 +89,34 @@ def aufgabentext(task: Mapping[str, object], nummer: int) -> str:
     return "\n".join(zeilen)
 
 
+LEISTE_ZEICHEN = 240  # Leiste: Urteil und Anfang der Rueckmeldung; der Rest wuerde Flaeche und Knoepfe verdecken
+
+
+def kuerzen(text: str, *, zeichen: int, zeilen: int | None = None, je_zeile: int = 36) -> str:
+    """`text`, falls er passt; sonst an der letzten passenden Wortgrenze gekuerzt und mit „ …“.
+
+    Passt heisst: hoechstens `zeichen` Zeichen und, falls `zeilen` gesetzt, geschaetzt hoechstens so viele
+    Zeilen, wenn jede Zeile nach `je_zeile` Zeichen umbricht.
+    """
+    def passt(t: str) -> bool:
+        if len(t) > zeichen:
+            return False
+        return zeilen is None or sum(max(1, -(-len(z) // je_zeile)) for z in t.split("\n")) <= zeilen
+
+    if passt(text):
+        return text
+    for grenze in sorted({m.start() for m in re.finditer(r"\s", text)}, reverse=True):
+        kandidat = text[:grenze].rstrip(" \n\t,;:–-") + " …"
+        if len(kandidat) > 2 and passt(kandidat):
+            return kandidat
+    return text[: max(0, min(zeichen, je_zeile) - 2)] + " …"
+
+
 def leistentext(gelesen: str | None, urteil: str, text: str) -> str:
     """Die Rueckmeldung als eine Zeile Klartext fuer die Leiste, wenn die Karte nicht auf die Flaeche kam."""
     teile = [f"Gelesen: {_klar(gelesen)}"] if gelesen and _klar(gelesen) else []
     teile += [_klar(urteil), _klar(text)]
-    return " ".join(" ".join(t.split()) for t in teile if t)
+    return kuerzen(" ".join(" ".join(t.split()) for t in teile if t), zeichen=LEISTE_ZEICHEN)
 
 
 def rueckmeldungstext(gelesen: str | None, urteil: str, text: str) -> str:
