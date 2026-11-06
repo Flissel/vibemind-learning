@@ -372,7 +372,10 @@ export const NICHT_LESBAR = "Nicht lesbar.";
 export function ergebnisAus(daten) {
   const v = daten?.vorbewertung;
   if (!v || typeof v.id !== "string" || typeof daten.urteil !== "string") return null;
-  return { vorbewertung_id: v.id, urteil: daten.urteil, lesbar: v.lesbar !== false };
+  const ergebnis = { vorbewertung_id: v.id, urteil: daten.urteil, lesbar: v.lesbar !== false };
+  // Karte nicht auf der Fläche (z. B. kein Platz): die Brücke schickt die Rückmeldung als Text für die Leiste.
+  if (typeof daten.karte === "string" && daten.karte) ergebnis.karte = daten.karte;
+  return ergebnis;
 }
 
 const unlesbar = (e) => e.lesbar === false || e.urteil === NICHT_LESBAR;
@@ -401,7 +404,8 @@ export function leistenZustand(task, ergebnis) {
 
 /** Der Hinweis nach einem nicht lesbaren Ergebnis (ein unverändert erneut abgegebenes Bild bleibt nicht lesbar). */
 export function ergebnisHinweis(ergebnis) {
-  if (!ergebnis || !unlesbar(ergebnis)) return null;
+  if (!ergebnis) return null;
+  if (!unlesbar(ergebnis)) return ergebnis.karte ?? null;
   return "Nicht lesbar. Schreiben Sie die Antwort neu und drücken Sie „Abgeben“, oder wählen Sie „Selbst eintippen“. "
     + "Unverändert abgegeben bleibt sie nicht lesbar.";
 }

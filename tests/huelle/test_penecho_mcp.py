@@ -851,3 +851,14 @@ def test_bericht_kartentitel_auf_120_zeichen_gekuerzt(zustand: Path) -> None:
     _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "# Bericht: " + "K" * 300 + "\n")
     titel = fake.aufrufe("penecho_present_widget")[0]["arguments"]["title"]
     assert len(titel) == 120 and titel.endswith("\u2026")
+
+
+def test_rueckmeldungskarte_ist_klein_bericht_nicht(zustand: Path) -> None:
+    # Abnahme 06.11.: Karten in Seitengroesse (1200x800) fuellten das Board, ab Aufgabe 4 fand PenEcho keinen Platz.
+    fake = Fake()
+    c = _client(zustand, fake)
+    c.rueckmeldung_zeigen("sess-1", "t1", 4, gelesen="B", urteil="Richtig.", text="Gut.")
+    c.bericht_zeigen("sess-1", "s1", "# Bericht\nText")
+    karte, bericht = [a["arguments"] for a in fake.aufrufe("penecho_present_widget")]
+    assert karte["presentation"] == {"size": "base"}
+    assert "presentation" not in bericht

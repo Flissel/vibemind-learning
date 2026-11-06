@@ -427,3 +427,12 @@ test("huelle.js gibt die Aufgabenkarte nur ohne leere Teile weiter", () => {
   const quelle = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
   assert.match(quelle, /\$\("karte"\)\.replaceChildren\(\.\.\.ohneLeere\(/);
 });
+
+test("Karte nicht auf der Fläche: Urteil als Hinweis in der Leiste", () => {
+  const e = ergebnisAus({ urteil: "Richtig.", vorbewertung: { id: "v9", lesbar: true }, flaeche: false, karte: "Gelesen: D Richtig." });
+  assert.equal(e.karte, "Gelesen: D Richtig.");
+  assert.equal(ergebnisHinweis(e), "Gelesen: D Richtig.");
+  assert.equal("karte" in ergebnisAus({ urteil: "Richtig.", vorbewertung: { id: "v9" }, flaeche: true }), false);
+  const unl = ergebnisAus({ urteil: "Nicht lesbar.", vorbewertung: { id: "v9", lesbar: false }, karte: "Nicht lesbar." });
+  assert.match(ergebnisHinweis(unl), /Selbst eintippen/);
+});

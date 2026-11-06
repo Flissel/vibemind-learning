@@ -557,16 +557,18 @@ class PenEchoMcp:
         return revision
 
     def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
-        self._karte(session_id, f"rueckmeldung-{aufgabe_id}", titel, text)
+        # Klein (480x360): in Seitengroesse (Vorgabe 1200x800) fand PenEcho ab Aufgabe 4 keinen Platz mehr.
+        self._karte(session_id, f"rueckmeldung-{aufgabe_id}", titel, text, groesse="base")
 
-    def _karte(self, session_id: str, artifact_id: str, titel: str, text: str) -> None:
+    def _karte(self, session_id: str, artifact_id: str, titel: str, text: str, *, groesse: str | None = None) -> None:
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines
         # aus html/architecture/sequence/workflow/scene/note
         # schema.js:703: requestId ist Pflicht und "nur fuer identische Argumente wiederverwenden";
         # daher traegt sie einen Kurz-Hash der Argumente (deterministisch, <= 128 Zeichen).
-        pruefsumme = hashlib.sha256(f"{titel}\n{text}".encode("utf-8")).hexdigest()[:12]
+        signatur = f"{titel}\n{text}" + (f"\n{groesse}" if groesse is not None else "")
+        pruefsumme = hashlib.sha256(signatur.encode("utf-8")).hexdigest()[:12]
         rest = MAX_SCHLUESSEL - len(pruefsumme) - 1
-        self._werkzeug("penecho_present_widget", {
+        argumente: dict[str, Any] = {
             "sessionId": session_id,
             "requestId": f"{artifact_id[:rest]}-{pruefsumme}",
             "artifactId": artifact_id[:MAX_SCHLUESSEL],
@@ -577,7 +579,11 @@ class PenEchoMcp:
                 "summary": text,
                 "blocks": [{"type": "markdown", "text": text}],
             },
-        })
+        }
+        if groesse is not None:
+            # schema.js presentationSchema: size base 480x360 ... page 1200x800 (Vorgabe).
+            argumente["presentation"] = {"size": groesse}
+        self._werkzeug("penecho_present_widget", argumente)
 
     def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: Sequence[int] = ()) -> None:
         """Berichtskarte `bericht-{sid}` und, je Aufgabe, der Schnappschuss ihres Bereichs.

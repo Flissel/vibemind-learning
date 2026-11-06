@@ -89,6 +89,13 @@ def aufgabentext(task: Mapping[str, object], nummer: int) -> str:
     return "\n".join(zeilen)
 
 
+def leistentext(gelesen: str | None, urteil: str, text: str) -> str:
+    """Die Rueckmeldung als eine Zeile Klartext fuer die Leiste, wenn die Karte nicht auf die Flaeche kam."""
+    teile = [f"Gelesen: {_klar(gelesen)}"] if gelesen and _klar(gelesen) else []
+    teile += [_klar(urteil), _klar(text)]
+    return " ".join(" ".join(t.split()) for t in teile if t)
+
+
 def rueckmeldungstext(gelesen: str | None, urteil: str, text: str) -> str:
     """Inhalt der Rueckmeldungskarte: „Gelesen: …“ (falls gesetzt), Urteil, Rueckmeldung."""
     teile: list[str] = []

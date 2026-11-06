@@ -42,7 +42,7 @@ from .einstellung import Einstellung, Kurs
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt
 from .sperre import Sperre
-from .tafel import aufgabentext
+from .tafel import aufgabentext, leistentext
 
 log = logging.getLogger(__name__)
 
@@ -885,12 +885,17 @@ class Bruecke:
         urteil = urteil_aus(vorbewertung)
         gelesen = vorbewertung.get("gelesen_text") if urteil != "Nicht lesbar." else None
         text = kartentext(vorbewertung)
+        gelesen = gelesen if isinstance(gelesen, str) else None
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
-            s, task["id"], nummer, gelesen=gelesen if isinstance(gelesen, str) else None, urteil=urteil, text=text,
+            s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text,
         ))
+        antwort = {"vorbewertung": vorbewertung, "urteil": urteil, "turn": turn, "flaeche": flaeche}
         if flaeche:
             self._board_merken(sitzung)
-        return {"vorbewertung": vorbewertung, "urteil": urteil, "turn": turn, "flaeche": flaeche}
+        else:
+            # Die Karte kam nicht aufs Board (z. B. kein Platz): die Leiste zeigt die Rueckmeldung.
+            antwort["karte"] = leistentext(gelesen, urteil, text)
+        return antwort
 
     def _passt(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision = _revision_aus(body)

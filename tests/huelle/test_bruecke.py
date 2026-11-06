@@ -1677,3 +1677,24 @@ def test_ende_ohne_summary_zeigt_keinen_bericht() -> None:
     lern.antworten["learning_task_next"] = [{"session": ENDE}]
     assert client.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 200
     assert _berichte(penecho) == []
+
+
+def test_abgeben_karte_scheitert_urteil_kommt_als_text_zurueck() -> None:
+    # Abnahme 06.11.: PenEcho fand keinen Platz fuer die Karte ("No clear space"), die Leiste blieb stumm.
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+
+    def scheitert(*_a: Any, **_k: Any) -> None:
+        raise PenEchoNichtErreichbar("kein Platz")
+
+    penecho.rueckmeldung_zeigen = scheitert  # type: ignore[method-assign]
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    body = r.json()
+    assert r.status_code == 200 and body["flaeche"] is False and body["urteil"] == "Richtig."
+    assert body["karte"].startswith("Gelesen: -1,5") and "Richtig." in body["karte"]
+    assert "$" not in body["karte"] and "\n" not in body["karte"]
+
+
+def test_abgeben_mit_karte_auf_der_flaeche_ohne_kartentext() -> None:
+    _, client, _, _ = _flaechen_sitzung("numeric")
+    body = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).json()
+    assert body["flaeche"] is True and "karte" not in body
