@@ -131,9 +131,10 @@ class FakePenEcho:
             raise self.merken_fehler
         return True
 
-    def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
-        self.aufrufe.append(("notizkarte", session_id, aufgabe_id, titel, text))
-        self._pruefen("notizkarte")
+    def rueckmeldung_setzen(self, session_id: str, aufgabe_id: str, nummer: int, titel: str, text: str) -> None:
+        self.aufrufe.append(("rueckmeldung_setzen", session_id, aufgabe_id, nummer, titel, text))
+        bereich(nummer)
+        self._pruefen("rueckmeldung_setzen")
 
     def schnappschuss(self, session_id: str, nummer: int) -> bytes:
         self.aufrufe.append(("schnappschuss", session_id, nummer))
@@ -306,7 +307,7 @@ def _offene_sitzung(antwort: Any, **kw: Any):
     return lern, client, sperre, penecho
 
 
-def test_antwort_gibt_frei_und_setzt_notizkarte() -> None:
+def test_antwort_gibt_frei_und_setzt_rueckmeldung() -> None:
     naechster = turn(TASK_2, completed=1, revision=2, feedback={"state": "incorrect", "score": 0.0,
                      "rationale_codes": [], "source_refs": [],
                      "criteria": [{"criterion_id": "c1", "description": "Begriff", "score": 0.5,
@@ -320,10 +321,10 @@ def test_antwort_gibt_frei_und_setzt_notizkarte() -> None:
     tool, kw = [a for a in lern.aufrufe if a[0] == "learning_task_answer"][-1]
     assert lern.aufrufe[-1][0] == "learning_course_overview"  # Begriffe nach der Abgabe
     assert kw["expected_revision"] == 1 and kw["payload"] == {"answer": {"choice_id": "a"}} and kw["schreibend"]
-    karte = [a for a in penecho.aufrufe if a[0] == "notizkarte"]
+    karte = [a for a in penecho.aufrufe if a[0] == "rueckmeldung_setzen"]
     assert len(karte) == 1
-    _, _, aufgabe_id, titel, text = karte[0]
-    assert aufgabe_id == TASK_1 and titel == "Rückmeldung zu Aufgabe 1"
+    _, _, aufgabe_id, nummer, titel, text = karte[0]
+    assert aufgabe_id == TASK_1 and nummer == 1 and titel == "Rückmeldung zu Aufgabe 1"
     assert "Noch nicht richtig." in text and "Begriff: Der Begriff fehlt." in text
     assert body["rueckmeldung"] == text and body["flaeche"] is True
     assert body["turn"]["task"]["id"] == TASK_2 and body["nummer"] == 2
@@ -366,7 +367,7 @@ def test_antwort_ohne_ueberblick_bleibt_gueltig() -> None:
     assert r.status_code == 200 and r.json()["begriffe"] is None
 
 
-def test_antwort_notizkarte_fehler_wird_geschluckt() -> None:
+def test_antwort_rueckmeldung_fehler_wird_geschluckt() -> None:
     naechster = turn(TASK_2, completed=1, revision=2, feedback={"state": "correct", "score": 1.0,
                      "rationale_codes": [], "source_refs": []})
     lern, client, sperre, penecho = _offene_sitzung({"session": naechster})
@@ -1397,7 +1398,7 @@ def test_passt_bestaetigt_und_merkt_naechste() -> None:
     assert body["begriffe"] == [{"concept_key": "k1", "titel": "Begriff", "beherrschung": 0.7}]
     assert body["rueckmeldung"] is None
     neu = [a[0] for a in penecho.aufrufe[vorher:]]
-    assert "rueckmeldung_zeigen" not in neu and "notizkarte" not in neu and "aufgabe_setzen" not in neu
+    assert "rueckmeldung_zeigen" not in neu and "rueckmeldung_setzen" not in neu and "aufgabe_setzen" not in neu
     assert "dokument_merken" in neu
     assert sperre.gesperrt() is False
     # weiter zeigt danach die vorgemerkte Aufgabe.

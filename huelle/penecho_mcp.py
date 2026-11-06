@@ -31,23 +31,28 @@ PROTOKOLL = "2025-11-25"
 SCHLUESSEL_PRAEFIX = "learning-huelle:"
 MAX_SCHLUESSEL = 128  # schema.js: sessionKey/sessionId/requestId maxLength 128
 
-# Ruling L: eine Flaeche je Lernsitzung mit 20 Aufgabenbereichen in PenEchos Weltgrenzen
-# (schema.js: Weltkoordinaten 0..20000). Zwei Spalten zu zehn Zeilen; Aufgabe 1-10 links, 11-20 rechts.
+# Ruling L neu: eine Flaeche je Lernsitzung, 20 Aufgabenbereiche untereinander im nativen Massstab
+# (schema.js: Weltkoordinaten 0..20000). PenEcho setzt Text an festen Koordinaten mit 20 px und bricht
+# bei 400 um (canvas-documents.js create_text), ohne zu skalieren; in 9000 breiten Bereichen war er
+# winzig. Rechts neben jedem Bereich liegt sein Rueckmeldungsfeld, ausserhalb des Schnappschusses.
 FLAECHE_GROESSE = 20000
 BEREICHE = 20
-BEREICH_BREITE = 9000
-BEREICH_HOEHE = 1900
-_RAND = 500
-_SPALTEN_SCHRITT = 10000
-_ZEILEN_SCHRITT = 1950
-_ZEILEN = 10
+BEREICH_BREITE = 1300
+BEREICH_HOEHE = 800
+_RAND = 100
+_ZEILEN_SCHRITT = 850
+_TEXT_RAND = 20
+_TEXT_BREITE = 460
+_RUECKMELDUNG_ABSTAND = 40
+_RUECKMELDUNG_BREITE = 420
 
-# Ergebnisfeld (Task 6): unteres rechtes Viertel des Bereichs. Rahmen und Schild liegen AUSSERHALB
-# des Feldes, damit der Schnappschuss des Feldes nur die Handschrift der Lernenden enthaelt.
-FELD_BREITE = 2000
-FELD_HOEHE = 700
-_FELD_RAND_RECHTS = 150
-_FELD_RAND_UNTEN = 100
+# Ergebnisfeld (Task 6): oben rechts im Bereich, darunter bleibt Platz fuer Rechenweg oder Skizze.
+# Rahmen und Schild liegen AUSSERHALB des Feldes, damit der Schnappschuss des Feldes nur die
+# Handschrift der Lernenden enthaelt.
+FELD_BREITE = 480
+FELD_HOEHE = 200
+_FELD_RAND_RECHTS = 20
+_FELD_RAND_OBEN = 80
 _RAHMEN_ABSTAND = 8
 _RAHMEN_STAERKE = 4
 _RAHMEN_FARBE = "#2b6cb0"
@@ -71,24 +76,31 @@ def bereich(nummer: int) -> dict[str, int]:
     """Weltregion des Aufgabenbereichs `nummer` (1..20); ausserhalb ValueError."""
     if isinstance(nummer, bool) or not isinstance(nummer, int) or not 1 <= nummer <= BEREICHE:
         raise ValueError("Aufgabenbereich ausserhalb der Flaeche")
-    spalte, zeile = divmod(nummer - 1, _ZEILEN)
-    return {
-        "x": _RAND + spalte * _SPALTEN_SCHRITT,
-        "y": _RAND + zeile * _ZEILEN_SCHRITT,
-        "w": BEREICH_BREITE,
-        "h": BEREICH_HOEHE,
-    }
+    return {"x": _RAND, "y": _RAND + (nummer - 1) * _ZEILEN_SCHRITT, "w": BEREICH_BREITE, "h": BEREICH_HOEHE}
+
+
+def textfeld(nummer: int) -> dict[str, int]:
+    """Platz des Aufgabentexts oben links in `bereich(nummer)`, links neben dem Ergebnisfeld."""
+    b = bereich(nummer)
+    return {"x": b["x"] + _TEXT_RAND, "y": b["y"] + _TEXT_RAND, "w": _TEXT_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
 
 
 def ergebnisfeld(nummer: int) -> dict[str, int]:
-    """Weltrechteck des Ergebnisfelds im unteren rechten Viertel von `bereich(nummer)` (>= 360x140)."""
+    """Weltrechteck des Ergebnisfelds oben rechts in `bereich(nummer)` (>= 360x140)."""
     b = bereich(nummer)
     return {
         "x": b["x"] + b["w"] - _FELD_RAND_RECHTS - FELD_BREITE,
-        "y": b["y"] + b["h"] - _FELD_RAND_UNTEN - FELD_HOEHE,
+        "y": b["y"] + _FELD_RAND_OBEN,
         "w": FELD_BREITE,
         "h": FELD_HOEHE,
     }
+
+
+def rueckmeldungsfeld(nummer: int) -> dict[str, int]:
+    """Platz der Rueckmeldung rechts neben `bereich(nummer)`, nicht im Schnappschuss des Bereichs."""
+    b = bereich(nummer)
+    return {"x": b["x"] + b["w"] + _RUECKMELDUNG_ABSTAND, "y": b["y"] + _TEXT_RAND,
+            "w": _RUECKMELDUNG_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
 
 
 def _sitzungsschluessel(schluessel: str) -> str:
@@ -113,7 +125,23 @@ class PenEchoFlaecheVerloren(PenEchoNichtErreichbar):
 
 
 class PenEchoPlatzBelegt(PenEchoNichtErreichbar):
-    """Der gewuenschte Bereich ist schon belegt (PenEcho LAYOUT_CONFLICT)."""
+    """Der gewuenschte Bereich ist schon belegt (PenEcho LAYOUT_CONFLICT).
+
+    `hindernisse`: PenEchos details.obstacles (canvas-documents.js, je {id,x,y,w,h}), nur gueltige Eintraege.
+    """
+
+    def __init__(self, code: str, hindernisse: Sequence[dict[str, Any]] = ()) -> None:
+        super().__init__(code)
+        self.hindernisse = list(hindernisse)
+
+
+def _hindernisse(struktur: dict[str, Any]) -> list[dict[str, Any]]:
+    details = struktur.get("details")
+    roh = details.get("obstacles") if isinstance(details, dict) else None
+    if not isinstance(roh, list):
+        return []
+    return [h for h in roh if isinstance(h, dict) and isinstance(h.get("id"), str)
+            and all(isinstance(h.get(k), (int, float)) and not isinstance(h.get(k), bool) for k in "xywh")]
 
 
 class PenEchoRevisionVeraltet(PenEchoNichtErreichbar):
@@ -282,7 +310,8 @@ class PenEchoMcp:
                 raise
             break
         if ergebnis.get("isError"):
-            code = self._struktur(ergebnis).get("code")
+            struktur = self._struktur(ergebnis)
+            code = struktur.get("code")
             # Nur PenEchos feste Codes (z. B. LAYOUT_CONFLICT) ins Log, nie Meldungstext.
             sicher = code if isinstance(code, str) and _CODE_MUSTER.fullmatch(code) else "?"
             log.warning("PenEcho-Werkzeug %s meldet Fehler %s", name, sicher)
@@ -291,7 +320,7 @@ class PenEchoMcp:
             if isinstance(code, str) and code in _VERLOREN_CODES:
                 raise PenEchoFlaecheVerloren(code)
             if code == "LAYOUT_CONFLICT":
-                raise PenEchoPlatzBelegt(code)
+                raise PenEchoPlatzBelegt(code, _hindernisse(struktur))
             if code == "REVISION_CONFLICT":
                 raise PenEchoRevisionVeraltet(code)
             if code == "REQUEST_ID_CONFLICT":
@@ -460,7 +489,7 @@ class PenEchoMcp:
     ) -> None:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
-        region = bereich(nummer)
+        region = textfeld(nummer)
         argumente = {
             "sessionId": session_id,
             "requestId": f"aufgabe-{aufgabe_id}-{nummer}"[:MAX_SCHLUESSEL],
@@ -469,14 +498,35 @@ class PenEchoMcp:
             "region": region,
         }
         try:
-            self._werkzeug("penecho_edit_canvas", argumente)
+            ergebnis = self._werkzeug("penecho_edit_canvas", argumente)
         except PenEchoPlatzBelegt:
-            # PenEchos KI hat den Bereich nach einer Abgabe belegt: PenEcho einen freien Platz waehlen lassen.
+            # Jemand hat den Textplatz belegt (z. B. PenEchos KI nach einer Abgabe): PenEcho waehlt frei.
             del argumente["region"]
             argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
-            self._werkzeug("penecho_edit_canvas", argumente)
+            ergebnis = self._werkzeug("penecho_edit_canvas", argumente)
         if mit_ergebnisfeld:
             self._ergebnisfeld_zeichnen(session_id, aufgabe_id, nummer)
+        self._zeigen(session_id, self._struktur(ergebnis).get("objectId"))
+
+    def _zeigen(self, session_id: str, objekt_id: object) -> None:
+        """Die Aufgabe ins Bild holen (show). Ab Aufgabe 2 liegt sie sonst unter dem Bildschirmrand.
+
+        Zierde wie das Schild: nur verlorene Sitzung/Flaeche gehen an den Aufrufer. Eine neue requestId je
+        Aufruf, sonst spielte PenEcho beim erneuten Oeffnen nur die alte Antwort ab und zeigte nichts.
+        """
+        if not isinstance(objekt_id, str) or not objekt_id:
+            return
+        try:
+            self._werkzeug("penecho_edit_canvas", {
+                "sessionId": session_id,
+                "requestId": f"zeigen-{uuid4().hex}",
+                "action": "show",
+                "objectId": objekt_id[:MAX_SCHLUESSEL],
+            })
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("Aufgabe nicht gezeigt: %s", _typ(fehler))
 
     @staticmethod
     def _ergebnis_id(aufgabe_id: str, nummer: int, zusatz: str = "") -> str:
@@ -556,16 +606,51 @@ class PenEchoMcp:
             raise PenEchoNichtErreichbar("revision")
         return revision
 
-    def notizkarte(self, session_id: str, aufgabe_id: str, titel: str, text: str) -> None:
-        # Klein (480x360): in Seitengroesse (Vorgabe 1200x800) fand PenEcho ab Aufgabe 4 keinen Platz mehr.
-        self._karte(session_id, f"rueckmeldung-{aufgabe_id}", titel, text, groesse="base")
+    def rueckmeldung_setzen(self, session_id: str, aufgabe_id: str, nummer: int, titel: str, text: str) -> None:
+        """Rueckmeldung als Text in `rueckmeldungsfeld(nummer)`; eine neue ersetzt die alte.
 
-    def _karte(self, session_id: str, artifact_id: str, titel: str, text: str, *, groesse: str | None = None) -> None:
+        Kein Widget mehr: PenEcho platzierte die Karten selbst und belegte damit die Bereiche der
+        naechsten Aufgaben. Liegt am Platz schon eine fruehere Rueckmeldung (ein Text exakt an der
+        Feldecke), wird sie geloescht und einmal neu gesetzt. Jedes andere Hindernis (Handschrift,
+        Widget, Text der Lernenden) bleibt; dann PenEchoPlatzBelegt, die Bruecke zeigt die Leiste.
+        """
+        feld = rueckmeldungsfeld(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
+        inhalt = f"{titel}\n\n{text}"
+        pruefsumme = hashlib.sha256(inhalt.encode("utf-8")).hexdigest()[:12]
+        rest = MAX_SCHLUESSEL - len(f"rueckmeldung--{nummer}-{pruefsumme}")
+        argumente = {
+            "sessionId": session_id,
+            # Gleicher Inhalt, gleiche Kennung: PenEcho haelt einen Fehlversuch offen, der zweite
+            # Versuch nach dem Loeschen schliesst ihn ab (bound-operations.js mutationRequests).
+            "requestId": f"rueckmeldung-{aufgabe_id[:rest]}-{nummer}-{pruefsumme}",
+            "action": "create_text",
+            "text": inhalt,
+            "region": feld,
+        }
+        try:
+            self._werkzeug("penecho_edit_canvas", argumente)
+            return
+        except PenEchoPlatzBelegt as fehler:
+            alte = [h for h in fehler.hindernisse if h["id"].startswith("text-box-")
+                    and abs(h["x"] - feld["x"]) < 1 and abs(h["y"] - feld["y"]) < 1]
+            if not alte or len(alte) != len(fehler.hindernisse):
+                raise
+        for h in alte:
+            self._werkzeug("penecho_edit_canvas", {
+                "sessionId": session_id,
+                "requestId": f"weg-{uuid4().hex}",
+                "action": "delete",
+                "objectId": h["id"][:MAX_SCHLUESSEL],
+                "baseRevision": self._revision(session_id),
+            })
+        self._werkzeug("penecho_edit_canvas", argumente)
+
+    def _karte(self, session_id: str, artifact_id: str, titel: str, text: str) -> None:
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines
         # aus html/architecture/sequence/workflow/scene/note
         # schema.js:703: requestId ist Pflicht und "nur fuer identische Argumente wiederverwenden";
         # daher traegt sie einen Kurz-Hash der Argumente (deterministisch, <= 128 Zeichen).
-        signatur = f"{titel}\n{text}" + (f"\n{groesse}" if groesse is not None else "")
+        signatur = f"{titel}\n{text}"
         pruefsumme = hashlib.sha256(signatur.encode("utf-8")).hexdigest()[:12]
         rest = MAX_SCHLUESSEL - len(pruefsumme) - 1
         argumente: dict[str, Any] = {
@@ -580,9 +665,6 @@ class PenEchoMcp:
                 "blocks": [{"type": "markdown", "text": text}],
             },
         }
-        if groesse is not None:
-            # schema.js presentationSchema: size base 480x360 ... page 1200x800 (Vorgabe).
-            argumente["presentation"] = {"size": groesse}
         self._werkzeug("penecho_present_widget", argumente)
 
     def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: Sequence[int] = ()) -> None:
@@ -631,15 +713,12 @@ class PenEchoMcp:
     def rueckmeldung_zeigen(
         self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str
     ) -> None:
-        """Rueckmeldungskarte zur Aufgabe; gleiche artifactId, jede neue Vorbewertung ersetzt sie.
-
-        PenEchos Host platziert Widgets selbst (presentation.relativeTo verlangt eine artifactId, die
-        Aufgabentext und Ergebnisfeld nicht haben); `nummer` prueft nur den Bereich.
-        """
+        """Vorbewertung neben die Aufgabe (`rueckmeldung_setzen`); jede neue ersetzt die vorige."""
         bereich(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
         if urteil not in URTEILE:
             raise ValueError("unbekanntes Urteil")
-        self.notizkarte(session_id, aufgabe_id, "Rückmeldung", rueckmeldungstext(gelesen, urteil, text))
+        self.rueckmeldung_setzen(session_id, aufgabe_id, nummer, f"Rückmeldung zu Aufgabe {nummer}",
+                                 rueckmeldungstext(gelesen, urteil, text))
 
     def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
         """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; Rahmen und Schild liegen ausserhalb)."""

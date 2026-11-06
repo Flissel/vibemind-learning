@@ -635,7 +635,7 @@ class Bruecke:
             return None, False
         titel = f"Rückmeldung zu Aufgabe {nummer}"
         ok = self._flaeche_still(
-            sitzung, lambda s: self._penecho.notizkarte(s, aufgabe_id, titel, text)
+            sitzung, lambda s: self._penecho.rueckmeldung_setzen(s, aufgabe_id, nummer, titel, text)
         )
         return text, ok
 
