@@ -649,7 +649,7 @@ def test_aufgabe_setzen_mit_ergebnisfeld_zwei_aufrufe_feste_ids(zustand: Path) -
     rahmen = [e for e in erste if e["action"] == "draw_ink"]
     assert len(rahmen) == 1 and rahmen[0]["requestId"] == "ergebnis-t1-3"
     assert rahmen[0]["baseRevision"] == 7
-    schild = [e for e in erste if e["action"] == "create_text" and e["text"] == "Ihr Ergebnis"]
+    schild = [e for e in erste if e["action"] == "create_text" and e["text"] == "Ihr Ergebnis zu Aufgabe 3"]
     assert len(schild) == 1 and schild[0]["requestId"] == "ergebnis-t1-3-schild"
     f = ergebnisfeld(3)
     assert f["x"] <= schild[0]["region"]["x"] <= f["x"] + f["w"]
@@ -756,7 +756,7 @@ def test_schild_platz_belegt_wird_geloggt_nicht_geworfen(zustand: Path, caplog: 
 
     def antwort(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        if body["method"] == "tools/call" and body["params"]["arguments"].get("text") == "Ihr Ergebnis":
+        if body["method"] == "tools/call" and body["params"]["arguments"].get("text", "").startswith("Ihr Ergebnis"):
             sc = {"code": "LAYOUT_CONFLICT", "message": "m"}
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
                 "isError": True, "structuredContent": sc, "content": []}})

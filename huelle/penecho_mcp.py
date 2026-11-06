@@ -485,7 +485,7 @@ class PenEchoMcp:
         return f"ergebnis-{aufgabe_id[:rest]}-{nummer}{zusatz}"
 
     def _ergebnisfeld_zeichnen(self, session_id: str, aufgabe_id: str, nummer: int) -> None:
-        """Schild "Ihr Ergebnis" ueber dem Feld und ein Tintenrahmen um das Feld.
+        """Schild "Ihr Ergebnis zu Aufgabe N" ueber dem Feld und ein Tintenrahmen um das Feld.
 
         Der Rahmen ist Tinte (penecho_edit_canvas draw_ink), kein Objekt: Tinte ist nur Pixel in der
         Zeichenebene, faengt also keine Stifteingabe ab, und die Lernenden schreiben ungehindert
@@ -500,7 +500,8 @@ class PenEchoMcp:
                 "sessionId": session_id,
                 "requestId": self._ergebnis_id(aufgabe_id, nummer, "-schild"),
                 "action": "create_text",
-                "text": "Ihr Ergebnis",
+                # Mit Nummer: PenEcho verschiebt Aufgabentexte, die Felder bleiben im festen Raster.
+                "text": f"Ihr Ergebnis zu Aufgabe {nummer}",
                 "region": {"x": feld["x"], "y": feld["y"] - _SCHILD_HOEHE, "w": 360, "h": 40},
             })
         except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
