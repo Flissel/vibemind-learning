@@ -1065,14 +1065,30 @@ def test_zeigen_gibt_aufgabenbilder_an_die_flaeche() -> None:
     lern = FakeLern({"learning_course_overview": _ueberblick(_mit_bildern(turn())),
                      "learning_task_next": {"session": _mit_bildern(turn())}})
     _, _, penecho, _ = _offen(lern, api=_medien_api())
-    assert penecho.bilder == [[Aufgabenbild(None, PNG, 640 / 360), Aufgabenbild("Graph 1", WEBP, 4 / 3)]]
+    assert penecho.bilder == [[Aufgabenbild(None, PNG, 640 / 360), Aufgabenbild("1) Graph 1", WEBP, 4 / 3)]]
+
+
+def test_bildschild_traegt_das_etikett_vom_board() -> None:
+    # Finaler Review (I1): links hiessen die Graphen "Graph A ...", auf dem Board aber 1, 2, ...; rechts
+    # "Graph 1 ..." mit A, B, .... Auf dem Bild stand nur der Name: wer "3-B" nach den Bildern schrieb,
+    # meinte andere Eintraege, als der Leser zurueckuebersetzte. Das Schild nennt jetzt das Board-Etikett.
+    t = turn()
+    t["task"]["type"] = "matching"
+    graph = {"image": "/lernsequenz-medien/graph-a.webp", "width": 4, "height": 3}
+    t["task"]["presentation"] = {
+        "left": [{"id": "l1", "label": "Graph A", **graph}, {"id": "l2", "label": "Graph B", **graph}],
+        "right": [{"id": "r1", "label": "Graph 1", **graph}, {"id": "r2", "label": "Graph 2", **graph}],
+    }
+    lern = FakeLern({"learning_course_overview": _ueberblick(t), "learning_task_next": {"session": t}})
+    _, _, penecho, _ = _offen(lern, api=_medien_api())
+    assert [b.beschriftung for b in penecho.bilder[0]] == ["1) Graph A", "2) Graph B", "A) Graph 1", "B) Graph 2"]
 
 
 def test_fehlendes_aufgabenbild_wird_ausgelassen() -> None:
     lern = FakeLern({"learning_course_overview": _ueberblick(_mit_bildern(turn())),
                      "learning_task_next": {"session": _mit_bildern(turn())}})
     _, _, penecho, _ = _offen(lern, api=_medien_api(frozenset({BILD})))
-    assert penecho.bilder == [[Aufgabenbild("Graph 1", WEBP, 4 / 3)]]
+    assert penecho.bilder == [[Aufgabenbild("1) Graph 1", WEBP, 4 / 3)]]
 
 
 def test_learning_weg_aufgabe_kommt_ohne_bilder() -> None:

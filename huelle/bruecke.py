@@ -37,6 +37,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from ..contracts.beschriftung import beschriften
 from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
@@ -1132,14 +1133,27 @@ class Bruecke:
         """Bilder der Aufgabe fuer die Flaeche (Spec: „Bilder der Aufgabe als Bild“), in der Reihenfolge
         Hauptbild, linke, rechte Eintraege. Fehlt eines, entfaellt es; ist learning-api weg, kommt die
         Aufgabe ohne die restlichen Bilder.
+
+        Das Schild eines Eintragsbilds beginnt mit seinem Etikett vom Board ("1) Graph A", "A) Graph 1"),
+        aus demselben `beschriften` wie der Etikettenblock im Aufgabentext (finaler Review, I1).
         """
         presentation = task.get("presentation")
         if not isinstance(presentation, dict):
             return []
+        try:
+            etiketten = beschriften(str(task.get("type") or ""), presentation, [])
+            etikett_von = {eid: e for e, eid in (*etiketten.links.items(), *etiketten.rechts.items())}
+        except ValueError:  # mehr als 26 Eintraege: ohne Etikett
+            etikett_von = {}
         eintraege: list[tuple[object, dict[str, Any]]] = [(None, presentation)]
         for seite in ("left", "right"):
             liste = presentation.get(seite)
-            eintraege += [(e.get("label"), e) for e in (liste if isinstance(liste, list) else []) if isinstance(e, dict)]
+            for e in liste if isinstance(liste, list) else []:
+                if not isinstance(e, dict):
+                    continue
+                name = e.get("label").strip() if isinstance(e.get("label"), str) else ""
+                etikett = etikett_von.get(str(e.get("id")))
+                eintraege.append((f"{etikett}) {name}".strip() if etikett else name, e))
         bilder: list[Aufgabenbild] = []
         for beschriftung, eintrag in eintraege:
             name = _bildname(eintrag.get("image"))

@@ -77,6 +77,10 @@ def _aufloesen(labels: list[str] | None, table: Mapping[str, str]) -> list[str] 
     return [table[label] for label in labels]
 
 
+# Ein einzelner Punkt mit genau drei Ziffern danach und 1-999 davor (final review I2).
+_MEHRDEUTIG = re.compile(r"[+-]?[1-9]\d{0,2}\.\d{3}")
+
+
 def _zahl(value: object) -> float | None:
     if isinstance(value, bool):
         return None
@@ -84,6 +88,9 @@ def _zahl(value: object) -> float | None:
         number = float(value)
     elif isinstance(value, str):
         text = re.sub(r"\s+", "", value.replace("−", "-").replace("–", "-").replace("—", "-"))
+        if _MEHRDEUTIG.fullmatch(text):
+            # "1.500": deutsch 1500, englisch 1,5. Lieber nicht lesbar als eine falsche Zahl bewerten.
+            return None
         if "," in text and "." in text:
             # The last separator is the decimal one, the other groups thousands.
             decimal = "," if text.rfind(",") > text.rfind(".") else "."

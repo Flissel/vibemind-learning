@@ -280,6 +280,8 @@ function aufloesen(liste, tabelle) {
 /** Wie `_zahl` der Brücke: Unicode-Minus, Komma als Dezimaltrenner, Tausenderzeichen; kein Exponent. */
 function zahlAus(wert) {
   let text = String(wert ?? "").replace(/[−–—]/g, "-").replace(/\s+/g, "");
+  // "1.500": deutsch 1500, englisch 1,5. Wie `_zahl`: lieber null als eine falsche Zahl.
+  if (/^[+-]?[1-9]\d{0,2}\.\d{3}$/.test(text)) return null;
   if (text.includes(",") && text.includes(".")) {
     const dezimal = text.lastIndexOf(",") > text.lastIndexOf(".") ? "," : ".";
     const gruppe = dezimal === "," ? "." : ",";
