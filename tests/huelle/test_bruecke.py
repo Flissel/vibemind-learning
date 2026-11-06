@@ -1631,7 +1631,7 @@ def test_kursende_zeigt_bericht_einmal() -> None:
     assert len(_berichte(penecho)) == 1
     _, board, sid, text, nummern = _berichte(penecho)[0]
     assert board == "pe-1" and sid == SID and nummern == (1, 2, 3)
-    assert "# Bericht: Testkurs" in text and "2 von 3 richtig" in text and "Aufgabe 2: teilweise" in text
+    assert "# Bericht: Testkurs" in text and "1 von 3 richtig" in text and "Aufgabe 2: teilweise" in text
     assert "Anl" not in text and "Versuch" not in text
     # Zweites Oeffnen des beendeten Kurses: Kursende-Seite wie bisher, keine zweite Karte.
     lern.antworten["learning_course_overview"] = _ueberblick(None)

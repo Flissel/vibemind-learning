@@ -33,8 +33,16 @@ def test_grenzen_wie_learning() -> None:
     assert "Aufgabe 1: richtig" in text and "Aufgabe 2: teilweise" in text and "Aufgabe 3: falsch" in text
 
 
-def test_richtig_von_bearbeitet_aus_correct() -> None:
-    assert "2 von 3 richtig" in bericht_text("Mathe", SUMMARY, BEGRIFFE)
+def test_kopfzeile_zaehlt_wie_die_liste() -> None:
+    # Learnings `correct` zaehlt ab 0,65 (hier 2); die Liste zeigt nur ein "richtig": die Kopfzeile folgt der Liste.
+    text = bericht_text("Mathe", SUMMARY, BEGRIFFE)
+    assert "1 von 3 richtig" in text and "2 von 3" not in text
+
+
+def test_markdown_in_titel_und_begriffen_wird_entschaerft() -> None:
+    text = bericht_text("A *fett*\n# Zwei", SUMMARY, [{"titel": "x_y\n[l](u)", "beherrschung": 0.5}])
+    assert text.splitlines()[0] == "# Bericht: A \\*fett\\* \\# Zwei"
+    assert "- x\\_y \\[l\\](u): 50 %" in text
 
 
 def test_titel_und_begriffe_mit_prozent() -> None:

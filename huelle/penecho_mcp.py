@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import ssl
+import time
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -56,11 +57,14 @@ _SCHILD_HOEHE = 56  # Abstand der Schild-Oberkante ueber dem Feld
 
 # Bericht am Kursende. Urheberschafts-Befund (Task 1, BOARD_SPEICHERN.md): PenEchos KI-Tinte landet in
 # denselben Raster-Kacheln wie die Striche der Lernenden, nur Plots und Widgets sind trennbar. Darum
-# kommt unter die Berichtskarte je Aufgabe der Schnappschuss des Bereichs. Trennt PenEcho die KI-Objekte
+# kommt zur Berichtskarte je Aufgabe (PenEcho platziert selbst) der Schnappschuss des Bereichs. Trennt PenEcho die KI-Objekte
 # einmal sauber, hier auf False stellen; kein Laufzeit-Test.
 BERICHT_MIT_SCHNAPPSCHUESSEN = True
 MAX_BILD_DATENURL = 800_000  # schema.js penecho_place_image/upload_image: Data-URL inkl. Praefix, UTF-8-Bytes
 BERICHT_BILD_BREITE = 900
+BERICHT_BILD_ZEIT = 20.0  # Sekunden fuer alle Berichtsbilder zusammen; danach entfallen die uebrigen
+MAX_TITEL = 120  # schema.js MAX_TITLE_CHARS
+_uhr = time.monotonic  # nur fuer Tests ersetzbar
 
 
 def bereich(nummer: int) -> dict[str, int]:
@@ -575,18 +579,27 @@ class PenEchoMcp:
         })
 
     def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: Sequence[int] = ()) -> None:
-        """Berichtskarte `bericht-{sid}` und, je Aufgabe, der Schnappschuss ihres Bereichs darunter.
+        """Berichtskarte `bericht-{sid}` und, je Aufgabe, der Schnappschuss ihres Bereichs.
 
         Wiederholbar: die Karte hat eine feste artifactId, jedes Bild eine feste requestId
         `bericht-{sid}-{nummer}`. Ein Bild, das nicht passt (zu gross, schon gesetzt, PenEcho lehnt ab),
-        faellt weg; die Karte bleibt. Nur verlorene Sitzung/Flaeche gehen an den Aufrufer.
+        faellt weg; die Karte bleibt. Die Bilder setzt PenEcho selbst (ohne region, Auto-Layout), sie
+        liegen also nicht garantiert unter der Karte. Der erste Transportfehler beendet die Bildschleife,
+        ebenso ein Zeitbudget von `BERICHT_BILD_ZEIT` fuer alle Bilder; die Karte steht dann schon.
+        Nur verlorene Sitzung/Flaeche gehen an den Aufrufer.
         """
         erste = text.splitlines()[0] if text.strip() else ""
-        titel = erste.lstrip("# ").strip() or "Bericht"
+        titel = re.sub(r"\\(.)", r"\1", erste.lstrip("# ").strip()) or "Bericht"
+        if len(titel) > MAX_TITEL:
+            titel = titel[: MAX_TITEL - 1].rstrip() + "\u2026"
         self._karte(session_id, f"bericht-{sid}", titel, text)
         if not BERICHT_MIT_SCHNAPPSCHUESSEN:
             return
-        for nummer in nummern:
+        ende = _uhr() + BERICHT_BILD_ZEIT
+        for position, nummer in enumerate(nummern):
+            if _uhr() >= ende:
+                log.warning("Berichtsbilder: Zeitbudget erschoepft, %d uebersprungen", len(nummern) - position)
+                break
             try:
                 quelle = _datenurl(self.schnappschuss(session_id, nummer))
                 if quelle is None or len(quelle) > MAX_BILD_DATENURL:
@@ -600,10 +613,13 @@ class PenEchoMcp:
                 })
             except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
                 raise
-            except PenEchoAnfrageSchonBekannt:
-                continue  # dieses Bild steht schon (andere Pixel unter derselben requestId)
-            except (PenEchoNichtErreichbar, ValueError) as fehler:
+            except (PenEchoAnfrageSchonBekannt, PenEchoPlatzBelegt, PenEchoRevisionVeraltet, ValueError) as fehler:
+                # Dieses eine Bild entfaellt (steht schon, Platz belegt, Revision veraltet, Bereich ungueltig).
                 log.warning("Berichtsbild uebersprungen: %s", _typ(fehler))
+            except PenEchoNichtErreichbar as fehler:
+                # Transportfehler: weitere Bilder liefen in dieselbe Zeitueberschreitung.
+                log.warning("Berichtsbilder abgebrochen: %s", _typ(fehler))
+                break
 
     def rueckmeldung_zeigen(
         self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str

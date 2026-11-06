@@ -5,6 +5,7 @@ Zaehlt nur, was richtig ist. Die Zahl der Anlaeufe kommt hier nicht vor (Spec, E
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Dieselben Grenzen wie Learnings `_turn_feedback` (services/adaptive_engine/session_service.py).
@@ -18,6 +19,14 @@ def urteil(score: float) -> str:
     if score >= GRENZE_TEILWEISE:
         return "teilweise"
     return "falsch"
+
+
+_MARKDOWN = re.compile(r"([\\`*_\[\]<>#|~])")
+
+
+def rein(text: str) -> str:
+    """Fremden Text fuer Markdown entschaerfen: Zeilenumbrueche zu Leerzeichen, Formatzeichen maskiert."""
+    return _MARKDOWN.sub(r"\\\1", " ".join(str(text).split()))
 
 
 def _zahl(wert: Any) -> float | None:
@@ -42,12 +51,12 @@ def aufgaben(summary: dict[str, Any]) -> list[tuple[int, float]]:
 
 
 def bericht_text(kurs_titel: str, summary: dict[str, Any], begriffe: list[dict[str, Any]]) -> str:
-    zeilen = [f"# Bericht: {kurs_titel}", ""]
-    richtig, bearbeitet = summary.get("correct"), summary.get("attempted")
-    if isinstance(richtig, int) and isinstance(bearbeitet, int):
-        zeilen += [f"**{richtig} von {bearbeitet} richtig**", ""]
+    zeilen = [f"# Bericht: {rein(kurs_titel)}", ""]
     einzeln = aufgaben(summary)
     if einzeln:
+        # Kopfzeile und Liste zaehlen nach denselben Grenzen (nicht nach Learnings `correct`, das ab 0,65 zaehlt).
+        richtig = sum(1 for _, score in einzeln if urteil(score) == "richtig")
+        zeilen += [f"**{richtig} von {len(einzeln)} richtig**", ""]
         zeilen += [f"- Aufgabe {nummer}: {urteil(score)}" for nummer, score in einzeln]
         zeilen.append("")
     gelistet = []
@@ -57,7 +66,7 @@ def bericht_text(kurs_titel: str, summary: dict[str, Any], begriffe: list[dict[s
         titel = begriff.get("titel")
         stand = _zahl(begriff.get("beherrschung"))
         if isinstance(titel, str) and titel and stand is not None:
-            gelistet.append(f"- {titel}: {round(min(max(stand, 0.0), 1.0) * 100)} %")
+            gelistet.append(f"- {rein(titel)}: {round(min(max(stand, 0.0), 1.0) * 100)} %")
     if gelistet:
         zeilen += ["**Begriffe**", "", *gelistet]
     return "\n".join(zeilen).rstrip() + "\n"

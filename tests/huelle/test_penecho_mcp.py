@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from spaces.learning.huelle.penecho_mcp import (
-    BEREICHE, FLAECHE_GROESSE, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich, ergebnisfeld,
+    BEREICHE, FLAECHE_GROESSE, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich, ergebnisfeld,
 )
 
 TOKEN = "ab" * 32
@@ -803,3 +803,51 @@ def test_bericht_ein_bild_scheitert_karte_bleibt(zustand: Path) -> None:
     c.bericht_zeigen("sess-1", LERN_SID, "x", (1,))
     assert len(fake.aufrufe("penecho_present_widget")) == 1 and fake.aufrufe("penecho_place_image") == []
 
+
+def test_bericht_transportfehler_beendet_bildschleife(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    orig = c._werkzeug
+
+    def werkzeug(name, argumente):
+        if name == "penecho_place_image":
+            raise PenEchoNichtErreichbar("jsonrpc")
+        return orig(name, argumente)
+
+    c._werkzeug = werkzeug  # type: ignore[method-assign]
+    c.bericht_zeigen("sess-1", LERN_SID, "x", (1, 2, 3))
+    assert len(fake.aufrufe("penecho_capture_canvas")) == 1
+
+
+def test_bericht_konflikt_ueberspringt_nur_dieses_bild(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    orig = c._werkzeug
+    erstes = []
+
+    def werkzeug(name, argumente):
+        if name == "penecho_place_image" and not erstes:
+            erstes.append(1)
+            raise PenEchoAnfrageSchonBekannt("REQUEST_ID_CONFLICT")
+        return orig(name, argumente)
+
+    c._werkzeug = werkzeug  # type: ignore[method-assign]
+    c.bericht_zeigen("sess-1", LERN_SID, "x", (1, 2))
+    assert len(fake.aufrufe("penecho_place_image")) == 1
+
+
+def test_bericht_zeitbudget_ueberspringt_restliche_bilder(zustand: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import spaces.learning.huelle.penecho_mcp as modul
+
+    zeit = iter([0.0, 1.0, 100.0, 100.0, 100.0])
+    monkeypatch.setattr(modul, "_uhr", lambda: next(zeit))
+    fake = Fake()
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "x", (1, 2, 3))
+    assert len(fake.aufrufe("penecho_place_image")) == 1
+
+
+def test_bericht_kartentitel_auf_120_zeichen_gekuerzt(zustand: Path) -> None:
+    fake = Fake()
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "# Bericht: " + "K" * 300 + "\n")
+    titel = fake.aufrufe("penecho_present_widget")[0]["arguments"]["title"]
+    assert len(titel) == 120 and titel.endswith("\u2026")
