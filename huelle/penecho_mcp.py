@@ -53,7 +53,7 @@ _RUECKMELDUNG_ZEILEN = (BEREICH_HOEHE - 2 * _TEXT_RAND) // 27
 _ZEICHEN_JE_ZEILE = 36
 
 # Ergebnisfeld (Task 6): oben rechts im Bereich, darunter bleibt Platz fuer Rechenweg oder Skizze.
-# Rahmen und Schild liegen AUSSERHALB des Feldes, damit der Schnappschuss des Feldes nur die
+# Der Rahmen liegt AUSSERHALB des Feldes, damit der Schnappschuss des Feldes nur die
 # Handschrift der Lernenden enthaelt.
 FELD_BREITE = 480
 FELD_HOEHE = 200
@@ -64,7 +64,11 @@ _RAHMEN_STAERKE = 4
 _RAHMEN_FARBE = "#2b6cb0"
 # "Wird noch geprüft.": Learnings Zustand needs_review (Rubrik-Bewertung nicht angenommen).
 URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.", "Wird noch geprüft.")
-_SCHILD_HOEHE = 56  # Abstand der Schild-Oberkante ueber dem Feld
+# Abnahme 06.11. (F15): PenEcho nimmt je Flaeche hoechstens 50 Texte (canvasDocumentsCapacity "text" 50,
+# MAX_VISIBLE_TEXT_BOXES 50 auch fuer die Lernenden). Ein eigenes Schild ueber dem Feld kostete je Aufgabe
+# einen dritten Text; der Hinweis steht deshalb als letzte Zeile im Aufgabentext.
+_HINWEIS_ERGEBNIS = "Ihr Ergebnis schreiben Sie in das blau umrandete Feld."
+_HINWEIS_LOESUNG = "Ihre Lösung schreiben Sie in das blau umrandete Feld."
 
 # Bericht am Kursende. Urheberschafts-Befund (Task 1, BOARD_SPEICHERN.md): PenEchos KI-Tinte landet in
 # denselben Raster-Kacheln wie die Striche der Lernenden, nur Plots und Widgets sind trennbar. Darum
@@ -572,11 +576,12 @@ class PenEchoMcp:
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
         region = textfeld(nummer)
+        hinweis = _HINWEIS_ERGEBNIS if mit_ergebnisfeld else _HINWEIS_LOESUNG if mit_arbeitsfeld else None
         argumente = {
             "sessionId": session_id,
             "requestId": f"aufgabe-{aufgabe_id}-{nummer}"[:MAX_SCHLUESSEL],
             "action": "create_text",
-            "text": f"Aufgabe {nummer}: {text}",
+            "text": f"Aufgabe {nummer}: {text}" + (f"\n\n{hinweis}" if hinweis else ""),
             "region": region,
         }
         try:
@@ -599,11 +604,9 @@ class PenEchoMcp:
             self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
                                 bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld))
         if mit_ergebnisfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer),
-                                f"Ihr Ergebnis zu Aufgabe {nummer}", "ergebnis")
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer), "ergebnis")
         elif mit_arbeitsfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, arbeitsfeld(nummer),
-                                f"Ihre Lösung zu Aufgabe {nummer}", "arbeit")
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, arbeitsfeld(nummer), "arbeit")
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
@@ -645,7 +648,7 @@ class PenEchoMcp:
         """Board sichtbar machen und die Aufgabe ins Bild holen (show). Ab Aufgabe 2 laege sie sonst
         unter dem Bildschirmrand; ein frisch angelegtes Board ist ohne show nicht aktiv.
 
-        Zierde wie das Schild: nur verlorene Sitzung/Flaeche gehen an den Aufrufer. Eine neue requestId je
+        Zierde wie der Rahmen: nur verlorene Sitzung/Flaeche gehen an den Aufrufer. Eine neue requestId je
         Aufruf, sonst spielte PenEcho beim erneuten Oeffnen nur die alte Antwort ab und zeigte nichts.
         """
         argumente: dict[str, Any] = {"sessionId": session_id, "requestId": f"zeigen-{uuid4().hex}", "action": "show"}
@@ -664,31 +667,16 @@ class PenEchoMcp:
         rest = MAX_SCHLUESSEL - len(f"{praefix}--{nummer}{zusatz}")
         return f"{praefix}-{aufgabe_id[:rest]}-{nummer}{zusatz}"
 
-    def _feld_zeichnen(
-        self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], schild: str, praefix: str
-    ) -> None:
-        """Schild (z. B. "Ihr Ergebnis zu Aufgabe N") ueber dem Feld und ein Tintenrahmen um das Feld.
+    def _feld_zeichnen(self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], praefix: str) -> None:
+        """Tintenrahmen um das Feld (der Hinweis darauf steht im Aufgabentext, siehe _HINWEIS_ERGEBNIS).
 
         Der Rahmen ist Tinte (penecho_edit_canvas draw_ink), kein Objekt: Tinte ist nur Pixel in der
         Zeichenebene, faengt also keine Stifteingabe ab, und die Lernenden schreiben ungehindert
         darueber. penecho_draw/Widgets sind eigene Objekte und wuerden Eingaben aufnehmen; zudem
-        platziert der Host sie selbst, nicht an Weltkoordinaten. Rahmen und Schild sind Zierde: Fehler
-        ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab (der Schnappschuss gilt
-        ohnehin dem festen Feld).
+        platziert der Host sie selbst, nicht an Weltkoordinaten. Der Rahmen ist Zierde: Fehler ausser
+        verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab (der Schnappschuss gilt ohnehin dem
+        festen Feld).
         """
-        try:
-            self._werkzeug("penecho_edit_canvas", {
-                "sessionId": session_id,
-                "requestId": self._feld_id(praefix, aufgabe_id, nummer, "-schild"),
-                "action": "create_text",
-                # Mit Nummer: PenEcho verschiebt Aufgabentexte, die Felder bleiben im festen Raster.
-                "text": schild,
-                "region": {"x": feld["x"], "y": feld["y"] - _SCHILD_HOEHE, "w": 360, "h": 40},
-            })
-        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
-            raise
-        except PenEchoNichtErreichbar as fehler:  # u. a. PenEchoPlatzBelegt: Schild fehlt, Aufgabe laeuft weiter
-            log.warning("Feld-Schild nicht gesetzt: %s", _typ(fehler))
         a = _RAHMEN_ABSTAND
         links, oben = feld["x"] - a, feld["y"] - a
         rechts, unten = feld["x"] + feld["w"] + a, feld["y"] + feld["h"] + a
@@ -858,7 +846,7 @@ class PenEchoMcp:
                                  rueckmeldungstext(gelesen, urteil, text))
 
     def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
-        """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; Rahmen und Schild liegen ausserhalb)."""
+        """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; der Rahmen liegt ausserhalb)."""
         return self._aufnahme(session_id, ergebnisfeld(nummer))
 
     def schnappschuss(self, session_id: str, nummer: int) -> bytes:

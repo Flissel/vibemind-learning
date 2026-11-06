@@ -593,7 +593,7 @@ def test_widget_request_id_deterministisch_und_gueltig(zustand: Path) -> None:
     assert all(1 <= len(i) <= 128 for i in ids)
 
 
-# ---- Task 6: Ergebnisfeld, Schild, Rueckmeldung ---------------------------------------------
+# ---- Task 6: Ergebnisfeld, Rahmen, Rueckmeldung ---------------------------------------------
 
 class FeldFake(Fake):
     """Wie Fake, beantwortet penecho_read_file mit canvas.json und einer Revision."""
@@ -691,18 +691,28 @@ def test_aufgabe_setzen_mit_ergebnisfeld_zwei_aufrufe_feste_ids(zustand: Path) -
     c.aufgabe_setzen("sess-1", "t1", "x", 3, mit_ergebnisfeld=True)
     c.aufgabe_setzen("sess-1", "t1", "x", 3, mit_ergebnisfeld=True)
     edits = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] != "show"]
-    assert len(edits) == 6
-    erste, zweite = edits[:3], edits[3:]
+    assert len(edits) == 4
+    erste, zweite = edits[:2], edits[2:]
     assert [e["requestId"] for e in erste] == [e["requestId"] for e in zweite]
-    assert len({e["requestId"] for e in erste}) == 3
+    assert len({e["requestId"] for e in erste}) == 2
     rahmen = [e for e in erste if e["action"] == "draw_ink"]
     assert len(rahmen) == 1 and rahmen[0]["requestId"] == "ergebnis-t1-3"
     assert rahmen[0]["baseRevision"] == 7
-    schild = [e for e in erste if e["action"] == "create_text" and e["text"] == "Ihr Ergebnis zu Aufgabe 3"]
-    assert len(schild) == 1 and schild[0]["requestId"] == "ergebnis-t1-3-schild"
-    f = ergebnisfeld(3)
-    assert f["x"] <= schild[0]["region"]["x"] <= f["x"] + f["w"]
-    assert schild[0]["region"]["y"] < f["y"]  # ueber dem Feld, nicht im Schnappschuss
+    (text,) = [e for e in erste if e["action"] == "create_text"]
+    assert text["text"] == "Aufgabe 3: x\n\nIhr Ergebnis schreiben Sie in das blau umrandete Feld."
+
+
+def test_aufgaben_bleiben_unter_penechos_textgrenze(zustand: Path) -> None:
+    # Abnahme 06.11. (F15): PenEcho nimmt je Flaeche hoechstens 50 Texte (canvasDocumentsCapacity,
+    # auch MAX_VISIBLE_TEXT_BOXES fuer die Lernenden). Mit Feld-Schild brauchte jede Aufgabe 3 Texte,
+    # bei Aufgabe 17 kam OBJECT_LIMIT. Aufgabentext + Rueckmeldung = 2 je Aufgabe, 20 Aufgaben = 40.
+    fake = FeldFake()
+    c = _client(zustand, fake)
+    for n in range(1, 21):
+        c.aufgabe_setzen("sess-1", f"t{n}", "x", n, mit_ergebnisfeld=n % 2 == 0, mit_arbeitsfeld=n % 2 == 1)
+        c.rueckmeldung_zeigen("sess-1", f"t{n}", n, gelesen=None, urteil="Richtig.", text="Gut.")
+    texte = [a for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] == "create_text"]
+    assert len(texte) <= 40
 
 
 def test_rahmen_ist_tinte_um_das_feld_ohne_widget(zustand: Path) -> None:
@@ -872,25 +882,6 @@ def test_rueckmeldung_setzen_fuer_getippte_antworten(zustand: Path) -> None:
     assert arg["text"] == "Rückmeldung zu Aufgabe 2\n\nRichtig – gut gemacht."
 
 
-def test_schild_platz_belegt_wird_geloggt_nicht_geworfen(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
-    fake = FeldFake()
-    original = fake.__call__
-
-    def antwort(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if body["method"] == "tools/call" and body["params"]["arguments"].get("text", "").startswith("Ihr Ergebnis"):
-            sc = {"code": "LAYOUT_CONFLICT", "message": "m"}
-            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
-                "isError": True, "structuredContent": sc, "content": []}})
-        return original(request)
-
-    with caplog.at_level(logging.WARNING):
-        PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen(
-            "s", "t", "x", 1, mit_ergebnisfeld=True)
-    assert "Schild nicht gesetzt: PenEchoPlatzBelegt" in caplog.text
-    assert len(_ink(fake)) == 1  # der Rahmen wird trotzdem gezeichnet
-
-
 def test_rueckmeldung_unbekanntes_urteil_wirft_ohne_penecho(zustand: Path) -> None:
     fake = Fake()
     with pytest.raises(ValueError):
@@ -1013,12 +1004,12 @@ def test_arbeitsfeld_rechts_neben_dem_text_mit_rahmen_im_bereich(nummer: int) ->
     assert a["x"] - 16 >= t["x"] + t["w"]
 
 
-def test_aufgabe_mit_arbeitsfeld_zeichnet_rahmen_und_schild(zustand: Path) -> None:
+def test_aufgabe_mit_arbeitsfeld_zeichnet_rahmen_hinweis_im_aufgabentext(zustand: Path) -> None:
     fake = FeldFake(revision=4)
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Skizzieren", 8, mit_arbeitsfeld=True)
     edits = [e["arguments"] for e in fake.aufrufe("penecho_edit_canvas")]
-    schild = [e for e in edits if e["action"] == "create_text" and e["text"] == "Ihre Lösung zu Aufgabe 8"]
-    assert len(schild) == 1 and schild[0]["requestId"] == "arbeit-t1-8-schild"
+    (text,) = [e for e in edits if e["action"] == "create_text"]
+    assert text["text"] == "Aufgabe 8: Skizzieren\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."
     (rahmen,) = _ink(fake)
     assert rahmen["requestId"] == "arbeit-t1-8" and rahmen["baseRevision"] == 4
     a = arbeitsfeld(8)
