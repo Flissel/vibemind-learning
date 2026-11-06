@@ -553,9 +553,33 @@ class FeldFake(Fake):
     def __init__(self, revision: int = 7) -> None:
         super().__init__()
         self.revision = revision
+        self.signaturen: dict[str, str] = {}  # requestId -> Argumente, wie PenEchos mutationRequests
+        self.gezeichnet = 0
+
+    def konflikt(self, body: dict) -> httpx.Response | None:
+        """PenEcho (bound-operations.js): gleiche requestId mit anderen Argumenten ist REQUEST_ID_CONFLICT.
+
+        Der Eintrag entsteht vor dem Browseraufruf und bleibt auch nach einem Fehler stehen.
+        """
+        args = body["params"]["arguments"]
+        if body["params"]["name"] != "penecho_edit_canvas":
+            return None
+        signatur = json.dumps(args, sort_keys=True)
+        if self.signaturen.setdefault(args["requestId"], signatur) != signatur:
+            sc = {"code": "REQUEST_ID_CONFLICT", "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": []}})
+        return None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        if body["method"] == "tools/call":
+            abgelehnt = self.konflikt(body)
+            if abgelehnt is not None:
+                self.anfragen.append((body, request.headers))
+                return abgelehnt
+            if body["params"]["arguments"].get("action") == "draw_ink":
+                self.gezeichnet += 1
         if body["method"] == "tools/call" and body["params"]["name"] == "penecho_read_file":
             self.anfragen.append((body, request.headers))
             sc = {"content": json.dumps({"revision": self.revision}), "contentHash": "h"}
@@ -575,6 +599,10 @@ def _fehler_bei_ink(fake: FeldFake, code: str, wie_oft: int = 1) -> httpx.MockTr
         body = json.loads(request.content)
         if body["method"] == "tools/call" and body["params"]["arguments"].get("action") == "draw_ink":
             zaehler["n"] += 1
+            abgelehnt = fake.konflikt(body)
+            if abgelehnt is not None:
+                fake.anfragen.append((body, request.headers))
+                return abgelehnt
             if zaehler["n"] <= wie_oft:
                 fake.anfragen.append((body, request.headers))
                 fake.revision += 1
@@ -646,7 +674,12 @@ def test_rahmen_veraltete_revision_wird_einmal_neu_gelesen(zustand: Path) -> Non
     fake = FeldFake(revision=1)
     transport = _fehler_bei_ink(fake, "REVISION_CONFLICT")
     PenEchoMcp(zustand, transport=transport).aufgabe_setzen("s", "t", "x", 1, mit_ergebnisfeld=True)
-    assert [i["baseRevision"] for i in _ink(fake)] == [1, 2]  # nach dem Konflikt wird canvas.json neu gelesen
+    ink = _ink(fake)
+    assert [i["baseRevision"] for i in ink] == [1, 2]  # nach dem Konflikt wird canvas.json neu gelesen
+    # Neue Revision braucht neue Kennung, sonst lehnt PenEcho mit REQUEST_ID_CONFLICT ab.
+    assert ink[0]["requestId"] == "ergebnis-t-1" and ink[1]["requestId"] == "ergebnis-t-1-r2"
+    assert len(ink[1]["requestId"]) <= 128
+    assert fake.gezeichnet == 1  # der Rahmen steht wirklich (zweiter Versuch von PenEcho angenommen)
 
 
 def test_rahmen_dauerhaft_veraltet_gibt_auf_ohne_fehler(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -655,6 +688,7 @@ def test_rahmen_dauerhaft_veraltet_gibt_auf_ohne_fehler(zustand: Path, caplog: p
     with caplog.at_level(logging.WARNING):
         PenEchoMcp(zustand, transport=transport).aufgabe_setzen("s", "t", "x", 1, mit_ergebnisfeld=True)
     assert len(_ink(fake)) == 2  # genau ein Wiederholungsversuch
+    assert "Revision veraltet" in caplog.text and fake.gezeichnet == 0
 
 
 def test_rahmen_bereits_gezeichnet_ist_kein_fehler(zustand: Path) -> None:
@@ -707,3 +741,29 @@ def test_rueckmeldung_zeigen_ersetzt_gleiche_karte(zustand: Path) -> None:
     assert a1["artifactId"] == a2["artifactId"] == "rueckmeldung-t1"
     assert a1["requestId"] != a2["requestId"]  # neuer Inhalt, neue requestId
     assert len(a1["requestId"]) <= 128
+
+
+def test_schild_platz_belegt_wird_geloggt_nicht_geworfen(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    fake = FeldFake()
+    original = fake.__call__
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/call" and body["params"]["arguments"].get("text") == "Ihr Ergebnis":
+            sc = {"code": "LAYOUT_CONFLICT", "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": []}})
+        return original(request)
+
+    with caplog.at_level(logging.WARNING):
+        PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen(
+            "s", "t", "x", 1, mit_ergebnisfeld=True)
+    assert "Schild nicht gesetzt: PenEchoPlatzBelegt" in caplog.text
+    assert len(_ink(fake)) == 1  # der Rahmen wird trotzdem gezeichnet
+
+
+def test_rueckmeldung_unbekanntes_urteil_wirft_ohne_penecho(zustand: Path) -> None:
+    fake = Fake()
+    with pytest.raises(ValueError):
+        _client(zustand, fake).rueckmeldung_zeigen("s", "t", 1, gelesen=None, urteil="Super!", text="x")
+    assert fake.aufrufe("penecho_present_widget") == []

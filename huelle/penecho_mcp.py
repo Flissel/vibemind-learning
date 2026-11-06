@@ -49,6 +49,7 @@ _FELD_RAND_UNTEN = 100
 _RAHMEN_ABSTAND = 8
 _RAHMEN_STAERKE = 4
 _RAHMEN_FARBE = "#2b6cb0"
+URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.")
 _SCHILD_HOEHE = 56  # Abstand der Schild-Oberkante ueber dem Feld
 
 
@@ -477,7 +478,7 @@ class PenEchoMcp:
             })
         except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
             raise
-        except PenEchoNichtErreichbar as fehler:
+        except PenEchoNichtErreichbar as fehler:  # u. a. PenEchoPlatzBelegt: Schild fehlt, Aufgabe laeuft weiter
             log.warning("Ergebnisfeld-Schild nicht gesetzt: %s", _typ(fehler))
         a = _RAHMEN_ABSTAND
         links, oben = feld["x"] - a, feld["y"] - a
@@ -486,16 +487,25 @@ class PenEchoMcp:
                   {"x": links, "y": unten}, {"x": links, "y": oben}]
         for versuch in (1, 2):
             try:
+                # PenEchos Signatur einer Anfrage umfasst baseRevision: eine neue Revision unter
+                # derselben requestId waere REQUEST_ID_CONFLICT. Der erste Versuch behaelt die feste
+                # Kennung (erneutes Senden nach verlorener Antwort wird dedupliziert), der Wiederholungs-
+                # versuch nach REVISION_CONFLICT bekommt eine abgeleitete frische Kennung.
                 self._werkzeug("penecho_edit_canvas", {
                     "sessionId": session_id,
-                    "requestId": self._ergebnis_id(aufgabe_id, nummer),
+                    "requestId": self._ergebnis_id(aufgabe_id, nummer, "" if versuch == 1 else "-r2"),
                     "action": "draw_ink",
                     "baseRevision": self._revision(session_id),
                     "strokes": [{"points": rahmen, "color": _RAHMEN_FARBE, "width": _RAHMEN_STAERKE}],
                 })
                 return
             except PenEchoAnfrageSchonBekannt:
-                return  # derselbe Rahmen wurde in dieser Sitzung schon gezeichnet
+                if versuch == 1:
+                    # Nur beim Erstversuch heisst REQUEST_ID_CONFLICT "schon gezeichnet": dieselbe feste
+                    # Kennung kam in dieser Sitzung schon an (Wiederholung der Aufgabe, andere Revision).
+                    return
+                log.warning("Ergebnisfeld-Rahmen nicht gezeichnet: REQUEST_ID_CONFLICT")
+                return
             except PenEchoRevisionVeraltet:
                 if versuch == 1:
                     continue  # Flaeche hat sich geaendert: Revision neu lesen, einmal wiederholen
@@ -547,6 +557,8 @@ class PenEchoMcp:
         Aufgabentext und Ergebnisfeld nicht haben); `nummer` prueft nur den Bereich.
         """
         bereich(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
+        if urteil not in URTEILE:
+            raise ValueError("unbekanntes Urteil")
         self.notizkarte(session_id, aufgabe_id, "Rückmeldung", rueckmeldungstext(gelesen, urteil, text))
 
     def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
