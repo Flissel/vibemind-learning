@@ -1162,7 +1162,9 @@ def _vor(*, lesbar: bool = True, score: float | None = 1.0, gelesen: str | None 
          vid: str = VOR_ID) -> dict[str, Any]:
     feedback = None
     if lesbar:
-        zustand = "correct" if score == 1 else ("partial" if score and score > 0 else "incorrect")
+        # Baender wie session_service._turn_feedback (angenommene Bewertung).
+        s = score or 0.0
+        zustand = "correct" if s >= 0.999 else ("partial" if s >= 0.65 else "incorrect")
         feedback = {"state": zustand, "score": score, "rationale_codes": [], "source_refs": [],
                     "criteria": criteria or []}
     return {"id": vid, "attempt_id": "77777777-7777-4777-8777-777777777771", "quelle": quelle, "lesbar": lesbar,
@@ -1448,7 +1450,8 @@ def test_passt_nach_neustart_der_bruecke() -> None:
     assert kw["session_id"] == SID and kw["expected_revision"] == 1
     assert kw["payload"] == {"vorbewertung_id": VOR_ID} and kw["schreibend"] is True
     assert r.json()["nummer"] == 2
-    assert "dokument_merken" in penecho2.namen()
+    # Kein Board in dieser Instanz bekannt: nichts gemerkt, keine Sitzung angelegt (merkt `weiter`).
+    assert "dokument_merken" not in penecho2.namen() and "sitzung" not in penecho2.namen()
 
 
 def test_passt_am_kursende_merkt_das_ende(tmp_path) -> None:
@@ -1512,20 +1515,43 @@ def test_zeigen_setzt_ergebnisfeld_nur_fuer_deterministische_typen(typ: str, mit
 
 
 @pytest.mark.parametrize("vor, erwartet", [
-    ({"lesbar": True, "score": 1.0, "accepted": True}, "Richtig."),
-    ({"lesbar": True, "score": 1, "accepted": True}, "Richtig."),
-    ({"lesbar": True, "score": 0.5, "accepted": False}, "Teilweise richtig."),
-    ({"lesbar": True, "score": 0.01, "accepted": False}, "Teilweise richtig."),
-    ({"lesbar": True, "score": 0.0, "accepted": False}, "Noch nicht richtig."),
-    ({"lesbar": True, "score": None, "accepted": None}, "Noch nicht richtig."),
-    ({"lesbar": True, "score": True, "accepted": True}, "Noch nicht richtig."),
-    ({"lesbar": False, "score": None, "accepted": None}, "Nicht lesbar."),
-    ({"lesbar": False, "score": 1.0, "accepted": True}, "Nicht lesbar."),
+    (_vor(score=1.0), "Richtig."),
+    (_vor(score=0.9995), "Richtig."),  # Learnings Richtig-Regel (feedback.state), nicht score == 1
+    (_vor(score=0.8), "Teilweise richtig."),
+    (_vor(score=0.5), "Teilweise richtig."),
+    (_vor(score=0.01), "Teilweise richtig."),
+    (_vor(score=0.0), "Noch nicht richtig."),
+    ({"lesbar": True, "score": None, "accepted": None, "feedback": None}, "Noch nicht richtig."),
+    ({"lesbar": True, "score": True, "accepted": True, "feedback": None}, "Noch nicht richtig."),
+    # Ohne Learnings „correct“ kein „Richtig.“, auch bei vollen Punkten (nicht angenommen: needs_review).
+    ({"lesbar": True, "score": 1.0, "accepted": False,
+      "feedback": {"state": "needs_review", "score": 1.0}}, "Teilweise richtig."),
+    (_vor(lesbar=False), "Nicht lesbar."),
+    ({"lesbar": False, "score": 1.0, "accepted": True, "feedback": {"state": "correct"}}, "Nicht lesbar."),
     ({}, "Nicht lesbar."),
 ])
 def test_urteil_aus_score(vor: dict[str, Any], erwartet: str) -> None:
     assert urteil_aus(vor) == erwartet
     assert erwartet in URTEILE
+
+
+def test_abgeben_zwei_bilder_zwei_vorbewertungen() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("numeric")
+    for bild in (PNG, PNG + b"anders"):
+        penecho.bild = bild
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).status_code == 200
+    erste, zweite = (kw["payload"] for kw in _aufrufe(lern, "learning_task_preview"))
+    assert erste != zweite
+    assert base64.b64decode(zweite["handschrift_png_base64"]) == PNG + b"anders"
+
+
+def test_passt_nach_neustart_legt_kein_board_an() -> None:
+    lern, _, _, _ = _flaechen_sitzung("numeric")
+    client2, _, penecho2 = bauen(lern)
+    r = client2.post(f"/lernen/api/sitzungen/{SID}/passt", json={"revision": 1, "vorbewertung_id": VOR_ID})
+    assert r.status_code == 200, r.text
+    # Weder penecho_start_session (sitzung) noch ein anderer PenEcho-Aufruf.
+    assert penecho2.aufrufe == []
 
 
 def test_lern_mcp_nicht_verfuegbar_behaelt_den_code() -> None:

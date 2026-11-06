@@ -137,6 +137,7 @@ class _Sitzung:
     aufgabe_id: str | None = None   # aktuelle Aufgabe laut letztem Turn
     nummer: int | None = None       # Flaechenbereich der aktuellen Aufgabe (Ruling B)
     auf_flaeche: bool = False       # aktuelle Aufgabe steht schon auf der Flaeche
+    board: str | None = None        # PenEcho-Sitzung, mit der zuletzt ein Flaechenaufruf gelang
     # Gespraech mit dem Tutor zur aktuellen Aufgabe: (Frage, Antwort); der Tutor selbst merkt sich nichts.
     tutor: list[tuple[str, str]] = field(default_factory=list)
     tutor_aufgabe: str | None = None
@@ -237,19 +238,20 @@ def _punkte(vorbewertung: dict[str, Any]) -> float | None:
 
 
 def urteil_aus(vorbewertung: dict[str, Any]) -> str:
-    """Urteil der Rueckmeldungskarte aus Learnings Vorbewertung, nur nach Richtigkeit (Punkte).
+    """Urteil der Rueckmeldungskarte aus Learnings Vorbewertung, nur nach Richtigkeit.
 
-    Nicht lesbar -> „Nicht lesbar.“; 1 -> „Richtig.“; zwischen 0 und 1 -> „Teilweise richtig.“;
-    sonst „Noch nicht richtig.“. Rubrik-Typen nach derselben Regel.
+    „Richtig.“ folgt Learnings eigenem Urteil: `feedback.state == "correct"` (gesetzt von
+    `session_service._turn_feedback`, dieselben Baender wie bei einer gebuchten Antwort).
+    Sonst nach Punkten: ueber 0 -> „Teilweise richtig.“, sonst „Noch nicht richtig.“.
+    Nicht lesbar -> „Nicht lesbar.“. Rubrik-Typen nach derselben Regel.
     """
     if vorbewertung.get("lesbar") is not True:
         return "Nicht lesbar."
-    score = _punkte(vorbewertung)
-    if score is None:
-        return "Noch nicht richtig."
-    if score >= 1:
+    feedback = vorbewertung.get("feedback")
+    if isinstance(feedback, dict) and feedback.get("state") == "correct":
         return "Richtig."
-    if score > 0:
+    score = _punkte(vorbewertung)
+    if score is not None and score > 0:
         return "Teilweise richtig."
     return "Noch nicht richtig."
 
@@ -491,10 +493,14 @@ class Bruecke:
         titel = f"{sitzung.kurs.titel} · {date.today():%d.%m.%Y}"
         session_id = self._penecho.sitzung(sitzung.sid, titel)
         try:
-            return aktion(session_id)
+            ergebnis = aktion(session_id)
         except PenEchoSitzungUnbekannt:
+            sitzung.board = None
             self._penecho.vergessen(sitzung.sid)
-            return aktion(self._penecho.sitzung(sitzung.sid, titel))
+            session_id = self._penecho.sitzung(sitzung.sid, titel)
+            ergebnis = aktion(session_id)
+        sitzung.board = session_id
+        return ergebnis
 
     def _flaeche_still(self, sitzung: _Sitzung, aktion: Callable[[str], Any]) -> bool:
         try:
@@ -535,9 +541,14 @@ class Bruecke:
         """documentId des Boards merken (`dokument_merken`), still: Fehler nur als Typ geloggt, nie gemeldet.
 
         Das eigentliche Speichern in PenEcho loest die Seite aus (BOARD_SPEICHERN.md); der Server kann es nicht.
+        Nur fuer ein Board, mit dem diese Bruecke schon gearbeitet hat: kein `sitzung()`, kein Neuanlegen,
+        kein Wiederholen (etwa nach einem Neustart der Huelle bei `passt`; `weiter` merkt es danach).
+        `dokument_merken` selbst fragt PenEcho nur per `penecho_inspect_session`.
         """
+        if sitzung.board is None:
+            return
         try:
-            self._auf_flaeche(sitzung, self._penecho.dokument_merken)
+            self._penecho.dokument_merken(sitzung.board)
         except Exception as fehler:  # noqa: BLE001 - Merken darf nie eine Abgabe aufhalten
             log.warning("Board nicht gemerkt: %s", _typ(fehler))
 
