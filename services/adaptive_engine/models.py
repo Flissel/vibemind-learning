@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
+    LargeBinary,
     String,
     UniqueConstraint,
 )
@@ -274,6 +275,9 @@ class LearningVorbewertung(Base):
         String(36), ForeignKey("learning_vorbewertungen.id")
     )
     bild_sha256: Mapped[str | None] = mapped_column(String(64))
+    # The handwriting itself, kept only for rubric previews: their booked answer refers
+    # to it, so a human review can see what was written. A reading needs no image.
+    bild_png: Mapped[bytes | None] = mapped_column(LargeBinary)
     gelesen: Mapped[dict | None] = mapped_column(JSON)
     answer: Mapped[dict | None] = mapped_column(JSON)
     lesbar: Mapped[bool] = mapped_column(Boolean, nullable=False)

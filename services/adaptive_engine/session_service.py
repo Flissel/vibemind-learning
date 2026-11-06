@@ -433,16 +433,29 @@ class AdaptiveSessionService:
             attempt_id = attempt.id
             task = self._public_task(item, row.id).model_dump(mode="json")
         png = command.handschrift_png
+        sha = hashlib.sha256(png).hexdigest() if png is not None else None
+        vorbewertung_id = str(uuid4())
         gelesen: GelesenV1 | None = None
         bewertung: _Bewertung | None = None
         if rubrik:
-            bewertung = self._bewerten(item, {"kind": "handschrift"}, bild_png=png)
+            if self._rubric_evaluator is None:
+                raise RuntimeError("rubric evaluator is not configured")
+            # The booked answer refers to this preview, which keeps the PNG for review.
+            bewertung = self._bewerten(
+                item,
+                {"kind": "handschrift", "vorbewertung_id": vorbewertung_id, "bild_sha256": sha},
+                bild_png=png,
+            )
         elif png is not None:
             if self._handschrift_leser is None:
                 raise RuntimeError("handwriting reader is not configured")
             gelesen, antwort = self._handschrift_leser.lesen(task, png)
             if gelesen.lesbar and antwort is not None:
-                bewertung = self._bewerten(item, antwort)
+                try:
+                    bewertung = self._bewerten(item, antwort)
+                except ValueError:
+                    # A reading the scorer cannot take counts as unreadable.
+                    bewertung = None
         else:
             assert command.answer is not None
             bewertung = self._bewerten(item, command.answer)
@@ -453,12 +466,13 @@ class AdaptiveSessionService:
             if attempt.id != attempt_id:
                 raise PersistenceConflict("vorbewertung not current")
             stored = LearningVorbewertung(
-                id=str(uuid4()),
+                id=vorbewertung_id,
                 attempt_id=attempt.id,
                 session_id=row.id,
                 quelle="handschrift" if png is not None else "getippt",
                 korrigiert_aus=command.korrigiert_aus,
-                bild_sha256=hashlib.sha256(png).hexdigest() if png is not None else None,
+                bild_sha256=sha,
+                bild_png=png if rubrik else None,
                 gelesen=gelesen.model_dump(mode="json") if gelesen is not None else None,
                 lesbar=bewertung is not None,
                 created_at=now,

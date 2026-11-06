@@ -227,7 +227,7 @@ def test_route_filtert_quelle(tmp_path: Path, monkeypatch) -> None:
         notizen_routes._store.cache_clear()
 
 
-def test_migration_0019_head(tmp_path: Path) -> None:
+def test_migration_0019_notiz_quelle_vorgabe(tmp_path: Path) -> None:
     from spaces.learning.deployment.migrate import migrate
     from spaces.learning.services.db.session import create_learning_engine
 
@@ -236,7 +236,6 @@ def test_migration_0019_head(tmp_path: Path) -> None:
     engine = create_learning_engine(url)
     try:
         with engine.begin() as c:
-            assert c.exec_driver_sql("SELECT version_num FROM learning_alembic_version").scalar_one() == "0020_vorbewertungen"
             c.exec_driver_sql(
                 "INSERT INTO learning_notes (id, actor_id, course_id, sequence_id, anchor, selection, explanation,"
                 " extra, extra_sources, own_text, created_at, updated_at)"

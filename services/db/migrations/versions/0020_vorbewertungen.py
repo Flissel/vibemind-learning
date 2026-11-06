@@ -2,7 +2,8 @@
 
 "Abgeben" stores a preview here and changes nothing in the learning state; only the
 preview the learner confirms becomes a response and an evaluation (with the ids kept
-here). Unreadable handwriting is stored without grading fields.
+here). Unreadable handwriting is stored without grading fields. Rubric previews keep the
+PNG itself: their booked answer refers to this row, so a human review sees the writing.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ def upgrade() -> None:
             "korrigiert_aus", sa.String(36), sa.ForeignKey("learning_vorbewertungen.id")
         ),
         sa.Column("bild_sha256", sa.String(64)),
+        sa.Column("bild_png", sa.LargeBinary()),
         sa.Column("gelesen", sa.JSON()),
         sa.Column("answer", sa.JSON()),
         sa.Column("lesbar", sa.Boolean(), nullable=False),

@@ -26,6 +26,7 @@ from spaces.learning.services.adaptive_engine.models import (
     Misconception,
     ReviewSchedule,
 )
+from spaces.learning.services.adaptive_engine import session_service as session_modul
 from spaces.learning.services.adaptive_engine.session_service import (
     AdaptiveSessionService,
     AnswerCommand,
@@ -257,6 +258,7 @@ def test_vorbewerten_aendert_nichts_am_lernstand(tmp_path: Path) -> None:
         assert row is not None
         assert row.attempt_id == vor.attempt_id
         assert row.bild_sha256 == hashlib.sha256(PNG).hexdigest()
+        assert row.bild_png is None  # the reading is the answer; no image is kept
         assert row.gelesen == {"lesbar": True, "roh": {"auswahl": ["A"]}, "text": "A"}
     engine.dispose()
 
@@ -339,7 +341,10 @@ def test_rubrik_typ_lehnt_korrektur_ab(tmp_path: Path) -> None:
     vor = _vor(service, turn, handschrift_png=PNG)
     assert vor.art == "rubric" and vor.quelle == "handschrift"
     request, bild = rubrik.calls[0]
-    assert request.response == {"kind": "handschrift"} and bild == PNG
+    assert request.response == {
+        "kind": "handschrift", "vorbewertung_id": vor.id, "bild_sha256": hashlib.sha256(PNG).hexdigest(),
+    }
+    assert bild == PNG
 
     with pytest.raises(ValueError):
         _vor(service, turn, answer={"text": "Der Pfad."}, korrigiert_aus=vor.id)
@@ -408,7 +413,8 @@ def test_bestaetigen_uebernimmt_gespeicherte_ids_ohne_neuen_aufruf(tmp_path: Pat
     assert booked.audit.evaluation_id == evaluation_id
     with factory() as db:
         response = db.get(LearningResponse, response_id)
-        assert response is not None and response.answer == {"kind": "handschrift"}
+        assert response is not None and response.answer["kind"] == "handschrift"
+        assert response.answer["vorbewertung_id"] == vor.id
         assert db.get(LearningEvaluation, evaluation_id).response_id == response_id
     assert booked.feedback.criteria and booked.feedback.criteria[0].criterion_id == "authority"
     engine.dispose()
@@ -485,7 +491,7 @@ def test_penecho_canvas_extern_geht_bei_vorschau_trotzdem_an_die_rubrik(tmp_path
     vor = _vor(service, turn, handschrift_png=PNG)
 
     assert vor.art == "rubric" and vor.lesbar is True
-    assert rubrik.calls[0][0].response == {"kind": "handschrift"}
+    assert rubrik.calls[0][0].response["kind"] == "handschrift"
     assert rubrik.calls[0][1] == PNG
     engine.dispose()
 
@@ -570,3 +576,147 @@ def test_migration_0020_legt_tabelle_an(tmp_path: Path) -> None:
         }
     finally:
         engine.dispose()
+
+
+# ---- Nachbesserung 1: Bild fuer die Pruefung, eindeutige Fehler -----------------------
+
+
+def test_unakzeptierte_rubrik_handschrift_behaelt_bild_fuer_pruefung(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_rubric_item("open"), _rubric_item("open")])
+    service = AdaptiveSessionService(
+        factory, clock=lambda: NOW, rubric_evaluator=_Rubrik(accepted=False)
+    )
+    turn = _start(service, course_id)
+    vor = _vor(service, turn, handschrift_png=PNG)
+
+    _bestaetigen(service, turn, vor.id)
+
+    with factory() as db:
+        review = db.scalar(select(LearningReviewItem))
+        evaluation = db.get(LearningEvaluation, review.evaluation_id)
+        response = db.get(LearningResponse, evaluation.response_id)
+        assert response.answer == {
+            "kind": "handschrift",
+            "vorbewertung_id": vor.id,
+            "bild_sha256": hashlib.sha256(PNG).hexdigest(),
+        }
+        stored = db.get(LearningVorbewertung, response.answer["vorbewertung_id"])
+        assert stored.bild_png == PNG
+        assert hashlib.sha256(stored.bild_png).hexdigest() == response.answer["bild_sha256"]
+    engine.dispose()
+
+
+def test_rubrik_vorschau_ohne_rubrik_ist_nicht_konfiguriert(tmp_path: Path) -> None:
+    spec = _rubric_item("penecho_canvas")
+    spec["scoring_config"] = {**spec["scoring_config"], "presentation": {"canvas_href": "x"}}
+    engine, factory, course_id, _ = _store(tmp_path, [spec])
+    service = AdaptiveSessionService(
+        factory, clock=lambda: NOW, external_rubric_types=frozenset({"penecho_canvas"})
+    )
+    turn = _start(service, course_id)
+
+    with pytest.raises(RuntimeError, match="rubric evaluator"):
+        _vor(service, turn, handschrift_png=PNG)
+    with factory() as db:
+        assert db.scalar(select(func.count(LearningVorbewertung.id))) == 0
+    engine.dispose()
+
+
+def test_leser_antwort_die_der_bewerter_ablehnt_ist_unlesbar(tmp_path: Path, monkeypatch) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_choice(1), _choice(2)])
+    leser = _Leser({"choice_id": "correct-1"})
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, handschrift_leser=leser)
+    turn = _start(service, course_id)
+
+    def _ablehnen(item, answer):
+        raise ValueError("answer does not fit the item")
+
+    monkeypatch.setattr(session_modul, "score_response", _ablehnen)
+    vor = _vor(service, turn, handschrift_png=PNG)
+
+    assert vor.lesbar is False and vor.score is None and vor.feedback is None
+    with factory() as db:
+        row = db.get(LearningVorbewertung, vor.id)
+        assert row.lesbar is False and row.response_id is None
+        assert row.gelesen == {"lesbar": True, "roh": {"auswahl": ["A"]}, "text": "A"}
+    with pytest.raises(ValueError, match="readable"):
+        _bestaetigen(service, turn, vor.id)
+    engine.dispose()
+
+
+def test_leser_lesbar_ohne_antwort_ist_unlesbar(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_choice(1), _choice(2)])
+
+    class _OhneAntwort:
+        def lesen(self, task, png):
+            return GelesenV1(lesbar=True, roh={"auswahl": ["Z"]}, text="Z"), None
+
+    service = AdaptiveSessionService(
+        factory, clock=lambda: NOW, handschrift_leser=_OhneAntwort()
+    )
+    turn = _start(service, course_id)
+
+    vor = _vor(service, turn, handschrift_png=PNG)
+
+    with factory() as db:
+        row = db.get(LearningVorbewertung, vor.id)
+        assert row.lesbar is False and row.gelesen["text"] == "Z"
+    assert vor.lesbar is row.lesbar is False
+    assert vor.score is None and vor.accepted is None and vor.feedback is None
+    engine.dispose()
+
+
+def test_fremde_person_wird_abgelehnt(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_choice(1), _choice(2)])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW)
+    turn = _start(service, course_id)
+    vor = _vor(service, turn, answer=_richtig(turn))
+
+    with pytest.raises(PermissionError, match="another actor"):
+        service.vorbewerten(
+            VorbewertungCommand(
+                session_id=turn.session_id, actor_id="fremd",
+                expected_session_revision=turn.session_revision, answer=_richtig(turn),
+            )
+        )
+    with pytest.raises(PermissionError, match="another actor"):
+        service.bestaetigen(
+            session_id=turn.session_id, actor_id="fremd",
+            expected_session_revision=turn.session_revision, vorbewertung_id=vor.id,
+        )
+    with pytest.raises(PermissionError, match="another actor"):
+        service.answer(
+            AnswerCommand(
+                session_id=turn.session_id, actor_id="fremd",
+                expected_session_revision=turn.session_revision, answer=_richtig(turn),
+            )
+        )
+    engine.dispose()
+
+
+def test_vorbewertung_aus_anderer_sitzung_ist_unbekannt(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_choice(1), _choice(2)])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW)
+    erste = _start(service, course_id)
+    zweite = _start(service, course_id)
+    vor = _vor(service, erste, answer=_richtig(erste))
+
+    with pytest.raises(LookupError, match="vorbewertung"):
+        _bestaetigen(service, zweite, vor.id)
+    with pytest.raises(LookupError, match="vorbewertung"):
+        _bestaetigen(service, zweite, str(uuid4()))
+    engine.dispose()
+
+
+def test_bestaetigen_in_pruefung_abgelehnt(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_choice(1), _choice(2)])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW)
+    turn = _start(
+        service, course_id, mode="exam",
+        item_count=2, item_types=["single_choice"], difficulty_bands=[],
+    )
+
+    with pytest.raises(PermissionError, match="exam"):
+        _bestaetigen(service, turn, str(uuid4()))
+    assert service.current(turn.session_id, actor_id=ACTOR).session_revision == turn.session_revision
+    engine.dispose()
