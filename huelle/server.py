@@ -34,7 +34,7 @@ def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
     bruecke = Bruecke(
         einstellung,
         LernMcp(einstellung.mcp_url, einstellung.actor_id),
-        PenEchoMcp(Path(einstellung.penecho_state)),
+        PenEchoMcp(Path(einstellung.penecho_state), url=einstellung.penecho_mcp_url),
         sperre,
         httpx.Client(timeout=30.0, follow_redirects=False),
         # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).

@@ -41,6 +41,7 @@ SEITEN = {
 class FakePenEcho:
     def __init__(self) -> None:
         self.aufrufe: list[str] = []
+        self.abfragen: list[bytes] = []
         self.kopf: dict[str, str] = {}
         self.immer_gzip = False
         # PenEcho 1.4.x: nach jedem Neustart "undecided", bis jemand Code oder "offen" waehlt.
@@ -67,6 +68,7 @@ class FakePenEcho:
                 await send({"type": "websocket.send", "text": "echo:" + (m.get("text") or "")})
         pfad = scope["path"]
         self.aufrufe.append(pfad)
+        self.abfragen.append(scope.get("query_string", b""))
         self.kopf = {k.decode(): v.decode() for k, v in scope["headers"]}
         if pfad in ("/api/local-access/status", "/api/local-access/open"):
             m = await receive()
@@ -136,9 +138,9 @@ def _frei() -> Sperre:
 
 
 async def _lauf(app: Any, pfad: str, *, methode: str = "GET", headers: list[tuple[bytes, bytes]] | None = None,
-                body: bytes = b"") -> tuple[int, list[tuple[bytes, bytes]], list[tuple[float, bytes]]]:
+                body: bytes = b"", query: bytes = b"") -> tuple[int, list[tuple[bytes, bytes]], list[tuple[float, bytes]]]:
     scope = {"type": "http", "method": methode, "path": pfad, "raw_path": pfad.encode("utf-8"),
-             "query_string": b"", "headers": headers or []}
+             "query_string": query, "headers": headers or []}
     gesendet: list[dict[str, Any]] = []
     zeiten: list[tuple[float, bytes]] = []
     gegeben = False
@@ -583,6 +585,17 @@ def test_html_seite_bekommt_das_skript_einmal(fake: tuple[FakePenEcho, str], pfa
     csp = kopf[b"content-security-policy"].decode()
     assert "script-src 'self' https://cdn.jsdelivr.net;" in csp
     assert "frame-ancestors https://lernen.example.test http://127.0.0.1:8150" in csp
+
+
+def test_einspritzen_mit_abfrage(fake: tuple[FakePenEcho, str]) -> None:
+    """Der Rahmen laedt `/?lernen=1`: auch dann kommt das Speichern-Skript, und die Abfrage erreicht die Flaeche."""
+    upstream, url = fake
+    upstream.abfragen.clear()
+    status, _, teile = asyncio.run(_lauf(_mit_seite(url), "/", query=b"lernen=1"))
+    body = b"".join(t for _, t in teile)
+    assert status == 200
+    assert body == INDEX.replace(b"</head>", TAG + b"</head>", 1)
+    assert upstream.abfragen[-1] == b"lernen=1"  # davor oeffnet der Durchreicher den lokalen Zugang
 
 
 def test_html_trotz_identity_gzip_wird_entpackt(fake: tuple[FakePenEcho, str]) -> None:

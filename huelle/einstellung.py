@@ -21,6 +21,7 @@ PORT = "LEARNING_HUELLE_PORT"
 BASIS = "LEARNING_HUELLE_BASIS"
 PENECHO_URL = "LEARNING_HUELLE_PENECHO_URL"
 PENECHO_STATE = "LEARNING_HUELLE_PENECHO_STATE"
+PENECHO_MCP_URL = "LEARNING_HUELLE_PENECHO_MCP_URL"
 MCP_URL = "LEARNING_HUELLE_MCP_URL"
 API_URL = "LEARNING_HUELLE_API_URL"
 SCHLUESSEL = "LEARNHOUSE_LEARNING_SERVICE_KEY"
@@ -54,6 +55,7 @@ class Einstellung:
     flaeche_port: int
     flaeche_basis: str
     penecho_paket: str
+    penecho_mcp_url: str
 
     @property
     def basis_host(self) -> str:
@@ -164,4 +166,5 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         flaeche_port=flaeche_port,
         flaeche_basis=flaeche_basis,
         penecho_paket=(env.get(PENECHO_PAKET) or "").strip() or _penecho_paket_vorgabe(env),
+        penecho_mcp_url=(env.get(PENECHO_MCP_URL) or "").strip() or "https://127.0.0.1:3922/mcp",
     )

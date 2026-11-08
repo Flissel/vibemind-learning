@@ -143,3 +143,73 @@ def test_build_apps_prueft_penecho_version(tmp_path: Path) -> None:
         sperre = seiten._api._sperre
         sperre.frei()
         assert sperre.gesperrt() is (not frei_moeglich)
+
+
+def _lernflaeche(tmp_path: Path, basis: object = "1.4.2", *, mit_feld: bool = True) -> Path:
+    import json
+
+    daten: dict[str, object] = {"name": "lernflaeche", "version": "0.1.0"}
+    if mit_feld:
+        daten["lernflaeche"] = {"basisPenecho": basis}
+    paket = tmp_path / "lernflaeche"
+    paket.mkdir()
+    (paket / "package.json").write_text(json.dumps(daten), encoding="utf-8")
+    return paket
+
+
+def test_lernflaeche_mit_basis_142_loest_die_sperre(tmp_path: Path) -> None:
+    from spaces.learning.huelle.sperre import penecho_version_pruefen
+
+    s = Sperre()
+    assert penecho_version_pruefen(_lernflaeche(tmp_path), s) is True
+    s.frei()
+    assert s.gesperrt() is False
+
+
+@pytest.mark.parametrize("fall", ["fremde_basis", "ohne_feld", "basis_kein_text"])
+def test_fremde_basis_bleibt_gesperrt(tmp_path: Path, fall: str, caplog: pytest.LogCaptureFixture) -> None:
+    from spaces.learning.huelle.sperre import penecho_version_pruefen
+
+    caplog.set_level(logging.WARNING)
+    paket = {
+        "fremde_basis": lambda: _lernflaeche(tmp_path, "1.5.0"),
+        "ohne_feld": lambda: _lernflaeche(tmp_path, mit_feld=False),
+        "basis_kein_text": lambda: _lernflaeche(tmp_path, 142),
+    }[fall]()
+    s = Sperre()
+    assert penecho_version_pruefen(paket, s) is False
+    s.frei()
+    assert s.gesperrt() is True
+    assert str(tmp_path) not in caplog.text
+    if fall == "fremde_basis":
+        assert "lernflaeche" in caplog.text and "1.5.0" in caplog.text
+
+
+def test_penecho_142_bleibt_erlaubt(tmp_path: Path) -> None:
+    from spaces.learning.huelle.sperre import penecho_version_pruefen
+
+    s = Sperre()
+    assert penecho_version_pruefen(_paket_mit(tmp_path, '{"name": "penecho", "version": "1.4.2"}'), s) is True
+    s.frei()
+    assert s.gesperrt() is False
+
+
+def test_mcp_url_aus_umgebung(tmp_path: Path) -> None:
+    import json
+
+    from spaces.learning.huelle.einstellung import einstellung_lesen
+    from spaces.learning.huelle.server import build_apps
+
+    env = {
+        "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
+        "LEARNING_HUELLE_FLAECHE_BASIS": "https://lernen.example.test:8443",
+        "LEARNING_HUELLE_PENECHO_STATE": str(tmp_path / "state"),
+        "LEARNHOUSE_LEARNING_SERVICE_KEY": "k" * 40,
+        "LEARNING_HUELLE_ACTOR": "lh-1-test",
+        "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "11111111-1111-4111-8111-111111111111", "titel": "T"}]),
+    }
+    seiten, _ = build_apps(einstellung_lesen(env))
+    assert seiten._api._penecho._url == "https://127.0.0.1:3922/mcp"
+    eigene = "https://127.0.0.1:3923/mcp"
+    seiten, _ = build_apps(einstellung_lesen({**env, "LEARNING_HUELLE_PENECHO_MCP_URL": f" {eigene} "}))
+    assert seiten._api._penecho._url == eigene

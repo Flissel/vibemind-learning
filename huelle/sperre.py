@@ -85,16 +85,33 @@ class Sperre:
             return self._dauerhaft or self._zustand != _FREI
 
 
-def penecho_version(paket: Path) -> str | None:
-    """Version aus `package.json` der PenEcho-Installation; None, wenn nicht lesbar oder kein PenEcho."""
+def _paket_daten(paket: Path) -> dict[str, object] | None:
     try:
         daten = json.loads((Path(paket) / "package.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(daten, dict) or daten.get("name") != "penecho":
-        return None
-    version = daten.get("version")
-    return version if isinstance(version, str) else None
+    return daten if isinstance(daten, dict) else None
+
+
+def _kennung(daten: dict[str, object] | None) -> tuple[str, str | None]:
+    """`(Name, PenEcho-Version)` einer Flaeche: PenEcho selbst oder die Lernflaeche mit ihrer Basis."""
+    if daten is None:
+        return "unbekannt", None
+    name = daten.get("name")
+    if name == "penecho":
+        version = daten.get("version")
+    elif name == "lernflaeche":
+        fork = daten.get("lernflaeche")
+        version = fork.get("basisPenecho") if isinstance(fork, dict) else None
+    else:
+        return (name if isinstance(name, str) else "unbekannt"), None
+    return name, (version if isinstance(version, str) else None)
+
+
+def penecho_version(paket: Path) -> str | None:
+    """PenEcho-Version der Flaeche aus `package.json`: bei PenEcho `version`, bei der Lernflaeche
+    `lernflaeche.basisPenecho`; None, wenn nicht lesbar oder keine bekannte Flaeche."""
+    return _kennung(_paket_daten(paket))[1]
 
 
 def penecho_version_pruefen(paket: Path, sperre: Sperre) -> bool:
@@ -103,11 +120,14 @@ def penecho_version_pruefen(paket: Path, sperre: Sperre) -> bool:
     Die KI-Pfade oben stammen aus dem Quelltext genau dieser Version. Eine neuere PenEcho-Version
     kann neue Modellrouten haben, die die Sperre nicht kennt.
     """
-    version = penecho_version(paket)
+    name, version = _kennung(_paket_daten(paket))
     if version == GEPRUEFTE_PENECHO_VERSION:
         return True
     sperre.dauerhaft_gesperrt()
-    gefunden = re.sub(r"[^0-9A-Za-z.+-]", "", version)[:40] if version else "unbekannt"
-    log.warning("PenEcho-Version %s ist nicht geprueft (erwartet %s); die KI bleibt gesperrt",
-                gefunden, GEPRUEFTE_PENECHO_VERSION)
+
+    def kurz(text: str | None) -> str:
+        return re.sub(r"[^0-9A-Za-z.+-]", "", text)[:40] if text else "unbekannt"
+
+    log.warning("Flaeche %s mit PenEcho-Version %s ist nicht geprueft (erwartet %s); die KI bleibt gesperrt",
+                kurz(name), kurz(version), GEPRUEFTE_PENECHO_VERSION)
     return False

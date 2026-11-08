@@ -67,9 +67,9 @@ def test_seite_traegt_katex_kopf_und_rahmen() -> None:
     html = _hole(seite_app(E), "/lernen/")[1]["body"].decode("utf-8")
     assert KOPF in html and "<!--KOPF-->" not in html
     # Die Flaeche kommt von der eigenen Flaechen-Herkunft, nicht von der Seite (Ruling J).
-    assert f'<iframe id="rahmen" src="https://{HOST}:8443/"' in html
+    assert f'<iframe id="rahmen" src="https://{HOST}:8443/?lernen=1"' in html
     lokal = _hole(seite_app(E), "/lernen/", host="127.0.0.1:8150")[1]["body"].decode("utf-8")
-    assert '<iframe id="rahmen" src="http://127.0.0.1:8151/"' in lokal
+    assert '<iframe id="rahmen" src="http://127.0.0.1:8151/?lernen=1"' in lokal
     for text in ("Fläche groß", "Geteilt"):
         assert text in html
 
