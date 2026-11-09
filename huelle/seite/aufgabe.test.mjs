@@ -413,6 +413,23 @@ test("speicherAusgang: Erfolg löscht den Dauerhinweis; Meldung nur beim Knopf; 
   assert.deepEqual(speicherAusgang({ ok: false, art: "leer" }, { manuell: false, token: 1, aktuell: 1 }), { speicher: null, meldung: null });
 });
 
+import { leistenKnoepfe } from "./aufgabe.js";
+
+test("leistenKnoepfe: gleiche Lage, gleiche Kennung; nur echte Änderungen bauen die Leiste neu (A2, Befund 8)", () => {
+  const lage = { busy: false, speichert: false, abgebenGesperrt: false };
+  const a = leistenKnoepfe(["passt", "eintippen", "abgeben"], lage);
+  const b = leistenKnoepfe(["passt", "eintippen", "abgeben"], { ...lage });
+  assert.equal(a.kennung, b.kennung);
+  assert.deepEqual(a.knoepfe.map((k) => k.id), ["passt", "eintippen", "abgeben"]);
+  assert.deepEqual(a.knoepfe[1], { id: "eintippen", haupt: false, disabled: false, text: "Selbst eintippen" });
+  assert.equal(a.knoepfe[2].haupt, true);
+  assert.notEqual(leistenKnoepfe(["passt", "eintippen", "abgeben"], { ...lage, abgebenGesperrt: true }).kennung, a.kennung);
+  assert.notEqual(leistenKnoepfe(["passt", "abgeben"], lage).kennung, a.kennung);
+  const beschaeftigt = leistenKnoepfe(["speichern", "abgeben"], { ...lage, busy: true });
+  assert.ok(beschaeftigt.knoepfe.every((k) => k.disabled));
+  assert.equal(leistenKnoepfe(["speichern"], { ...lage, speichert: true }).knoepfe[0].disabled, true);
+});
+
 import { ohneLeere } from "./aufgabe.js";
 
 test("ohneLeere: null und undefined fallen weg, sonst bleibt die Reihenfolge", () => {

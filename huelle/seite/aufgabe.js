@@ -404,6 +404,21 @@ export function leistenZustand(task, ergebnis) {
   return { sichtbar: true, knoepfe };
 }
 
+/**
+ * Die Knöpfe der Leiste mit Text und Sperre, dazu eine Kennung. Die Seite baut die Leiste nur neu, wenn sich
+ * die Kennung ändert: die Abfrage alle 2 s ersetzte sonst die Knöpfe unter dem Finger, und Klicks auf
+ * „Selbst eintippen“ gingen ins Leere (Abnahme A2, Befund 8).
+ */
+export function leistenKnoepfe(ids, { busy, speichert, abgebenGesperrt }) {
+  const knoepfe = ids.map((id) => ({
+    id,
+    haupt: id === "abgeben",
+    disabled: Boolean(busy) || (id === "speichern" && Boolean(speichert)) || (id === "abgeben" && Boolean(abgebenGesperrt)),
+    text: KNOPF_TEXT[id],
+  }));
+  return { knoepfe, kennung: JSON.stringify(knoepfe) };
+}
+
 /** Der Hinweis nach einem nicht lesbaren Ergebnis (ein unverändert erneut abgegebenes Bild bleibt nicht lesbar). */
 export function ergebnisHinweis(ergebnis) {
   if (!ergebnis) return null;

@@ -1,7 +1,7 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
   antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
-  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, KNOPF_TEXT, korrekturAntwort, leistenZustand, meldungFuer,
+  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, leistenKnoepfe, leistenZustand, meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import { flaecheSpeichern } from "./flaeche.js";
@@ -834,11 +834,16 @@ function leisteZeigen() {
     falsch: () => korrekturOeffnen("falsch"),
     eintippen: () => korrekturOeffnen("eintippen"),
   };
-  $("leisten-knoepfe").replaceChildren(...zustand.knoepfe.map((id) => el("button", {
-    type: "button", id: `leiste-${id}`, class: id === "abgeben" ? "haupt-knopf" : "",
-    disabled: z.busy || (id === "speichern" && z.speichert !== null) || (id === "abgeben" && abgebenGesperrt),
-    text: KNOPF_TEXT[id], onclick: aktion[id],
-  })));
+  // Nur bei echter Änderung neu bauen; die Aktionen lesen den Zustand erst beim Klick.
+  const plan = leistenKnoepfe(zustand.knoepfe, { busy: z.busy, speichert: z.speichert !== null, abgebenGesperrt });
+  const knoepfeBox = $("leisten-knoepfe");
+  if (knoepfeBox.dataset.plan !== plan.kennung) {
+    knoepfeBox.replaceChildren(...plan.knoepfe.map((k) => el("button", {
+      type: "button", id: `leiste-${k.id}`, class: k.haupt ? "haupt-knopf" : "",
+      disabled: k.disabled, text: k.text, onclick: aktion[k.id],
+    })));
+    knoepfeBox.dataset.plan = plan.kennung;
+  }
   const text = z.busy ? TEXT.wirdBewertet : (z.hinweis ?? z.speicherHinweis ?? ergebnisHinweis(ergebnis));
   $("leisten-hinweis").textContent = text ?? "";
   $("leisten-hinweis").hidden = !text;
