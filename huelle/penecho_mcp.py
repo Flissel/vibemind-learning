@@ -50,7 +50,8 @@ _RUECKMELDUNG_BREITE = 420
 # INVALID_TEXT), Schrift 20 px mit Zeilenhoehe 1,35 (27 px), Umbruch bei 400 px. Ein laengerer Text ragte ueber
 # das Rueckmeldungsfeld in den naechsten Bereich. 36 Zeichen je Zeile ist vorsichtig geschaetzt.
 _TEXT_HOECHSTENS = 2000
-_RUECKMELDUNG_ZEILEN = (BEREICH_HOEHE - 2 * _TEXT_RAND) // 27
+_ZEILEN_HOEHE = 27
+_RUECKMELDUNG_ZEILEN = (BEREICH_HOEHE - 2 * _TEXT_RAND) // _ZEILEN_HOEHE
 _ZEICHEN_JE_ZEILE = 36
 
 # Ergebnisfeld (Task 6): oben rechts im Bereich, darunter bleibt Platz fuer Rechenweg oder Skizze.
@@ -939,9 +940,10 @@ class PenEchoMcp:
         """
         # Ohne Rechteck ausserhalb 1..20 ValueError, ohne PenEcho zu rufen.
         feld = felder(rechteck).rueckmeldungsfeld if rechteck is not None else rueckmeldungsfeld(nummer)
-        # Zu lang fuer das Feld: gekuerzt; die volle Rueckmeldung bleibt in Learning (Bericht).
-        inhalt = kuerzen(f"{titel}\n\n{text}", zeichen=_TEXT_HOECHSTENS, zeilen=_RUECKMELDUNG_ZEILEN,
-                         je_zeile=_ZEICHEN_JE_ZEILE)
+        # Zu lang fuer das Feld: gekuerzt; die volle Rueckmeldung bleibt in Learning (Bericht). Die Zeilen
+        # richten sich nach der Hoehe des Feldes: hohe Bereiche (Listenkurs, Aufgabe mit Bild) fassen mehr (A2).
+        zeilen = max(_RUECKMELDUNG_ZEILEN, feld["h"] // _ZEILEN_HOEHE)
+        inhalt = kuerzen(f"{titel}\n\n{text}", zeichen=_TEXT_HOECHSTENS, zeilen=zeilen, je_zeile=_ZEICHEN_JE_ZEILE)
         pruefsumme = hashlib.sha256(inhalt.encode("utf-8")).hexdigest()[:12]
         rest = MAX_SCHLUESSEL - len(f"rueckmeldung--{nummer}-{pruefsumme}")
         argumente = {

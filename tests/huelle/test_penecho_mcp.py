@@ -1184,6 +1184,18 @@ def test_lange_rueckmeldung_wird_fuer_die_flaeche_gekuerzt(zustand: Path) -> Non
     assert text.endswith(" …") and not text.endswith(": …")
 
 
+def test_rueckmeldung_nutzt_die_hoehe_eines_hohen_bereichs(zustand: Path) -> None:
+    # Abnahme A2 (Befund 6): im Listenkurs sind Bereiche mit Bild hoeher; die Karte wurde trotzdem nach
+    # 28 Zeilen (Hoehe des 800er-Rasters) mit „…“ abgeschnitten.
+    fake = Fake()
+    hoch = {"x": 100, "y": 100, "w": 1300, "h": 1600}
+    lang = _LANG[:_LANG.rindex("begründet.", 0, 1500) + len("begründet.")]
+    _client(zustand, fake).rueckmeldung_setzen("sess-1", "t1", 4, "Rückmeldung zu Aufgabe 4", lang, rechteck=hoch)
+    text = fake.aufrufe("penecho_edit_canvas")[0]["arguments"]["text"]
+    assert 28 < _zeilen_bedarf(text) <= (1600 - 40) // 27
+    assert text == f"Rückmeldung zu Aufgabe 4\n\n{lang}"  # knapp 1500 Zeichen passen ganz in den hohen Bereich
+
+
 def test_volle_flaeche_zeigt_aufgabe_trotzdem(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
     # Abnahme 06.11. (F15): PenEcho prueft die Textgrenze vor dem Platz. Auf einer vollen Flaeche
     # scheiterte selbst das erneute Setzen einer vorhandenen Aufgabe mit OBJECT_LIMIT, und die Huelle
