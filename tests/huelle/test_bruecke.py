@@ -2766,6 +2766,23 @@ def test_zusammenfassung_unlesbares_bild_faellt_einzeln_weg_mit_warnung(monkeypa
         client.app.beenden()
 
 
+def test_zusammenfassung_begriffe_ohne_slug_dubletten(monkeypatch) -> None:
+    # Abnahme A2 (Befund 6): `ablauf-x` und `ablauf_x` standen doppelt im PDF; die Seite fasst sie schon zusammen.
+    gesehen = _zf_mitschneiden(monkeypatch)
+    ll = ListenLern(2)
+    begriffe = [{"concept_key": "k1", "titel": "ablauf-kurvendiskussion", "beherrschung": 0.2},
+                {"concept_key": "k2", "titel": "ablauf_kurvendiskussion", "beherrschung": 0.6},
+                {"concept_key": "k3", "titel": "Ableitung", "beherrschung": None}]
+    ll.lern.antworten["learning_course_overview"] = lambda kw: {**_ueberblick(ll.turn()), "begriffe": begriffe}
+    client, _ = _zf_offen(ll)
+    try:
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        (z,) = gesehen
+        assert z.begriffe == (("Ablauf kurvendiskussion", "60 %"), ("Ableitung", "noch offen"))
+    finally:
+        client.app.beenden()
+
+
 def test_zusammenfassung_ohne_gemerktes_board_warnt(caplog) -> None:
     ll = ListenLern(2)
     client, _ = _zf_offen(ll)

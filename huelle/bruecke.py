@@ -61,7 +61,8 @@ from .penecho_mcp import (
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
 from .zusammenfassung import (
-    BILD_BUDGET_S, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, ergebnis_von, kernaussage, kurs_kurz,
+    BILD_BUDGET_S, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von,
+    kernaussage, kurs_kurz,
 )
 
 log = logging.getLogger(__name__)
@@ -931,8 +932,9 @@ class Bruecke:
 
     def _begriffe_zeilen(self, kurs: Any) -> tuple[tuple[str, str], ...]:
         zeilen = []
-        for begriff in self._begriffe(kurs) or []:
-            titel = begriff.get("titel") if isinstance(begriff, dict) else None
+        # Wie auf der Seite: Slug-Titel lesbar, gleiche Titel einmal (A2, Befund 6).
+        for begriff in begriffe_zusammenfassen(self._begriffe(kurs) or []):
+            titel = begriff.get("titel")
             if not isinstance(titel, str) or not titel:
                 continue
             stand = begriff.get("beherrschung")

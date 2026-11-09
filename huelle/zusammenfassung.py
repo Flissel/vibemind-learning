@@ -23,12 +23,11 @@ from matplotlib.figure import Figure  # noqa: E402
 
 # Zeitbudget fuer alle Aufnahmen eines PDF-Abrufs zusammen; danach entfallen die uebrigen Bilder.
 BILD_BUDGET_S = 30.0
-KERNAUSSAGE_ZEICHEN = 300
+KERNAUSSAGE_ZEICHEN = 900
 KURS_KURZ_ZEICHEN = 40
 
 _SEITE = (8.27, 11.69)  # A4 hoch, Zoll
 _UMLAUTE = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
-_SATZ_ENDE = re.compile(r"(?<=[.!?])\s")
 
 
 @dataclass(frozen=True)
@@ -60,24 +59,119 @@ def _einzeilig(text: object) -> str:
 
 
 def ergebnis_von(status: str, vorbewertung: dict[str, Any] | None) -> str:
-    """Das Gelesene der Vorbewertung; ohne Gelesenes (Rubrik) „siehe Bild“, ohne Vorbewertung „eingegeben“/„offen“."""
+    """Das Gelesene der Vorbewertung; eingetippt (ohne Gelesenes) „eingetippt“, Handschrift ohne Gelesenes
+    (Rubrik) „siehe Bild“, ohne Vorbewertung „eingegeben“/„offen“.
+
+    Den getippten Text liefert Learnings Vorbewertung nicht mit; „siehe Bild“ waere dafuer falsch (A2, Befund 6).
+    """
     if isinstance(vorbewertung, dict):
         gelesen = vorbewertung.get("gelesen_text")
-        return _einzeilig(gelesen) if isinstance(gelesen, str) and gelesen.strip() else "siehe Bild"
+        if isinstance(gelesen, str) and gelesen.strip():
+            return _einzeilig(gelesen)
+        return "eingetippt" if vorbewertung.get("quelle") == "getippt" else "siehe Bild"
     return "eingegeben" if status == "bestaetigt" else "offen"
 
 
 def kernaussage(vorbewertung: dict[str, Any]) -> str:
-    """Urteil plus erster Satz der Rueckmeldung der Karte, hoechstens 300 Zeichen (sonst mit „…“ gekuerzt)."""
+    """Urteil plus die ganze Rueckmeldung der Karte (alle Kriterien), hoechstens 900 Zeichen (sonst mit „…“)."""
     from .bruecke import kartentext, urteil_aus  # bruecke importiert dieses Modul
 
-    urteil = urteil_aus(vorbewertung)
-    text = _einzeilig(kartentext(vorbewertung))
-    satz = _SATZ_ENDE.split(text, maxsplit=1)[0] if text else ""
-    ganz = f"{urteil} {satz}".strip()
+    ganz = f"{urteil_aus(vorbewertung)} {_einzeilig(kartentext(vorbewertung))}".strip()
     if len(ganz) <= KERNAUSSAGE_ZEICHEN:
         return ganz
     return ganz[:KERNAUSSAGE_ZEICHEN - 1].rstrip() + "…"
+
+
+# ---- Begriffe ------------------------------------------------------------------------------------
+_SLUG = re.compile(r"^[a-z0-9äöüß]+([-_][a-z0-9äöüß]+)*$")
+
+
+def begriff_titel(titel: object) -> str:
+    """Slugs aus dem Graphen (`ablauf-kurvendiskussion`) lesbar machen, sonst unveraendert (wie aufgabe.js)."""
+    t = str(titel if titel is not None else "")
+    if " " in t or not _SLUG.fullmatch(t):
+        return t
+    s = re.sub(r"[-_]", " ", t)
+    return s[:1].upper() + s[1:]
+
+
+def begriffe_zusammenfassen(begriffe: list[Any]) -> list[dict[str, Any]]:
+    """Gleicher Anzeigetitel (ohne Gross-/Kleinschreibung) wird ein Begriff mit lesbarem Titel; die hoehere
+    Beherrschung gewinnt (fehlend am niedrigsten). Wie `begriffeZusammenfassen` in aufgabe.js."""
+    def stufe(b: dict[str, Any]) -> float:
+        wert = b.get("beherrschung")
+        return float(wert) if isinstance(wert, (int, float)) and not isinstance(wert, bool) else -1.0
+
+    reihe: list[dict[str, Any]] = []
+    platz: dict[str, int] = {}
+    for b in begriffe:
+        if not isinstance(b, dict):
+            continue
+        b = {**b, "titel": begriff_titel(b.get("titel"))}
+        schluessel = b["titel"].lower()
+        if schluessel not in platz:
+            platz[schluessel] = len(reihe)
+            reihe.append(b)
+        elif stufe(b) > stufe(reihe[platz[schluessel]]):
+            reihe[platz[schluessel]] = {**b, "titel": reihe[platz[schluessel]]["titel"]}
+    return reihe
+
+
+# ---- Formeln als Klartext (PDF) -----------------------------------------------------------------
+# matplotlib setzt kein volles LaTeX; ein unbekannter Befehl liesse das ganze PDF scheitern. Darum werden
+# Formeln zwischen `$…$`/`$$…$$` in lesbaren Text mit Unicode-Zeichen umgeschrieben (A2, Befund 6).
+_FORMEL = re.compile(r"\$\$(.+?)\$\$|(?<!\\)\$(?!\s)([^$\n]+?)(?<![\s\\])\$")
+_HOCH = str.maketrans("0123456789+-=()niax", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱᵃˣ")
+_TIEF = str.maketrans("0123456789+-=()aeiox", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑᵢₒₓ")
+_ZEICHEN = {
+    "cdot": "·", "times": "×", "div": "÷", "pm": "±", "mp": "∓", "infty": "∞", "to": "→",
+    "rightarrow": "→", "leftarrow": "←", "Rightarrow": "⇒", "Leftrightarrow": "⇔", "implies": "⇒",
+    "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥", "neq": "≠", "ne": "≠", "approx": "≈", "in": "∈",
+    "notin": "∉", "subset": "⊂", "cup": "∪", "cap": "∩", "emptyset": "∅", "forall": "∀", "exists": "∃",
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "Delta": "Δ", "epsilon": "ε", "varepsilon": "ε",
+    "lambda": "λ", "mu": "μ", "pi": "π", "sigma": "σ", "Sigma": "Σ", "phi": "φ", "varphi": "φ", "omega": "ω",
+    "sum": "∑", "int": "∫", "prime": "′", "degree": "°", "circ": "°", "ldots": "…", "dots": "…", "cdots": "⋯",
+}
+_DOPPELSTRICH = {"R": "ℝ", "N": "ℕ", "Z": "ℤ", "Q": "ℚ", "C": "ℂ"}
+_GRUPPE = r"\{([^{}]*)\}"
+
+
+def _geklammert(teil: str) -> str:
+    return teil if re.fullmatch(r"[\w′²³]+|\S", teil) else f"({teil})"
+
+
+def _hoch_tief(teil: str, tabelle: dict[int, str], zeichen: str) -> str:
+    """Hoch-/tiefgestellt, wenn jedes Zeichen eine Unicode-Form hat; sonst `^(…)`/`_(…)`."""
+    if teil and all(ord(c) in tabelle for c in teil):
+        return teil.translate(tabelle)
+    return f"{zeichen}{_geklammert(teil)}"
+
+
+def _formel_klartext(f: str) -> str:
+    f = re.sub(r"\\(?:left|right|big|Big|bigg|Bigg)\s*([()\[\]|.])", lambda m: "" if m.group(1) == "." else m.group(1), f)
+    f = re.sub(r"\\(?:left|right)\\([{}])", r"\1", f)
+    f = re.sub(r"\\[,;:!]|\\quad|\\qquad|~", " ", f)
+    for _ in range(8):  # innen nach aussen, damit verschachtelte Brueche und Wurzeln aufgehen
+        vorher = f
+        f = re.sub(r"\\(?:text|mathrm|mathit|mathbf|operatorname)\s*" + _GRUPPE, r"\1", f)
+        f = re.sub(r"\\mathbb\s*\{?([A-Z])\}?", lambda m: _DOPPELSTRICH.get(m.group(1), m.group(1)), f)
+        f = re.sub(r"\\[dt]?frac\s*" + _GRUPPE + r"\s*" + _GRUPPE,
+                   lambda m: f"{_geklammert(m.group(1).strip())}/{_geklammert(m.group(2).strip())}", f)
+        f = re.sub(r"\\sqrt\s*" + _GRUPPE, lambda m: "√" + _geklammert(m.group(1).strip()), f)
+        f = re.sub(r"\^" + _GRUPPE, lambda m: _hoch_tief(m.group(1).strip(), _HOCH, "^"), f)
+        f = re.sub(r"_" + _GRUPPE, lambda m: _hoch_tief(m.group(1).strip(), _TIEF, "_"), f)
+        if f == vorher:
+            break
+    f = re.sub(r"\^(\w)", lambda m: _hoch_tief(m.group(1), _HOCH, "^"), f)
+    f = re.sub(r"_(\w)", lambda m: _hoch_tief(m.group(1), _TIEF, "_"), f)
+    f = re.sub(r"\\([A-Za-z]+)", lambda m: _ZEICHEN.get(m.group(1), m.group(1)), f)
+    return f.replace("{", "").replace("}", "")
+
+
+def ohne_latex(text: str) -> str:
+    """Formeln in `text` als lesbarer Klartext; Text ausserhalb bleibt, `\\$` wird zu `$`."""
+    ersetzt = _FORMEL.sub(lambda m: _formel_klartext(m.group(1) if m.group(1) is not None else m.group(2)), text)
+    return ersetzt.replace("\\$", "$")
 
 
 def _datum(d: date) -> str:
@@ -131,7 +225,7 @@ class _Seite:
 
     def text(self, text: str, *, groesse: float = 10.5, fett: bool = False, breite: int | None = None,
              max_zeilen: int | None = None, farbe: str = "#1a1a1a") -> None:
-        zeilen = textwrap.wrap(_einzeilig(text), width=breite or self.BREITE) or [""]
+        zeilen = textwrap.wrap(_einzeilig(ohne_latex(text)), width=breite or self.BREITE) or [""]
         if max_zeilen is not None and len(zeilen) > max_zeilen:
             zeilen = zeilen[:max_zeilen]
             zeilen[-1] = zeilen[-1][:max(0, self.BREITE - 2)].rstrip() + " …"
@@ -162,7 +256,7 @@ def _aufgabenseite(a: AufgabeZeile) -> Figure:
     s.luft()
     s.text(f"Aufgabe: {a.text}", max_zeilen=9)
     s.text(f"Ergebnis: {a.ergebnis}", max_zeilen=3)
-    s.text(f"Rückmeldung: {a.kernaussage}", max_zeilen=6)
+    s.text(f"Rückmeldung: {a.kernaussage}", max_zeilen=12)
     s.luft()
     unten = 0.06
     _bild_zeigen(s.fig, a.bild, (0.09, unten, 0.82, max(0.1, s.y - unten - 0.01)))

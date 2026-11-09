@@ -8,7 +8,8 @@ from datetime import date
 import pypdf
 
 from spaces.learning.huelle.zusammenfassung import (
-    AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, ergebnis_von, kernaussage, kurs_kurz,
+    KERNAUSSAGE_ZEICHEN, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriff_titel,
+    begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz, ohne_latex,
 )
 
 
@@ -58,7 +59,7 @@ def test_pdf_kaputtes_bild_und_dollar_zeichen() -> None:
     z = Zusammenfassung("Kurs $x$", date(2026, 11, 9), b"kein bild",
                         (AufgabeZeile(1, "Lösen Sie $x^2$", "$5", "ok", b"\x89PNG kaputt"),), ())
     seiten = _text(als_pdf(z))
-    assert len(seiten) == 3 and "$x^2$" in seiten[1]
+    assert len(seiten) == 3 and "x²" in seiten[1] and "$5" in seiten[1]
 
 
 def test_markdown_format() -> None:
@@ -76,17 +77,21 @@ def test_markdown_format() -> None:
 
 def test_kernaussage_gekuerzt() -> None:
     vor = {"lesbar": True, "feedback": {"state": "partial", "criteria": [
-        {"score": 0.5, "description": "Kriterium", "feedback": "a" * 500}]}}
+        {"score": 0.5, "description": "Kriterium", "feedback": "a" * 1500}]}}
     k = kernaussage(vor)
-    assert len(k) <= 300 and k.endswith("…") and k.startswith("Teilweise richtig. ")
+    assert len(k) <= KERNAUSSAGE_ZEICHEN and k.endswith("…") and k.startswith("Teilweise richtig. ")
 
 
-def test_kernaussage_erster_satz() -> None:
+def test_kernaussage_ganze_rueckmeldung() -> None:
     vor = {"lesbar": True, "feedback": {"state": "correct", "criteria": []}}
     assert kernaussage(vor) == "Richtig. Gut gemacht."
+    # Abnahme A2 (Befund 6): alle Kriterien, nicht nur der erste Satz des ersten.
     vor = {"lesbar": True, "feedback": {"state": "partial", "criteria": [
-        {"score": 0.5, "description": "Kriterium", "feedback": "Erster Satz. Zweiter Satz."}]}}
-    assert kernaussage(vor) == "Teilweise richtig. Kriterium: Erster Satz."
+        {"score": 0.5, "description": "Kriterium A", "feedback": "Erster Satz. Zweiter Satz."},
+        {"score": 0.0, "description": "Kriterium B", "feedback": "Dritter Satz."}]}}
+    k = kernaussage(vor)
+    assert k.startswith("Teilweise richtig. Kriterium A: Erster Satz. Zweiter Satz. Kriterium B: Dritter Satz. ")
+    assert k.endswith("noch einmal abgeben. Die KI auf der Fläche erklärt Ihnen gern den Weg.")
 
 
 def test_ergebnis_von() -> None:
@@ -94,6 +99,50 @@ def test_ergebnis_von() -> None:
     assert ergebnis_von("offen", {"gelesen_text": None}) == "siehe Bild"
     assert ergebnis_von("bestaetigt", None) == "eingegeben"
     assert ergebnis_von("offen", None) == "offen"
+
+
+def test_ergebnis_eingetippt_nie_siehe_bild() -> None:
+    # Abnahme A2 (Befund 6): eine eingetippte Antwort hat kein Gelesenes, ist aber kein Bild.
+    assert ergebnis_von("bestaetigt", {"quelle": "getippt", "gelesen_text": None}) == "eingetippt"
+    assert ergebnis_von("offen", {"quelle": "handschrift", "gelesen_text": None}) == "siehe Bild"
+
+
+def test_formeln_als_lesbarer_text() -> None:
+    assert ohne_latex("Lösen Sie $x^2 - 4 = 0$.") == "Lösen Sie x² - 4 = 0."
+    assert ohne_latex(r"$f(x) = \frac{x^2-1}{x-2}$") == "f(x) = (x²-1)/(x-2)"
+    assert ohne_latex(r"$\frac{1}{2}$") == "1/2"
+    assert ohne_latex(r"$\lim_{x \to 2} f(x) = \infty$") == "lim_(x → 2) f(x) = ∞"
+    assert ohne_latex(r"$\sqrt{x}$ und $\sqrt{x+1}$") == "√x und √(x+1)"
+    assert ohne_latex(r"$x \cdot y \leq 3$, $x \in \mathbb{R}$") == "x · y ≤ 3, x ∈ ℝ"
+    assert ohne_latex(r"$$a_1 = 5\text{ cm}$$") == "a₁ = 5 cm"
+    assert ohne_latex(r"$\left( x \right)^{n+1}$") == "( x )ⁿ⁺¹"
+    assert ohne_latex(r"Preis \$5 und $5") == "Preis $5 und $5"
+    assert ohne_latex("Kein LaTeX hier.") == "Kein LaTeX hier."
+
+
+def test_pdf_setzt_formeln_lesbar() -> None:
+    z = Zusammenfassung("Kurs", date(2026, 11, 9), None,
+                        (AufgabeZeile(1, r"Bestimmen Sie $\frac{1}{x}$ für $x \to \infty$.", "0", "ok", None),), ())
+    seite = _text(als_pdf(z))[1]
+    assert "1/x" in seite and "∞" in seite and "\\frac" not in seite and "$" not in seite
+
+
+def test_begriffe_zusammenfassen() -> None:
+    # Abnahme A2 (Befund 6): Dubletten aus Slugs mit `-` und `_`; hoehere Beherrschung gewinnt.
+    begriffe = [
+        {"titel": "ablauf-kurvendiskussion", "beherrschung": 0.2},
+        {"titel": "ablauf_kurvendiskussion", "beherrschung": 0.6},
+        {"titel": "Ableitung", "beherrschung": None},
+        {"titel": "ableitung", "beherrschung": 0.4},
+        {"titel": "Graph der Funktion"},
+    ]
+    assert begriffe_zusammenfassen(begriffe) == [
+        {"titel": "Ablauf kurvendiskussion", "beherrschung": 0.6},
+        {"titel": "Ableitung", "beherrschung": 0.4},
+        {"titel": "Graph der Funktion"},
+    ]
+    assert begriff_titel("ablauf-kurvendiskussion") == "Ablauf kurvendiskussion"
+    assert begriff_titel("Schon lesbar") == "Schon lesbar" and begriff_titel("f'(x)") == "f'(x)"
 
 
 def test_kurs_kurz() -> None:
