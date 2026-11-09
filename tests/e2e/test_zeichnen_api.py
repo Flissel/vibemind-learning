@@ -25,7 +25,7 @@ from spaces.learning.mcp.tools.canvas import (
 )
 from spaces.learning.mcp.tools.sessions import build_session_gateways
 from spaces.learning.services.adaptive_engine.models import AdaptiveConcept, AdaptiveItem, ItemConcept
-from spaces.learning.services.adaptive_engine.repository import SessionInput
+from spaces.learning.services.adaptive_engine.session_service import SessionStartCommand
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
 from spaces.learning.services.db.models import Base
 from spaces.learning.services.evaluation.canvas_artifacts import CanvasArtifactStore
@@ -90,11 +90,11 @@ def world(tmp_path: Path, monkeypatch):
         # here; that projection is tested in test_werkstatt_katalog.
         row.scoring_config = {**row.scoring_config, "source_refs": [REF]}
     sessions = AdaptiveSessionService(factory, external_rubric_types=frozenset({"penecho_canvas"}))
-    werkstatt_started = sessions.start(SessionInput(
+    werkstatt_started = sessions.start(SessionStartCommand(
         course_id=werkstatt_course, course_revision=1, actor_id="lh-3-lernende", mode="training",
         blueprint={"max_attempts": 1},
     ))
-    started = sessions.start(SessionInput(course_id=str(course_id), course_revision=1, actor_id="lh-3-lernende",
+    started = sessions.start(SessionStartCommand(course_id=str(course_id), course_revision=1, actor_id="lh-3-lernende",
                                           mode="training", blueprint={"max_attempts": 1}))
     backend = LocalCanvasBackend(root=tmp_path / "canvas", origin="http://127.0.0.1:8139")
     (tmp_path / "artifacts").mkdir()

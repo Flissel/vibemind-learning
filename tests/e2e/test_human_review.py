@@ -17,7 +17,7 @@ from spaces.learning.services.adaptive_engine.models import (
     LearningReviewItem,
     MasteryEvidence,
 )
-from spaces.learning.services.adaptive_engine.repository import SessionInput
+from spaces.learning.services.adaptive_engine.session_service import SessionStartCommand
 from spaces.learning.services.adaptive_engine.session_service import (
     AdaptiveSessionService,
     AnswerCommand,
@@ -30,7 +30,7 @@ from spaces.learning.tests.e2e.test_adaptive_session import _open_item_store, _R
 def held(tmp_path: Path):
     engine, factory, course_id = _open_item_store(tmp_path)
     service = AdaptiveSessionService(factory, rubric_evaluator=_RubricStub(accepted=False))
-    turn = service.start(SessionInput(course_id=course_id, course_revision=1, actor_id="learner-1",
+    turn = service.start(SessionStartCommand(course_id=course_id, course_revision=1, actor_id="learner-1",
                                       mode="training", blueprint={"max_attempts": 1}))
     service.answer(AnswerCommand(
         session_id=turn.session_id, actor_id="learner-1",

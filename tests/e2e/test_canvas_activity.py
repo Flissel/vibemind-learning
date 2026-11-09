@@ -24,7 +24,7 @@ from spaces.learning.services.adaptive_engine.models import (
     AdaptiveConcept, AdaptiveItem, ItemConcept, LearningEvaluation,
     LearningReviewItem, MasteryEvidence,
 )
-from spaces.learning.services.adaptive_engine.repository import SessionInput
+from spaces.learning.services.adaptive_engine.session_service import SessionStartCommand
 from spaces.learning.services.adaptive_engine.session_service import (
     AdaptiveSessionService,
     AnswerCommand,
@@ -178,7 +178,7 @@ def test_canvas_open_draw_save_reload_hint_submit_review_and_next_task(tmp_path:
         factory,
         external_rubric_types=frozenset({"penecho_canvas"}),
     )
-    started = adaptive.start(SessionInput(
+    started = adaptive.start(SessionStartCommand(
         course_id=str(course_id), course_revision=1, actor_id="student-1",
         mode="training", blueprint={"max_attempts": 2},
     ))

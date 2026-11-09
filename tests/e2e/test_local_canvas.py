@@ -26,7 +26,7 @@ from spaces.learning.mcp.tools.canvas import (
 from spaces.learning.services.adaptive_engine.models import (
     AdaptiveConcept, AdaptiveItem, ItemConcept, LearningEvaluation,
 )
-from spaces.learning.services.adaptive_engine.repository import SessionInput
+from spaces.learning.services.adaptive_engine.session_service import SessionStartCommand
 from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
 from spaces.learning.services.course_factory.model_gateway import GatewayResult
 from spaces.learning.services.db.models import Base
@@ -108,7 +108,7 @@ def world(tmp_path: Path):
         db.add(ItemConcept(item_id=str(canvas_item), concept_id=str(concept_id),
                            course_id=str(course_id), course_revision=1))
     started = AdaptiveSessionService(factory, external_rubric_types=frozenset({"penecho_canvas"})).start(
-        SessionInput(course_id=str(course_id), course_revision=1, actor_id="student-1",
+        SessionStartCommand(course_id=str(course_id), course_revision=1, actor_id="student-1",
                      mode="training", blueprint={"max_attempts": 1})
     )
     backend = LocalCanvasBackend(root=tmp_path / "canvas-sessions", origin=ORIGIN)
