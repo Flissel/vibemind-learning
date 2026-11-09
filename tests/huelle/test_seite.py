@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-from spaces.learning.claw.formeln import KOPF
+from spaces.learning.claw import formeln
 from spaces.learning.huelle.einstellung import einstellung_lesen
-from spaces.learning.huelle.seite_app import DATEIEN, SEITE, seite_app, seiten_csp
+from spaces.learning.huelle.seite_app import DATEIEN, KOPF, SEITE, seite_app, seiten_csp
 from spaces.learning.huelle.server import build_apps
 from spaces.learning.huelle.zugang import COOKIE, token_erzeugen
 
@@ -49,7 +52,9 @@ def test_seite_hat_csp_und_keine_adressen() -> None:
         assert gesendet[0]["status"] == 200
         assert kopf[b"content-type"].decode() == art
         csp = kopf[b"content-security-policy"].decode()
-        assert "script-src 'self' https://cdn.jsdelivr.net/npm/katex@0.16.11/" in csp
+        # KaTeX liegt bei der Seite: keine fremde Herkunft fuer Skripte, Styles und Schriften.
+        assert "script-src 'self';" in csp and "font-src 'self';" in csp
+        assert "jsdelivr" not in csp and "https://cdn" not in csp
         assert "style-src 'self' 'unsafe-inline'" in csp
         assert "connect-src 'self'" in csp and "img-src 'self'" in csp
         assert f"frame-src https://{HOST}:8443 http://127.0.0.1:8151" in csp and "frame-src 'self'" not in csp
@@ -58,14 +63,42 @@ def test_seite_hat_csp_und_keine_adressen() -> None:
         assert kopf[b"x-content-type-options"] == b"nosniff"
         assert kopf[b"referrer-policy"] == b"same-origin"
         assert kopf[b"cache-control"] == b"no-store"
+        if datei.startswith("katex/"):
+            continue  # unveraendertes KaTeX (MIT), Pruefsummen in test_katex_liegt_bei_der_seite
         text = (SEITE / datei).read_text(encoding="utf-8")
         for verboten in ("100.", "ts.net", "http://", "https://", "8443", "8151"):
             assert verboten not in text, (datei, verboten)
 
 
+def _sri(daten: bytes) -> str:
+    return "sha384-" + base64.b64encode(hashlib.sha384(daten).digest()).decode()
+
+
+def test_katex_liegt_bei_der_seite() -> None:
+    app = seite_app(E)
+    css = _hole(app, "/lernen/katex/katex.min.css")
+    js = _hole(app, "/lernen/katex/katex.min.js")
+    assert css[0]["status"] == 200 and js[0]["status"] == 200
+    # Dieselbe gepinnte Fassung wie die Claw-Seiten (0.16.11), Byte fuer Byte.
+    assert _sri(css[1]["body"]) == formeln._CSS_SRI and _sri(js[1]["body"]) == formeln._JS_SRI
+    schriften = sorted(set(re.findall(r"url\((fonts/[^)]+\.woff2)\)", css[1]["body"].decode("utf-8"))))
+    assert len(schriften) == 20
+    for schrift in schriften:
+        antwort = _hole(app, "/lernen/katex/" + schrift)
+        kopf = {k.lower(): v for k, v in antwort[0]["headers"]}
+        assert antwort[0]["status"] == 200 and kopf[b"content-type"] == b"font/woff2", schrift
+    assert (SEITE / "katex" / "LICENSE").read_text(encoding="utf-8").startswith("The MIT License")
+    # Nur die Dateien aus der Liste, kein Pfad nach aussen.
+    assert _hole(app, "/lernen/katex/LICENSE")[0]["status"] == 404
+    assert _hole(app, "/lernen/katex/../huelle.js")[0]["status"] == 404
+
+
 def test_seite_traegt_katex_kopf_und_rahmen() -> None:
     html = _hole(seite_app(E), "/lernen/")[1]["body"].decode("utf-8")
     assert KOPF in html and "<!--KOPF-->" not in html
+    assert '<script defer src="katex/katex.min.js"></script>' in html
+    assert '<link rel="stylesheet" href="katex/katex.min.css">' in html
+    assert "jsdelivr" not in html
     # Die Flaeche kommt von der eigenen Flaechen-Herkunft, nicht von der Seite (Ruling J).
     assert f'<iframe id="rahmen" src="https://{HOST}:8443/?lernen=1"' in html
     lokal = _hole(seite_app(E), "/lernen/", host="127.0.0.1:8150")[1]["body"].decode("utf-8")

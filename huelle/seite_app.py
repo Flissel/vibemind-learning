@@ -11,13 +11,15 @@ from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from ..claw.formeln import KOPF, csp
 from .einstellung import Einstellung
 
 SEITE = Path(__file__).parent / "seite"
 PREFIX = "/lernen/"
 KOPF_MARKE = "<!--KOPF-->"
 FLAECHE_MARKE = "<!--FLAECHE-->"
+# KaTeX (MIT, 0.16.11, dieselbe Fassung wie die Claw-Seiten) liegt bei der Seite: kein fremder Host beim Laden.
+# Die Huelle setzt Formeln selbst (aufgabe.js `formel` ueber window.katex); Auto-Render braucht sie nicht.
+KOPF = '<link rel="stylesheet" href="katex/katex.min.css"><script defer src="katex/katex.min.js"></script>'
 
 Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -32,19 +34,26 @@ DATEIEN = {
     "aufgabe.js": ("aufgabe.js", "text/javascript; charset=utf-8"),
     "flaeche.js": ("flaeche.js", "text/javascript; charset=utf-8"),
     "liste.js": ("liste.js", "text/javascript; charset=utf-8"),
+    "katex/katex.min.css": ("katex/katex.min.css", "text/css; charset=utf-8"),
+    "katex/katex.min.js": ("katex/katex.min.js", "text/javascript; charset=utf-8"),
+    **{f"katex/fonts/{f.name}": (f"katex/fonts/{f.name}", "font/woff2")
+       for f in sorted((SEITE / "katex" / "fonts").glob("*.woff2"))},
 }
 
 
 def seiten_csp(flaechen_herkuenfte: Iterable[str]) -> bytes:
-    """Die CSP der Claw-Seiten (KaTeX), erweitert um eigene Skripte/Styles, Fetch, Bilder und die Flaeche."""
-    direktiven = [d for d in csp().decode().split("; ") if d]
-    ergebnis: list[str] = []
-    for d in direktiven:
-        if d.startswith("script-src ") or d.startswith("style-src "):
-            d = d.replace(" ", " 'self' ", 1)
-        ergebnis.append(d)
-    ergebnis += ["connect-src 'self'", "img-src 'self'", "frame-src " + " ".join(flaechen_herkuenfte)]
-    return "; ".join(ergebnis).encode()
+    """Nur eigene Skripte, Styles (KaTeX setzt Inline-Styles) und Schriften, dazu Fetch, Bilder und die Flaeche."""
+    return "; ".join([
+        "default-src 'none'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "connect-src 'self'",
+        "img-src 'self'",
+        "frame-src " + " ".join(flaechen_herkuenfte),
+    ]).encode()
 
 
 def _headers(content_type: str, laenge: int, richtlinie: bytes) -> list[tuple[bytes, bytes]]:
