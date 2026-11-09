@@ -5,6 +5,9 @@ every existing row) from the fixed list ("liste": all attempts exist from the st
 `learning_adaptive_items.listen_platz` is the author's order from the Werkstatt release.
 No backfill: the items table is append-only, old items keep a NULL place and fall back to
 `activity_id` order.
+
+Plain ALTERs only: on SQLite a batch rebuild would drop the unnamed CHECKs of both tables, so
+the new CHECKs are created on PostgreSQL only (the models carry them for create_all).
 """
 
 from __future__ import annotations
@@ -19,28 +22,38 @@ branch_labels = None
 depends_on = None
 
 
+def _postgres() -> bool:
+    return op.get_bind().dialect.name == "postgresql"
+
+
 def upgrade() -> None:
-    with op.batch_alter_table("learning_adaptive_sessions") as batch:
-        batch.add_column(
-            sa.Column(
-                "ablauf", sa.String(16), nullable=False, server_default="anpassend"
-            )
+    op.add_column(
+        "learning_adaptive_sessions",
+        sa.Column("ablauf", sa.String(16), nullable=False, server_default="anpassend"),
+    )
+    op.add_column(
+        "learning_adaptive_items", sa.Column("listen_platz", sa.Integer(), nullable=True)
+    )
+    if _postgres():
+        op.create_check_constraint(
+            "ck_learning_adaptive_sessions_ablauf",
+            "learning_adaptive_sessions",
+            "ablauf IN ('anpassend','liste')",
         )
-        batch.create_check_constraint(
-            "ck_learning_adaptive_sessions_ablauf", "ablauf IN ('anpassend','liste')"
-        )
-    with op.batch_alter_table("learning_adaptive_items") as batch:
-        batch.add_column(sa.Column("listen_platz", sa.Integer(), nullable=True))
-        batch.create_check_constraint(
+        op.create_check_constraint(
             "ck_learning_adaptive_items_listen_platz",
+            "learning_adaptive_items",
             "listen_platz IS NULL OR listen_platz >= 1",
         )
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("learning_adaptive_items") as batch:
-        batch.drop_constraint("ck_learning_adaptive_items_listen_platz", type_="check")
-        batch.drop_column("listen_platz")
-    with op.batch_alter_table("learning_adaptive_sessions") as batch:
-        batch.drop_constraint("ck_learning_adaptive_sessions_ablauf", type_="check")
-        batch.drop_column("ablauf")
+    if _postgres():
+        op.drop_constraint(
+            "ck_learning_adaptive_items_listen_platz", "learning_adaptive_items", type_="check"
+        )
+        op.drop_constraint(
+            "ck_learning_adaptive_sessions_ablauf", "learning_adaptive_sessions", type_="check"
+        )
+    op.drop_column("learning_adaptive_items", "listen_platz")
+    op.drop_column("learning_adaptive_sessions", "ablauf")

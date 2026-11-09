@@ -296,3 +296,39 @@ def test_aufgabenliste_nur_fuer_listen(tmp_path: Path) -> None:
         service.aufgabenliste(turn.session_id, actor_id="jemand-anders")
     with pytest.raises(LookupError):
         service.aufgabenliste(str(uuid4()), actor_id=ACTOR)
+
+
+def test_nachlesen_in_listen_vertraegt_zwischenbuchung(tmp_path: Path) -> None:
+    factory, course_id = _store(tmp_path, [1, 2, 3])
+    service = _service(factory)
+    turn = _start(service, course_id)
+    v1, v2, _ = _versuche(factory, turn)
+
+    # A is booked; B commits before A's readback runs. A must still be returned.
+    gebucht_a = service.answer(
+        AnswerCommand(
+            session_id=turn.session_id, actor_id=ACTOR, expected_session_revision=1,
+            attempt_id=v1.id, answer=_richtig(factory, v1),
+        )
+    )
+    _antwort(service, turn, v2, factory)
+
+    ergebnis = service._with_readback(gebucht_a.model_copy(update={"audit": gebucht_a.audit}))
+    assert ergebnis.audit.readback_verified is True
+    assert ergebnis.audit.response_id == gebucht_a.audit.response_id
+
+
+def test_nachlesen_anpassend_verlangt_gleiche_revision(tmp_path: Path) -> None:
+    factory, course_id = _store(tmp_path, [1, 2, 3])
+    service = _service(factory)
+    turn = _start(service, course_id, ablauf=None)
+    erster = _versuche(factory, turn)[0]
+    service.answer(
+        AnswerCommand(
+            session_id=turn.session_id, actor_id=ACTOR,
+            expected_session_revision=turn.session_revision, answer=_richtig(factory, erster),
+        )
+    )
+
+    with pytest.raises(PersistenceConflict, match="readback failed"):
+        service._with_readback(turn)

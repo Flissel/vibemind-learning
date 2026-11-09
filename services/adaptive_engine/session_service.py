@@ -1585,7 +1585,12 @@ class AdaptiveSessionService:
     def _with_readback(self, turn: SessionTurn) -> SessionTurn:
         with self._session_factory() as db:
             row = db.get(LearningSession, turn.session_id)
-            verified = row is not None and row.revision == turn.session_revision
+            # List sessions take bookings of different attempts back to back, so a later
+            # booking may already have raised the revision; the booking itself is checked below.
+            if row is not None and row.ablauf == "liste":
+                verified = row.revision >= turn.session_revision
+            else:
+                verified = row is not None and row.revision == turn.session_revision
             if turn.audit.evaluation_id:
                 evaluation = db.get(LearningEvaluation, turn.audit.evaluation_id)
                 evidence_count = db.scalar(
