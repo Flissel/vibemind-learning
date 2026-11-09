@@ -460,20 +460,24 @@ class PenEchoMcp:
         self._client = None
         self._mcp_session = None
 
-    def _post(self, body: dict[str, Any]) -> httpx.Response:
+    def _post(self, body: dict[str, Any], timeout: float | None = None) -> httpx.Response:
         assert self._client is not None
         kopf = {"Content-Type": "application/json"}
         if self._mcp_session:
             kopf["Mcp-Session-Id"] = self._mcp_session
             kopf["MCP-Protocol-Version"] = PROTOKOLL
-        antwort = self._client.post(self._url, json=body, headers=kopf)
+        if timeout is None:
+            antwort = self._client.post(self._url, json=body, headers=kopf)
+        else:
+            antwort = self._client.post(self._url, json=body, headers=kopf, timeout=timeout)
         antwort.raise_for_status()
         return antwort
 
-    def _rpc(self, methode: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _rpc(self, methode: str, params: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         self._next_id += 1
         try:
-            antwort = self._post({"jsonrpc": "2.0", "id": self._next_id, "method": methode, "params": params})
+            antwort = self._post(
+                {"jsonrpc": "2.0", "id": self._next_id, "method": methode, "params": params}, timeout)
             sid = antwort.headers.get("mcp-session-id")
             if sid and not self._mcp_session:
                 self._mcp_session = sid
@@ -486,15 +490,16 @@ class PenEchoMcp:
             raise PenEchoNichtErreichbar("jsonrpc")
         return daten["result"]
 
-    def _werkzeug(self, name: str, argumente: dict[str, Any]) -> dict[str, Any]:
+    def _werkzeug(self, name: str, argumente: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+        """`timeout` (Sekunden) begrenzt den einen HTTP-Aufruf; dann gibt es auch keine Wiederholung."""
         for versuch in (1, 2):
             self._verbinden()
             try:
-                ergebnis = self._rpc("tools/call", {"name": name, "arguments": argumente})
+                ergebnis = self._rpc("tools/call", {"name": name, "arguments": argumente}, timeout)
             except _HttpFehler as fehler:
                 # Der MCP-Zugang verfaellt nach Leerlauf (404/400): neu verbinden, einmal wiederholen.
                 self._zuruecksetzen()
-                if versuch == 1 and fehler.status in (400, 404):
+                if versuch == 1 and fehler.status in (400, 404) and timeout is None:
                     continue
                 raise
             except PenEchoNichtErreichbar:
@@ -1077,8 +1082,9 @@ class PenEchoMcp:
         """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; der Rahmen liegt ausserhalb)."""
         return self._aufnahme(session_id, felder(rechteck).ergebnisfeld if rechteck is not None else ergebnisfeld(nummer))
 
-    def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
-        return self._aufnahme(session_id, rechteck if rechteck is not None else bereich(nummer))
+    def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None,
+                      timeout: float | None = None) -> bytes:
+        return self._aufnahme(session_id, rechteck if rechteck is not None else bereich(nummer), timeout)
 
     # ---- Listenkurs: Markenzeile und Ansicht ---------------------------------
     def bereiche_melden(self, session_id: str, bereiche: Sequence[dict[str, int]]) -> None:
@@ -1125,15 +1131,16 @@ class PenEchoMcp:
             objekt_id = min(belegung, key=lambda e: (e["bounds"]["y"], e["bounds"]["x"]))["objectId"]
         self._zeigen(session_id, objekt_id)
 
-    def _aufnahme(self, session_id: str, region: dict[str, int]) -> bytes:
+    def _aufnahme(self, session_id: str, region: dict[str, int], timeout: float | None = None) -> bytes:
         # schema.js:666 penecho_capture_canvas: target "region" verlangt region {x,y,w,h};
         # das Bild kommt als content-Eintrag type "image" (base64 in data), protocol.js:28-37.
+        grenze = {} if timeout is None else {"timeout": timeout}
         ergebnis = self._werkzeug("penecho_capture_canvas", {
             "sessionId": session_id,
             "target": "region",
             "region": region,
             "quality": "detail",
-        })
+        }, **grenze)
         for teil in ergebnis.get("content") or []:
             if isinstance(teil, dict) and teil.get("type") == "image" and isinstance(teil.get("data"), str):
                 try:

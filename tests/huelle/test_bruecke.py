@@ -102,6 +102,8 @@ class FakePenEcho:
         self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
         self.aufnahme_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je Schnappschuss
+        self.aufnahme_timeouts: list[float | None] = []
+        self.aufnahme_fehler: Any = None  # rechteck -> Exception | None
         self.bericht_rechtecke: list[dict[int, dict[str, int]] | None] = []
         self.rueckmeldung_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je rueckmeldung_setzen
 
@@ -171,9 +173,15 @@ class FakePenEcho:
             bereich(nummer)
         self._pruefen("rueckmeldung_setzen")
 
-    def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
+    def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None,
+                      timeout: float | None = None) -> bytes:
         self.aufrufe.append(("schnappschuss", session_id, nummer))
         self.aufnahme_rechtecke.append((nummer, rechteck))
+        self.aufnahme_timeouts.append(timeout)
+        if self.aufnahme_fehler is not None:
+            fehler = self.aufnahme_fehler(rechteck)
+            if fehler is not None:
+                raise fehler
         self._pruefen("schnappschuss")
         return self.bild
 
@@ -2567,6 +2575,12 @@ def _zf_offen(ll: ListenLern, penecho: FakePenEcho | None = None, **kw: Any):
     return client, penecho
 
 
+def _vereinigung(bereiche: list[dict[str, int]]) -> dict[str, int]:
+    x0, y0 = min(b["x"] for b in bereiche), min(b["y"] for b in bereiche)
+    return {"x": x0, "y": y0, "w": max(b["x"] + b["w"] for b in bereiche) - x0,
+            "h": max(b["y"] + b["h"] for b in bereiche) - y0}
+
+
 def test_zusammenfassung_route() -> None:
     ll = ListenLern(2)
     client, penecho = _zf_offen(ll)
@@ -2576,10 +2590,11 @@ def test_zusammenfassung_route() -> None:
         assert r.headers["content-type"] == "application/pdf" and r.content.startswith(b"%PDF")
         assert re.fullmatch(r'attachment; filename="zusammenfassung-testkurs-\d{4}-\d{2}-\d{2}\.pdf"',
                             r.headers["content-disposition"])
-        # Fläche (ganze) plus je Aufgabe ein Bild, jedes mit eigenem Rechteck.
+        # Erst je Aufgabe ein Bild mit eigenem Rechteck, die ganze Fläche zuletzt (die langsamste, heikelste Aufnahme).
         rechtecke = [rt for _, rt in penecho.aufnahme_rechtecke]
         bereiche = anordnung([False] * 2)
-        assert rechtecke[1:] == bereiche and rechtecke[0] is not None
+        assert rechtecke[:2] == bereiche and len(rechtecke) == 3
+        assert rechtecke[2] == _vereinigung(bereiche)
     finally:
         client.app.beenden()
 
@@ -2614,7 +2629,86 @@ def test_zusammenfassung_zeitbudget_laesst_restliche_bilder_weg() -> None:
         client.app._uhr = lambda: next(zeiten)
         r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
         assert r.status_code == 200 and r.content.startswith(b"%PDF")
-        assert len(penecho.aufnahme_rechtecke) == 1  # nur die Fläche; das Budget war vor Aufgabe 1 verbraucht
+        # Aufgabe 1 noch im Budget; vor Aufgabe 2 ist es verbraucht, danach keine Aufnahme mehr.
+        assert [n for n, _ in penecho.aufnahme_rechtecke] == [1]
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_zeitlimit_je_aufnahme_ist_der_rest_des_budgets() -> None:
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        zeiten = iter([0.0, 1.0, 12.0, 31.0, 40.0])
+        client.app._uhr = lambda: next(zeiten)
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert penecho.aufnahme_timeouts == [29.0, 18.0]  # die ganze Fläche (Rest -1 s) entfällt
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_ganze_flaeche_fehlt_aufgabenbilder_bleiben() -> None:
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        bereiche = anordnung([False] * 2)
+        ganz = _vereinigung(bereiche)
+        penecho.aufnahme_fehler = lambda rt: PenEchoNichtErreichbar("werkzeug") if rt == ganz else None
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+        assert [rt for _, rt in penecho.aufnahme_rechtecke] == [*bereiche, ganz]
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_werkzeugfehler_einer_aufgabe_stoppt_nicht() -> None:
+    ll = ListenLern(3)
+    client, penecho = _zf_offen(ll)
+    try:
+        bereiche = anordnung([False] * 3)
+        penecho.aufnahme_fehler = lambda rt: PenEchoNichtErreichbar("werkzeug") if rt == bereiche[0] else None
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert len(penecho.aufnahme_rechtecke) == 4
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_verbindungsfehler_stoppt_weitere_aufnahmen() -> None:
+    ll = ListenLern(3)
+    client, penecho = _zf_offen(ll)
+    try:
+        penecho.aufnahme_fehler = lambda rt: PenEchoNichtErreichbar("verbindung")
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+        assert len(penecho.aufnahme_rechtecke) == 1
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_ohne_gemerktes_board_oeffnet_und_legt_nichts_an() -> None:
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        client.app._sitzungen[SID].board = None
+        vorher = len(penecho.aufrufe)
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+        neu = penecho.aufrufe[vorher:]
+        assert [a for a in neu if a[0] in ("sitzung", "vergessen", "schnappschuss")] == []
+        assert client.app._sitzungen[SID].board is None
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_veraltete_sitzung_wird_nicht_neu_angelegt() -> None:
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        penecho.aufnahme_fehler = lambda rt: PenEchoSitzungUnbekannt("session_expired")
+        vorher = len([a for a in penecho.aufrufe if a[0] == "sitzung"])
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert len([a for a in penecho.aufrufe if a[0] == "sitzung"]) == vorher
+        assert len(penecho.aufnahme_rechtecke) == 1
     finally:
         client.app.beenden()
 
@@ -2623,14 +2717,19 @@ def _md_dateien(ordner) -> list:
     return sorted(ordner.glob("*.md"))
 
 
-def test_markdown_nur_mit_ordner(tmp_path) -> None:
+def test_markdown_nur_mit_ordner(tmp_path, monkeypatch) -> None:
     import dataclasses
 
+    from spaces.learning.huelle import bruecke as modul
+
+    aufrufe: list[object] = []
+    echt = modul.als_markdown
+    monkeypatch.setattr(modul, "als_markdown", lambda z: (aufrufe.append(z), echt(z))[1])
     ll = ListenLern(2)
     client, _ = _zf_offen(ll)
     try:
         assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
-        assert list(tmp_path.iterdir()) == []
+        assert aufrufe == []  # ohne Einstellung wird die Textfassung nicht einmal gebaut
     finally:
         client.app.beenden()
     ll = ListenLern(2)

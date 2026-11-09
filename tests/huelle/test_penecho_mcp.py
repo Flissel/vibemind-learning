@@ -188,6 +188,29 @@ def test_schnappschuss_liefert_png(zustand: Path) -> None:
     assert arg["region"] == bereich(2)
 
 
+def test_schnappschuss_zeitlimit_geht_an_den_http_aufruf_ohne_wiederholung(zustand: Path) -> None:
+    fake = Fake(tool_404=1)
+    zeiten: list[tuple[str, float | None]] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        name = body.get("params", {}).get("name") if body["method"] == "tools/call" else None
+        zeiten.append((name or body["method"], request.extensions["timeout"]["read"]))
+        return fake(request)
+
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(transport))
+    with pytest.raises(PenEchoNichtErreichbar):
+        c.schnappschuss("sess-1", 1, timeout=5.0)  # 404 -> mit Zeitlimit kein zweiter Versuch
+    aufnahmen = [t for n, t in zeiten if n == "penecho_capture_canvas"]
+    assert aufnahmen == [5.0]
+    assert [t for n, t in zeiten if n == "initialize"] == [60.0]  # Vorgabe bleibt fuer den Rest
+    fake2 = Fake()
+    zeiten.clear()
+    c2 = PenEchoMcp(zustand, transport=httpx.MockTransport(lambda r: (zeiten.append(r.extensions["timeout"]["read"]), fake2(r))[1]))
+    assert c2.schnappschuss("sess-1", 1).startswith(b"PNG", 1)
+    assert set(zeiten) == {60.0}
+
+
 def test_404_auf_werkzeugaufruf_reconnect_und_einmal_wiederholen(zustand: Path) -> None:
     # Ueber sitzung(): aufgabe_setzen liest seit F18 zuerst (optional) die Belegung.
     fake = Fake(tool_404=1)

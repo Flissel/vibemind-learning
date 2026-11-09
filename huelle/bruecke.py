@@ -875,7 +875,9 @@ class Bruecke:
                 "w": max(b["x"] + b["w"] for b in bereiche) - min(b["x"] for b in bereiche),
                 "h": max(b["y"] + b["h"] for b in bereiche) - min(b["y"] for b in bereiche),
             }
-            aufnahmen = self._aufnahmen(sitzung, [ganz, *bereiche])
+            # Erst die Aufgaben, die ganze Flaeche zuletzt (langsamste, heikelste Aufnahme).
+            bilder_roh = self._aufnahmen(sitzung, [*bereiche, ganz])
+            aufnahmen = [bilder_roh[-1], *bilder_roh[:-1]]
         zeilen = []
         for e, bild in zip(eintraege, aufnahmen[1:]):
             vor = e.get("vorbewertung")
@@ -887,28 +889,37 @@ class Bruecke:
         return Zusammenfassung(sitzung.kurs.titel, date.today(), aufnahmen[0], tuple(zeilen),
                                self._begriffe_zeilen(sitzung.kurs))
 
-    def _aufnahmen(self, sitzung: _Sitzung, rechtecke: list[dict[str, int]]) -> list[bytes | None]:
-        """Ein Bild je Rechteck, jedes kurz unter der Flaechensperre; das Zeitbudget gilt fuer alle zusammen.
+    @staticmethod
+    def _aufnahme_fehler_einzeln(fehler: Exception) -> bool:
+        """Ein Werkzeugfehler von PenEcho (z. B. Aufnahme-Zeitueberschreitung) betrifft nur dieses eine Bild."""
+        return type(fehler) is PenEchoNichtErreichbar and fehler.args in (("werkzeug",), ("bild",))
 
-        Nach dem ersten Fehler (Flaeche nicht erreichbar) oder nach Ablauf des Budgets entfallen die uebrigen.
+    def _aufnahmen(self, sitzung: _Sitzung, rechtecke: list[dict[str, int]]) -> list[bytes | None]:
+        """Ein Bild je Rechteck in dieser Reihenfolge; das Zeitbudget gilt fuer alle zusammen.
+
+        Nur auf dem gemerkten Board der zuletzt geoeffneten Sitzung: ein Lesezugriff oeffnet oder legt nie ein
+        Board an und wiederholt nie. Jede Aufnahme bekommt den Rest des Budgets als Zeitlimit, jede liegt kurz
+        unter der Flaechensperre. Ein Werkzeugfehler laesst nur dieses Bild weg; ein Verbindungsfehler oder ein
+        aufgebrauchtes Budget beendet die Aufnahmen.
         """
+        ergebnis: list[bytes | None] = [None] * len(rechtecke)
         start = self._uhr()
-        ergebnis: list[bytes | None] = []
-        offen = True
-        for nummer, rechteck in enumerate(rechtecke, start=0):
-            if offen and self._uhr() - start > BILD_BUDGET_S:
+        for i, rechteck in enumerate(rechtecke):
+            rest = BILD_BUDGET_S - (self._uhr() - start)
+            if rest <= 0:
                 log.warning("Zusammenfassung: Zeitbudget fuer Bilder aufgebraucht")
-                offen = False
-            bild = None
-            if offen:
-                try:
-                    bild = self._auf_flaeche(
-                        sitzung, lambda s, r=rechteck, n=max(nummer, 1): self._penecho.schnappschuss(s, n, rechteck=r)
-                    )
-                except Exception as fehler:  # noqa: BLE001 - ohne Bild gibt es das PDF trotzdem
-                    log.warning("Zusammenfassung: Bild nicht aufgenommen: %s", _typ(fehler))
-                    offen = False
-            ergebnis.append(bild)
+                break
+            try:
+                with self._flaeche_sperre:
+                    if not self._noch_offen(sitzung) or not sitzung.board:
+                        log.info("Zusammenfassung: kein gemerktes Board, keine Bilder")
+                        break
+                    ergebnis[i] = self._penecho.schnappschuss(
+                        sitzung.board, i + 1, rechteck=rechteck, timeout=rest)
+            except Exception as fehler:  # noqa: BLE001 - ohne Bild gibt es das PDF trotzdem
+                log.warning("Zusammenfassung: Bild nicht aufgenommen: %s", _typ(fehler))
+                if not self._aufnahme_fehler_einzeln(fehler):
+                    break
         return ergebnis
 
     def _begriffe_zeilen(self, kurs: Any) -> tuple[tuple[str, str], ...]:
