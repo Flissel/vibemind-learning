@@ -2896,6 +2896,32 @@ def test_liste_karte_unterwegs_stand_meldet_karte_ausstehend() -> None:
         bruecke.beenden()
 
 
+def test_liste_karte_endet_zwischen_den_lesungen_text_kommt_trotzdem() -> None:
+    """Die Spur legt den Text ab und raeumt ihre Arbeit weg, nachdem `_stand_aus` die Texte gelesen hat:
+    weder `karte` noch `karte_ausstehend` waere sonst gesetzt, und die Seite hoerte auf zu fragen."""
+    ll = ListenLern(2)
+    penecho = FakePenEcho()
+    _karte_verweigern(penecho)
+    client, penecho, _ = _listen_offen(ll, penecho)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        echt = bruecke._kartentexte_von
+        aufrufe = [0]
+
+        def erst_leer(sid: str) -> dict[int, str]:
+            aufrufe[0] += 1
+            return {} if aufrufe[0] == 1 else echt(sid)  # erste Lesung vor dem Ablegen des Textes
+
+        bruecke._kartentexte_von = erst_leer  # type: ignore[method-assign]
+        eintrag = _stand(client)["aufgaben"][1]
+        assert eintrag["status"] == "rueckmeldung"
+        assert eintrag.get("karte", "").startswith("Gelesen: 2") or eintrag.get("karte_ausstehend") is True
+    finally:
+        bruecke.beenden()
+
+
 def test_liste_oeffnen_karte_der_zweiten_aufgabe_unterwegs_karte_ausstehend() -> None:
     ll = ListenLern(2)
     ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="7")

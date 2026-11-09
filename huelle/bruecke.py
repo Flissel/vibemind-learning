@@ -1466,6 +1466,11 @@ class Bruecke:
             elif status == "rueckmeldung" and self._karte_unterwegs(sid, nummer):
                 # Die Karte ist noch nicht versucht: die Seite fragt weiter, bis sie steht oder `karte` da ist.
                 aufgaben[-1]["karte_ausstehend"] = True
+            elif status == "rueckmeldung":
+                # Die Spur kann den Text nach der ersten Lesung abgelegt und ihre Arbeit weggeraeumt haben.
+                nachgelesen = self._kartentexte_von(sid).get(nummer)
+                if nachgelesen is not None:
+                    aufgaben[-1]["karte"] = nachgelesen
         aktuell = next((a["nummer"] for a in aufgaben if a["status"] != "bestaetigt"), aufgaben[-1]["nummer"])
         return {"ablauf": "liste", "aktuell": aktuell, "wartend": self._modellspur.wartend(f"{sid}:abgabe:"),
                 "aufgaben": aufgaben}
