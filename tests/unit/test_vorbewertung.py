@@ -568,7 +568,7 @@ def test_migration_0020_legt_tabelle_an(tmp_path: Path) -> None:
         with engine.connect() as c:
             assert (
                 c.exec_driver_sql("SELECT version_num FROM learning_alembic_version").scalar_one()
-                == "0020_vorbewertungen"
+                == "0021_feste_liste"
             )
         spalten = {col["name"] for col in inspect(engine).get_columns("learning_vorbewertungen")}
         assert spalten == {

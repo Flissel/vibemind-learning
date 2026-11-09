@@ -92,6 +92,7 @@ class SessionStartCommand(_Command):
     actor_id: str = Field(min_length=1, max_length=128)
     mode: Literal["training", "exam"]
     blueprint: dict[str, object]
+    ablauf: Literal["anpassend", "liste"] = "anpassend"
 
     @field_validator("course_id")
     @classmethod
@@ -104,6 +105,8 @@ class AnswerCommand(_Command):
     actor_id: str = Field(min_length=1, max_length=128)
     expected_session_revision: int = Field(ge=1)
     answer: dict[str, object]
+    # Required in list sessions, where it addresses the attempt instead of the revision.
+    attempt_id: str | None = None
 
     @field_validator("session_id")
     @classmethod
@@ -124,6 +127,7 @@ class VorbewertungCommand(_Command):
     answer: dict[str, object] | None = None
     handschrift_png: bytes | None = Field(default=None, min_length=1)
     korrigiert_aus: str | None = None
+    attempt_id: str | None = None
 
     @field_validator("session_id")
     @classmethod
@@ -202,6 +206,18 @@ class Vorbewertung(BaseModel):
     feedback: TurnFeedback | None
 
 
+class ListenEintrag(BaseModel):
+    """One task of a fixed list with its state and the newest preview of its attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt_id: str
+    nummer: int = Field(ge=1)
+    task: PublicTask
+    status: Literal["offen", "bestaetigt"]
+    vorbewertung: Vorbewertung | None
+
+
 class AuditReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -236,6 +252,7 @@ class SessionTurn(BaseModel):
     session_revision: int
     state: Literal["active", "completed", "cancelled"]
     mode: Literal["training", "exam"]
+    ablauf: Literal["anpassend", "liste"] = "anpassend"
     task: PublicTask | None
     progress: SessionProgress
     feedback: TurnFeedback | None = None
@@ -294,7 +311,11 @@ class AdaptiveSessionService:
             items = self._catalog(db, command.course_id, command.course_revision)
             if not items:
                 raise LookupError("adaptive course revision has no approved items")
+            if command.ablauf == "liste" and command.mode != "training":
+                raise ValueError("list sessions are training only")
             blueprint = self._normalize_blueprint(command, items)
+            if command.ablauf == "liste":
+                blueprint = self._listen_blueprint(blueprint, items)
             row = LearningSession(
                 id=str(uuid4()),
                 course_id=command.course_id,
@@ -304,13 +325,17 @@ class AdaptiveSessionService:
                 state="active",
                 revision=1,
                 blueprint=blueprint,
+                ablauf=command.ablauf,
                 created_at=now,
                 updated_at=now,
                 completed_at=None,
             )
             db.add(row)
             db.flush()
-            self._append_next(db, row, items)
+            if command.ablauf == "liste":
+                self._append_liste(db, row, items)
+            else:
+                self._append_next(db, row, items)
             turn = self._turn(db, row)
         return self._with_readback(turn)
 
@@ -400,6 +425,52 @@ class AdaptiveSessionService:
             assert row is not None
             return self._with_readback(self._turn(db, row))
 
+    def aufgabenliste(self, session_id: str, *, actor_id: str) -> tuple[ListenEintrag, ...]:
+        """The fixed list of a list session: every task with state and newest preview."""
+        with self._session_factory() as db:
+            row = db.get(LearningSession, str(UUID(session_id)))
+            self._assert_owned(row, actor_id)
+            assert row is not None
+            if row.ablauf != "liste":
+                raise ValueError("only list sessions have a task list")
+            versuche = db.scalars(
+                select(LearningAttempt)
+                .where(LearningAttempt.session_id == row.id)
+                .order_by(LearningAttempt.ordinal)
+            ).all()
+            gebucht = set(
+                db.scalars(
+                    select(LearningResponse.attempt_id)
+                    .join(LearningAttempt, LearningAttempt.id == LearningResponse.attempt_id)
+                    .where(LearningAttempt.session_id == row.id)
+                )
+            )
+            eintraege: list[ListenEintrag] = []
+            for attempt in versuche:
+                item = db.get(AdaptiveItem, attempt.item_id)
+                if item is None:
+                    raise LookupError("adaptive item is unavailable")
+                neueste = db.scalar(
+                    select(LearningVorbewertung)
+                    .where(LearningVorbewertung.attempt_id == attempt.id)
+                    .order_by(
+                        LearningVorbewertung.created_at.desc(), LearningVorbewertung.id.desc()
+                    )
+                    .limit(1)
+                )
+                eintraege.append(
+                    ListenEintrag(
+                        attempt_id=attempt.id,
+                        nummer=attempt.ordinal,
+                        task=self._public_task(item, row.id),
+                        status="bestaetigt" if attempt.id in gebucht else "offen",
+                        vorbewertung=(
+                            self._vorbewertung_aus(neueste, item) if neueste is not None else None
+                        ),
+                    )
+                )
+            return tuple(eintraege)
+
     def has_revision(self, session_id: str, revision: int) -> bool:
         with self._session_factory() as db:
             row = db.get(LearningSession, str(UUID(session_id)))
@@ -409,7 +480,9 @@ class AdaptiveSessionService:
         now = self._aware_now()
         with self._session_factory() as db, db.begin():
             row = self._active_session(db, command.session_id, command.actor_id, lock=True)
-            attempt, item = self._open_attempt(db, row, command.expected_session_revision)
+            attempt, item = self._open_attempt(
+                db, row, command.expected_session_revision, command.attempt_id
+            )
             bewertung = self._bewerten(item, command.answer)
             turn = self._book(db, row, attempt, item, bewertung, now)
         return self._with_readback(turn)
@@ -424,7 +497,9 @@ class AdaptiveSessionService:
             row = self._active_session(db, command.session_id, command.actor_id, lock=False)
             if row.mode == "exam":
                 raise PermissionError("exam sessions have no preview grading")
-            attempt, item = self._open_attempt(db, row, command.expected_session_revision)
+            attempt, item = self._open_attempt(
+                db, row, command.expected_session_revision, command.attempt_id
+            )
             rubrik = self._vorschau_rubrik(item, command)
             if command.korrigiert_aus is not None:
                 korrigiert = db.get(LearningVorbewertung, command.korrigiert_aus)
@@ -462,7 +537,9 @@ class AdaptiveSessionService:
         now = self._aware_now()
         with self._session_factory() as db, db.begin():
             row = self._active_session(db, command.session_id, command.actor_id, lock=True)
-            attempt, _ = self._open_attempt(db, row, command.expected_session_revision)
+            attempt, _ = self._open_attempt(
+                db, row, command.expected_session_revision, command.attempt_id
+            )
             if attempt.id != attempt_id:
                 raise PersistenceConflict("vorbewertung not current")
             stored = LearningVorbewertung(
@@ -499,6 +576,7 @@ class AdaptiveSessionService:
         actor_id: str,
         expected_session_revision: int,
         vorbewertung_id: str,
+        attempt_id: str | None = None,
     ) -> SessionTurn:
         """Book exactly the stored preview ("Passt"): no new model call, the same ids."""
         now = self._aware_now()
@@ -506,15 +584,20 @@ class AdaptiveSessionService:
             row = self._active_session(db, str(UUID(session_id)), actor_id, lock=True)
             if row.mode == "exam":
                 raise PermissionError("exam sessions have no preview grading")
-            if row.revision != expected_session_revision:
+            liste = row.ablauf == "liste"
+            if not liste and row.revision != expected_session_revision:
                 raise PersistenceConflict("adaptive session revision conflict")
             stored = db.get(LearningVorbewertung, str(UUID(vorbewertung_id)))
             if stored is None or stored.session_id != row.id:
                 raise LookupError("vorbewertung is unknown")
-            attempt = self._current_attempt(db, row.id)
+            if liste:
+                attempt = self._listen_versuch(db, row, attempt_id)
+            else:
+                attempt = self._current_attempt(db, row.id)
             if (
                 attempt is None
                 or stored.attempt_id != attempt.id
+                or (attempt_id is not None and attempt_id != attempt.id)
                 or self._answered(db, attempt.id)
             ):
                 raise PersistenceConflict("vorbewertung not current")
@@ -535,12 +618,26 @@ class AdaptiveSessionService:
         return row
 
     def _open_attempt(
-        self, db: Session, row: LearningSession, expected_revision: int
+        self,
+        db: Session,
+        row: LearningSession,
+        expected_revision: int,
+        attempt_id: str | None = None,
     ) -> tuple[LearningAttempt, AdaptiveItem]:
-        """The current, unanswered attempt of a session at the expected revision."""
-        if row.revision != expected_revision:
-            raise PersistenceConflict("adaptive session revision conflict")
-        attempt = self._current_attempt(db, row.id)
+        """The unanswered attempt to work on.
+
+        Adaptive sessions: the current attempt at the expected revision (a given
+        `attempt_id` must be it). List sessions: the attempt named by `attempt_id`; the
+        revision is not checked, so open submissions do not block each other.
+        """
+        if row.ablauf == "liste":
+            attempt = self._listen_versuch(db, row, attempt_id)
+        else:
+            if row.revision != expected_revision:
+                raise PersistenceConflict("adaptive session revision conflict")
+            attempt = self._current_attempt(db, row.id)
+            if attempt is not None and attempt_id is not None and attempt_id != attempt.id:
+                raise PersistenceConflict("vorbewertung not current")
         if attempt is None:
             raise PersistenceConflict("adaptive session has no current task")
         if self._answered(db, attempt.id):
@@ -573,7 +670,13 @@ class AdaptiveSessionService:
         row.revision += 1
         row.updated_at = now
         total = self._total(row)
-        if attempt.ordinal >= total:
+        if row.ablauf == "liste":
+            # Every attempt exists already: the list ends with the last unanswered one.
+            db.flush()
+            if self._offene_versuche(db, row.id) == 0:
+                row.state = "completed"
+                row.completed_at = now
+        elif attempt.ordinal >= total:
             row.state = "completed"
             row.completed_at = now
         else:
@@ -585,6 +688,22 @@ class AdaptiveSessionService:
             else None
         )
         return self._turn(db, row, feedback=feedback, answer_audit=audit)
+
+    def _vorbewertung_aus(self, stored: LearningVorbewertung, item: AdaptiveItem) -> Vorbewertung:
+        """A stored preview as the model `vorbewerten` returns."""
+        bewertung = self._bewertung_aus(stored) if stored.lesbar else None
+        gelesen = stored.gelesen if isinstance(stored.gelesen, dict) else None
+        return Vorbewertung(
+            id=stored.id,
+            attempt_id=stored.attempt_id,
+            quelle=stored.quelle,
+            lesbar=stored.lesbar,
+            gelesen_text=str(gelesen.get("text", "")) if gelesen is not None else None,
+            art="rubric" if item.item_type not in _DETERMINISTIC_TYPES else "deterministic",
+            score=bewertung.score if bewertung is not None else None,
+            accepted=bewertung.accepted if bewertung is not None else None,
+            feedback=self._feedback_aus(bewertung) if bewertung is not None else None,
+        )
 
     @staticmethod
     def _vorschau_rubrik(item: AdaptiveItem, command: VorbewertungCommand) -> bool:
@@ -1211,6 +1330,71 @@ class AdaptiveSessionService:
         db.flush()
         return attempt
 
+    def _append_liste(
+        self, db: Session, row: LearningSession, items: tuple[AdaptiveItem, ...]
+    ) -> None:
+        """Create every attempt of a list session in list order (one revision step)."""
+        by_id = {item.id: item for item in items}
+        now = self._aware_now()
+        for ordinal, item_id in enumerate(row.blueprint["liste"], start=1):
+            db.add(
+                LearningAttempt(
+                    id=str(uuid4()),
+                    session_id=row.id,
+                    item_id=by_id[item_id].id,
+                    course_id=row.course_id,
+                    course_revision=row.course_revision,
+                    ordinal=ordinal,
+                    selection_reason={"mode": "liste", "ordinal": ordinal},
+                    selected_at=now,
+                )
+            )
+        row.revision += 1
+        row.updated_at = now
+        db.flush()
+
+    @staticmethod
+    def _listen_blueprint(
+        blueprint: dict[str, object], items: tuple[AdaptiveItem, ...]
+    ) -> dict[str, object]:
+        """The fixed list: approved items (of the asked types) by place, then activity id."""
+        types = blueprint.get("item_types")
+        chosen = [item for item in items if not types or item.item_type in types]
+        chosen.sort(
+            key=lambda item: (
+                item.listen_platz is None,
+                item.listen_platz or 0,
+                item.activity_id,
+                item.id,
+            )
+        )
+        return {**blueprint, "max_attempts": len(chosen), "liste": [item.id for item in chosen]}
+
+    def _listen_versuch(
+        self, db: Session, row: LearningSession, attempt_id: str | None
+    ) -> LearningAttempt:
+        """The attempt of a list session named by `attempt_id`."""
+        if attempt_id is None:
+            raise ValueError("list sessions need attempt_id")
+        attempt = db.get(LearningAttempt, attempt_id)
+        if attempt is None or attempt.session_id != row.id:
+            raise LookupError("attempt is unknown")
+        return attempt
+
+    @staticmethod
+    def _offene_versuche(db: Session, session_id: str) -> int:
+        return (
+            db.scalar(
+                select(func.count(LearningAttempt.id))
+                .outerjoin(LearningResponse, LearningResponse.attempt_id == LearningAttempt.id)
+                .where(
+                    LearningAttempt.session_id == session_id,
+                    LearningResponse.id.is_(None),
+                )
+            )
+            or 0
+        )
+
     def _select_item(
         self,
         db: Session,
@@ -1350,6 +1534,7 @@ class AdaptiveSessionService:
             session_revision=row.revision,
             state=row.state,
             mode=row.mode,
+            ablauf=row.ablauf,
             task=task,
             progress=self._progress(db, row),
             feedback=feedback,
@@ -1527,6 +1712,21 @@ class AdaptiveSessionService:
 
     @staticmethod
     def _current_attempt(db: Session, session_id: str) -> LearningAttempt | None:
+        row = db.get(LearningSession, session_id)
+        if row is not None and row.ablauf == "liste":
+            # The next open task of the list; when all are answered, the last one.
+            offen = db.scalar(
+                select(LearningAttempt)
+                .outerjoin(LearningResponse, LearningResponse.attempt_id == LearningAttempt.id)
+                .where(
+                    LearningAttempt.session_id == session_id,
+                    LearningResponse.id.is_(None),
+                )
+                .order_by(LearningAttempt.ordinal)
+                .limit(1)
+            )
+            if offen is not None:
+                return offen
         return db.scalar(
             select(LearningAttempt)
             .where(LearningAttempt.session_id == session_id)

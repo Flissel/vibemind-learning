@@ -207,7 +207,7 @@ class WerkstattKatalog:
                 # The release passed the Werkstatt checks; blocking findings stop it earlier.
                 quality_status="approved", expected_answer=erwartet,
                 scoring_config=scoring_config,
-                rubric=rubrik,
+                rubric=rubrik, listen_platz=i + 1,
             ))
             session.flush()
             for konzept in dict.fromkeys(inhalt.concept_ids):

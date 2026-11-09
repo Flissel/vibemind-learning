@@ -89,6 +89,10 @@ class AdaptiveItem(Base):
             "'numeric','fill_in','open','case','code','penecho_canvas')"
         ),
         CheckConstraint("quality_status IN ('approved','review','rejected')"),
+        CheckConstraint(
+            "listen_platz IS NULL OR listen_platz >= 1",
+            name="ck_learning_adaptive_items_listen_platz",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -101,6 +105,7 @@ class AdaptiveItem(Base):
     expected_answer: Mapped[dict] = mapped_column(JSON, nullable=False)
     scoring_config: Mapped[dict] = mapped_column(JSON, nullable=False)
     rubric: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    listen_platz: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -145,6 +150,10 @@ class LearningSession(Base):
         CheckConstraint("revision >= 1"),
         CheckConstraint("mode IN ('training','exam')"),
         CheckConstraint("state IN ('active','completed','cancelled')"),
+        CheckConstraint(
+            "ablauf IN ('anpassend','liste')",
+            name="ck_learning_adaptive_sessions_ablauf",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -155,6 +164,9 @@ class LearningSession(Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     blueprint: Mapped[dict] = mapped_column(JSON, nullable=False)
+    ablauf: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="anpassend", server_default="anpassend"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

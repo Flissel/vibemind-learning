@@ -968,3 +968,18 @@ def test_belegfilter_kuerzt_nur_die_anzeige_nicht_die_bewertungsquellen(tmp_path
     config = _items(factory, 1)["skizze"].scoring_config
     assert len(config["source_refs"]) == 3 and len(config["anzeige_refs"]) == 1
     assert config["anzeige_refs"][0] in refs and len(config["hints"]) == 1
+
+
+def test_werkstatt_setzt_listen_platz(tmp_path):
+    factory = _factory(tmp_path)
+    eintraege = [
+        _eintrag("zeta", _quiz("Welcher Befehl listet Dateien auf?", "k1")),
+        _eintrag("alpha", _quiz("Welcher Befehl wechselt den Ordner?", "k2", ["b"])),
+        _eintrag("mitte", _quiz("Welcher Befehl zeigt den Ordner?", "k3", ["c"])),
+    ]
+
+    WerkstattKatalog(factory).projizieren(COURSE, 3, eintraege, None)
+
+    items = _items(factory, 3)
+    # The author's order, not the alphabet of the keys.
+    assert [items[k].listen_platz for k in ("zeta", "alpha", "mitte")] == [1, 2, 3]
