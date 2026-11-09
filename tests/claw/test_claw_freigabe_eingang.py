@@ -418,3 +418,39 @@ def test_standard_oeffner_vertraut_auch_certifi(tmp_path: Path, monkeypatch: pyt
     assert kontext.verify_mode == ssl.CERT_REQUIRED and kontext.check_hostname
     namen = {wert for c in kontext.get_ca_certs() for teil in c["subject"] for (k, wert) in teil if k == "commonName"}
     assert "ISRG Root X2" in namen
+
+
+def test_neu_ausliefern_wird_gemeldet(api: Api, eingang: FakeEingang) -> None:
+    api.vorbereitet = _vorbereitet()
+    api.vorbereitet["vergleich"]["neu_ausliefern"] = True
+    werkzeuge.werkstatt_freigabe_anzeigen(COURSE, neu_ausliefern=True)
+    assert eingang.eintraege[0][4] == {"course_id": COURSE, "nummer": 3, "neu_ausliefern": True}
+
+
+def test_auftrag_uebernimmt_neu_ausliefern_aus_dem_eintrag() -> None:
+    """Der Sales-Knopf darf eine Neu-Auslieferung nicht in "nichts zu veroeffentlichen" verwandeln."""
+    fake = FakeEingang(
+        auftraege=[{"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}}],
+        offene=[{"art": "kursfreigabe", "quelle_ref": f"kurs:{COURSE}",
+                 "details": {"course_id": COURSE, "nummer": 5, "neu_ausliefern": True}}],
+    )
+    gerufen: list[tuple[str, dict[str, Any]]] = []
+
+    def anzeigen(course_id: str, **kwargs: Any) -> dict[str, Any]:
+        gerufen.append((course_id, kwargs))
+        return {"ok": True, "daten": {"handy_link_gesendet": True}}
+
+    freigabe_eingang.abholer_einmal(fake, anzeigen=anzeigen, freigaben_lesen=lambda c: [])
+    assert gerufen == [(COURSE, {"neu_ausliefern": True})]
+    assert fake.ergebnisse == [("a1", True, None)]
+
+
+@pytest.mark.parametrize("feld", ["nichts_zu_veroeffentlichen", "blockiert"])
+def test_nicht_freigebbar_ist_kein_erfolg(feld: str) -> None:
+    """Ein Link auf eine Seite mit ausgegrautem Knopf ist kein Erfolg."""
+    fake = FakeEingang(auftraege=[{"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}}])
+    freigabe_eingang.abholer_einmal(
+        fake, anzeigen=lambda c: {"ok": True, "daten": {"handy_link_gesendet": True, feld: True}},
+        freigaben_lesen=lambda c: [],
+    )
+    assert fake.ergebnisse == [("a1", False, feld)]

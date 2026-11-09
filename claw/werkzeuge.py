@@ -1044,15 +1044,17 @@ def _freigabe_melden(inhalt: dict[str, Any]) -> None:
         course_id = str(inhalt["course_id"])
         nummer = int(inhalt["nummer"])
         titel = f"Kurs „{str(inhalt['titel']).replace('@', '')}“ freigeben"[:200]
+        details: dict[str, Any] = {"course_id": course_id, "nummer": nummer}
+        vergleich = inhalt.get("vergleich")
+        if isinstance(vergleich, dict) and vergleich.get("neu_ausliefern") is True:
+            # Sonst bereitet der Sales-Knopf eine Freigabe ohne Aenderung vor: Knopf ausgegraut.
+            details["neu_ausliefern"] = True
 
         def arbeit() -> None:
             try:
                 eingang = _eingang()
                 if eingang is not None:
-                    eingang.eintragen(
-                        "kursfreigabe", f"kurs:{course_id}", titel, None,
-                        {"course_id": course_id, "nummer": nummer},
-                    )
+                    eingang.eintragen("kursfreigabe", f"kurs:{course_id}", titel, None, details)
             except Exception as error:
                 logger.warning("Freigabe-Eingang: Meldung fehlgeschlagen (%s)", type(error).__name__)
 

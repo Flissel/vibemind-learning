@@ -150,11 +150,11 @@ def _kurs_id(wert: object) -> str | None:
     return wert if isinstance(wert, str) and _KURS_ID.fullmatch(wert) else None
 
 
-def _anzeigen_standard(course_id: str) -> dict[str, Any]:
+def _anzeigen_standard(course_id: str, neu_ausliefern: bool = False) -> dict[str, Any]:
     # Lazy: werkzeuge importiert dieses Modul fuer den Meldehaken.
     from . import werkzeuge
 
-    return werkzeuge.werkstatt_freigabe_anzeigen(course_id)
+    return werkzeuge.werkstatt_freigabe_anzeigen(course_id, neu_ausliefern=neu_ausliefern)
 
 
 def _freigaben_standard(course_id: str) -> list[dict[str, Any]]:
@@ -184,8 +184,23 @@ def _jetzt_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable[[str], dict[str, Any]],
-                        jetzt: Callable[[], datetime] = _jetzt_utc) -> None:
+def _neu_ausliefern_kurse(offene: list[dict[str, Any]]) -> set[str]:
+    """Kurse, deren offener Eintrag eine Neu-Auslieferung ist (Merkmal `details.neu_ausliefern`)."""
+    kurse: set[str] = set()
+    for eintrag in offene:
+        details = eintrag.get("details")
+        ref = eintrag.get("quelle_ref")
+        if isinstance(details, dict) and details.get("neu_ausliefern") is True and isinstance(ref, str) \
+                and ref.startswith("kurs:"):
+            course_id = _kurs_id(ref[len("kurs:"):])
+            if course_id is not None:
+                kurse.add(course_id)
+    return kurse
+
+
+def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable[..., dict[str, Any]],
+                        jetzt: Callable[[], datetime] = _jetzt_utc,
+                        neu_ausliefern: frozenset[str] | set[str] = frozenset()) -> None:
     auftrag_id = auftrag.get("id")
     if not isinstance(auftrag_id, str) or not auftrag_id:
         return
@@ -203,7 +218,7 @@ def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable
         client.ergebnis(auftrag_id, False, "ungueltig")
         return
     try:
-        antwort = anzeigen(course_id)
+        antwort = anzeigen(course_id, neu_ausliefern=True) if course_id in neu_ausliefern else anzeigen(course_id)
     except Exception as e:
         LOG.warning("Freigabe-Abholer: Anzeigen fehlgeschlagen (%s)", type(e).__name__)
         client.ergebnis(auftrag_id, False, type(e).__name__)
@@ -216,6 +231,11 @@ def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable
         # Sonst meldete der Server dem Betreiber "Link gesendet", obwohl nichts ankam.
         client.ergebnis(auftrag_id, False, "kein_link")
         return
+    for feld in ("blockiert", "nichts_zu_veroeffentlichen"):
+        if daten.get(feld) is True:
+            # Der Link fuehrt auf eine Seite mit ausgegrautem Knopf: kein Erfolg.
+            client.ergebnis(auftrag_id, False, feld)
+            return
     client.ergebnis(auftrag_id, True)
 
 
@@ -231,10 +251,13 @@ def abholer_einmal(
     anzeigen = anzeigen or _anzeigen_standard
     freigaben_lesen = freigaben_lesen or _freigaben_standard
     n = 0
-    for auftrag in client.auftraege() or []:
-        _auftrag_bearbeiten(client, auftrag, anzeigen, jetzt or _jetzt_utc)
+    auftraege = client.auftraege() or []
+    offene = client.offene() or []
+    neu = _neu_ausliefern_kurse(offene) if auftraege else set()
+    for auftrag in auftraege:
+        _auftrag_bearbeiten(client, auftrag, anzeigen, jetzt or _jetzt_utc, neu)
         n += 1
-    for eintrag in client.offene() or []:
+    for eintrag in offene:
         ref = eintrag.get("quelle_ref")
         if not isinstance(ref, str) or not ref.startswith("kurs:"):
             continue
