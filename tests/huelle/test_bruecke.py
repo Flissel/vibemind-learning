@@ -2228,6 +2228,40 @@ def test_doppelte_abgabe() -> None:
         bruecke.beenden()
 
 
+def test_passt_ueberspringt_aufgabe_in_bewertung() -> None:
+    # Abnahme A2 (Befund 3): „Passt“ sprang auf eine abgegebene Aufgabe, die noch bewertet wurde.
+    ll = ListenLern(4)
+    ll.eintraege[2]["vorbewertung"] = _vor(vid=_vid(3), gelesen="3")
+    halt = ll.halten(4)
+    client, penecho, _ = _listen_offen(ll)
+    bruecke = client.app
+    bereiche = anordnung([False] * 4)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 4}).status_code == 202
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 3, "vorbewertung_id": _vid(3)})
+        assert r.status_code == 200, r.text
+        assert r.json()["weiter_zu"] == 1
+        assert ("bereich_zeigen", "pe-1", bereiche[0]) in penecho.aufrufe[vorher:]
+    finally:
+        halt.set()
+        _bis(lambda: _ruhig(bruecke), 2)
+        bruecke.beenden()
+
+
+def test_naechste_offene_nimmt_bewertete_nur_als_letzte_wahl() -> None:
+    from spaces.learning.huelle.bruecke import _naechste_offene
+
+    def liste(*status: str) -> list[dict[str, Any]]:
+        return [{"nummer": i, "status": s} for i, s in enumerate(status, start=1)]
+
+    assert _naechste_offene(liste("offen", "bestaetigt", "in_bewertung", "rueckmeldung"), 2) == 4
+    assert _naechste_offene(liste("in_bewertung", "bestaetigt", "in_bewertung", "offen"), 2) == 4
+    # Nur noch Aufgaben in Bewertung: dann doch die naechste davon (sonst stuende die Ansicht still).
+    assert _naechste_offene(liste("in_bewertung", "bestaetigt", "in_bewertung"), 2) == 3
+    assert _naechste_offene(liste("bestaetigt", "bestaetigt"), 1) is None
+
+
 def test_passt_waehrend_bewertung() -> None:
     ll = ListenLern(5)
     ll.eintraege[2]["vorbewertung"] = _vor(vid=_vid(3), gelesen="3")

@@ -277,12 +277,14 @@ def _listeneintraege(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _naechste_offene(aufgaben: list[dict[str, Any]], ab: int) -> int | None:
-    """Erste Nummer nach `ab` mit Status != bestaetigt, am Ende von vorn (wie `liste.js` naechsteOffene)."""
+    """Erste Nummer nach `ab`, am Ende von vorn, die weder bestaetigt ist noch gerade bewertet wird; gibt es
+    keine, die erste nicht bestaetigte (wie `liste.js` naechsteOffene, A2 Befund 3)."""
     n = len(aufgaben)
-    for schritt in range(1, n + 1):
-        a = aufgaben[(ab - 1 + schritt) % n]
-        if a["status"] != "bestaetigt":
-            return a["nummer"]
+    reihe = [aufgaben[(ab - 1 + schritt) % n] for schritt in range(1, n + 1)]
+    for ueberspringen in (("bestaetigt", "in_bewertung"), ("bestaetigt",)):
+        for a in reihe:
+            if a["status"] not in ueberspringen:
+                return a["nummer"]
     return None
 
 

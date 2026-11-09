@@ -38,14 +38,19 @@ export function zusammenfassungSessionId(liste, listeEnde, turn) {
 
 const nummerVon = (a, i) => (Number.isInteger(a?.nummer) ? a.nummer : i + 1);
 
-/** Erste Nummer nach `ab` mit Status ≠ bestaetigt, am Ende von vorn; null, wenn alle bestätigt sind. */
+/**
+ * Erste Nummer nach `ab`, am Ende von vorn, die weder bestätigt ist noch gerade bewertet wird; gibt es keine,
+ * die erste nicht bestätigte (Abnahme A2, Befund 3). null, wenn alle bestätigt sind. Wie bruecke._naechste_offene.
+ */
 export function naechsteOffene(aufgaben, ab) {
   if (!Array.isArray(aufgaben) || aufgaben.length === 0) return null;
   const n = aufgaben.length;
   const start = aufgaben.findIndex((a, i) => nummerVon(a, i) === ab);
-  for (let schritt = 1; schritt <= n; schritt += 1) {
-    const i = (start + schritt + n) % n;
-    if (aufgaben[i]?.status !== "bestaetigt") return nummerVon(aufgaben[i], i);
+  for (const ueberspringen of [["bestaetigt", "in_bewertung"], ["bestaetigt"]]) {
+    for (let schritt = 1; schritt <= n; schritt += 1) {
+      const i = (start + schritt + n) % n;
+      if (!ueberspringen.includes(aufgaben[i]?.status)) return nummerVon(aufgaben[i], i);
+    }
   }
   return null;
 }

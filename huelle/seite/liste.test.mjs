@@ -17,7 +17,10 @@ test("naechsteOffene: nimmt die Nummern der Einträge, jeder andere Status zähl
     { nummer: 3, status: "bestaetigt" }, { nummer: 4, status: "fehler" },
   ];
   assert.equal(naechsteOffene(liste, 2), 4);
-  assert.equal(naechsteOffene(liste, 4), 2);
+  // Aufgaben in Bewertung nur als letzte Wahl (Abnahme A2, Befund 3).
+  assert.equal(naechsteOffene(liste, 4), 4);
+  assert.equal(naechsteOffene([b, { nummer: 2, status: "in_bewertung" }, b], 1), 2);
+  assert.equal(naechsteOffene([b, { status: "in_bewertung" }, b, o], 1), 4);
   assert.equal(naechsteOffene([], 1), null);
   assert.equal(naechsteOffene(null, 1), null);
 });
