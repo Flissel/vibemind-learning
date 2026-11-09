@@ -15,6 +15,16 @@
     <select id="kurs" aria-label="Kurs"></select>
   </label>
   <p id="fortschritt" class="fortschritt" aria-live="polite"></p>
+  <div id="listenkopf" class="listenkopf" role="group" aria-label="Aufgabenwahl" hidden>
+    <button type="button" id="aufgabe-zurueck" aria-label="Vorige Aufgabe">‹</button>
+    <label class="aufgabenwahl">
+      <span class="nur-leser">Aufgabe</span>
+      <select id="aufgabe-wahl" aria-label="Aufgabe"></select>
+    </label>
+    <button type="button" id="aufgabe-vor" aria-label="Nächste Aufgabe">›</button>
+    <span id="aufgabe-status" class="aufgabe-status" aria-live="polite"></span>
+    <span id="warte-text" class="warte-text" aria-live="polite"></span>
+  </div>
   <div class="umschalter" role="group" aria-label="Anordnung">
     <button type="button" id="layout-a" data-layout="a" aria-pressed="true">Fläche groß</button>
     <button type="button" id="layout-c" data-layout="c" aria-pressed="false">Geteilt</button>

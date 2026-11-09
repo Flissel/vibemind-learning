@@ -17,6 +17,17 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 }
 .kurswahl select { min-height: 2.5rem; max-width: 14rem; padding: 0 .5rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; }
 .fortschritt { flex: 1 1 8rem; margin: 0; font-weight: 600; min-width: 0; }
+/* Listenkurs: „‹ Aufgabe k von n ›“, Status der gewählten Aufgabe, wartende Abgaben. */
+.listenkopf { flex: 1 1 16rem; display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .5rem; min-width: 0; }
+.listenkopf > button { min-width: 2.5rem; min-height: 2.5rem; padding: 0 .6rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; font-weight: 600; }
+.aufgabenwahl select { min-height: 2.5rem; max-width: 12rem; padding: 0 .5rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; font-weight: 600; }
+.aufgabe-status { font-size: .9rem; padding: .1rem .5rem; border-radius: 1rem; background: #f0eee8; color: #55524a; overflow-wrap: anywhere; }
+.aufgabe-status:empty, .warte-text:empty { display: none; }
+.aufgabe-status[data-status="in_bewertung"] { background: #eef3f8; color: #24507d; }
+.aufgabe-status[data-status="rueckmeldung"] { background: #fff6dc; color: #5c4600; }
+.aufgabe-status[data-status="bestaetigt"] { background: #e7f3eb; color: #1d5c32; }
+.aufgabe-status[data-status="fehler"] { background: #fdecea; color: #8a1c13; }
+.warte-text { font-size: .9rem; color: #55524a; }
 .umschalter { display: flex; gap: .25rem; }
 .umschalter button { min-height: 2.5rem; padding: 0 .9rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff; }
 .umschalter button[aria-pressed="true"] { background: #17191c; color: #fff; }
@@ -128,4 +139,5 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .flaechenleiste { left: .5rem; align-items: flex-end; }
   .leisten-hinweis, .korrektur { max-width: 100%; }
   .kurswahl select { max-width: 100%; }
+  .listenkopf { flex-basis: 100%; }
 }

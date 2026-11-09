@@ -100,10 +100,25 @@ def test_seite_nur_mit_cookie() -> None:
 
 def test_seitendateien_vollstaendig() -> None:
     for name in ("index.html", "huelle.css", "huelle.js", "aufgabe.js", "aufgabe.test.mjs", "flaeche.js",
-                 "flaeche.test.mjs"):
+                 "flaeche.test.mjs", "liste.js", "liste.test.mjs"):
         assert (Path(SEITE) / name).is_file()
-    # flaecheSpeichern() muss fuer huelle.js ladbar sein.
+    # flaecheSpeichern() und die Listenhilfen muessen fuer huelle.js ladbar sein.
     assert DATEIEN["flaeche.js"] == ("flaeche.js", "text/javascript; charset=utf-8")
+    assert DATEIEN["liste.js"] == ("liste.js", "text/javascript; charset=utf-8")
+    assert 'from "./liste.js"' in (Path(SEITE) / "huelle.js").read_text(encoding="utf-8")
+
+
+def test_listenkopf_ist_verdrahtet() -> None:
+    html = (SEITE / "index.html").read_text(encoding="utf-8")
+    kopf = html.split('<header class="kopf">')[1].split("</header>")[0]
+    for kennung in ("listenkopf", "aufgabe-zurueck", "aufgabe-wahl", "aufgabe-vor", "aufgabe-status", "warte-text"):
+        assert f'id="{kennung}"' in kopf, kennung
+    assert 'id="listenkopf" class="listenkopf" role="group" aria-label="Aufgabenwahl" hidden' in kopf
+    js = (SEITE / "huelle.js").read_text(encoding="utf-8")
+    for route in ("/stand", "/zeigen"):
+        assert route in js, route
+    # CSP: keine Inline-Styles, auch nicht in erzeugtem HTML.
+    assert "style=" not in js and "style=" not in html
 
 
 def test_build_apps_zwei_herkuenfte_eine_sperre() -> None:

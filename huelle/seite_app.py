@@ -31,6 +31,7 @@ DATEIEN = {
     "huelle.js": ("huelle.js", "text/javascript; charset=utf-8"),
     "aufgabe.js": ("aufgabe.js", "text/javascript; charset=utf-8"),
     "flaeche.js": ("flaeche.js", "text/javascript; charset=utf-8"),
+    "liste.js": ("liste.js", "text/javascript; charset=utf-8"),
 }
 
 

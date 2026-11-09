@@ -7,6 +7,12 @@ einer Sperre des Ablaufs; PenEchoMcp ist nicht fuer parallele Aufrufe gebaut. Se
 Flaechenspur gibt (Listenkurse: Aufgaben im Hintergrund setzen), laeuft zudem jeder Aufruf an die
 Flaeche unter `_flaeche_sperre` (`_auf_flaeche`, `_board_merken`, die Arbeiten der Spur).
 
+Listenkurse (Body mit `nummer`): `abgeben` nimmt das Bild synchron unter der Flaechensperre auf und reiht
+die Vorbewertung in die Modellspur ein (ohne Sperre, ohne `_ablauf`), Antwort sofort 202. Die fertige
+Karte setzt die Flaechenspur (vorrang 0). `_ablauf` umfasst nur noch kurze Learning-Buchungen (passt,
+korrektur, oeffnen), nie einen Modellaufruf. `stand` liefert den Status je Aufgabe, `zeigen` holt eine
+Aufgabe ins Bild.
+
 Flaeche zuerst: `abgeben` (Schnappschuss -> Vorbewertung -> Karte), `korrektur` („Falsch
 gelesen“/„Selbst eintippen“: getippte Antwort mit `korrigiert_aus`) und `passt` (Vorbewertung
 buchen). „Ueberarbeiten“ braucht keine Route. Die Bruecke merkt sich keine Vorbewertung: ihre
@@ -91,6 +97,9 @@ NUR_UEBEN = "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vor
 NICHT_BESTAETIGT = (
     "Diese Rückmeldung lässt sich nicht bestätigen. Bitte überarbeiten Sie Ihr Ergebnis oder tippen Sie es selbst ein."
 )
+# Listenkurs: Abgaben im Hintergrund (409 mit code).
+LAEUFT_SCHON = "Diese Aufgabe wird gerade bewertet."
+SCHON_BESTAETIGT = "Diese Aufgabe ist schon bestätigt."
 # Text der Rueckmeldungskarte unter dem Urteil (nur Richtigkeit, nie die Zahl der Versuche).
 KARTE_RICHTIG = "Gut gemacht."
 KARTE_NOCH_NICHT = (
@@ -154,6 +163,15 @@ class _Sitzung:
     tutor: list[tuple[str, str]] = field(default_factory=list)
     tutor_aufgabe: str | None = None
     bericht_gezeigt: bool = False   # Bericht dieser Sitzung steht auf dem Board
+    liste: bool = False             # Listenkurs (Turn mit `ablauf == "liste"`): Routen mit `nummer`
+
+
+@dataclass(frozen=True)
+class _Abgabe:
+    """Abgabestand einer Listenaufgabe, nur im Speicher; nach einem Neustart zaehlt allein Learning."""
+
+    status: str                     # "in_bewertung" | "fehler"
+    meldung: str | None = None      # nur bei "fehler": Text fuer die Lernenden
 
 
 def _uuid(wert: str) -> str | None:
@@ -241,6 +259,7 @@ def _listeneintraege(result: dict[str, Any]) -> list[dict[str, Any]]:
         task = e.get("task") if isinstance(e, dict) else None
         if (isinstance(nummer, bool) or not isinstance(nummer, int) or not isinstance(task, dict)
                 or not isinstance(task.get("id"), str) or e.get("status") not in _LISTEN_STATUS
+                or not isinstance(e.get("attempt_id"), str) or not e["attempt_id"]
                 or not isinstance(e.get("vorbewertung"), (dict, type(None)))):
             raise LearningWeg("aufgaben")
         _medien({"task": task})
@@ -249,6 +268,23 @@ def _listeneintraege(result: dict[str, Any]) -> list[dict[str, Any]]:
     if [e["nummer"] for e in eintraege] != list(range(1, len(eintraege) + 1)):
         raise LearningWeg("aufgaben")
     return eintraege
+
+
+def _naechste_offene(aufgaben: list[dict[str, Any]], ab: int) -> int | None:
+    """Erste Nummer nach `ab` mit Status != bestaetigt, am Ende von vorn (wie `liste.js` naechsteOffene)."""
+    n = len(aufgaben)
+    for schritt in range(1, n + 1):
+        a = aufgaben[(ab - 1 + schritt) % n]
+        if a["status"] != "bestaetigt":
+            return a["nummer"]
+    return None
+
+
+def _ablehnungstext(code: str) -> str:
+    """Text zu einer Ablehnung der Vorbewertung, wie `_vorbewertung_abgelehnt`/`_stand_neu` (Ruling H)."""
+    if code == "session_access_denied":
+        return NUR_UEBEN
+    return SCHON_ABGEGEBEN if code in _SCHON_ABGEGEBEN_CODES else NICHT_ANGENOMMEN
 
 
 def _bildname(wert: object) -> str | None:
@@ -443,9 +479,19 @@ class Bruecke:
         self._flaeche_sperre = threading.RLock()
         # Listenkurse: die uebrigen Aufgaben kommen nacheinander im Hintergrund auf die Flaeche.
         self._flaechenspur = Spur("flaeche", sperre=self._flaeche_sperre)  # type: ignore[arg-type]
-        self._spuren = [self._flaechenspur]
+        # Listenkurse: die Vorbewertung einer Abgabe (Modellaufruf) laeuft hier, nie unter einer Sperre.
+        self._modellspur = Spur("modell")
+        self._spuren = [self._flaechenspur, self._modellspur]
         # Die zuletzt geoeffnete Lernsitzung: nur deren Hintergrundarbeiten laufen noch (Kurswechsel).
         self._zuletzt: str | None = None
+        # Abgaben der Listenkurse, je (sid, nummer); eigene kleine Sperre, nie die Flaechensperre.
+        self._abgaben_sperre = threading.Lock()
+        self._abgaben: dict[tuple[str, int], _Abgabe] = {}
+        # Fertige Vorbewertung, deren Karte noch auf die Flaeche muss: (task, vorbewertung); die Arbeit der
+        # Flaechenspur nimmt immer die neueste.
+        self._karten: dict[tuple[str, int], tuple[dict[str, Any], dict[str, Any]]] = {}
+        # Zaehlt je Nummer die frischen Karten; eine aeltere setzen-Arbeit setzt dann ihre alte Karte nicht.
+        self._kartenstand: dict[tuple[str, int], int] = {}
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
@@ -458,6 +504,8 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/abgeben", self._r_abgeben, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/korrektur", self._r_korrektur, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/passt", self._r_passt, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/stand", self._r_stand, methods=["GET"]),
+            Route(f"{p}/sitzungen/{{sid}}/zeigen", self._r_zeigen, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/erklaeren", self._r_erklaeren, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/hinweis", self._r_hinweis, methods=["POST"]),
             Route(f"{p}/notizen", self._r_notizen, methods=["GET"]),
@@ -477,7 +525,7 @@ class Bruecke:
     def _json(status: int, body: Any) -> JSONResponse:
         return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
-    async def _ausfuehren(self, arbeit: Callable[[], Any], *, ablauf: bool) -> JSONResponse:
+    async def _ausfuehren(self, arbeit: Callable[[], Any], *, ablauf: bool, status: int = 200) -> JSONResponse:
         try:
             if ablauf:
                 async with self._ablauf:
@@ -494,7 +542,7 @@ class Bruecke:
             return self._json(503, {"meldung": NICHT_ERREICHBAR})
         except LearningAbgelehnt as fehler:
             return self._json(409, {"meldung": fehler.nachricht, "code": fehler.code})
-        return self._json(200, body)
+        return self._json(status, body)
 
     @staticmethod
     async def _body(request: Request) -> dict[str, Any]:
@@ -579,8 +627,13 @@ class Bruecke:
         if kurs is None:
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
         task = _task(turn)
-        sitzung = _Sitzung(kurs, norm, task["id"] if task else None, _nummer(turn) if task else None)
+        sitzung = _Sitzung(kurs, norm, task["id"] if task else None, _nummer(turn) if task else None,
+                           liste=turn.get("ablauf") == "liste")
         self._sitzungen[norm] = sitzung
+        if self._zuletzt is None:
+            # Nach einem Neustart der Huelle ist die erste Sitzung, mit der die Seite spricht, die offene;
+            # sonst kaemen die Karten der Hintergrund-Abgaben erst nach einem erneuten Oeffnen.
+            self._zuletzt = norm
         return norm, sitzung, turn
 
     # ---- PenEcho ----------------------------------------------------------
@@ -716,7 +769,8 @@ class Bruecke:
             andere_sid = _uuid(str(laufend.get("session_id"))) if isinstance(laufend, dict) else None
             if task is not None:
                 if andere_sid is not None:
-                    self._sitzungen.setdefault(andere_sid, _Sitzung(kurs, andere_sid, task["id"], _nummer(laufend)))
+                    self._sitzungen.setdefault(andere_sid, _Sitzung(
+                        kurs, andere_sid, task["id"], _nummer(laufend), liste=laufend.get("ablauf") == "liste"))
                 if _sperrt(laufend):
                     self._sperre.offen(task["id"])
                     return
@@ -742,20 +796,28 @@ class Bruecke:
         )
         return text, ok
 
-    def _bericht(self, sitzung: _Sitzung, turn: dict[str, Any]) -> None:
+    def _bericht(
+        self, sitzung: _Sitzung, turn: dict[str, Any], rechtecke: dict[int, dict[str, int]] | None = None,
+    ) -> None:
         """Berichtskarte am Kursende auf das Board; hoechstens einmal je Sitzung, nie ein Abbruch.
 
         Feste Kennungen (Karte `bericht-{sid}`, Bild `bericht-{sid}-{nummer}`) machen auch ein erneutes
         Oeffnen nach einem Neustart der Bruecke wiederholbar. Die Kursende-Seite bleibt die letzte Seite.
+        `rechtecke` (Listenkurs): Bereich je Nummer; dann gelten diese Nummern statt der festen 1..20.
         """
         summary = turn.get("summary")
         if sitzung.bericht_gezeigt or not isinstance(summary, dict):
             return
         try:
             text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung.kurs) or [])
-            nummern = tuple(n for n, _ in bericht_aufgaben(summary) if 1 <= n <= BEREICHE)
+            if rechtecke is None:
+                nummern = tuple(n for n, _ in bericht_aufgaben(summary) if 1 <= n <= BEREICHE)
+                lage: dict[str, Any] = {}
+            else:
+                nummern = tuple(n for n, _ in bericht_aufgaben(summary) if n in rechtecke)
+                lage = {"rechteck": rechtecke}
             sitzung.bericht_gezeigt = self._flaeche_still(
-                sitzung, lambda s: self._penecho.bericht_zeigen(s, sitzung.sid, text, nummern)
+                sitzung, lambda s: self._penecho.bericht_zeigen(s, sitzung.sid, text, nummern, **lage)
             )
         except Exception as fehler:  # noqa: BLE001 - der Bericht darf das Kursende nie blockieren
             log.warning("Bericht nicht gezeigt: %s", _typ(fehler))
@@ -851,9 +913,11 @@ class Bruecke:
         if sitzung is None or sitzung.kurs.course_id != kurs.course_id:
             sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid)
         self._zuletzt = sid  # Hintergrundarbeiten frueherer Sitzungen entfallen ab hier
+        sitzung.liste = turn.get("ablauf") == "liste"
+        liste: dict[str, Any] = {}
         # Ein Turn ohne `ablauf` (alte Sitzung) laeuft anpassend wie bisher.
-        if turn.get("ablauf") == "liste" and _task(turn) is not None:
-            nummer, flaeche = self._liste_oeffnen(sitzung, turn)
+        if sitzung.liste and _task(turn) is not None:
+            nummer, flaeche, liste = self._liste_oeffnen(sitzung, turn)
         else:
             nummer, flaeche = self._zeigen(sitzung, turn)
         begriffe = ueberblick.get("begriffe")
@@ -864,22 +928,21 @@ class Bruecke:
             "nummer": nummer,
             "flaeche": flaeche,
             "abgeschlossen": False,
+            **liste,
         }
 
     # ---- Listenkurs: alle Aufgaben auf der Flaeche -------------------------
-    def _liste_oeffnen(self, sitzung: _Sitzung, turn: dict[str, Any]) -> tuple[int, bool]:
+    def _liste_oeffnen(self, sitzung: _Sitzung, turn: dict[str, Any]) -> tuple[int, bool, dict[str, Any]]:
         """Listenkurs oeffnen: Bereiche melden, die erste offene Aufgabe setzen und zeigen, den Rest einreihen.
 
         Die Anordnung entsteht jedes Mal neu aus der Liste (deterministisch, kein eigener Zustand). Die
         Nummer einer Aufgabe ist ihre Listennummer, ihr Bereich `anordnung(gross)[nummer - 1]`. Die uebrigen
         Aufgaben (auch bestaetigte) setzt die Flaechenspur, je eine Arbeit `"<sid>:setzen:<nummer>"`.
+        Liefert zusaetzlich `stand` und die Aufgaben (`[{nummer, task}]`, fuer Korrektur und Leiste der Seite).
         """
-        eintraege = _listeneintraege(
-            self._lern.rufe("learning_task_list", "learning.task.list", session_id=sitzung.sid))
-        try:
-            bereiche = anordnung([_gross(e["task"]) for e in eintraege])
-        except ZuVieleAufgaben:
-            raise _Antwort(409, {"meldung": ZU_VIELE_AUFGABEN, "code": "zu_viele_aufgaben"}) from None
+        abgaben = self._abgabestaende(sitzung.sid)
+        _, eintraege = self._liste_lesen(sitzung)
+        bereiche = self._bereiche(eintraege)
         erste = next((e for e in eintraege if e["status"] == "offen"), None)
         if erste is None:
             raise LearningWeg("aufgaben")  # aktiver Turn, aber keine offene Aufgabe in der Liste
@@ -900,10 +963,15 @@ class Bruecke:
             if e is not erste:
                 self._flaechenspur.einreihen(
                     f"{sitzung.sid}:setzen:{e['nummer']}",
-                    functools.partial(self._im_hintergrund_setzen, sitzung, e, bereiche[e["nummer"] - 1]),
+                    functools.partial(self._im_hintergrund_setzen, sitzung, e, bereiche[e["nummer"] - 1],
+                                      self._kartenstand_von(sitzung.sid, e["nummer"])),
                     vorrang=1,
                 )
-        return nummer, ok
+        liste = {
+            "stand": self._stand_aus(sitzung.sid, eintraege, abgaben),
+            "aufgaben": [{"nummer": e["nummer"], "task": e["task"]} for e in eintraege],
+        }
+        return nummer, ok, liste
 
     def _listenaufgabe_setzen(
         self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int],
@@ -920,18 +988,24 @@ class Bruecke:
                     s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
         return ok
 
-    def _im_hintergrund_setzen(self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int]) -> None:
+    def _im_hintergrund_setzen(
+        self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int], kartenstand: int = 0,
+    ) -> None:
         """Arbeit der Flaechenspur: Fehler nur loggen (Typ), sie treffen nie die Antwort von `oeffnen`.
 
         Nur fuer die zuletzt geoeffnete Sitzung: nach einem Kurswechsel (oder wenn Learning die Sitzung
         ersetzt hat) faellt die Arbeit weg. Sonst holte schon `_auf_flaeche` das alte Board zurueck oder
         legte es neu an. Geprueft unter der Flaechensperre; gesetzt wird ohne show (`zeigen=False`).
+        Kam seit dem Einreihen eine frische Karte fuer diese Nummer (`kartenstand`), setzt die Arbeit nur
+        die Aufgabe, nicht ihre alte Karte.
         """
         try:
             with self._flaeche_sperre:
-                if self._zuletzt != sitzung.sid or self._sitzungen.get(sitzung.sid) is not sitzung:
+                if not self._noch_offen(sitzung):
                     log.info("Listenaufgabe %d: Sitzung nicht mehr offen, entfaellt", eintrag["nummer"])
                     return
+                if self._kartenstand_von(sitzung.sid, eintrag["nummer"]) != kartenstand:
+                    eintrag = {**eintrag, "vorbewertung": None}
                 if not self._listenaufgabe_setzen(sitzung, eintrag, rechteck, zeigen=False):
                     log.warning("Listenaufgabe %d nicht auf der Flaeche", eintrag["nummer"])
         except Exception as fehler:  # noqa: BLE001 - eine Aufgabe darf die Spur nie anhalten
@@ -988,17 +1062,36 @@ class Bruecke:
         return {"turn": turn, "nummer": nummer, "flaeche": flaeche}
 
     # ---- Flaeche zuerst: abgeben, korrektur, passt --------------------------
+    # Ein Body mit `nummer` gehoert zu einem Listenkurs (Seite mit `stand.ablauf == "liste"`); sonst wie heute
+    # mit `revision`. Die Abgabe im Listenkurs laeuft ohne `_ablauf`: das Bild kommt synchron unter der
+    # Flaechensperre, der Modellaufruf in die Modellspur.
     async def _r_abgeben(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._mit_body(request, lambda body: self._abgeben(sid, body), ablauf=True)
+        try:
+            body = await self._body(request)
+        except _Antwort as antwort:
+            return self._json(antwort.status, antwort.body)
+        if "nummer" in body:
+            return await self._ausfuehren(lambda: self._listen_abgeben(sid, body), ablauf=False, status=202)
+        return await self._ausfuehren(lambda: self._abgeben(sid, body), ablauf=True)
 
     async def _r_korrektur(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._mit_body(request, lambda body: self._korrektur(sid, body), ablauf=True)
+        return await self._mit_body(request, lambda body: (
+            self._listen_korrektur(sid, body) if "nummer" in body else self._korrektur(sid, body)), ablauf=True)
 
     async def _r_passt(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._mit_body(request, lambda body: self._passt(sid, body), ablauf=True)
+        return await self._mit_body(request, lambda body: (
+            self._listen_passt(sid, body) if "nummer" in body else self._passt(sid, body)), ablauf=True)
+
+    async def _r_stand(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        return await self._ausfuehren(lambda: self._stand(self._listensitzung(sid)), ablauf=False)
+
+    async def _r_zeigen(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        return await self._mit_body(request, lambda body: self._listen_zeigen(sid, body), ablauf=False)
 
     def _flaechenaufgabe(
         self, sid: str, sitzung: _Sitzung, revision: int, turn: dict[str, Any] | None
@@ -1107,6 +1200,339 @@ class Bruecke:
             # Bestaetigen: nicht lesbare oder unbekannte Vorbewertung. Vorbewerten: Antwortformat falsch.
             raise _Antwort(400, {"code": fehler.code, "meldung": NICHT_BESTAETIGT if bestaetigen else NICHT_ANGENOMMEN})
         self._stand_neu(sid, sitzung, fehler.code)
+
+    # ---- Listenkurs: Abgaben im Hintergrund, Stand je Aufgabe ----------------------------------------
+    # Die Abgabestaende (`_abgaben`) leben nur im Speicher. Learning weiss, was bestaetigt ist und welche
+    # Vorbewertung zuletzt gespeichert wurde; der Speicher ergaenzt nur „wird bewertet“ und „Fehler“.
+    def _listensitzung(self, sid_roh: str) -> _Sitzung:
+        _, sitzung, _ = self._sitzung(sid_roh)
+        if not sitzung.liste:
+            raise _Antwort(400, {"meldung": UNGUELTIG})
+        return sitzung
+
+    def _noch_offen(self, sitzung: _Sitzung) -> bool:
+        """Ob Hintergrundarbeiten dieser Sitzung noch auf die Flaeche duerfen (zuletzt geoeffnet, nicht ersetzt)."""
+        return self._zuletzt == sitzung.sid and self._sitzungen.get(sitzung.sid) is sitzung
+
+    def _liste_lesen(self, sitzung: _Sitzung) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        result = self._lern.rufe("learning_task_list", "learning.task.list", session_id=sitzung.sid)
+        return _turn(result), _listeneintraege(result)
+
+    @staticmethod
+    def _bereiche(eintraege: list[dict[str, Any]]) -> list[dict[str, int]]:
+        try:
+            return anordnung([_gross(e["task"]) for e in eintraege])
+        except ZuVieleAufgaben:
+            raise _Antwort(409, {"meldung": ZU_VIELE_AUFGABEN, "code": "zu_viele_aufgaben"}) from None
+
+    @staticmethod
+    def _listennummer(body: dict[str, Any]) -> int:
+        nummer = body.get("nummer")
+        if isinstance(nummer, bool) or not isinstance(nummer, int) or nummer < 1:
+            raise _Antwort(400, {"meldung": UNGUELTIG})
+        return nummer
+
+    @staticmethod
+    def _eintrag_zu(eintraege: list[dict[str, Any]], nummer: int) -> dict[str, Any]:
+        if nummer > len(eintraege):
+            raise _Antwort(400, {"meldung": UNGUELTIG})
+        return eintraege[nummer - 1]
+
+    @staticmethod
+    def _revision_von(turn: dict[str, Any]) -> int:
+        # Learning prueft die Revision in Listenkursen nicht, verlangt aber eine.
+        revision = turn.get("session_revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise LearningWeg("session_revision")
+        return revision
+
+    def _abgabestaende(self, sid: str) -> dict[int, _Abgabe]:
+        """Abgaben dieser Sitzung je Nummer, als Schnappschuss.
+
+        Vor dem Lesen bei Learning nehmen: eine Abgabe, die dazwischen fertig wird, zeigt dann hoechstens
+        noch einmal „in_bewertung“ (die Seite fragt weiter), nie faelschlich „offen“.
+        """
+        with self._abgaben_sperre:
+            return {n: a for (s, n), a in self._abgaben.items() if s == sid}
+
+    def _kartenstand_von(self, sid: str, nummer: int) -> int:
+        with self._abgaben_sperre:
+            return self._kartenstand.get((sid, nummer), 0)
+
+    def _laeuft(self, sid: str, nummer: int, abgabe: _Abgabe | None) -> bool:
+        return (abgabe is not None and abgabe.status == "in_bewertung") or \
+            self._modellspur.zustand(f"{sid}:abgabe:{nummer}") is not None
+
+    def _stand_aus(self, sid: str, eintraege: list[dict[str, Any]], abgaben: dict[int, _Abgabe]) -> dict[str, Any]:
+        """Status je Aufgabe: bestaetigt (Learning) > in_bewertung > fehler (Speicher) > rueckmeldung > offen."""
+        aufgaben = []
+        for e in eintraege:
+            nummer, vor, abgabe = e["nummer"], e.get("vorbewertung"), abgaben.get(e["nummer"])
+            meldung = None
+            if e["status"] == "bestaetigt":
+                status = "bestaetigt"
+            elif self._laeuft(sid, nummer, abgabe):
+                status = "in_bewertung"
+            elif abgabe is not None and abgabe.status == "fehler":
+                status, meldung = "fehler", abgabe.meldung
+            elif isinstance(vor, dict):
+                status = "rueckmeldung"
+            else:
+                status = "offen"
+            kennung = vor.get("id") if isinstance(vor, dict) else None
+            aufgaben.append({
+                "nummer": nummer,
+                "status": status,
+                "urteil": urteil_aus(vor) if isinstance(vor, dict) else None,
+                "vorbewertung_id": kennung if isinstance(kennung, str) else None,
+                "meldung": meldung,
+            })
+        aktuell = next((a["nummer"] for a in aufgaben if a["status"] != "bestaetigt"), aufgaben[-1]["nummer"])
+        return {"ablauf": "liste", "aktuell": aktuell, "wartend": self._modellspur.wartend(f"{sid}:abgabe:"),
+                "aufgaben": aufgaben}
+
+    def _stand(self, sitzung: _Sitzung) -> dict[str, Any]:
+        abgaben = self._abgabestaende(sitzung.sid)  # vor dem Lesen bei Learning (siehe dort)
+        _, eintraege = self._liste_lesen(sitzung)
+        return self._stand_aus(sitzung.sid, eintraege, abgaben)
+
+    def _listen_abgelehnt(self, sitzung: _Sitzung, fehler: LearningAbgelehnt, *, bestaetigen: bool) -> NoReturn:
+        """Wie `_vorbewertung_abgelehnt`, nur mit dem Stand der Liste statt eines Turns."""
+        if fehler.code == "session_access_denied":
+            raise _Antwort(403, {"code": fehler.code, "meldung": NUR_UEBEN})
+        if fehler.code == "invalid_session_request":
+            raise _Antwort(400, {"code": fehler.code, "meldung": NICHT_BESTAETIGT if bestaetigen else NICHT_ANGENOMMEN})
+        raise _Antwort(409, {"code": fehler.code, "meldung": _ablehnungstext(fehler.code),
+                             "stand": self._stand(sitzung)})
+
+    def _schon_bestaetigt(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]]) -> NoReturn:
+        raise _Antwort(409, {"code": "schon_bestaetigt", "meldung": SCHON_BESTAETIGT,
+                             "stand": self._stand_aus(sitzung.sid, eintraege, self._abgabestaende(sitzung.sid))})
+
+    def _listen_abgeben(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Bild jetzt aufnehmen, die Vorbewertung in die Modellspur; Antwort sofort (202).
+
+        Die Nummer wird belegt, bevor das Bild kommt: eine zweite Abgabe derselben Nummer bekommt 409
+        `laeuft_schon`. Scheitert etwas vor dem Einreihen, gilt wieder der vorige Stand der Nummer.
+        """
+        nummer = self._listennummer(body)
+        sitzung = self._listensitzung(sid_roh)
+        sid = sitzung.sid
+        schluessel, arbeit = (sid, nummer), f"{sid}:abgabe:{nummer}"
+        with self._abgaben_sperre:
+            vorher = self._abgaben.get(schluessel)
+            if self._laeuft(sid, nummer, vorher):
+                raise _Antwort(409, {"code": "laeuft_schon", "meldung": LAEUFT_SCHON})
+            self._abgaben[schluessel] = _Abgabe("in_bewertung")  # eine fruehere Fehlermeldung ist damit ersetzt
+        try:
+            turn, eintraege = self._liste_lesen(sitzung)
+            eintrag = self._eintrag_zu(eintraege, nummer)
+            if eintrag["status"] == "bestaetigt":
+                self._schon_bestaetigt(sitzung, eintraege)
+            task = eintrag["task"]
+            if task.get("type") not in _FLAECHEN_TYPEN:
+                raise _Antwort(400, {"meldung": KEINE_FLAECHENAUFGABE})
+            rechteck = self._bereiche(eintraege)[nummer - 1]
+            revision = self._revision_von(turn)
+            # Wie `_abgeben`: deterministische Typen nur das Ergebnisfeld, Rubrik-Typen der ganze Bereich.
+            if task.get("type") in DETERMINISTISCHE_TYPEN:
+                aufnahme = self._penecho.ergebnis_schnappschuss
+            else:
+                aufnahme = self._penecho.schnappschuss
+            try:
+                png = _als_png(self._auf_flaeche(sitzung, lambda s: aufnahme(s, nummer, rechteck=rechteck)))
+            except Exception as fehler:  # noqa: BLE001 - PenEcho weg oder Bild unlesbar
+                log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
+                raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
+            payload = {"handschrift_png_base64": base64.b64encode(png).decode("ascii"),
+                       "attempt_id": eintrag["attempt_id"]}
+            bewerten = functools.partial(self._im_hintergrund_bewerten, sitzung, eintrag, rechteck, payload, revision)
+            if not self._modellspur.einreihen(arbeit, bewerten, vorrang=1):
+                raise _Antwort(409, {"code": "laeuft_schon", "meldung": LAEUFT_SCHON})
+        except BaseException:
+            with self._abgaben_sperre:
+                if vorher is None:
+                    self._abgaben.pop(schluessel, None)
+                else:
+                    self._abgaben[schluessel] = vorher
+            raise
+        return {"nummer": nummer, "status": "in_bewertung", "wartend": self._modellspur.wartend(f"{sid}:abgabe:")}
+
+    def _im_hintergrund_bewerten(
+        self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int], payload: dict[str, Any],
+        revision: int,
+    ) -> None:
+        """Arbeit der Modellspur (ohne Sperre): `learning_task_preview`, dann die Karte in die Flaechenspur.
+
+        Fehler werden zum Stand `fehler` mit dem Text fuer die Lernenden; geloggt nur Nummer und Typ.
+        """
+        nummer = eintrag["nummer"]
+        schluessel = (sitzung.sid, nummer)
+        try:
+            result = self._lern.rufe(
+                "learning_task_preview", "learning.task.preview", session_id=sitzung.sid,
+                expected_revision=revision, payload=payload, schreibend=True,
+            )
+            vorbewertung = result.get("vorbewertung")
+            if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
+                raise LearningWeg("vorbewertung")
+        except LearningWeg as fehler:
+            meldung = BEWERTUNG_WEG if fehler.code == _BEWERTUNG_WEG_CODE else NICHT_ERREICHBAR
+            self._abgabe_gescheitert(schluessel, meldung, fehler)
+            return
+        except LearningAbgelehnt as fehler:
+            self._abgabe_gescheitert(schluessel, _ablehnungstext(fehler.code), fehler)
+            return
+        except Exception as fehler:  # noqa: BLE001 - die Abgabe darf nie stumm „in Bewertung“ bleiben
+            self._abgabe_gescheitert(schluessel, NICHT_ERREICHBAR, fehler)
+            return
+        with self._abgaben_sperre:
+            # Learning kennt die Vorbewertung jetzt: der Stand kommt ab hier von dort (rueckmeldung).
+            self._abgaben.pop(schluessel, None)
+            self._karten[schluessel] = (eintrag["task"], vorbewertung)
+            self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
+        self._flaechenspur.einreihen(
+            f"{sitzung.sid}:rueckmeldung:{nummer}",
+            functools.partial(self._im_hintergrund_rueckmelden, sitzung, nummer, rechteck),
+            vorrang=0,
+        )
+
+    def _abgabe_gescheitert(self, schluessel: tuple[str, int], meldung: str, fehler: BaseException) -> None:
+        log.warning("Abgabe %d nicht bewertet: %s", schluessel[1], _typ(fehler))
+        with self._abgaben_sperre:
+            self._abgaben[schluessel] = _Abgabe("fehler", meldung)
+
+    def _im_hintergrund_rueckmelden(self, sitzung: _Sitzung, nummer: int, rechteck: dict[str, int]) -> None:
+        """Arbeit der Flaechenspur (vorrang 0): die neueste fertige Karte dieser Nummer neben ihre Aufgabe.
+
+        Ohne show. Ist die Sitzung nicht mehr die offene, entfaellt die Karte; beim naechsten Oeffnen
+        setzt `_liste_oeffnen` sie aus Learnings Vorbewertung.
+        """
+        try:
+            with self._flaeche_sperre:
+                with self._abgaben_sperre:
+                    karte = self._karten.pop((sitzung.sid, nummer), None)
+                if karte is None:
+                    return
+                if not self._noch_offen(sitzung):
+                    log.info("Rueckmeldung %d: Sitzung nicht mehr offen, entfaellt", nummer)
+                    return
+                task, vorbewertung = karte
+                gelesen, urteil, text = _kartenteile(vorbewertung)
+                if self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+                        s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck)):
+                    self._board_merken(sitzung)
+                else:
+                    log.warning("Rueckmeldung %d nicht auf der Flaeche", nummer)
+        except Exception as fehler:  # noqa: BLE001 - eine Karte darf die Spur nie anhalten
+            log.warning("Rueckmeldung %d nicht gesetzt: %s", nummer, _typ(fehler))
+
+    def _listen_korrektur(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        """„Falsch gelesen“ im Listenkurs: wie `_korrektur` (synchron, kurz), mit `attempt_id` und Rechteck."""
+        nummer = self._listennummer(body)
+        kennung = _vorbewertung_id_aus(body)
+        answer = body.get("answer")
+        if not isinstance(answer, dict):
+            raise _Antwort(400, {"meldung": UNGUELTIG})
+        sitzung = self._listensitzung(sid_roh)
+        sid, schluessel = sitzung.sid, (sitzung.sid, nummer)
+        if self._laeuft(sid, nummer, self._abgabestaende(sid).get(nummer)):
+            raise _Antwort(409, {"code": "laeuft_schon", "meldung": LAEUFT_SCHON})
+        turn, eintraege = self._liste_lesen(sitzung)
+        eintrag = self._eintrag_zu(eintraege, nummer)
+        if eintrag["status"] == "bestaetigt":
+            self._schon_bestaetigt(sitzung, eintraege)
+        task = eintrag["task"]
+        if task.get("type") not in DETERMINISTISCHE_TYPEN:
+            raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
+        rechteck = self._bereiche(eintraege)[nummer - 1]
+        try:
+            result = self._lern.rufe(
+                "learning_task_preview", "learning.task.preview", session_id=sid,
+                expected_revision=self._revision_von(turn), schreibend=True,
+                payload={"answer": answer, "korrigiert_aus": kennung, "attempt_id": eintrag["attempt_id"]},
+            )
+        except LearningAbgelehnt as fehler:
+            self._listen_abgelehnt(sitzung, fehler, bestaetigen=False)
+        vorbewertung = result.get("vorbewertung")
+        if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
+            raise LearningWeg("vorbewertung")
+        with self._abgaben_sperre:
+            # Die Korrektur ist die neueste Karte: eine fruehere Fehlermeldung und eine noch wartende Karte
+            # einer Abgabe gelten nicht mehr.
+            if (alt := self._abgaben.get(schluessel)) is not None and alt.status == "fehler":
+                del self._abgaben[schluessel]
+            self._karten.pop(schluessel, None)
+            self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
+        gelesen, urteil, text = _kartenteile(vorbewertung)
+        flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+            s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
+        antwort: dict[str, Any] = {"vorbewertung": vorbewertung, "urteil": urteil, "turn": _turn(result),
+                                   "flaeche": flaeche}
+        if flaeche:
+            self._board_merken(sitzung)
+        else:
+            antwort["karte"] = leistentext(gelesen, urteil, text)
+        antwort["stand"] = self._stand(sitzung)
+        return antwort
+
+    def _listen_passt(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Vorbewertung der Nummer buchen, die naechste offene Aufgabe in Listenfolge zeigen.
+
+        Antwort: `stand` plus `weiter_zu` (None am Kursende), `turn` und `begriffe`. Am Kursende wie heute
+        Kursende merken und Bericht (mit den Rechtecken der Liste).
+        """
+        nummer = self._listennummer(body)
+        kennung = _vorbewertung_id_aus(body)
+        sitzung = self._listensitzung(sid_roh)
+        vorher, eintraege = self._liste_lesen(sitzung)
+        eintrag = self._eintrag_zu(eintraege, nummer)
+        bereiche = self._bereiche(eintraege)
+        try:
+            result = self._lern.rufe(
+                "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
+                expected_revision=self._revision_von(vorher), schreibend=True,
+                payload={"vorbewertung_id": kennung, "attempt_id": eintrag["attempt_id"]},
+            )
+        except LearningAbgelehnt as fehler:
+            self._listen_abgelehnt(sitzung, fehler, bestaetigen=True)
+        turn = _turn(result)
+        task = _task(turn)
+        if task is not None and _sperrt(turn):
+            self._sperre.offen(task["id"])
+        else:
+            self._frei(sitzung)
+        self._vormerken(sitzung, turn)
+        if turn.get("state") == "completed":
+            self._ende_setzen(sitzung.kurs, sitzung.sid)
+            self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
+        stand = self._stand_nach_passt(sitzung, eintraege, nummer)
+        weiter_zu = _naechste_offene(stand["aufgaben"], nummer)
+        if weiter_zu is not None:
+            ziel = bereiche[weiter_zu - 1]
+            self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
+        self._board_merken(sitzung)
+        return {**stand, "weiter_zu": weiter_zu, "turn": turn, "begriffe": self._begriffe(sitzung.kurs)}
+
+    def _stand_nach_passt(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]], nummer: int) -> dict[str, Any]:
+        """Stand nach der Buchung; ist Learning gerade weg, die Liste von vorher mit der gebuchten Nummer."""
+        abgaben = self._abgabestaende(sitzung.sid)
+        try:
+            _, neu = self._liste_lesen(sitzung)
+        except LearningWeg as fehler:
+            log.warning("Stand nach Passt nicht gelesen: %s", _typ(fehler))
+            neu = [{**e, "status": "bestaetigt"} if e["nummer"] == nummer else e for e in eintraege]
+        return self._stand_aus(sitzung.sid, neu, abgaben)
+
+    def _listen_zeigen(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Die gewaehlte Aufgabe ins Bild holen (`bereich_zeigen`)."""
+        nummer = self._listennummer(body)
+        sitzung = self._listensitzung(sid_roh)
+        _, eintraege = self._liste_lesen(sitzung)
+        self._eintrag_zu(eintraege, nummer)
+        rechteck = self._bereiche(eintraege)[nummer - 1]
+        flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
+        return {"nummer": nummer, "flaeche": flaeche}
 
     async def _r_zeichnung(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]

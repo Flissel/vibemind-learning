@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import json
 import re
@@ -16,7 +17,8 @@ from starlette.testclient import TestClient
 
 from spaces.learning.huelle.bruecke import (
     BEWERTUNG_WEG, FLAECHE_WEG, KEIN_KURS, KEINE_FLAECHENAUFGABE, KEINE_KORREKTUR, NICHT_ANGENOMMEN,
-    NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, WIRD_GEPRUEFT, Bruecke, urteil_aus,
+    NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, WIRD_GEPRUEFT, _BEWERTUNG_WEG_CODE, Bruecke,
+    urteil_aus,
 )
 from spaces.learning.huelle.anordnung import anordnung
 from spaces.learning.huelle.einstellung import einstellung_lesen
@@ -99,6 +101,8 @@ class FakePenEcho:
         self.rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
+        self.aufnahme_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je Schnappschuss
+        self.bericht_rechtecke: list[dict[int, dict[str, int]] | None] = []
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -135,8 +139,9 @@ class FakePenEcho:
         self.aufrufe.append(("bereich_zeigen", session_id, rechteck))
         self._pruefen("bereich_zeigen")
 
-    def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
+    def ergebnis_schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
         self.aufrufe.append(("ergebnis_schnappschuss", session_id, nummer))
+        self.aufnahme_rechtecke.append((nummer, rechteck))
         self._pruefen("ergebnis_schnappschuss")
         return self.bild
 
@@ -162,13 +167,16 @@ class FakePenEcho:
         bereich(nummer)
         self._pruefen("rueckmeldung_setzen")
 
-    def schnappschuss(self, session_id: str, nummer: int) -> bytes:
+    def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
         self.aufrufe.append(("schnappschuss", session_id, nummer))
+        self.aufnahme_rechtecke.append((nummer, rechteck))
         self._pruefen("schnappschuss")
         return self.bild
 
-    def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: tuple[int, ...] = ()) -> None:
+    def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: tuple[int, ...] = (), *,
+                       rechteck: Any = None) -> None:
         self.aufrufe.append(("bericht_zeigen", session_id, sid, text, tuple(nummern)))
+        self.bericht_rechtecke.append(None if rechteck is None else dict(rechteck))
         self._pruefen("bericht_zeigen")
 
     def namen(self) -> list[str]:
@@ -1991,13 +1999,20 @@ class MerkSpur:
 
     def __init__(self) -> None:
         self.arbeiten: list[tuple[str, Any]] = []
+        self.vorrang: dict[str, int] = {}
 
     def einreihen(self, schluessel: str, arbeit: Any, *, vorrang: int = 1) -> bool:
         self.arbeiten.append((schluessel, arbeit))
+        self.vorrang[schluessel] = vorrang
         return True
 
+    def wartend(self, praefix: str) -> int:
+        return sum(1 for s, _ in self.arbeiten if s.startswith(praefix))
+
     def abarbeiten(self, sperre: Any) -> None:
-        arbeiten, self.arbeiten = self.arbeiten, []
+        # Wie Spur: kleiner Vorrang zuerst, sonst in der Reihenfolge des Einreihens.
+        arbeiten = sorted(self.arbeiten, key=lambda a: self.vorrang[a[0]])
+        self.arbeiten = []
         for _, arbeit in arbeiten:
             with sperre:
                 arbeit()
@@ -2008,10 +2023,10 @@ class MerkSpur:
 
 def _mit_merkspur(client: TestClient) -> MerkSpur:
     bruecke = client.app
-    bruecke.beenden()  # die echte Spur anhalten
+    bruecke._flaechenspur.beenden()  # die echte Flaechenspur anhalten; die Modellspur bleibt
     merk = MerkSpur()
+    bruecke._spuren = [merk if s is bruecke._flaechenspur else s for s in bruecke._spuren]
     bruecke._flaechenspur = merk
-    bruecke._spuren = [merk]
     return merk
 
 
@@ -2046,3 +2061,351 @@ def test_hintergrundarbeiten_zeigen_nichts() -> None:
     assert neu.count("aufgabe_setzen") == 2 and "rueckmeldung_zeigen" in neu and "bereich_zeigen" not in neu
     # Erste Aufgabe darf das Board sichtbar machen; die im Hintergrund gesetzten nicht.
     assert penecho.zeigen == [(1, True), (2, False), (3, False)]
+
+
+# ---- Teil A2, Task 5: Abgaben im Hintergrund und Aufgabenwahl --------------------------------------
+
+LAEUFT_SCHON = "Diese Aufgabe wird gerade bewertet."
+SCHON_BESTAETIGT = "Diese Aufgabe ist schon bestätigt."
+
+
+def _vid(n: int) -> str:
+    return f"55555555-5555-4555-8555-5555555556{n:02d}"
+
+
+class ListenLern:
+    """Learning eines Listenkurses mit Zustand: Vorbewerten speichert die Vorbewertung, Passt bestaetigt.
+
+    `halten(n)` haelt die Vorbewertung von Aufgabe n an einem Event an (wie ein langsames Modell);
+    `fehler[n]` laesst sie scheitern.
+    """
+
+    def __init__(self, n: int, *, typ: str = "numeric") -> None:
+        self.eintraege = [_eintrag(i, typ=typ) for i in range(1, n + 1)]
+        self.halt: dict[int, threading.Event] = {}
+        self.fehler: dict[int, Exception] = {}
+        self.lern = FakeLern({
+            "learning_course_overview": lambda kw: _ueberblick(self.turn()),
+            "learning_task_next": lambda kw: {"session": self.turn()},
+            "learning_task_list": lambda kw: {"session": self.turn(), "aufgaben": copy.deepcopy(self.eintraege)},
+            "learning_task_preview": self._vorbewerten,
+            "learning_task_confirm": self._bestaetigen,
+        })
+
+    def turn(self) -> dict[str, Any]:
+        if any(e["status"] == "offen" for e in self.eintraege):
+            return _listen_turn(self.eintraege)
+        fertig = turn(None, completed=len(self.eintraege), revision=9, state="completed", mode="training")
+        return {**fertig, "ablauf": "liste", "summary": BERICHT}
+
+    def halten(self, n: int) -> threading.Event:
+        self.halt[n] = threading.Event()
+        return self.halt[n]
+
+    def _nummer(self, kw: dict[str, Any]) -> int:
+        aid = kw["payload"]["attempt_id"]
+        (e,) = [e for e in self.eintraege if e["attempt_id"] == aid]
+        return e["nummer"]
+
+    def _vorbewerten(self, kw: dict[str, Any]) -> dict[str, Any]:
+        n = self._nummer(kw)
+        if n in self.halt:
+            assert self.halt[n].wait(2), "Vorbewertung nie freigegeben"
+        if n in self.fehler:
+            raise self.fehler[n]
+        vor = _vor(vid=_vid(n), gelesen=str(n))
+        self.eintraege[n - 1]["vorbewertung"] = vor
+        return {"session": self.turn(), "vorbewertung": vor}
+
+    def _bestaetigen(self, kw: dict[str, Any]) -> dict[str, Any]:
+        n = self._nummer(kw)
+        self.eintraege[n - 1]["status"] = "bestaetigt"
+        return {"session": self.turn()}
+
+    def vorschauen(self) -> list[dict[str, Any]]:
+        return _aufrufe(self.lern, "learning_task_preview")
+
+
+def _ruhig(bruecke: Bruecke) -> bool:
+    """Keine Abgabe mehr in der Modellspur und keine Rueckmeldung mehr auf dem Weg zur Flaeche."""
+    return bruecke._modellspur.wartend(f"{SID}:abgabe:") == 0 and \
+        bruecke._flaechenspur.wartend(f"{SID}:rueckmeldung:") == 0
+
+
+def _stand(client: TestClient) -> dict[str, Any]:
+    r = client.get(f"/lernen/api/sitzungen/{SID}/stand")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _status(stand: dict[str, Any], n: int) -> str:
+    return stand["aufgaben"][n - 1]["status"]
+
+
+def _listen_offen(ll: ListenLern, penecho: FakePenEcho | None = None, **kw: Any):
+    client, sperre, penecho = bauen(ll.lern, penecho, **kw)
+    r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    assert r.status_code == 200, r.text
+    _bis(lambda: client.app._flaechenspur.wartend(f"{SID}:setzen:") == 0, 2)
+    return client, penecho, r.json()
+
+
+def test_abgeben_antwortet_sofort() -> None:
+    ll = ListenLern(3)
+    halt = ll.halten(2)
+    client, penecho, offen = _listen_offen(ll)
+    bruecke = client.app
+    try:
+        assert offen["stand"]["ablauf"] == "liste" and offen["stand"]["aktuell"] == 1
+        assert [a["nummer"] for a in offen["aufgaben"]] == [1, 2, 3]
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})
+        assert r.status_code == 202, r.text
+        assert r.json() == {"nummer": 2, "status": "in_bewertung", "wartend": 1}
+        stand = _stand(client)
+        assert stand["ablauf"] == "liste" and stand["wartend"] == 1 and stand["aktuell"] == 1
+        assert [_status(stand, n) for n in (1, 2, 3)] == ["offen", "in_bewertung", "offen"]
+        bereiche = anordnung([False] * 3)
+        # Das Bild kam synchron aus dem Ergebnisfeld der Aufgabe 2, mit ihrem Rechteck.
+        assert ("ergebnis_schnappschuss", "pe-1", 2) in penecho.aufrufe
+        assert penecho.aufnahme_rechtecke == [(2, bereiche[1])]
+        halt.set()
+        _bis(lambda: _ruhig(bruecke), 2)
+        stand = _stand(client)
+        assert stand["wartend"] == 0
+        assert stand["aufgaben"][1] == {"nummer": 2, "status": "rueckmeldung", "urteil": "Richtig.",
+                                        "vorbewertung_id": _vid(2), "meldung": None}
+        assert (2, bereiche[1]) in penecho.karten_rechtecke
+        (karte,) = [k for k in _karten(penecho) if k[3] == 2]
+        assert karte[4:6] == ("2", "Richtig.")
+        (kw,) = ll.vorschauen()
+        assert kw["payload"]["attempt_id"] == ll.eintraege[1]["attempt_id"]
+        assert set(kw["payload"]) == {"handschrift_png_base64", "attempt_id"} and kw["schreibend"] is True
+    finally:
+        halt.set()
+        bruecke.beenden()
+
+
+def test_doppelte_abgabe() -> None:
+    ll = ListenLern(2)
+    halt = ll.halten(1)
+    client, _, _ = _listen_offen(ll)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 409
+        assert r.json()["code"] == "laeuft_schon" and r.json()["meldung"] == LAEUFT_SCHON
+        halt.set()
+        _bis(lambda: _ruhig(bruecke), 2)
+        assert len(ll.vorschauen()) == 1
+    finally:
+        halt.set()
+        bruecke.beenden()
+
+
+def test_passt_waehrend_bewertung() -> None:
+    ll = ListenLern(5)
+    ll.eintraege[2]["vorbewertung"] = _vor(vid=_vid(3), gelesen="3")
+    halt = ll.halten(5)
+    client, penecho, _ = _listen_offen(ll)
+    bruecke = client.app
+    bereiche = anordnung([False] * 5)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 5}).status_code == 202
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 3, "vorbewertung_id": _vid(3)})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["weiter_zu"] == 4 and body["ablauf"] == "liste"
+        assert [a["status"] for a in body["aufgaben"]] == ["offen", "offen", "bestaetigt", "offen", "in_bewertung"]
+        assert body["wartend"] == 1
+        (kw,) = _aufrufe(ll.lern, "learning_task_confirm")
+        assert kw["payload"] == {"vorbewertung_id": _vid(3), "attempt_id": ll.eintraege[2]["attempt_id"]}
+        assert ("bereich_zeigen", "pe-1", bereiche[3]) in penecho.aufrufe[vorher:]
+        halt.set()
+        _bis(lambda: _ruhig(bruecke), 2)
+        assert (5, bereiche[4]) in penecho.karten_rechtecke
+        assert _status(_stand(client), 5) == "rueckmeldung"
+    finally:
+        halt.set()
+        bruecke.beenden()
+
+
+def test_neustart_waehrend_bewertung() -> None:
+    ll = ListenLern(2)
+    halt = ll.halten(1)
+    client, _, _ = _listen_offen(ll)
+    client2, _, _ = bauen(ll.lern)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        # Neue Bruecke: nichts im Speicher, Learning kennt (noch) keine Vorbewertung.
+        stand = _stand(client2)
+        assert _status(stand, 1) == "offen" and stand["wartend"] == 0
+        r = client2.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 202, r.text
+    finally:
+        halt.set()
+        client.app.beenden()
+        client2.app.beenden()
+
+
+def test_bewertung_weg_wird_fehler() -> None:
+    ll = ListenLern(2)
+    ll.fehler[1] = LearningWeg("x", code=_BEWERTUNG_WEG_CODE)
+    client, _, _ = _listen_offen(ll)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        eintrag = _stand(client)["aufgaben"][0]
+        assert eintrag["status"] == "fehler" and eintrag["meldung"] == BEWERTUNG_WEG
+        del ll.fehler[1]
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        eintrag = _stand(client)["aufgaben"][0]
+        assert eintrag["status"] == "rueckmeldung" and eintrag["meldung"] is None
+    finally:
+        bruecke.beenden()
+
+
+def test_andere_fehler_der_bewertung_werden_fehler() -> None:
+    ll = ListenLern(3)
+    ll.fehler[1] = LearningWeg("x")
+    ll.fehler[2] = LearningAbgelehnt("english text", "invalid_session_request")
+    client, _, _ = _listen_offen(ll)
+    bruecke = client.app
+    try:
+        for n in (1, 2):
+            assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": n}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        stand = _stand(client)
+        assert [(a["status"], a["meldung"]) for a in stand["aufgaben"][:2]] == [
+            ("fehler", NICHT_ERREICHBAR), ("fehler", NICHT_ANGENOMMEN)]
+    finally:
+        bruecke.beenden()
+
+
+def test_passt_letzte_aufgabe_beendet_kurs(tmp_path) -> None:
+    datei = tmp_path / "kursende.json"
+    ll = ListenLern(2)
+    ll.eintraege[0]["status"] = "bestaetigt"
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2))
+    client, penecho, _ = _listen_offen(ll, kursende=datei)
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 2, "vorbewertung_id": _vid(2)})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["weiter_zu"] is None and body["turn"]["state"] == "completed"
+        assert [a["status"] for a in body["aufgaben"]] == ["bestaetigt", "bestaetigt"] and body["aktuell"] == 2
+        assert json.loads(datei.read_text(encoding="utf-8")) == {f"{ACTOR}|{KURS}": SID}
+        (bericht,) = _berichte(penecho)
+        bereiche = anordnung([False] * 2)
+        assert bericht[4] == (1, 2) and penecho.bericht_rechtecke == [{1: bereiche[0], 2: bereiche[1]}]
+    finally:
+        client.app.beenden()
+
+
+def test_abgeben_bestaetigt_und_ungueltig() -> None:
+    ll = ListenLern(2, typ="code")
+    ll.eintraege[0]["status"] = "bestaetigt"
+    client, penecho, _ = _listen_offen(ll)
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 409
+        assert r.json()["code"] == "schon_bestaetigt" and r.json()["meldung"] == SCHON_BESTAETIGT
+        assert r.json()["stand"]["aufgaben"][0]["status"] == "bestaetigt"
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})
+        assert r.status_code == 400 and r.json()["meldung"] == KEINE_FLAECHENAUFGABE
+        for body in ({"nummer": 0}, {"nummer": 3}, {"nummer": True}, {"nummer": "1"}):
+            assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json=body).status_code == 400, body
+        assert ll.vorschauen() == [] and penecho.aufnahme_rechtecke == []
+        # Nach einer Ablehnung ist die Nummer nicht mehr belegt.
+        assert _status(_stand(client), 2) == "offen"
+    finally:
+        client.app.beenden()
+
+
+def test_abgeben_ohne_flaeche_503_und_frei() -> None:
+    ll = ListenLern(2)
+    client, penecho, _ = _listen_offen(ll)
+    try:
+        penecho.fehler = PenEchoNichtErreichbar("weg")
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 503 and r.json() == {"meldung": FLAECHE_WEG}
+        assert ll.vorschauen() == [] and _status(_stand(client), 1) == "offen"
+    finally:
+        client.app.beenden()
+
+
+def test_abgeben_open_nimmt_den_bereich_mit_rechteck() -> None:
+    ll = ListenLern(2, typ="open")
+    client, penecho, _ = _listen_offen(ll)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        _bis(lambda: _ruhig(client.app), 2)
+        assert ("schnappschuss", "pe-1", 2) in penecho.aufrufe
+        assert penecho.aufnahme_rechtecke == [(2, anordnung([False] * 2)[1])]
+    finally:
+        client.app.beenden()
+
+
+def test_zeigen_holt_die_gewaehlte_aufgabe() -> None:
+    ll = ListenLern(3)
+    client, penecho, _ = _listen_offen(ll)
+    try:
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3})
+        assert r.status_code == 200, r.text
+        assert [a for a in penecho.aufrufe[vorher:] if a[0] == "bereich_zeigen"] == [
+            ("bereich_zeigen", "pe-1", anordnung([False] * 3)[2])]
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 4}).status_code == 400
+    finally:
+        client.app.beenden()
+
+
+def test_korrektur_im_listenkurs_mit_attempt_id() -> None:
+    ll = ListenLern(2)
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="7")
+    client, penecho, _ = _listen_offen(ll)
+    try:
+        body = {"nummer": 2, "vorbewertung_id": _vid(2), "answer": {"value": 2}}
+        r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur", json=body)
+        assert r.status_code == 200, r.text
+        (kw,) = ll.vorschauen()
+        assert kw["payload"] == {"answer": {"value": 2}, "korrigiert_aus": _vid(2),
+                                 "attempt_id": ll.eintraege[1]["attempt_id"]}
+        assert r.json()["urteil"] == "Richtig." and r.json()["stand"]["aufgaben"][1]["status"] == "rueckmeldung"
+        assert penecho.karten_rechtecke[-1] == (2, anordnung([False] * 2)[1])
+    finally:
+        client.app.beenden()
+
+
+def test_stand_nur_fuer_listenkurse() -> None:
+    lern = FakeLern({"learning_course_overview": _ueberblick(turn()), "learning_task_next": {"session": turn()}})
+    client, _, _ = bauen(lern)
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+        assert client.get(f"/lernen/api/sitzungen/{SID}/stand").status_code == 400
+        assert "stand" not in client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()
+    finally:
+        client.app.beenden()
+
+
+def test_alte_setzen_arbeit_ueberschreibt_die_frische_karte_nicht() -> None:
+    # Aufgabe 2 hat beim Oeffnen eine alte Vorbewertung; ihre setzen-Arbeit wartet noch, als die neue
+    # Abgabe fertig wird. Die Rueckmeldung (vorrang 0) kommt zuerst; die alte Karte darf danach nicht folgen.
+    ll = ListenLern(3)
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(9), gelesen="alt")
+    client, _, penecho = bauen(ll.lern)
+    bruecke = client.app
+    merk = _mit_merkspur(client)
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        _bis(lambda: bruecke._modellspur.wartend(f"{SID}:abgabe:") == 0, 2)
+        assert [s for s, _ in merk.arbeiten] == [f"{SID}:setzen:2", f"{SID}:setzen:3", f"{SID}:rueckmeldung:2"]
+        merk.abarbeiten(bruecke._flaeche_sperre)
+        assert [k[4] for k in _karten(penecho) if k[3] == 2] == ["2"]
+        assert sorted(n for n, _ in penecho.rechtecke) == [1, 2, 3]  # die Aufgabe selbst kam trotzdem
+    finally:
+        bruecke.beenden()
