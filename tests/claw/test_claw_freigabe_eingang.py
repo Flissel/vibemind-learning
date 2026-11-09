@@ -381,3 +381,40 @@ def test_umgebungsschluessel_werden_aus_env_datei_geladen() -> None:
     from spaces.learning.claw import server
 
     assert {"FREIGABE_URL", "FREIGABE_SCHLUESSEL_DATEI"} <= set(server._ENV_KEYS)
+
+
+class _JsonAntwort:
+    def __init__(self, daten: Any) -> None:
+        self._roh = json.dumps(daten).encode()
+
+    def __enter__(self) -> "_JsonAntwort":
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._roh
+
+
+def test_standard_oeffner_vertraut_auch_certifi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows-Python 3.11/OpenSSL 1.1.1 kennt ISRG Root X2 nur als Zwischenzertifikat; certifi ergaenzt die Wurzel."""
+    import ssl
+    import urllib.request
+
+    pytest.importorskip("certifi")
+    gesehen: dict[str, Any] = {}
+
+    def falsch_oeffnen(req: Any, timeout: float | None = None, context: Any = None) -> _JsonAntwort:
+        gesehen["context"] = context
+        return _JsonAntwort({"eintraege": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", falsch_oeffnen)
+    datei = tmp_path / "schluessel"
+    datei.write_text(KEY, encoding="utf-8")
+    assert FreigabeEingang(EINGANG, datei).offene() == []
+    kontext = gesehen["context"]
+    assert isinstance(kontext, ssl.SSLContext)
+    assert kontext.verify_mode == ssl.CERT_REQUIRED and kontext.check_hostname
+    namen = {wert for c in kontext.get_ca_certs() for teil in c["subject"] for (k, wert) in teil if k == "commonName"}
+    assert "ISRG Root X2" in namen

@@ -14,10 +14,12 @@ Fehlt eins oder die Datei, ist alles aus.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import re
+import ssl
 import threading
 import urllib.error
 import urllib.parse
@@ -41,9 +43,26 @@ _KURS_ID = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
 _VERBOTEN = ("/freigabe/",)
 
 
+@functools.lru_cache(maxsize=1)
+def _tls_kontext() -> ssl.SSLContext:
+    """Systemspeicher plus certifi, falls installiert. Windows-Python 3.11/OpenSSL 1.1.1 kennt ISRG Root X2
+    nur als Zwischenzertifikat und baut die Let's-Encrypt-Kette sonst ueber die abgelaufene Querzertifizierung."""
+    kontext = ssl.create_default_context()
+    try:
+        import certifi
+    except ImportError:
+        return kontext
+    kontext.load_verify_locations(cafile=certifi.where())
+    return kontext
+
+
+def _oeffnen_mit_tls(req: urllib.request.Request, timeout: float | None = None) -> Any:
+    return urllib.request.urlopen(req, timeout=timeout, context=_tls_kontext())
+
+
 class FreigabeEingang:
     def __init__(self, url: str, schluessel_datei: Path, *,
-                 oeffnen: Callable[..., Any] = urllib.request.urlopen) -> None:
+                 oeffnen: Callable[..., Any] = _oeffnen_mit_tls) -> None:
         self.url = url.rstrip("/")
         self.schluessel_datei = Path(schluessel_datei)
         self._oeffnen = oeffnen
