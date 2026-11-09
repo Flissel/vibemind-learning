@@ -16,13 +16,14 @@ import re
 import ssl
 import time
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
 
 import httpx
 
+from .anordnung import markenzeile, zeile
 from .tafel import kuerzen, rueckmeldungstext
 
 log = logging.getLogger(__name__)
@@ -89,21 +90,50 @@ def bereich(nummer: int) -> dict[str, int]:
     return {"x": _RAND, "y": _RAND + (nummer - 1) * _ZEILEN_SCHRITT, "w": BEREICH_BREITE, "h": BEREICH_HOEHE}
 
 
-def textfeld(nummer: int) -> dict[str, int]:
-    """Platz des Aufgabentexts oben links in `bereich(nummer)`, links neben dem Ergebnisfeld."""
-    b = bereich(nummer)
-    return {"x": b["x"] + _TEXT_RAND, "y": b["y"] + _TEXT_RAND, "w": _TEXT_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
+_BERICHT_ABSTAND = 80
 
 
-def ergebnisfeld(nummer: int) -> dict[str, int]:
-    """Weltrechteck des Ergebnisfelds oben rechts in `bereich(nummer)` (>= 360x140)."""
-    b = bereich(nummer)
-    return {
+class Felder(NamedTuple):
+    """Die festen Plaetze eines Aufgabenbereichs, alle relativ zu dessen Rechteck (siehe `felder`)."""
+
+    textfeld: dict[str, int]
+    ergebnisfeld: dict[str, int]
+    arbeitsfeld: dict[str, int]
+    rueckmeldungsfeld: dict[str, int]
+    berichtsplatz: dict[str, int]
+
+
+def felder(b: dict[str, int]) -> Felder:
+    """Text, Ergebnisfeld, Arbeitsfeld, Rueckmeldung und Berichtsbild zum Bereichsrechteck `b`.
+
+    Dieselben Abstaende wie im festen 850er-Raster (`bereich`); ein hoeherer Bereich (Listenkurs, Aufgabe
+    mit Bild) verlaengert Text, Arbeitsfeld und Rueckmeldung nach unten, das Ergebnisfeld bleibt oben.
+    """
+    text = {"x": b["x"] + _TEXT_RAND, "y": b["y"] + _TEXT_RAND, "w": _TEXT_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
+    ergebnis = {
         "x": b["x"] + b["w"] - _FELD_RAND_RECHTS - FELD_BREITE,
         "y": b["y"] + _FELD_RAND_OBEN,
         "w": FELD_BREITE,
         "h": FELD_HOEHE,
     }
+    x = text["x"] + text["w"] + _TEXT_RAND
+    arbeit = {"x": x, "y": b["y"] + _FELD_RAND_OBEN, "w": b["x"] + b["w"] - _FELD_RAND_RECHTS - x,
+              "h": b["h"] - _FELD_RAND_OBEN - _TEXT_RAND}
+    rueckmeldung = {"x": b["x"] + b["w"] + _RUECKMELDUNG_ABSTAND, "y": b["y"] + _TEXT_RAND,
+                    "w": _RUECKMELDUNG_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
+    bericht = {"x": rueckmeldung["x"] + rueckmeldung["w"] + _BERICHT_ABSTAND, "y": b["y"],
+               "w": BERICHT_BILD_BREITE, "h": b["h"]}
+    return Felder(text, ergebnis, arbeit, rueckmeldung, bericht)
+
+
+def textfeld(nummer: int) -> dict[str, int]:
+    """Platz des Aufgabentexts oben links in `bereich(nummer)`, links neben dem Ergebnisfeld."""
+    return felder(bereich(nummer)).textfeld
+
+
+def ergebnisfeld(nummer: int) -> dict[str, int]:
+    """Weltrechteck des Ergebnisfelds oben rechts in `bereich(nummer)` (>= 360x140)."""
+    return felder(bereich(nummer)).ergebnisfeld
 
 
 def arbeitsfeld(nummer: int) -> dict[str, int]:
@@ -111,10 +141,7 @@ def arbeitsfeld(nummer: int) -> dict[str, int]:
 
     Nur eine sichtbare Grenze; bewertet wird weiter der ganze Bereich (`schnappschuss`).
     """
-    b, t = bereich(nummer), textfeld(nummer)
-    x = t["x"] + t["w"] + _TEXT_RAND
-    return {"x": x, "y": b["y"] + _FELD_RAND_OBEN, "w": b["x"] + b["w"] - _FELD_RAND_RECHTS - x,
-            "h": b["h"] - _FELD_RAND_OBEN - _TEXT_RAND}
+    return felder(bereich(nummer)).arbeitsfeld
 
 
 _BILD_LUECKE = 20
@@ -130,15 +157,17 @@ class Aufgabenbild(NamedTuple):
     seitenverhaeltnis: float
 
 
-def bildfeld(nummer: int, *, unter_ergebnisfeld: bool) -> dict[str, int]:
+def bildfeld(nummer: int, *, unter_ergebnisfeld: bool, rechteck: dict[str, int] | None = None) -> dict[str, int]:
     """Platz der Aufgabenbilder rechts neben dem Text.
 
     Mit Ergebnisfeld darunter, bis zum Bereichsende; sonst oben im Arbeitsfeld, damit darunter Platz zum
-    Schreiben bleibt und offene Aufgaben direkt im Bild beschriftet werden koennen.
+    Schreiben bleibt und offene Aufgaben direkt im Bild beschriftet werden koennen. `rechteck` ersetzt
+    `bereich(nummer)` (Listenkurs, dann ohne die Grenze 1..20).
     """
-    a = arbeitsfeld(nummer)
+    f = felder(rechteck if rechteck is not None else bereich(nummer))
+    a = f.arbeitsfeld
     if unter_ergebnisfeld:
-        e = ergebnisfeld(nummer)
+        e = f.ergebnisfeld
         y = e["y"] + e["h"] + 2 * _BILD_LUECKE
         return {"x": a["x"], "y": y, "w": a["w"], "h": a["y"] + a["h"] - y}
     return {"x": a["x"] + _BILD_LUECKE, "y": a["y"] + _BILD_LUECKE, "w": a["w"] - 2 * _BILD_LUECKE,
@@ -171,12 +200,7 @@ def bildraster(feld: dict[str, int], bilder: Sequence[Aufgabenbild]) -> list[tup
 
 def rueckmeldungsfeld(nummer: int) -> dict[str, int]:
     """Platz der Rueckmeldung rechts neben `bereich(nummer)`, nicht im Schnappschuss des Bereichs."""
-    b = bereich(nummer)
-    return {"x": b["x"] + b["w"] + _RUECKMELDUNG_ABSTAND, "y": b["y"] + _TEXT_RAND,
-            "w": _RUECKMELDUNG_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
-
-
-_BERICHT_ABSTAND = 80
+    return felder(bereich(nummer)).rueckmeldungsfeld
 
 
 def berichtsplatz(nummer: int) -> dict[str, int]:
@@ -186,13 +210,52 @@ def berichtsplatz(nummer: int) -> dict[str, int]:
     die Breite durch den Zoom der Ansicht und lehnte bei kleinem Zoom ab (INVALID_GEOMETRY).
     Ein Schnappschuss des Bereichs (1300 x 800) ist bei Breite 900 rund 554 hoch und passt in die Zeile.
     """
-    r = rueckmeldungsfeld(nummer)
-    return {"x": r["x"] + r["w"] + _BERICHT_ABSTAND, "y": bereich(nummer)["y"],
-            "w": BERICHT_BILD_BREITE, "h": BEREICH_HOEHE}
+    return felder(bereich(nummer)).berichtsplatz
 
 
 def _ueberlappt(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]
+
+
+def _spalten(plaetze: Iterable[dict[str, int]]) -> list[dict[str, int]]:
+    """Je Spalte (gleiches x und w) ein Rechteck um alle ihre Plaetze: eine Belegungsabfrage je Spalte."""
+    spalten: dict[tuple[int, int], tuple[int, int]] = {}
+    for p in plaetze:
+        schluessel = (p["x"], p["w"])
+        oben, unten = spalten.get(schluessel, (p["y"], p["y"] + p["h"]))
+        spalten[schluessel] = (min(oben, p["y"]), max(unten, p["y"] + p["h"]))
+    return [{"x": x, "y": oben, "w": w, "h": unten - oben} for (x, w), (oben, unten) in spalten.items()]
+
+
+_KONTEXT = "context.md"
+_MARKE = re.compile(r"<!-- lernflaeche-bereiche:.*-->")
+
+
+def _markenpatch(inhalt: str, neu: str) -> str | None:
+    """Strikter Unified Diff (PenEcho penecho_patch_file, jsdiff ohne Unschaerfe) fuer die Markenzeile `neu`.
+
+    Ersetzt die erste vorhandene Markenzeile (eine Zeile, ohne Kontext) oder haengt `neu` an das Ende;
+    dann steht die letzte Zeile als Kontext davor. None, wenn die Marke schon genau so dasteht.
+    Zeilen enden mit LF; fehlt am Dateiende der Zeilenumbruch, traegt der Diff die Kennzeile dafuer.
+    """
+    kopf = f"--- a/{_KONTEXT}\n+++ b/{_KONTEXT}\n"
+    offen_am_ende = bool(inhalt) and not inhalt.endswith("\n")
+    zeilen = inhalt.split("\n")
+    if not offen_am_ende:
+        zeilen.pop()  # "" nach dem letzten Zeilenumbruch (oder der leere Inhalt)
+    ohne_lf = "\n\\ No newline at end of file\n"
+    for i, z in enumerate(zeilen):
+        if _MARKE.fullmatch(z.strip()):
+            if z == neu:
+                return None
+            ende = ohne_lf if offen_am_ende and i == len(zeilen) - 1 else "\n"
+            return f"{kopf}@@ -{i + 1},1 +{i + 1},1 @@\n-{z}{ende}+{neu}{ende}"
+    if not zeilen:
+        return f"{kopf}@@ -0,0 +1,1 @@\n+{neu}\n"
+    n, letzte = len(zeilen), zeilen[-1]
+    if offen_am_ende:
+        return f"{kopf}@@ -{n},1 +{n},2 @@\n-{letzte}{ohne_lf}+{letzte}\n+{neu}\n"
+    return f"{kopf}@@ -{n},1 +{n},2 @@\n {letzte}\n+{neu}\n"
 
 
 def _sitzungsschluessel(schluessel: str) -> str:
@@ -275,6 +338,10 @@ class PenEchoAnfrageSchonBekannt(PenEchoNichtErreichbar):
 
 class PenEchoNichtSichtbar(PenEchoNichtErreichbar):
     """PenEcho meldet ACTIVE_CANVAS_REQUIRED: draw_ink braucht das Board sichtbar (show)."""
+
+
+class PenEchoQuelleVeraltet(PenEchoNichtErreichbar):
+    """PenEcho meldet SOURCE_CONFLICT oder PATCH_CONFLICT: die Datei hat sich seit dem Lesen geaendert."""
 
 
 _SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
@@ -457,6 +524,8 @@ class PenEchoMcp:
                 raise PenEchoAnfrageSchonBekannt(code)
             if code == "ACTIVE_CANVAS_REQUIRED":
                 raise PenEchoNichtSichtbar(code)
+            if code in ("SOURCE_CONFLICT", "PATCH_CONFLICT"):
+                raise PenEchoQuelleVeraltet(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -654,11 +723,19 @@ class PenEchoMcp:
 
     def aufgabe_setzen(
         self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
-        mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (),
+        mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (), rechteck: dict[str, int] | None = None,
     ) -> None:
+        """Aufgabe `nummer` in ihren Bereich: `bereich(nummer)` oder, im Listenkurs, `rechteck` (ohne Grenze 1..20).
+
+        Ohne Rechteck holt PenEcho die Aufgabe danach ins Bild. Mit Rechteck wird das Board nur sichtbar
+        gemacht (der Rahmen braucht es aktiv): die Huelle setzt so auch Aufgaben im Hintergrund, ohne die
+        Ansicht zu verschieben, und zeigt den Bereich selbst (`bereich_zeigen`).
+        """
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
-        region = textfeld(nummer)
+        b = rechteck if rechteck is not None else bereich(nummer)
+        f = felder(b)
+        region = f.textfeld
         hinweis = _HINWEIS_ERGEBNIS if mit_ergebnisfeld else _HINWEIS_LOESUNG if mit_arbeitsfeld else None
         argumente = {
             "sessionId": session_id,
@@ -668,7 +745,7 @@ class PenEchoMcp:
             "region": region,
         }
         voll = False
-        belegung = self._belegung(session_id, bereich(nummer))
+        belegung = self._belegung(session_id, b)
         try:
             objekt_id = _an_ecke(belegung, region, "text")
             if objekt_id is None:
@@ -691,18 +768,18 @@ class PenEchoMcp:
                 argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
                 objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
         # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
-        self._zeigen(session_id, objekt_id)
+        self._zeigen(session_id, objekt_id if rechteck is None else None)
         if bilder:
             # Vor dem Rahmen: dessen Tinte zaehlte sonst als Hindernis im Bildfeld.
             # Volle Flaeche: keine Beschriftungen versuchen. Jeder gescheiterte Text bliebe in PenEchos
             # Sitzung unaufgeloest und sperrte nach vier weiteren Fehlern alle Aenderungen (F17).
             self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
-                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld), beschriften=not voll,
-                                belegung=belegung)
+                                bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld, rechteck=b),
+                                beschriften=not voll, belegung=belegung)
         if mit_ergebnisfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, ergebnisfeld(nummer), "ergebnis")
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.ergebnisfeld, "ergebnis")
         elif mit_arbeitsfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, arbeitsfeld(nummer), "arbeit")
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.arbeitsfeld, "arbeit")
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
@@ -835,15 +912,20 @@ class PenEchoMcp:
             raise PenEchoNichtErreichbar("revision")
         return revision
 
-    def rueckmeldung_setzen(self, session_id: str, aufgabe_id: str, nummer: int, titel: str, text: str) -> None:
+    def rueckmeldung_setzen(
+        self, session_id: str, aufgabe_id: str, nummer: int, titel: str, text: str, *,
+        rechteck: dict[str, int] | None = None,
+    ) -> None:
         """Rueckmeldung als Text in `rueckmeldungsfeld(nummer)`; eine neue ersetzt die alte.
 
         Kein Widget mehr: PenEcho platzierte die Karten selbst und belegte damit die Bereiche der
         naechsten Aufgaben. Liegt am Platz schon eine fruehere Rueckmeldung (ein Text exakt an der
         Feldecke), wird sie geloescht und einmal neu gesetzt. Jedes andere Hindernis (Handschrift,
         Widget, Text der Lernenden) bleibt; dann PenEchoPlatzBelegt, die Bruecke zeigt die Leiste.
+        Mit `rechteck` liegt das Feld neben diesem Bereich (Listenkurs).
         """
-        feld = rueckmeldungsfeld(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
+        # Ohne Rechteck ausserhalb 1..20 ValueError, ohne PenEcho zu rufen.
+        feld = felder(rechteck).rueckmeldungsfeld if rechteck is not None else rueckmeldungsfeld(nummer)
         # Zu lang fuer das Feld: gekuerzt; die volle Rueckmeldung bleibt in Learning (Bericht).
         inhalt = kuerzen(f"{titel}\n\n{text}", zeichen=_TEXT_HOECHSTENS, zeilen=_RUECKMELDUNG_ZEILEN,
                          je_zeile=_ZEICHEN_JE_ZEILE)
@@ -897,7 +979,10 @@ class PenEchoMcp:
         }
         self._werkzeug("penecho_present_widget", argumente)
 
-    def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: Sequence[int] = ()) -> None:
+    def bericht_zeigen(
+        self, session_id: str, sid: str, text: str, nummern: Sequence[int] = (), *,
+        rechteck: Mapping[int, dict[str, int]] | None = None,
+    ) -> None:
         """Berichtskarte `bericht-{sid}` und, je Aufgabe, der Schnappschuss ihres Bereichs.
 
         Wiederholbar: die Karte hat eine feste artifactId, jedes Bild eine feste requestId
@@ -907,6 +992,9 @@ class PenEchoMcp:
         aufgenommen noch gesendet. Der erste Transportfehler beendet die Bildschleife,
         ebenso ein Zeitbudget von `BERICHT_BILD_ZEIT` fuer alle Bilder; die Karte steht dann schon.
         Nur verlorene Sitzung/Flaeche gehen an den Aufrufer.
+
+        `rechteck` (Listenkurs): Bereich je Nummer; Bild und Platz kommen dann aus diesem Rechteck.
+        Eine Nummer ohne Eintrag nimmt `bereich(nummer)`.
         """
         erste = text.splitlines()[0] if text.strip() else ""
         titel = re.sub(r"\\(.)", r"\1", erste.lstrip("# ").strip()) or "Bericht"
@@ -916,18 +1004,35 @@ class PenEchoMcp:
         if not BERICHT_MIT_SCHNAPPSCHUESSEN:
             return
         ende = _uhr() + BERICHT_BILD_ZEIT
-        spalte = berichtsplatz(1)
-        belegung = self._belegung(session_id, {**spalte, "h": BEREICHE * _ZEILEN_SCHRITT})
+        bereiche = dict(rechteck or {})
+
+        def platz_von(nummer: int) -> dict[str, int]:
+            r = bereiche.get(nummer)
+            return felder(r).berichtsplatz if r is not None else berichtsplatz(nummer)
+
+        if bereiche:
+            plaetze = []
+            for n in nummern:
+                try:
+                    plaetze.append(platz_von(n))
+                except ValueError:
+                    continue  # die Schleife unten ueberspringt diese Nummer ebenso
+            belegung = []
+            for spalte in _spalten(plaetze):
+                belegung += self._belegung(session_id, spalte)
+        else:
+            spalte = berichtsplatz(1)
+            belegung = self._belegung(session_id, {**spalte, "h": BEREICHE * _ZEILEN_SCHRITT})
         for position, nummer in enumerate(nummern):
             if _uhr() >= ende:
                 log.warning("Berichtsbilder: Zeitbudget erschoepft, %d uebersprungen", len(nummern) - position)
                 break
             try:
-                platz = berichtsplatz(nummer)
+                platz = platz_von(nummer)
                 if any(_ueberlappt(e["bounds"], platz) for e in belegung):
                     log.info("Berichtsbild %d: Platz schon belegt", nummer)
                     continue
-                quelle = _datenurl(self.schnappschuss(session_id, nummer))
+                quelle = _datenurl(self.schnappschuss(session_id, nummer, rechteck=bereiche.get(nummer)))
                 if quelle is None or len(quelle) > MAX_BILD_DATENURL:
                     log.warning("Berichtsbild uebersprungen: Format oder Groesse")
                     continue
@@ -949,21 +1054,68 @@ class PenEchoMcp:
                 break
 
     def rueckmeldung_zeigen(
-        self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str
+        self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str,
+        rechteck: dict[str, int] | None = None,
     ) -> None:
         """Vorbewertung neben die Aufgabe (`rueckmeldung_setzen`); jede neue ersetzt die vorige."""
-        bereich(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
+        if rechteck is None:
+            bereich(nummer)  # ausserhalb 1..20 ValueError, ohne PenEcho zu rufen
         if urteil not in URTEILE:
             raise ValueError("unbekanntes Urteil")
         self.rueckmeldung_setzen(session_id, aufgabe_id, nummer, f"Rückmeldung zu Aufgabe {nummer}",
-                                 rueckmeldungstext(gelesen, urteil, text))
+                                 rueckmeldungstext(gelesen, urteil, text), rechteck=rechteck)
 
-    def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
+    def ergebnis_schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
         """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; der Rahmen liegt ausserhalb)."""
-        return self._aufnahme(session_id, ergebnisfeld(nummer))
+        return self._aufnahme(session_id, felder(rechteck).ergebnisfeld if rechteck is not None else ergebnisfeld(nummer))
 
-    def schnappschuss(self, session_id: str, nummer: int) -> bytes:
-        return self._aufnahme(session_id, bereich(nummer))
+    def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
+        return self._aufnahme(session_id, rechteck if rechteck is not None else bereich(nummer))
+
+    # ---- Listenkurs: Markenzeile und Ansicht ---------------------------------
+    def bereiche_melden(self, session_id: str, bereiche: Sequence[dict[str, int]]) -> None:
+        """Markenzeile der Bereiche (`anordnung.markenzeile`) in die context.md des Boards.
+
+        Vertrag mit der Lernflaeche: eine eigene Zeile `<!-- lernflaeche-bereiche: [...] -->`. Eine
+        vorhandene Markenzeile wird ersetzt, sonst kommt sie ans Ende; der uebrige Inhalt bleibt.
+        Steht sie schon so da, wird nichts geschrieben. PenEcho liefert context.md immer, leer als "".
+        Hat sich die Datei zwischen Lesen und Schreiben geaendert (SOURCE_CONFLICT), einmal neu lesen.
+        """
+        neu = markenzeile(bereiche)
+        for versuch in (1, 2):
+            lesen = self._struktur(self._werkzeug("penecho_read_file", {"sessionId": session_id, "path": _KONTEXT}))
+            inhalt, pruefsumme = lesen.get("content"), lesen.get("contentHash")
+            if not isinstance(inhalt, str) or not isinstance(pruefsumme, str) or not pruefsumme:
+                raise PenEchoNichtErreichbar("context")
+            patch = _markenpatch(inhalt, neu)
+            if patch is None:
+                return
+            kennung = hashlib.sha256(f"{pruefsumme}\n{patch}".encode("utf-8")).hexdigest()[:32]
+            try:
+                self._werkzeug("penecho_patch_file", {
+                    "sessionId": session_id,
+                    "path": _KONTEXT,
+                    "contentHash": pruefsumme,
+                    "patch": patch,
+                    "requestId": f"bereiche-{kennung}",
+                })
+                return
+            except PenEchoQuelleVeraltet:
+                if versuch == 2:
+                    raise
+
+    def bereich_zeigen(self, session_id: str, rechteck: dict[str, int]) -> None:
+        """Holt die Zeile des Bereichs (`anordnung.zeile`: Aufgabe samt Rueckmeldung) ins Bild.
+
+        PenEchos show nimmt nur eine objectId (schema.js EDIT_FIELDS.show), keine Region: gezeigt wird
+        darum der Aufgabentext der Zeile, sonst ihr oberstes Objekt. Liegt dort nichts, wird das Board
+        nur sichtbar gemacht. Fehler wie bei `_zeigen`: nur verlorene Sitzung/Flaeche gehen weiter.
+        """
+        belegung = self._belegung(session_id, zeile(rechteck))
+        objekt_id = _an_ecke(belegung, felder(rechteck).textfeld, "text")
+        if objekt_id is None and belegung:
+            objekt_id = min(belegung, key=lambda e: (e["bounds"]["y"], e["bounds"]["x"]))["objectId"]
+        self._zeigen(session_id, objekt_id)
 
     def _aufnahme(self, session_id: str, region: dict[str, int]) -> bytes:
         # schema.js:666 penecho_capture_canvas: target "region" verlangt region {x,y,w,h};

@@ -3,7 +3,9 @@
 Starlette mit async Handlern; die Clients (LernMcp, PenEchoMcp, httpx.Client) sind
 synchron und laufen im Threadpool. Routen, die Sitzung, Flaeche oder Sperre veraendern
 (oeffnen, antwort, weiter, zeichnung, abgeben, korrektur, passt), laufen nacheinander unter
-einer Sperre des Ablaufs; PenEchoMcp ist nicht fuer parallele Aufrufe gebaut.
+einer Sperre des Ablaufs; PenEchoMcp ist nicht fuer parallele Aufrufe gebaut. Seit es die
+Flaechenspur gibt (Listenkurse: Aufgaben im Hintergrund setzen), laeuft zudem jeder Aufruf an die
+Flaeche unter `_flaeche_sperre` (`_auf_flaeche`, `_board_merken`, die Arbeiten der Spur).
 
 Flaeche zuerst: `abgeben` (Schnappschuss -> Vorbewertung -> Karte), `korrektur` („Falsch
 gelesen“/„Selbst eintippen“: getippte Antwort mit `korrigiert_aus`) und `passt` (Vorbewertung
@@ -17,12 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import io
 import json
 import logging
 import os
 import re
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -38,8 +42,10 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from ..contracts.beschriftung import beschriften
+from .anordnung import ZuVieleAufgaben, anordnung
 from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
+from .hintergrund import Spur
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar,
@@ -57,6 +63,7 @@ NICHT_ERREICHBAR = "Learning ist gerade nicht erreichbar. Ihre Fläche bleibt er
 SCHON_ABGEGEBEN = "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand."
 NICHT_ANGENOMMEN = "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe."  # Ruling H
 KEIN_KURS = "Dieser Kurs hat noch keine freigegebenen Aufgaben."
+ZU_VIELE_AUFGABEN = "Dieser Kurs hat mehr Aufgaben, als auf eine Fläche passen."
 WIRD_GEPRUEFT = "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist."
 FLAECHE_WEG = "Die Fläche ist gerade nicht erreichbar."
 # Nach dem Fork (apps/web/lib/learning/practiceModel.ts). Die Huelle zeigt keine Quellenbelege;
@@ -203,6 +210,47 @@ def _medien(turn: dict[str, Any]) -> dict[str, Any]:
     return turn
 
 
+def _hat_bilder(task: dict[str, Any]) -> bool:
+    """Ob die Aufgabe Bilder hat, aus denselben Eintraegen wie `Bruecke._aufgabenbilder`, ohne sie zu laden."""
+    presentation = task.get("presentation")
+    if not isinstance(presentation, dict):
+        return False
+    eintraege = [presentation]
+    for seite in ("left", "right"):
+        liste = presentation.get(seite)
+        eintraege += [e for e in (liste if isinstance(liste, list) else []) if isinstance(e, dict)]
+    return any(_bildname(e.get("image")) is not None for e in eintraege)
+
+
+def _gross(task: dict[str, Any]) -> bool:
+    """Hoher Bereich (anordnung.HOEHE_GROSS): Aufgaben mit Bildern und Zeichenaufgaben."""
+    return task.get("type") == "penecho_canvas" or _hat_bilder(task)
+
+
+_LISTEN_STATUS = frozenset({"offen", "bestaetigt"})
+
+
+def _listeneintraege(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """`aufgaben` aus `learning_task_list`, geprueft: Nummern 1..n lueckenlos, Bildfelder umgeschrieben."""
+    roh = result.get("aufgaben")
+    if not isinstance(roh, list) or not roh:
+        raise LearningWeg("aufgaben")
+    eintraege = []
+    for e in roh:
+        nummer = e.get("nummer") if isinstance(e, dict) else None
+        task = e.get("task") if isinstance(e, dict) else None
+        if (isinstance(nummer, bool) or not isinstance(nummer, int) or not isinstance(task, dict)
+                or not isinstance(task.get("id"), str) or e.get("status") not in _LISTEN_STATUS
+                or not isinstance(e.get("vorbewertung"), (dict, type(None)))):
+            raise LearningWeg("aufgaben")
+        _medien({"task": task})
+        eintraege.append(e)
+    eintraege.sort(key=lambda e: e["nummer"])
+    if [e["nummer"] for e in eintraege] != list(range(1, len(eintraege) + 1)):
+        raise LearningWeg("aufgaben")
+    return eintraege
+
+
 def _bildname(wert: object) -> str | None:
     """Name eines Aufgabenbilds auf der eigenen Route (nach `_medien`); sonst None."""
     if not isinstance(wert, str) or not wert.startswith(MEDIEN_ROUTE):
@@ -297,6 +345,14 @@ def kartentext(vorbewertung: dict[str, Any]) -> str:
     return "\n\n".join(zeilen)
 
 
+def _kartenteile(vorbewertung: dict[str, Any]) -> tuple[str | None, str, str]:
+    """(Gelesenes, Urteil, Text) der Rueckmeldungskarte; ohne Gelesenes, wenn nicht lesbar."""
+    urteil = urteil_aus(vorbewertung)
+    gelesen = vorbewertung.get("gelesen_text") if urteil != "Nicht lesbar." else None
+    text = kartentext(vorbewertung)
+    return (gelesen if isinstance(gelesen, str) else None), urteil, text
+
+
 # mcp/tools/tutor.py nummeriert die Quellen als S1, S2, ...; die Huelle zeigt sie nicht an.
 _QUELLENMARKE = re.compile(
     r"\s*\((?:vgl\.\s*|siehe\s+)?S\d+(?:\s*,\s*S\d+)*\)"  # (S1), (vgl. S1, S2), (siehe S2)
@@ -382,6 +438,12 @@ class Bruecke:
         self._kursende_datei = kursende
         self._kursende = self._kursende_lesen()
         self._ablauf = asyncio.Lock()
+        # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
+        # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
+        self._flaeche_sperre = threading.RLock()
+        # Listenkurse: die uebrigen Aufgaben kommen nacheinander im Hintergrund auf die Flaeche.
+        self._flaechenspur = Spur("flaeche", sperre=self._flaeche_sperre)  # type: ignore[arg-type]
+        self._spuren = [self._flaechenspur]
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
@@ -402,6 +464,11 @@ class Bruecke:
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         await self._app(scope, receive, send)
+
+    def beenden(self) -> None:
+        """Spuren anhalten (Herunterfahren): Wartendes verfaellt, eine laufende Arbeit endet noch."""
+        for spur in self._spuren:
+            spur.beenden()
 
     # ---- Rahmen -----------------------------------------------------------
     @staticmethod
@@ -518,18 +585,20 @@ class Bruecke:
     def _auf_flaeche(self, sitzung: _Sitzung, aktion: Callable[[str], T]) -> T:
         """Canvas-Aufruf auf der Flaeche dieser Lernsitzung (Ruling L).
 
-        Kennt PenEcho die Sitzung nicht mehr, einmal neu anlegen und wiederholen.
+        Kennt PenEcho die Sitzung nicht mehr, einmal neu anlegen und wiederholen. Alles unter der
+        Flaechensperre, auch die Wahl der Sitzung.
         """
         titel = f"{sitzung.kurs.titel} · {date.today():%d.%m.%Y}"
-        session_id = self._penecho.sitzung(sitzung.sid, titel)
-        try:
-            ergebnis = aktion(session_id)
-        except PenEchoSitzungUnbekannt:
-            sitzung.board = None
-            self._penecho.vergessen(sitzung.sid)
+        with self._flaeche_sperre:
             session_id = self._penecho.sitzung(sitzung.sid, titel)
-            ergebnis = aktion(session_id)
-        sitzung.board = session_id
+            try:
+                ergebnis = aktion(session_id)
+            except PenEchoSitzungUnbekannt:
+                sitzung.board = None
+                self._penecho.vergessen(sitzung.sid)
+                session_id = self._penecho.sitzung(sitzung.sid, titel)
+                ergebnis = aktion(session_id)
+            sitzung.board = session_id
         return ergebnis
 
     def _flaeche_still(self, sitzung: _Sitzung, aktion: Callable[[str], Any]) -> bool:
@@ -559,14 +628,24 @@ class Bruecke:
             self._frei(sitzung)
         if sitzung.aufgabe_id == aufgabe_id and sitzung.nummer == nummer and sitzung.auf_flaeche:
             return nummer, True
+        ok = self._flaeche_still(sitzung, self._setzauftrag(task, nummer))
+        sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+        return nummer, ok
+
+    def _setzauftrag(
+        self, task: dict[str, Any], nummer: int, rechteck: dict[str, int] | None = None
+    ) -> Callable[[str], None]:
+        """`aufgabe_setzen` fuer eine Flaechensitzung; Text und Bilder werden hier einmal vorbereitet.
+
+        Ohne Rechteck genau der Aufruf wie vor den Listenkursen (fester Bereich `bereich(nummer)`).
+        """
         typ = task.get("type")
         text = str(task.get("prompt") or "") if typ == "code" else _tafeltext(task, nummer)
         feld, arbeit = typ in DETERMINISTISCHE_TYPEN, typ in BEREICHS_TYPEN
         bilder = self._aufgabenbilder(task)
-        ok = self._flaeche_still(sitzung, lambda s: self._penecho.aufgabe_setzen(
-            s, aufgabe_id, text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit, bilder=bilder))
-        sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
-        return nummer, ok
+        lage: dict[str, Any] = {} if rechteck is None else {"rechteck": rechteck}
+        return lambda s: self._penecho.aufgabe_setzen(
+            s, task["id"], text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit, bilder=bilder, **lage)
 
     def _board_merken(self, sitzung: _Sitzung) -> None:
         """documentId des Boards merken (`dokument_merken`), still: Fehler nur als Typ geloggt, nie gemeldet.
@@ -579,7 +658,8 @@ class Bruecke:
         if sitzung.board is None:
             return
         try:
-            self._penecho.dokument_merken(sitzung.board)
+            with self._flaeche_sperre:
+                self._penecho.dokument_merken(sitzung.board)
         except Exception as fehler:  # noqa: BLE001 - Merken darf nie eine Abgabe aufhalten
             log.warning("Board nicht gemerkt: %s", _typ(fehler))
 
@@ -749,7 +829,9 @@ class Bruecke:
         if sid is None:
             gestartet = _turn(self._lern.rufe(
                 "learning_session_start", "learning.session.start", course_id=kurs.course_id, schreibend=True,
-                payload={"course_revision": revision, "mode": "training", "blueprint": dict(TRAINING_BLUEPRINT)},
+                # Teil A2: neue Durchlaeufe sind feste Listen; fortgesetzte behalten, was Learning meldet.
+                payload={"course_revision": revision, "mode": "training", "blueprint": dict(TRAINING_BLUEPRINT),
+                         "ablauf": "liste"},
             ))
             sid = _uuid(str(gestartet.get("session_id")))
             if sid is None:
@@ -762,7 +844,11 @@ class Bruecke:
         sitzung = self._sitzungen.get(sid)
         if sitzung is None or sitzung.kurs.course_id != kurs.course_id:
             sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid)
-        nummer, flaeche = self._zeigen(sitzung, turn)
+        # Ein Turn ohne `ablauf` (alte Sitzung) laeuft anpassend wie bisher.
+        if turn.get("ablauf") == "liste" and _task(turn) is not None:
+            nummer, flaeche = self._liste_oeffnen(sitzung, turn)
+        else:
+            nummer, flaeche = self._zeigen(sitzung, turn)
         begriffe = ueberblick.get("begriffe")
         return {
             "kurs": {"course_id": kurs.course_id, "titel": kurs.titel},
@@ -772,6 +858,68 @@ class Bruecke:
             "flaeche": flaeche,
             "abgeschlossen": False,
         }
+
+    # ---- Listenkurs: alle Aufgaben auf der Flaeche -------------------------
+    def _liste_oeffnen(self, sitzung: _Sitzung, turn: dict[str, Any]) -> tuple[int, bool]:
+        """Listenkurs oeffnen: Bereiche melden, die erste offene Aufgabe setzen und zeigen, den Rest einreihen.
+
+        Die Anordnung entsteht jedes Mal neu aus der Liste (deterministisch, kein eigener Zustand). Die
+        Nummer einer Aufgabe ist ihre Listennummer, ihr Bereich `anordnung(gross)[nummer - 1]`. Die uebrigen
+        Aufgaben (auch bestaetigte) setzt die Flaechenspur, je eine Arbeit `"<sid>:setzen:<nummer>"`.
+        """
+        eintraege = _listeneintraege(
+            self._lern.rufe("learning_task_list", "learning.task.list", session_id=sitzung.sid))
+        try:
+            bereiche = anordnung([_gross(e["task"]) for e in eintraege])
+        except ZuVieleAufgaben:
+            raise _Antwort(409, {"meldung": ZU_VIELE_AUFGABEN, "code": "zu_viele_aufgaben"}) from None
+        erste = next((e for e in eintraege if e["status"] == "offen"), None)
+        if erste is None:
+            raise LearningWeg("aufgaben")  # aktiver Turn, aber keine offene Aufgabe in der Liste
+        aufgabe_id, nummer = erste["task"]["id"], erste["nummer"]
+        if _sperrt(turn):
+            self._sperre.offen(aufgabe_id)
+        else:
+            self._frei(sitzung)
+        rechteck = bereiche[nummer - 1]
+        auftrag = self._setzauftrag(erste["task"], nummer, rechteck)  # Bilder laden, bevor die Sperre greift
+        with self._flaeche_sperre:
+            self._flaeche_still(sitzung, lambda s: self._penecho.bereiche_melden(s, bereiche))
+            ok = self._listenaufgabe_setzen(sitzung, erste, rechteck, auftrag)
+            if ok:
+                self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
+        sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+        for e in eintraege:
+            if e is not erste:
+                self._flaechenspur.einreihen(
+                    f"{sitzung.sid}:setzen:{e['nummer']}",
+                    functools.partial(self._im_hintergrund_setzen, sitzung, e, bereiche[e["nummer"] - 1]),
+                    vorrang=1,
+                )
+        return nummer, ok
+
+    def _listenaufgabe_setzen(
+        self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int],
+        auftrag: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Eine Listenaufgabe in ihr Rechteck; hat sie eine Vorbewertung und ist offen, auch ihre Karte."""
+        task, nummer = eintrag["task"], eintrag["nummer"]
+        with self._flaeche_sperre:
+            ok = self._flaeche_still(sitzung, auftrag or self._setzauftrag(task, nummer, rechteck))
+            vorbewertung = eintrag.get("vorbewertung")
+            if ok and eintrag["status"] == "offen" and isinstance(vorbewertung, dict):
+                gelesen, urteil, text = _kartenteile(vorbewertung)
+                self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+                    s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
+        return ok
+
+    def _im_hintergrund_setzen(self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int]) -> None:
+        """Arbeit der Flaechenspur: Fehler nur loggen (Typ), sie treffen nie die Antwort von `oeffnen`."""
+        try:
+            if not self._listenaufgabe_setzen(sitzung, eintrag, rechteck):
+                log.warning("Listenaufgabe %d nicht auf der Flaeche", eintrag["nummer"])
+        except Exception as fehler:  # noqa: BLE001 - eine Aufgabe darf die Spur nie anhalten
+            log.warning("Listenaufgabe %d nicht gesetzt: %s", eintrag["nummer"], _typ(fehler))
 
     async def _r_antwort(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
@@ -900,10 +1048,7 @@ class Bruecke:
         vorbewertung = result.get("vorbewertung")
         if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
             raise LearningWeg("vorbewertung")
-        urteil = urteil_aus(vorbewertung)
-        gelesen = vorbewertung.get("gelesen_text") if urteil != "Nicht lesbar." else None
-        text = kartentext(vorbewertung)
-        gelesen = gelesen if isinstance(gelesen, str) else None
+        gelesen, urteil, text = _kartenteile(vorbewertung)
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text,
         ))

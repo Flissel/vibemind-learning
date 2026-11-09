@@ -6,6 +6,8 @@ import base64
 import io
 import json
 import re
+import threading
+import time
 from typing import Any
 
 import httpx
@@ -16,6 +18,7 @@ from spaces.learning.huelle.bruecke import (
     BEWERTUNG_WEG, FLAECHE_WEG, KEIN_KURS, KEINE_FLAECHENAUFGABE, KEINE_KORREKTUR, NICHT_ANGENOMMEN,
     NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, WIRD_GEPRUEFT, Bruecke, urteil_aus,
 )
+from spaces.learning.huelle.anordnung import anordnung
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import (
@@ -92,6 +95,9 @@ class FakePenEcho:
         self.arbeitsfelder: list[tuple[str, int, bool]] = []
         self.bilder: list[list[Aufgabenbild]] = []
         self.merken_fehler: Exception | None = None
+        # (nummer, rechteck) je aufgabe_setzen; rechteck None = fester Bereich wie bisher.
+        self.rechtecke: list[tuple[int, dict[str, int] | None]] = []
+        self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -109,13 +115,23 @@ class FakePenEcho:
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
-                       bilder: Any = ()) -> None:
+                       bilder: Any = (), rechteck: dict[str, int] | None = None) -> None:
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
         self.bilder.append(list(bilder))
         self.ergebnisfelder.append((aufgabe_id, nummer, mit_ergebnisfeld))
         self.arbeitsfelder.append((aufgabe_id, nummer, mit_arbeitsfeld))
-        bereich(nummer)  # wie PenEchoMcp: ausserhalb der 20 Bereiche ValueError
+        self.rechtecke.append((nummer, rechteck))
+        if rechteck is None:
+            bereich(nummer)  # wie PenEchoMcp: ausserhalb der 20 Bereiche ValueError
         self._pruefen("aufgabe_setzen")
+
+    def bereiche_melden(self, session_id: str, bereiche: Any) -> None:
+        self.aufrufe.append(("bereiche_melden", session_id, list(bereiche)))
+        self._pruefen("bereiche_melden")
+
+    def bereich_zeigen(self, session_id: str, rechteck: dict[str, int]) -> None:
+        self.aufrufe.append(("bereich_zeigen", session_id, rechteck))
+        self._pruefen("bereich_zeigen")
 
     def ergebnis_schnappschuss(self, session_id: str, nummer: int) -> bytes:
         self.aufrufe.append(("ergebnis_schnappschuss", session_id, nummer))
@@ -123,9 +139,12 @@ class FakePenEcho:
         return self.bild
 
     def rueckmeldung_zeigen(self, session_id: str, aufgabe_id: str, nummer: int, *,
-                            gelesen: str | None, urteil: str, text: str) -> None:
+                            gelesen: str | None, urteil: str, text: str,
+                            rechteck: dict[str, int] | None = None) -> None:
         self.aufrufe.append(("rueckmeldung_zeigen", session_id, aufgabe_id, nummer, gelesen, urteil, text))
-        bereich(nummer)
+        self.karten_rechtecke.append((nummer, rechteck))
+        if rechteck is None:
+            bereich(nummer)
         if urteil not in URTEILE:  # wie PenEchoMcp
             raise ValueError("unbekanntes Urteil")
         self._pruefen("rueckmeldung_zeigen")
@@ -212,7 +231,9 @@ def test_oeffnen_startet_ohne_sitzung() -> None:
     assert lern.tools() == ["learning_course_overview", "learning_session_start", "learning_task_next"]
     start = lern.aufrufe[1][1]
     assert start["course_id"] == KURS and start["schreibend"] is True
-    assert start["payload"] == {"course_revision": 3, "mode": "training", "blueprint": {"max_attempts": 20}}
+    # Teil A2: neue Durchlaeufe sind feste Listen; wie sie laufen, sagt danach der Turn (`ablauf`).
+    assert start["payload"] == {"course_revision": 3, "mode": "training", "blueprint": {"max_attempts": 20},
+                                "ablauf": "liste"}
 
 
 def test_oeffnen_ohne_revision_409_kein_kurs() -> None:
@@ -1763,3 +1784,199 @@ def test_abgeben_mit_karte_auf_der_flaeche_ohne_kartentext() -> None:
     _, client, _, _ = _flaechen_sitzung("numeric")
     body = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).json()
     assert body["flaeche"] is True and "karte" not in body
+
+
+# ---- Teil A2, Task 4: Listenkurs beim Oeffnen ganz auf der Flaeche ------------------------------
+
+ZU_VIELE = "Dieser Kurs hat mehr Aufgaben, als auf eine Fläche passen."
+
+
+def _listen_task(n: int, *, typ: str = "numeric", bild: str | None = None) -> dict[str, Any]:
+    presentation: dict[str, Any] = {} if bild is None else {"image": f"/lernsequenz-medien/{bild}"}
+    return {"id": f"44444444-4444-4444-8444-4444444445{n:02d}", "type": typ, "prompt": f"Frage {n}", "options": [],
+            "difficulty": 0.5, "representation": "text", "source_refs": [], "presentation": presentation}
+
+
+def _eintrag(n: int, status: str = "offen", *, vor: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+    return {"attempt_id": f"77777777-7777-4777-8777-7777777777{n:02d}", "nummer": n, "task": _listen_task(n, **kw),
+            "status": status, "vorbewertung": vor}
+
+
+def _listen_turn(eintraege: list[dict[str, Any]]) -> dict[str, Any]:
+    erste = next(e for e in eintraege if e["status"] == "offen")
+    t = turn(erste["task"]["id"], completed=sum(e["status"] == "bestaetigt" for e in eintraege), mode="training",
+             typ=erste["task"]["type"])
+    t["ablauf"] = "liste"
+    t["progress"]["total"] = len(eintraege)
+    return t
+
+
+def _listen_lern(eintraege: list[dict[str, Any]], *, laufend: bool = True) -> FakeLern:
+    t = _listen_turn(eintraege)
+    antworten: dict[str, Any] = {
+        "learning_course_overview": _ueberblick(t if laufend else None),
+        "learning_task_next": {"session": t},
+        "learning_task_list": {"session": t, "aufgaben": eintraege},
+    }
+    if not laufend:
+        antworten["learning_session_start"] = {"session": t}
+    return FakeLern(antworten)
+
+
+class HaltePenEcho(FakePenEcho):
+    """Haelt das Setzen im Hintergrund an, bis `frei` gesetzt ist (nur Aufgaben mit Rechteck ausser `sofort`)."""
+
+    def __init__(self, sofort: int) -> None:
+        super().__init__()
+        self.sofort = sofort
+        self.frei = threading.Event()
+
+    def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, **kw: Any) -> None:
+        if kw.get("rechteck") is not None and nummer != self.sofort:
+            assert self.frei.wait(5)
+        super().aufgabe_setzen(session_id, aufgabe_id, text, nummer, **kw)
+
+
+def _bis(bedingung: Any, zeit: float = 5.0) -> None:
+    ende = time.monotonic() + zeit
+    while not bedingung():
+        assert time.monotonic() < ende, "Spur wurde nicht fertig"
+        time.sleep(0.01)
+
+
+def test_oeffnen_liste_setzt_erste_und_reiht_rest_ein() -> None:
+    eintraege = [_eintrag(1, "bestaetigt"), _eintrag(2), _eintrag(3), _eintrag(4)]
+    lern = _listen_lern(eintraege, laufend=False)
+    penecho = HaltePenEcho(sofort=2)
+    client, _, _ = bauen(lern, penecho)
+    bruecke = client.app
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["nummer"] == 2 and body["flaeche"] is True and body["turn"]["ablauf"] == "liste"
+        assert _aufrufe(lern, "learning_session_start")[0]["payload"]["ablauf"] == "liste"
+        (liste,) = _aufrufe(lern, "learning_task_list")
+        assert liste["session_id"] == SID
+        bereiche = anordnung([False] * 4)
+        assert ("bereiche_melden", "pe-1", bereiche) in penecho.aufrufe  # 4 Bereiche gemeldet
+        assert penecho.rechtecke[0] == (2, bereiche[1])
+        assert ("aufgabe_setzen", "pe-1", eintraege[1]["task"]["id"], "Frage 2", 2) in penecho.aufrufe
+        namen = penecho.namen()
+        assert namen.index("bereiche_melden") < namen.index("aufgabe_setzen") < namen.index("bereich_zeigen")
+        assert ("bereich_zeigen", "pe-1", bereiche[1]) in penecho.aufrufe
+        spur = bruecke._flaechenspur
+        assert spur.wartend(f"{SID}:setzen:") == 3
+        assert all(spur.zustand(f"{SID}:setzen:{n}") in ("wartet", "laeuft") for n in (1, 3, 4))
+        assert spur.zustand(f"{SID}:setzen:2") is None
+        penecho.frei.set()
+        _bis(lambda: spur.wartend(f"{SID}:setzen:") == 0)
+        assert sorted(penecho.rechtecke[1:], key=lambda t: t[0]) == [(1, bereiche[0]), (3, bereiche[2]), (4, bereiche[3])]
+        # Im Hintergrund wird nichts gezeigt: die Ansicht bleibt bei Aufgabe 2.
+        assert [a for a in penecho.aufrufe if a[0] == "bereich_zeigen"] == [("bereich_zeigen", "pe-1", bereiche[1])]
+    finally:
+        penecho.frei.set()
+        bruecke.beenden()
+
+
+def test_oeffnen_zeigt_vorhandene_rueckmeldung() -> None:
+    vor = _vor(score=1.0, gelesen="4")
+    eintraege = [_eintrag(1, "bestaetigt", vor=_vor(vid=VOR_ID_2)), _eintrag(2, vor=vor), _eintrag(3)]
+    lern = _listen_lern(eintraege)
+    client, _, penecho = bauen(lern)
+    bruecke = client.app
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200, r.text
+        bereiche = anordnung([False] * 3)
+        (karte,) = _karten(penecho)
+        assert karte == ("rueckmeldung_zeigen", "pe-1", eintraege[1]["task"]["id"], 2, "4", "Richtig.",
+                         "Gut gemacht.")
+        assert penecho.karten_rechtecke == [(2, bereiche[1])]
+        namen = penecho.namen()
+        assert namen.index("aufgabe_setzen") < namen.index("rueckmeldung_zeigen") < namen.index("bereich_zeigen")
+        _bis(lambda: bruecke._flaechenspur.wartend(f"{SID}:setzen:") == 0)
+        # Die bestaetigte Aufgabe 1 kommt ohne Karte auf die Flaeche.
+        assert len(_karten(penecho)) == 1
+        assert sorted(n for n, _ in penecho.rechtecke) == [1, 2, 3]
+    finally:
+        bruecke.beenden()
+
+
+def test_oeffnen_liste_karte_einer_spaeteren_aufgabe_im_hintergrund() -> None:
+    eintraege = [_eintrag(1), _eintrag(2, vor=_vor(score=0.0, gelesen="7"))]
+    client, _, penecho = bauen(_listen_lern(eintraege))
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+        _bis(lambda: bruecke._flaechenspur.wartend(f"{SID}:setzen:") == 0)
+        (karte,) = _karten(penecho)
+        assert karte[3:6] == (2, "7", "Noch nicht richtig.")
+        assert penecho.karten_rechtecke == [(2, anordnung([False] * 2)[1])]
+    finally:
+        bruecke.beenden()
+
+
+def test_oeffnen_liste_grosse_bereiche_fuer_bilder_und_zeichnungen() -> None:
+    eintraege = [_eintrag(1, bild="graph-1.png"), _eintrag(2, typ="penecho_canvas"), _eintrag(3)]
+    client, _, penecho = bauen(_listen_lern(eintraege))
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+        (gemeldet,) = [a for a in penecho.aufrufe if a[0] == "bereiche_melden"]
+        assert gemeldet[2] == anordnung([True, True, False])
+    finally:
+        client.app.beenden()
+
+
+def test_oeffnen_liste_hintergrundfehler_bricht_nichts_ab() -> None:
+    eintraege = [_eintrag(1), _eintrag(2), _eintrag(3)]
+    penecho = FakePenEcho()
+    client, _, penecho = bauen(_listen_lern(eintraege), penecho)
+    bruecke = client.app
+    echt = penecho.aufgabe_setzen
+
+    def setzen(session_id: str, aufgabe_id: str, text: str, nummer: int, **kw: Any) -> None:
+        echt(session_id, aufgabe_id, text, nummer, **kw)
+        if nummer == 2:
+            raise RuntimeError("kaputt")  # kein PenEcho-Fehler: nur die Spur faengt ihn
+
+    penecho.aufgabe_setzen = setzen  # type: ignore[method-assign]
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200 and r.json()["nummer"] == 1
+        _bis(lambda: bruecke._flaechenspur.wartend(f"{SID}:setzen:") == 0)
+        assert sorted(n for n, _ in penecho.rechtecke) == [1, 2, 3]
+    finally:
+        bruecke.beenden()
+
+
+def test_alte_sitzung_bleibt_anpassend() -> None:
+    lern = FakeLern({"learning_course_overview": _ueberblick(turn()), "learning_task_next": {"session": turn()}})
+    client, _, penecho = bauen(lern)
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200 and r.json()["nummer"] == 1
+        assert "learning_task_list" not in lern.tools()
+        assert "bereiche_melden" not in penecho.namen() and "bereich_zeigen" not in penecho.namen()
+        assert penecho.rechtecke == [(1, None)]
+        assert client.app._flaechenspur.wartend("") == 0
+    finally:
+        client.app.beenden()
+
+
+def test_zu_viele_aufgaben_meldung() -> None:
+    eintraege = [_eintrag(n) for n in range(1, 44)]
+    client, _, penecho = bauen(_listen_lern(eintraege))
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 409
+        assert r.json() == {"meldung": ZU_VIELE, "code": "zu_viele_aufgaben"}
+        assert "aufgabe_setzen" not in penecho.namen() and "bereiche_melden" not in penecho.namen()
+    finally:
+        client.app.beenden()
+
+
+def test_beenden_stoppt_die_flaechenspur() -> None:
+    client, _, _ = bauen(FakeLern({}))
+    client.app.beenden()
+    assert client.app._flaechenspur.einreihen("x", lambda: None) is False

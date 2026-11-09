@@ -13,8 +13,9 @@ import pytest
 from spaces.learning.huelle.penecho_mcp import (
     BEREICHE, FLAECHE_GROESSE, Aufgabenbild, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar,
     PenEchoFlaecheVoll, PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
-    berichtsplatz, bildraster, textfeld,
+    berichtsplatz, bildraster, felder, textfeld,
 )
+from spaces.learning.huelle.anordnung import anordnung, markenzeile, zeile
 
 TOKEN = "ab" * 32
 SID = "s" * 64
@@ -1345,3 +1346,153 @@ def test_vorhandenes_berichtsbild_wird_nicht_erneut_gesetzt(zustand: Path) -> No
     PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).bericht_zeigen("sess-1", LERN_SID, "x", (1, 2, 3))
     assert [b["arguments"]["region"] for b in fake.aufrufe("penecho_place_image")] == [berichtsplatz(3)]
     assert len(fake.aufrufe("penecho_capture_canvas")) == 1  # nur fuer das Bild, das gesetzt wird
+
+
+# ---- Teil A2, Task 4: Felder je Rechteck, Markenzeile, Bereich zeigen ------------------------------
+
+def test_felder_relativ_zum_rechteck() -> None:
+    assert felder(bereich(3)) == (textfeld(3), ergebnisfeld(3), arbeitsfeld(3), rueckmeldungsfeld(3), berichtsplatz(3))
+    b = bereich(3)
+    verschoben = {**b, "x": b["x"] + 2900, "y": b["y"] + 50}
+    for alt, neu in zip(felder(b), felder(verschoben), strict=True):
+        assert neu == {**alt, "x": alt["x"] + 2900, "y": alt["y"] + 50}
+
+
+def test_felder_eines_grossen_bereichs_wachsen_nach_unten() -> None:
+    klein, gross = anordnung([False])[0], anordnung([True])[0]
+    k, g = felder(klein), felder(gross)
+    assert g.ergebnisfeld == k.ergebnisfeld and g.textfeld["h"] == k.textfeld["h"] + 300
+    assert g.arbeitsfeld["h"] == k.arbeitsfeld["h"] + 300 and g.berichtsplatz["h"] == gross["h"]
+    assert bildfeld(1, unter_ergebnisfeld=True, rechteck=gross)["h"] == bildfeld(1, unter_ergebnisfeld=True)["h"] + 300
+
+
+def test_rechteck_ueber_zwanzig(zustand: Path) -> None:
+    fake = FeldFake()
+    r = anordnung([False] * 25)[24]
+    assert r["x"] == 3000
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t25", "Rechne", 25, mit_ergebnisfeld=True, rechteck=r)
+    edits = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    (text,) = [e for e in edits if e["action"] == "create_text"]
+    assert text["region"] == felder(r).textfeld and text["region"]["x"] == 3020
+    assert text["text"].startswith("Aufgabe 25: Rechne") and text["requestId"] == "aufgabe-t25-25"
+    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_list_files")] == [r]
+    (ink,) = _ink(fake)
+    e = felder(r).ergebnisfeld
+    xs = [p["x"] for p in ink["strokes"][0]["points"]]
+    assert min(xs) == e["x"] - 8 and max(xs) == e["x"] + e["w"] + 8
+    # Mit Rechteck holt die Huelle den Bereich selbst ins Bild (bereich_zeigen); das Setzen verschiebt
+    # die Ansicht nicht, sondern macht das Board nur sichtbar (Rahmen braucht ein aktives Board).
+    (zeigen,) = [e for e in edits if e["action"] == "show"]
+    assert "objectId" not in zeigen
+
+
+def test_rueckmeldung_und_schnappschuss_mit_rechteck(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    r = anordnung([False] * 30)[29]
+    c.rueckmeldung_zeigen("sess-1", "t30", 30, gelesen="4", urteil="Richtig.", text="Gut gemacht.", rechteck=r)
+    (karte,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert karte["region"] == felder(r).rueckmeldungsfeld
+    assert karte["text"].startswith("Rückmeldung zu Aufgabe 30")
+    c.ergebnis_schnappschuss("sess-1", 30, rechteck=r)
+    c.schnappschuss("sess-1", 30, rechteck=r)
+    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_capture_canvas")] == [felder(r).ergebnisfeld, r]
+
+
+def test_bericht_mit_rechtecken_je_nummer(zustand: Path) -> None:
+    fake = Fake()
+    bereiche = anordnung([False] * 25)
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "# Bericht", (2, 25),
+                                          rechteck={n: bereiche[n - 1] for n in (2, 25)})
+    assert [b["arguments"]["region"] for b in fake.aufrufe("penecho_place_image")] == [
+        felder(bereiche[1]).berichtsplatz, felder(bereiche[24]).berichtsplatz]
+    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_capture_canvas")] == [bereiche[1], bereiche[24]]
+
+
+class KontextFake(Fake):
+    """Wie Fake, mit einer context.md wie PenEchos virtuelle Datei (Inhalt und contentHash)."""
+
+    def __init__(self, inhalt: str, *, konflikt: int = 0) -> None:
+        super().__init__()
+        self.inhalt = inhalt
+        self.konflikt = konflikt
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/call":
+            name, args = body["params"]["name"], body["params"]["arguments"]
+            if name == "penecho_read_file" and args.get("path") == "context.md":
+                self.anfragen.append((body, request.headers))
+                return _ok(body, {"content": self.inhalt, "contentHash": f"h-{len(self.anfragen)}"})
+            if name == "penecho_patch_file" and self.konflikt > 0:
+                self.konflikt -= 1
+                self.anfragen.append((body, request.headers))
+                return _fehler(body, "SOURCE_CONFLICT")
+        return super().__call__(request)
+
+
+_KOPF = "--- a/context.md\n+++ b/context.md\n"
+
+
+def _patches(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_patch_file")]
+
+
+def test_bereiche_melden_ersetzt_marke(zustand: Path) -> None:
+    alt = "<!-- lernflaeche-bereiche: [[100,100,1760,800]] -->"
+    fake = KontextFake(f"# Kurs\nText davor\n{alt}\nText danach\n")
+    bereiche = anordnung([False, True])
+    _client(zustand, fake).bereiche_melden("sess-1", bereiche)
+    (lesen,) = [a["arguments"] for a in fake.aufrufe("penecho_read_file")]
+    assert lesen == {"sessionId": "sess-1", "path": "context.md"}
+    (patch,) = _patches(fake)
+    assert set(patch) == {"sessionId", "path", "contentHash", "patch", "requestId"}
+    assert patch["path"] == "context.md" and patch["contentHash"] == "h-3" and patch["sessionId"] == "sess-1"
+    assert patch["patch"] == f"{_KOPF}@@ -3,1 +3,1 @@\n-{alt}\n+{markenzeile(bereiche)}\n"
+    assert 1 <= len(patch["requestId"]) <= 128
+
+
+def test_bereiche_melden_haengt_an(zustand: Path) -> None:
+    fake = KontextFake("# Kurs\nText\n")
+    bereiche = anordnung([False] * 3)
+    _client(zustand, fake).bereiche_melden("sess-1", bereiche)
+    (patch,) = _patches(fake)
+    assert patch["patch"] == f"{_KOPF}@@ -2,1 +2,2 @@\n Text\n+{markenzeile(bereiche)}\n"
+
+
+def test_bereiche_melden_ohne_zeilenende_und_leer(zustand: Path) -> None:
+    neu = markenzeile(anordnung([False]))
+    fake = KontextFake("Text")
+    _client(zustand, fake).bereiche_melden("sess-1", anordnung([False]))
+    assert _patches(fake)[0]["patch"] == f"{_KOPF}@@ -1,1 +1,2 @@\n-Text\n\\ No newline at end of file\n+Text\n+{neu}\n"
+    leer = KontextFake("")
+    _client(zustand, leer).bereiche_melden("sess-1", anordnung([False]))
+    assert _patches(leer)[0]["patch"] == f"{_KOPF}@@ -0,0 +1,1 @@\n+{neu}\n"
+
+
+def test_bereiche_melden_marke_schon_aktuell_kein_patch(zustand: Path) -> None:
+    bereiche = anordnung([False] * 2)
+    fake = KontextFake(f"Text\n{markenzeile(bereiche)}\n")
+    _client(zustand, fake).bereiche_melden("sess-1", bereiche)
+    assert _patches(fake) == []
+
+
+def test_bereiche_melden_liest_nach_konflikt_einmal_neu(zustand: Path) -> None:
+    fake = KontextFake("Text\n", konflikt=1)
+    _client(zustand, fake).bereiche_melden("sess-1", anordnung([False]))
+    erster, zweiter = _patches(fake)
+    assert erster["contentHash"] != zweiter["contentHash"] and erster["requestId"] != zweiter["requestId"]
+    assert len(fake.aufrufe("penecho_read_file")) == 2
+
+
+def test_bereich_zeigen_holt_die_zeile_ins_bild(zustand: Path) -> None:
+    # PenEchos show nimmt nur objectId (schema.js EDIT_FIELDS.show); gezeigt wird der Aufgabentext der Zeile.
+    fake = Fake()
+    r = anordnung([False] * 3)[2]
+    objekte = [("image", "image-1", {"x": r["x"] + 600, "y": r["y"] + 400, "w": 200, "h": 200}),
+               ("text", "text-box-9", {**felder(r).textfeld, "h": 300})]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).bereich_zeigen("sess-1", r)
+    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_list_files")] == [zeile(r)]
+    (zeigen,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert zeigen["action"] == "show" and zeigen["objectId"] == "text-box-9"
+    assert set(zeigen) == {"sessionId", "requestId", "action", "objectId"}

@@ -23,6 +23,12 @@ from .weiche import FlaechenWeiche, Weiche
 
 def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
     """(Seiten-Weiche, Flaechen-Weiche) mit einer gemeinsamen Sperre."""
+    seiten, flaeche, _ = _bauen(einstellung)
+    return seiten, flaeche
+
+
+def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
+    """Wie `build_apps`, dazu die Bruecke, deren Spuren `_beide` beim Herunterfahren beendet."""
     # Eine Sperre fuer Durchreicher und Bruecke: die Bruecke stellt sie, der Durchreicher prueft sie.
     sperre = Sperre()
     # Eine ungepruefte PenEcho-Version kann neue Modellrouten haben: dann wird die Sperre nie frei.
@@ -40,7 +46,7 @@ def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
         # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).
         Path(einstellung.penecho_state).parent / "learning-huelle" / "kursende.json",
     )
-    return Weiche(einstellung, seite_app(einstellung), bruecke), FlaechenWeiche(einstellung, durchreicher)
+    return Weiche(einstellung, seite_app(einstellung), bruecke), FlaechenWeiche(einstellung, durchreicher), bruecke
 
 
 def uvicorn_settings(host: str, port: int) -> dict[str, object]:
@@ -51,7 +57,7 @@ def uvicorn_settings(host: str, port: int) -> dict[str, object]:
 async def _beide(einstellung: Einstellung) -> None:
     import uvicorn
 
-    seiten, flaeche = build_apps(einstellung)
+    seiten, flaeche, bruecke = _bauen(einstellung)
     server = [
         uvicorn.Server(uvicorn.Config(seiten, **uvicorn_settings(einstellung.host, einstellung.port))),
         uvicorn.Server(uvicorn.Config(flaeche, **uvicorn_settings(einstellung.host, einstellung.flaeche_port))),
@@ -64,7 +70,11 @@ async def _beide(einstellung: Einstellung) -> None:
             for anderer in server:  # endet einer, enden beide
                 anderer.should_exit = True
 
-    await asyncio.gather(*(laufen(s) for s in server))
+    try:
+        await asyncio.gather(*(laufen(s) for s in server))
+    finally:
+        # Hintergrund-Spuren der Bruecke anhalten: Wartendes verfaellt, Laufendes endet noch.
+        await asyncio.to_thread(bruecke.beenden)
 
 
 def main() -> None:
