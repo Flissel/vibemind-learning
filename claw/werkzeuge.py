@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from . import freigabe_eingang
 from .freigabe import WERKSTATT, FreigabeAbgelehnt, FreigabeStore, handy_basis
 from .pruefung_seite import PREFIX as PRUEFUNG_PREFIX
 from .pruefung_seite import PruefungStore
@@ -1021,6 +1022,28 @@ def _handy_link_senden(geheimnis: str, titel: str, nummer: int, blockiert: bool)
     return _telegram_senden(nachricht)
 
 
+def _eingang() -> Any:
+    """Der Client fuer den Freigabe-Eingang oder None, wenn er nicht eingerichtet ist."""
+    return freigabe_eingang.aus_umgebung()
+
+
+def _freigabe_melden(inhalt: dict[str, Any]) -> None:
+    """Meldet eine vorbereitete Kursfreigabe an den Eingang; aendert nie die Antwort des Werkzeugs."""
+    try:
+        if inhalt["blockiert"] or inhalt["nichts_zu_veroeffentlichen"]:
+            return
+        eingang = _eingang()
+        if eingang is None:
+            return
+        titel = f"Kurs „{str(inhalt['titel']).replace('@', '')}“ freigeben"[:200]
+        eingang.eintragen(
+            "kursfreigabe", f"kurs:{inhalt['course_id']}", titel, None,
+            {"course_id": inhalt["course_id"], "nummer": inhalt["nummer"]},
+        )
+    except Exception as error:
+        logger.warning("Freigabe-Eingang: Meldung fehlgeschlagen (%s)", type(error).__name__)
+
+
 def werkstatt_freigabe_anzeigen(course_id: str, neu_ausliefern: bool = False) -> dict[str, Any]:
     """Bereitet die Freigabe eines Werkstatt-Kurses vor und zeigt, was sich fuer Lernende
     aendern wuerde: `vergleich` (neu, geaendert, textkorrektur, geloescht mit Kurzfassung und
@@ -1062,6 +1085,7 @@ def werkstatt_freigabe_anzeigen(course_id: str, neu_ausliefern: bool = False) ->
         gesendet = _handy_link_senden(
             anzeige.geheimnis, titel, inhalt["nummer"], inhalt["blockiert"]
         )
+        _freigabe_melden(inhalt)
         return {
             key: inhalt[key]
             for key in ("course_id", "titel", "nummer", "vergleich", "befunde", "blockiert",

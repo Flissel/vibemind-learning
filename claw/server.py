@@ -20,6 +20,7 @@ if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
 from spaces.learning.claw import werkzeuge  # noqa: E402
+from spaces.learning.claw.freigabe_eingang import starte_abholer  # noqa: E402
 from spaces.learning.claw.freigabe_seite import PREFIX as FREIGABE_PREFIX  # noqa: E402
 from spaces.learning.claw.freigabe_seite import FreigabeSeite  # noqa: E402
 from spaces.learning.claw.bewertungen import PREFIX as BEWERTUNGEN_PREFIX  # noqa: E402
@@ -279,6 +280,10 @@ def main() -> None:
         )
     register_tools(server)
     starte_melder()
+    try:
+        starte_abholer()  # nur im Claw-Prozess: nur hier kennt die Freigabeseite ihr Geheimnis
+    except Exception:  # darf den Start nie verhindern
+        pass
     uvicorn.run(build_app(server, token, port), **uvicorn_settings(host, port))
 
 
