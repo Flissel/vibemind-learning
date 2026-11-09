@@ -902,7 +902,8 @@ class Bruecke:
         Nur auf dem gemerkten Board der zuletzt geoeffneten Sitzung: ein Lesezugriff oeffnet oder legt nie ein
         Board an und wiederholt nie. Jede Aufnahme bekommt den Rest des Budgets als Zeitlimit, jede liegt kurz
         unter der Flaechensperre. Ein Werkzeugfehler laesst nur dieses Bild weg; ein Verbindungsfehler oder ein
-        aufgebrauchtes Budget beendet die Aufnahmen.
+        aufgebrauchtes Budget beendet die Aufnahmen. PenEcho liefert grosse Ausschnitte auch als JPEG/WebP; das
+        PDF liest nur PNG, darum wird jedes Bild gewandelt (ein unlesbares faellt einzeln weg).
         """
         ergebnis: list[bytes | None] = [None] * len(rechtecke)
         start = self._uhr()
@@ -914,14 +915,18 @@ class Bruecke:
             try:
                 with self._flaeche_sperre:
                     if not self._noch_offen(sitzung) or not sitzung.board:
-                        log.info("Zusammenfassung: kein gemerktes Board, keine Bilder")
+                        log.warning("Zusammenfassung: kein gemerktes Board, keine Bilder")
                         break
-                    ergebnis[i] = self._penecho.schnappschuss(
-                        sitzung.board, i + 1, rechteck=rechteck, timeout=rest)
+                    roh = self._penecho.schnappschuss(sitzung.board, i + 1, rechteck=rechteck, timeout=rest)
             except Exception as fehler:  # noqa: BLE001 - ohne Bild gibt es das PDF trotzdem
                 log.warning("Zusammenfassung: Bild nicht aufgenommen: %s", _typ(fehler))
                 if not self._aufnahme_fehler_einzeln(fehler):
                     break
+                continue
+            try:
+                ergebnis[i] = _als_png(roh)
+            except Exception as fehler:  # noqa: BLE001 - nur dieses Bild faellt weg
+                log.warning("Zusammenfassung: Bild unlesbar: %s", _typ(fehler))
         return ergebnis
 
     def _begriffe_zeilen(self, kurs: Any) -> tuple[tuple[str, str], ...]:

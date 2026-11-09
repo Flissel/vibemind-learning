@@ -2716,6 +2716,68 @@ def test_zusammenfassung_veraltete_sitzung_wird_nicht_neu_angelegt() -> None:
         client.app.beenden()
 
 
+def _jpeg() -> bytes:
+    from PIL import Image
+
+    puffer = io.BytesIO()
+    Image.new("RGB", (8, 6), (200, 30, 30)).save(puffer, format="JPEG")
+    return puffer.getvalue()
+
+
+def _zf_mitschneiden(monkeypatch) -> list:
+    """Faengt die Zusammenfassung ab, die an `als_pdf` geht (das echte PDF entsteht trotzdem)."""
+    import spaces.learning.huelle.bruecke as bruecke_modul
+
+    gesehen: list = []
+    echt = bruecke_modul.als_pdf
+    monkeypatch.setattr(bruecke_modul, "als_pdf", lambda z: (gesehen.append(z), echt(z))[1])
+    return gesehen
+
+
+def test_zusammenfassung_jpeg_aufnahmen_kommen_als_png_ins_pdf(monkeypatch) -> None:
+    # Abnahme A2: PenEcho liefert grosse Ausschnitte als JPEG/WebP, das PDF liest nur PNG -> 17x "Kein Bild".
+    gesehen = _zf_mitschneiden(monkeypatch)
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        penecho.bild = _jpeg()
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        (z,) = gesehen
+        bilder = [z.flaeche, *(a.bild for a in z.aufgaben)]
+        assert len(bilder) == 3
+        assert all(b is not None and b.startswith(b"\x89PNG\r\n\x1a\n") for b in bilder)
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_unlesbares_bild_faellt_einzeln_weg_mit_warnung(monkeypatch, caplog) -> None:
+    gesehen = _zf_mitschneiden(monkeypatch)
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        penecho.bild = b"kein bild"
+        with caplog.at_level("WARNING"):
+            assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert len(penecho.aufnahme_rechtecke) == 3  # jede Aufnahme versucht, keine bricht die Reihe ab
+        (z,) = gesehen
+        assert z.flaeche is None and all(a.bild is None for a in z.aufgaben)
+        assert "Bild unlesbar" in caplog.text
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_ohne_gemerktes_board_warnt(caplog) -> None:
+    ll = ListenLern(2)
+    client, _ = _zf_offen(ll)
+    try:
+        client.app._sitzungen[SID].board = None
+        with caplog.at_level("WARNING"):
+            assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert "kein gemerktes Board" in caplog.text
+    finally:
+        client.app.beenden()
+
+
 def _md_dateien(ordner) -> list:
     return sorted(ordner.glob("*.md"))
 
