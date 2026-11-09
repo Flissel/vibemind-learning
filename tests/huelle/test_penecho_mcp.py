@@ -1496,3 +1496,19 @@ def test_bereich_zeigen_holt_die_zeile_ins_bild(zustand: Path) -> None:
     (zeigen,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
     assert zeigen["action"] == "show" and zeigen["objectId"] == "text-box-9"
     assert set(zeigen) == {"sessionId", "requestId", "action", "objectId"}
+
+
+def test_setzen_ohne_zeigen_holt_kein_board_nach_vorn(zustand: Path) -> None:
+    # Review 4dec9b7: show (auch ohne objectId) macht das Board in der Lernflaeche zum aktiven
+    # (canvas-documents.js canvasDocumentsShow). Im Hintergrund darf das nicht passieren.
+    r = anordnung([False] * 3)[2]
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t3", "Rechne", 3, mit_ergebnisfeld=True, rechteck=r, zeigen=False)
+    edits = [a["arguments"]["action"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert edits == ["create_text", "draw_ink"]
+    # Ist das Board gerade nicht aktiv (ACTIVE_CANVAS_REQUIRED), entfaellt der Rahmen, statt es zu zeigen.
+    unsichtbar = FeldFake()
+    PenEchoMcp(zustand, transport=_fehler_bei_ink(unsichtbar, "ACTIVE_CANVAS_REQUIRED", wie_oft=5)).aufgabe_setzen(
+        "sess-1", "t3", "Rechne", 3, mit_ergebnisfeld=True, rechteck=r, zeigen=False)
+    edits = [a["arguments"]["action"] for a in unsichtbar.aufrufe("penecho_edit_canvas")]
+    assert edits == ["create_text", "draw_ink"]

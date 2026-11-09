@@ -98,6 +98,7 @@ class FakePenEcho:
         # (nummer, rechteck) je aufgabe_setzen; rechteck None = fester Bereich wie bisher.
         self.rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
+        self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -115,8 +116,9 @@ class FakePenEcho:
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
-                       bilder: Any = (), rechteck: dict[str, int] | None = None) -> None:
+                       bilder: Any = (), rechteck: dict[str, int] | None = None, zeigen: bool = True) -> None:
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
+        self.zeigen.append((nummer, zeigen))
         self.bilder.append(list(bilder))
         self.ergebnisfelder.append((aufgabe_id, nummer, mit_ergebnisfeld))
         self.arbeitsfelder.append((aufgabe_id, nummer, mit_arbeitsfeld))
@@ -1980,3 +1982,67 @@ def test_beenden_stoppt_die_flaechenspur() -> None:
     client, _, _ = bauen(FakeLern({}))
     client.app.beenden()
     assert client.app._flaechenspur.einreihen("x", lambda: None) is False
+
+
+# ---- Review 4dec9b7: alte Hintergrundarbeiten holen kein Board nach vorn -----------------------
+
+class MerkSpur:
+    """Statt der Flaechenspur: merkt die Arbeiten und fuehrt sie erst auf Zuruf aus, unter der Sperre wie Spur."""
+
+    def __init__(self) -> None:
+        self.arbeiten: list[tuple[str, Any]] = []
+
+    def einreihen(self, schluessel: str, arbeit: Any, *, vorrang: int = 1) -> bool:
+        self.arbeiten.append((schluessel, arbeit))
+        return True
+
+    def abarbeiten(self, sperre: Any) -> None:
+        arbeiten, self.arbeiten = self.arbeiten, []
+        for _, arbeit in arbeiten:
+            with sperre:
+                arbeit()
+
+    def beenden(self, timeout: float = 5.0) -> None:
+        self.arbeiten = []
+
+
+def _mit_merkspur(client: TestClient) -> MerkSpur:
+    bruecke = client.app
+    bruecke.beenden()  # die echte Spur anhalten
+    merk = MerkSpur()
+    bruecke._flaechenspur = merk
+    bruecke._spuren = [merk]
+    return merk
+
+
+def test_alte_hintergrundarbeiten_nach_kurswechsel_fallen_weg() -> None:
+    eintraege = [_eintrag(1), _eintrag(2), _eintrag(3)]
+    liste_a = _listen_turn(eintraege)
+    b = turn_b(mode="training")
+    lern = FakeLern({
+        "learning_course_overview": lambda kw: _ueberblick(liste_a if kw["course_id"] == KURS else b),
+        "learning_task_next": lambda kw: {"session": liste_a if kw["session_id"] == SID else b},
+        "learning_task_list": {"session": liste_a, "aufgaben": eintraege},
+    })
+    client, _, penecho = bauen(lern, einstellung=E2)
+    merk = _mit_merkspur(client)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    assert [s for s, _ in merk.arbeiten] == [f"{SID}:setzen:2", f"{SID}:setzen:3"]
+    assert client.post(f"/lernen/api/kurse/{KURS_B}/oeffnen").status_code == 200
+    vorher = len(penecho.aufrufe)
+    merk.abarbeiten(client.app._flaeche_sperre)
+    # Keine Arbeit fuer Kurs A mehr: weder setzen noch zeigen, auch keine PenEcho-Sitzung fuer A.
+    assert penecho.aufrufe[vorher:] == []
+
+
+def test_hintergrundarbeiten_zeigen_nichts() -> None:
+    eintraege = [_eintrag(1), _eintrag(2, vor=_vor()), _eintrag(3)]
+    client, _, penecho = bauen(_listen_lern(eintraege))
+    merk = _mit_merkspur(client)
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    vorher = len(penecho.aufrufe)
+    merk.abarbeiten(client.app._flaeche_sperre)
+    neu = [a[0] for a in penecho.aufrufe[vorher:]]
+    assert neu.count("aufgabe_setzen") == 2 and "rueckmeldung_zeigen" in neu and "bereich_zeigen" not in neu
+    # Erste Aufgabe darf das Board sichtbar machen; die im Hintergrund gesetzten nicht.
+    assert penecho.zeigen == [(1, True), (2, False), (3, False)]

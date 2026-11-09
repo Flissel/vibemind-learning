@@ -444,6 +444,8 @@ class Bruecke:
         # Listenkurse: die uebrigen Aufgaben kommen nacheinander im Hintergrund auf die Flaeche.
         self._flaechenspur = Spur("flaeche", sperre=self._flaeche_sperre)  # type: ignore[arg-type]
         self._spuren = [self._flaechenspur]
+        # Die zuletzt geoeffnete Lernsitzung: nur deren Hintergrundarbeiten laufen noch (Kurswechsel).
+        self._zuletzt: str | None = None
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
@@ -633,17 +635,20 @@ class Bruecke:
         return nummer, ok
 
     def _setzauftrag(
-        self, task: dict[str, Any], nummer: int, rechteck: dict[str, int] | None = None
+        self, task: dict[str, Any], nummer: int, rechteck: dict[str, int] | None = None, *, zeigen: bool = True,
     ) -> Callable[[str], None]:
         """`aufgabe_setzen` fuer eine Flaechensitzung; Text und Bilder werden hier einmal vorbereitet.
 
         Ohne Rechteck genau der Aufruf wie vor den Listenkursen (fester Bereich `bereich(nummer)`).
+        `zeigen=False` fuer das Setzen im Hintergrund: kein show, das Board bleibt, wie es ist.
         """
         typ = task.get("type")
         text = str(task.get("prompt") or "") if typ == "code" else _tafeltext(task, nummer)
         feld, arbeit = typ in DETERMINISTISCHE_TYPEN, typ in BEREICHS_TYPEN
         bilder = self._aufgabenbilder(task)
         lage: dict[str, Any] = {} if rechteck is None else {"rechteck": rechteck}
+        if not zeigen:
+            lage["zeigen"] = False
         return lambda s: self._penecho.aufgabe_setzen(
             s, task["id"], text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit, bilder=bilder, **lage)
 
@@ -815,6 +820,7 @@ class Bruecke:
         elif sid is None and (ende := self._abgeschlossen(kurs)) is not None:
             # Kursende: den beendeten Durchlauf zeigen (Bewertung), nichts neu starten.
             ende_sid, turn = ende
+            self._zuletzt = ende_sid
             sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(kurs, ende_sid))
             self._zeigen(sitzung, turn)
             begriffe = ueberblick.get("begriffe")
@@ -844,6 +850,7 @@ class Bruecke:
         sitzung = self._sitzungen.get(sid)
         if sitzung is None or sitzung.kurs.course_id != kurs.course_id:
             sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid)
+        self._zuletzt = sid  # Hintergrundarbeiten frueherer Sitzungen entfallen ab hier
         # Ein Turn ohne `ablauf` (alte Sitzung) laeuft anpassend wie bisher.
         if turn.get("ablauf") == "liste" and _task(turn) is not None:
             nummer, flaeche = self._liste_oeffnen(sitzung, turn)
@@ -900,12 +907,12 @@ class Bruecke:
 
     def _listenaufgabe_setzen(
         self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int],
-        auftrag: Callable[[str], None] | None = None,
+        auftrag: Callable[[str], None] | None = None, *, zeigen: bool = True,
     ) -> bool:
         """Eine Listenaufgabe in ihr Rechteck; hat sie eine Vorbewertung und ist offen, auch ihre Karte."""
         task, nummer = eintrag["task"], eintrag["nummer"]
         with self._flaeche_sperre:
-            ok = self._flaeche_still(sitzung, auftrag or self._setzauftrag(task, nummer, rechteck))
+            ok = self._flaeche_still(sitzung, auftrag or self._setzauftrag(task, nummer, rechteck, zeigen=zeigen))
             vorbewertung = eintrag.get("vorbewertung")
             if ok and eintrag["status"] == "offen" and isinstance(vorbewertung, dict):
                 gelesen, urteil, text = _kartenteile(vorbewertung)
@@ -914,10 +921,19 @@ class Bruecke:
         return ok
 
     def _im_hintergrund_setzen(self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int]) -> None:
-        """Arbeit der Flaechenspur: Fehler nur loggen (Typ), sie treffen nie die Antwort von `oeffnen`."""
+        """Arbeit der Flaechenspur: Fehler nur loggen (Typ), sie treffen nie die Antwort von `oeffnen`.
+
+        Nur fuer die zuletzt geoeffnete Sitzung: nach einem Kurswechsel (oder wenn Learning die Sitzung
+        ersetzt hat) faellt die Arbeit weg. Sonst holte schon `_auf_flaeche` das alte Board zurueck oder
+        legte es neu an. Geprueft unter der Flaechensperre; gesetzt wird ohne show (`zeigen=False`).
+        """
         try:
-            if not self._listenaufgabe_setzen(sitzung, eintrag, rechteck):
-                log.warning("Listenaufgabe %d nicht auf der Flaeche", eintrag["nummer"])
+            with self._flaeche_sperre:
+                if self._zuletzt != sitzung.sid or self._sitzungen.get(sitzung.sid) is not sitzung:
+                    log.info("Listenaufgabe %d: Sitzung nicht mehr offen, entfaellt", eintrag["nummer"])
+                    return
+                if not self._listenaufgabe_setzen(sitzung, eintrag, rechteck, zeigen=False):
+                    log.warning("Listenaufgabe %d nicht auf der Flaeche", eintrag["nummer"])
         except Exception as fehler:  # noqa: BLE001 - eine Aufgabe darf die Spur nie anhalten
             log.warning("Listenaufgabe %d nicht gesetzt: %s", eintrag["nummer"], _typ(fehler))
 

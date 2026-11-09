@@ -724,12 +724,14 @@ class PenEchoMcp:
     def aufgabe_setzen(
         self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
         mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (), rechteck: dict[str, int] | None = None,
+        zeigen: bool = True,
     ) -> None:
         """Aufgabe `nummer` in ihren Bereich: `bereich(nummer)` oder, im Listenkurs, `rechteck` (ohne Grenze 1..20).
 
         Ohne Rechteck holt PenEcho die Aufgabe danach ins Bild. Mit Rechteck wird das Board nur sichtbar
-        gemacht (der Rahmen braucht es aktiv): die Huelle setzt so auch Aufgaben im Hintergrund, ohne die
-        Ansicht zu verschieben, und zeigt den Bereich selbst (`bereich_zeigen`).
+        gemacht (der Rahmen braucht es aktiv); den Bereich zeigt die Huelle selbst (`bereich_zeigen`).
+        `zeigen=False` (Setzen im Hintergrund): kein show, denn jedes show macht dieses Board in der
+        Lernflaeche zum aktiven. Ist das Board dann nicht aktiv, entfaellt nur der Rahmen.
         """
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
@@ -768,7 +770,8 @@ class PenEchoMcp:
                 argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
                 objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
         # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
-        self._zeigen(session_id, objekt_id if rechteck is None else None)
+        if zeigen:
+            self._zeigen(session_id, objekt_id if rechteck is None else None)
         if bilder:
             # Vor dem Rahmen: dessen Tinte zaehlte sonst als Hindernis im Bildfeld.
             # Volle Flaeche: keine Beschriftungen versuchen. Jeder gescheiterte Text bliebe in PenEchos
@@ -777,9 +780,9 @@ class PenEchoMcp:
                                 bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld, rechteck=b),
                                 beschriften=not voll, belegung=belegung)
         if mit_ergebnisfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.ergebnisfeld, "ergebnis")
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.ergebnisfeld, "ergebnis", zeigen=zeigen)
         elif mit_arbeitsfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.arbeitsfeld, "arbeit")
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.arbeitsfeld, "arbeit", zeigen=zeigen)
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
@@ -849,7 +852,9 @@ class PenEchoMcp:
         rest = MAX_SCHLUESSEL - len(f"{praefix}--{nummer}{zusatz}")
         return f"{praefix}-{aufgabe_id[:rest]}-{nummer}{zusatz}"
 
-    def _feld_zeichnen(self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], praefix: str) -> None:
+    def _feld_zeichnen(
+        self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], praefix: str, *, zeigen: bool = True,
+    ) -> None:
         """Tintenrahmen um das Feld (der Hinweis darauf steht im Aufgabentext, siehe _HINWEIS_ERGEBNIS).
 
         Der Rahmen ist Tinte (penecho_edit_canvas draw_ink), kein Objekt: Tinte ist nur Pixel in der
@@ -890,9 +895,12 @@ class PenEchoMcp:
                     continue  # Flaeche hat sich geaendert: Revision neu lesen, einmal wiederholen
                 log.warning("Feld-Rahmen nicht gezeichnet: Revision veraltet")
             except PenEchoNichtSichtbar:
-                if versuch == 1:
+                if versuch == 1 and zeigen:
                     self._zeigen(session_id)  # Board inzwischen verdeckt: zeigen, einmal wiederholen
                     continue
+                if not zeigen:
+                    log.warning("Feld-Rahmen nicht gezeichnet: Board nicht aktiv, im Hintergrund kein show")
+                    return
                 log.warning("Feld-Rahmen nicht gezeichnet: Board nicht sichtbar")
             except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
                 raise
