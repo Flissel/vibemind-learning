@@ -70,8 +70,16 @@ class BewertungsNotizen:
         self._service = service
         self._notes = notes
 
-    def vorher(self, session_id: str, actor_id: str) -> PublicTask | None:
+    def vorher(
+        self, session_id: str, actor_id: str, attempt_id: str | None = None
+    ) -> PublicTask | None:
         try:
+            if attempt_id is not None:
+                # List sessions: the answered task is the one of this attempt, not the first open one.
+                for eintrag in self._service.aufgabenliste(session_id, actor_id=actor_id):
+                    if eintrag.attempt_id == attempt_id:
+                        return eintrag.task
+                return None
             return self._service.current(session_id, actor_id=actor_id).task
         except Exception:  # noqa: BLE001 - the answer itself reports the real error to the caller
             return None
@@ -264,7 +272,9 @@ class AdaptiveSessionGateway:
         attempt_id = _attempt_id(request.event.payload)
         actor_id = request.event.actor.actor_id
         # The turn after an answer carries the NEXT task, so the answered one is read first.
-        answered = self._notes.vorher(str(session_id), actor_id) if self._notes else None
+        answered = (
+            self._notes.vorher(str(session_id), actor_id, attempt_id) if self._notes else None
+        )
         turn = self._service.answer(
             AnswerCommand(
                 session_id=str(session_id),
@@ -332,7 +342,9 @@ class AdaptiveSessionGateway:
             raise ValueError("task confirm requires session, revision, and vorbewertung_id")
         attempt_id = _attempt_id(payload)
         actor_id = request.event.actor.actor_id
-        answered = self._notes.vorher(str(session_id), actor_id) if self._notes else None
+        answered = (
+            self._notes.vorher(str(session_id), actor_id, attempt_id) if self._notes else None
+        )
         turn = self._service.bestaetigen(
             session_id=str(session_id),
             actor_id=actor_id,

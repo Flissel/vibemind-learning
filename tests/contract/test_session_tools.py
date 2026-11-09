@@ -426,14 +426,14 @@ def _drei_aufgaben(factory, course_id: str) -> None:
             )
 
 
-def _liste_dispatcher(tmp_path: Path):
+def _liste_dispatcher(tmp_path: Path, notes: NoteStore | None = None):
     engine, factory, course_id = _store(tmp_path)
     _drei_aufgaben(factory, course_id)
     dispatcher = LearningDispatcher(
-        gateways=build_session_gateways(AdaptiveSessionService(factory)),
+        gateways=build_session_gateways(AdaptiveSessionService(factory), notes),
         receipts=InMemoryReceiptStore(),
     )
-    return engine, dispatcher, course_id
+    return engine, dispatcher, course_id, factory
 
 
 def _liste_starten(dispatcher, course_id: str) -> dict:
@@ -465,7 +465,7 @@ def _task_list(dispatcher, session_id: str):
 
 
 def test_task_list_liefert_alle_aufgaben(tmp_path: Path) -> None:
-    engine, dispatcher, course_id = _liste_dispatcher(tmp_path)
+    engine, dispatcher, course_id, _ = _liste_dispatcher(tmp_path)
     turn = _liste_starten(dispatcher, course_id)
     assert turn["ablauf"] == "liste"
     listed = _task_list(dispatcher, turn["session_id"])
@@ -479,7 +479,7 @@ def test_task_list_liefert_alle_aufgaben(tmp_path: Path) -> None:
 
 
 def test_preview_mit_attempt_id(tmp_path: Path) -> None:
-    engine, dispatcher, course_id = _liste_dispatcher(tmp_path)
+    engine, dispatcher, course_id, _ = _liste_dispatcher(tmp_path)
     turn = _liste_starten(dispatcher, course_id)
     aufgaben = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"]
     zweiter = aufgaben[1]["attempt_id"]
@@ -509,7 +509,7 @@ def test_preview_mit_attempt_id(tmp_path: Path) -> None:
 
 
 def test_answer_mit_attempt_id(tmp_path: Path) -> None:
-    engine, dispatcher, course_id = _liste_dispatcher(tmp_path)
+    engine, dispatcher, course_id, _ = _liste_dispatcher(tmp_path)
     turn = _liste_starten(dispatcher, course_id)
     dritter = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"][2]["attempt_id"]
     answered = _call(
@@ -568,4 +568,34 @@ def test_attempt_id_muss_text_sein(tmp_path: Path) -> None:
     result = _preview(dispatcher, turn, {"answer": {"choice_id": "a"}, "attempt_id": 5})
     assert result["state"] == "rejected", result
     assert result["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
+def test_notiz_gehoert_zur_aufgabe_des_versuchs(tmp_path: Path) -> None:
+    engine, factory, course_id = _store(tmp_path)
+    _drei_aufgaben(factory, course_id)
+    notes = NoteStore(factory)
+    dispatcher = LearningDispatcher(
+        gateways=build_session_gateways(AdaptiveSessionService(factory), notes),
+        receipts=InMemoryReceiptStore(),
+    )
+    turn = _liste_starten(dispatcher, course_id)
+    aufgaben = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"]
+    dritte = aufgaben[2]
+    answered = _call(
+        dispatcher,
+        "learning_task_answer",
+        _event(
+            "learning.task.answer",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"],
+            idempotency_key=f"answer-{uuid4()}",
+            payload={"answer": {"choice_id": "b"}, "attempt_id": dritte["attempt_id"]},
+        ),
+    )
+    assert answered["state"] == "completed", answered
+    gespeichert = notes.list_for("student-mcp", quelle="bewertung")
+    assert len(gespeichert) == 1
+    assert gespeichert[0]["anchor"] == {"art": "aufgabe", "aufgabe": dritte["task"]["id"]}
+    assert "Frage 3" in gespeichert[0]["selection"]
     engine.dispose()
