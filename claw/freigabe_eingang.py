@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ TIMEOUT_S = 10
 TAKT_S = 60.0
 _PFAD = "/api/freigaben"
 ART_ZEIGEN = "kurs_freigabe_zeigen"
+MAX_ALTER = timedelta(minutes=15)  # aeltere Auftraege laufen nicht mehr (Final-Review M3)
 _KURS_ID = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
 _VERBOTEN = ("/freigabe/",)
 
@@ -148,12 +150,33 @@ def _freigaben_standard(course_id: str) -> list[dict[str, Any]]:
     return [f for f in liste if isinstance(f, dict)]
 
 
-def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable[[str], dict[str, Any]]) -> None:
+def _angelegt_am(wert: object) -> datetime | None:
+    """Anlagezeit des Auftrags (ISO 8601 mit Zeitzone); `None`, wenn sie fehlt oder nicht lesbar ist."""
+    if not isinstance(wert, str):
+        return None
+    try:
+        zeit = datetime.fromisoformat(wert.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return zeit if zeit.tzinfo is not None else None  # ohne Zeitzone nicht vergleichbar
+
+
+def _jetzt_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable[[str], dict[str, Any]],
+                        jetzt: Callable[[], datetime] = _jetzt_utc) -> None:
     auftrag_id = auftrag.get("id")
     if not isinstance(auftrag_id, str) or not auftrag_id:
         return
     if auftrag.get("art") != ART_ZEIGEN:
         client.ergebnis(auftrag_id, False, "unbekannte_art")
+        return
+    angelegt = _angelegt_am(auftrag.get("angelegt_am"))
+    if angelegt is not None and jetzt() - angelegt > MAX_ALTER:
+        # Ein alter Klick (Claw lange aus) oeffnet keinen Browser und schickt keinen Link mehr.
+        client.ergebnis(auftrag_id, False, "veraltet")
         return
     nutzlast = auftrag.get("nutzlast")
     course_id = _kurs_id(nutzlast.get("course_id") if isinstance(nutzlast, dict) else None)
@@ -181,14 +204,16 @@ def abholer_einmal(
     client: Any,
     anzeigen: Callable[[str], dict[str, Any]] | None = None,
     freigaben_lesen: Callable[[str], list[dict[str, Any]]] | None = None,
+    jetzt: Callable[[], datetime] | None = None,
 ) -> int:
     """Ein Durchlauf: Auftraege abarbeiten, erledigte Kursfreigaben schliessen. Gibt die Zahl der
-    bearbeiteten Auftraege plus geschlossenen Eintraege zurueck."""
+    bearbeiteten Auftraege plus geschlossenen Eintraege zurueck. Ein Auftrag, der laut `angelegt_am`
+    aelter als `MAX_ALTER` ist, laeuft nicht und wird als `veraltet` gemeldet."""
     anzeigen = anzeigen or _anzeigen_standard
     freigaben_lesen = freigaben_lesen or _freigaben_standard
     n = 0
     for auftrag in client.auftraege() or []:
-        _auftrag_bearbeiten(client, auftrag, anzeigen)
+        _auftrag_bearbeiten(client, auftrag, anzeigen, jetzt or _jetzt_utc)
         n += 1
     for eintrag in client.offene() or []:
         ref = eintrag.get("quelle_ref")

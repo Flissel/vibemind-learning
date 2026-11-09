@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,49 @@ def test_handy_link_allein_genuegt() -> None:
         fake, anzeigen=lambda c: {"ok": True, "daten": {"handy_link_gesendet": True}}, freigaben_lesen=lambda c: []
     )
     assert fake.ergebnisse == [("a1", True, None)]
+
+
+JETZT = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def test_veralteter_auftrag_laeuft_nicht() -> None:
+    """Final-Review M3: ein Klick von vor mehr als 15 Minuten oeffnet nichts mehr."""
+    def auftrag(id_: str, angelegt: object) -> dict[str, Any]:
+        return {"id": id_, "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE},
+                "angelegt_am": angelegt}
+
+    fake = FakeEingang(auftraege=[
+        auftrag("alt", (JETZT - timedelta(minutes=16)).isoformat()),
+        auftrag("alt-z", "2026-11-09T11:00:00Z"),
+        auftrag("frisch", (JETZT - timedelta(minutes=14)).isoformat()),
+        auftrag("grenze", (JETZT - timedelta(minutes=15)).isoformat()),
+        auftrag("andere-zone", "2026-11-09T13:50:00+01:00"),  # = 12:50 UTC, in der Zukunft
+        auftrag("ohne-zone", "2026-11-09T10:00:00"),
+        auftrag("kaputt", "gestern"),
+        auftrag("zahl", 1731150000),
+        {"id": "fehlt", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}},
+    ])
+    gerufen: list[str] = []
+
+    def anzeigen(course_id: str) -> dict[str, Any]:
+        gerufen.append(course_id)
+        return {"ok": True, "daten": {"link_geoeffnet": True}}
+
+    freigabe_eingang.abholer_einmal(fake, anzeigen=anzeigen, freigaben_lesen=lambda c: [], jetzt=lambda: JETZT)
+    assert fake.ergebnisse == [
+        ("alt", False, "veraltet"), ("alt-z", False, "veraltet"), ("frisch", True, None), ("grenze", True, None),
+        ("andere-zone", True, None), ("ohne-zone", True, None), ("kaputt", True, None), ("zahl", True, None),
+        ("fehlt", True, None),
+    ]
+    assert len(gerufen) == 7  # die veralteten oeffnen nichts
+
+
+def test_veraltet_mit_echter_uhr() -> None:
+    fake = FakeEingang(auftraege=[{"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE},
+                                   "angelegt_am": "2020-01-01T00:00:00+00:00"}])
+    freigabe_eingang.abholer_einmal(fake, anzeigen=lambda c: pytest.fail("darf nicht laufen"),
+                                    freigaben_lesen=lambda c: [])
+    assert fake.ergebnisse == [("a1", False, "veraltet")]
 
 
 def test_freigegeben_schliesst() -> None:
