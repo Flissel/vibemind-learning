@@ -1357,13 +1357,18 @@ class AdaptiveSessionService:
     def _listen_blueprint(
         blueprint: dict[str, object], items: tuple[AdaptiveItem, ...]
     ) -> dict[str, object]:
-        """The fixed list: approved items (of the asked types) by place, then activity id."""
+        """The fixed list: approved items (of the asked types) by place, then creation order.
+
+        Courses released before the places existed have none; both release paths flush their items in
+        author order, so `created_at` restores it (activity id and id only break exact ties).
+        """
         types = blueprint.get("item_types")
         chosen = [item for item in items if not types or item.item_type in types]
         chosen.sort(
             key=lambda item: (
                 item.listen_platz is None,
                 item.listen_platz or 0,
+                item.created_at,
                 item.activity_id,
                 item.id,
             )

@@ -46,7 +46,10 @@ def _choice(index: int) -> dict[str, object]:
     }
 
 
-def _store(tmp_path: Path, plaetze: list[int | None], ids: list[str] | None = None):
+def _store(
+    tmp_path: Path, plaetze: list[int | None], ids: list[str] | None = None,
+    erstellt: list[datetime] | None = None,
+):
     engine = create_engine(f"sqlite:///{tmp_path / 'liste.db'}")
 
     @event.listens_for(engine, "connect")
@@ -72,6 +75,7 @@ def _store(tmp_path: Path, plaetze: list[int | None], ids: list[str] | None = No
                     id=item_id, course_id=course_id, course_revision=1,
                     activity_id=ids[index - 1] if ids else f"activity-{index}",
                     difficulty=0.5, quality_status="approved", listen_platz=platz,
+                    **({"created_at": erstellt[index - 1]} if erstellt else {}),
                     **_choice(index),
                 )
             )
@@ -155,13 +159,35 @@ def test_start_liste_legt_alle_versuche_an(tmp_path: Path) -> None:
     assert turn.session_revision == 2
 
 
-def test_liste_ohne_listen_platz_folgt_activity_id(tmp_path: Path) -> None:
-    factory, course_id = _store(tmp_path, [None, None, None], ["c", "a", "b"])
+def test_liste_ohne_listen_platz_gleichzeitig_folgt_activity_id(tmp_path: Path) -> None:
+    gleich = [datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)] * 3
+    factory, course_id = _store(tmp_path, [None, None, None], ["c", "a", "b"], gleich)
     turn = _start(_service(factory), course_id)
 
     with factory() as db:
         folge = [db.get(AdaptiveItem, v.item_id).activity_id for v in _versuche(factory, turn)]
     assert folge == ["a", "b", "c"]
+
+
+def test_liste_ohne_listen_platz_folgt_der_anlagezeit(tmp_path: Path) -> None:
+    # Vor A2 freigegebene Kurse: kein listen_platz; die Autorenreihenfolge steckt in created_at.
+    zeiten = [datetime(2026, 1, 1, 12, 0, s, tzinfo=timezone.utc) for s in (1, 2, 3)]
+    factory, course_id = _store(tmp_path, [None, None, None], ["c", "a", "b"], zeiten)
+    turn = _start(_service(factory), course_id)
+
+    with factory() as db:
+        folge = [db.get(AdaptiveItem, v.item_id).activity_id for v in _versuche(factory, turn)]
+    assert folge == ["c", "a", "b"]
+
+
+def test_listen_platz_gewinnt_vor_der_anlagezeit(tmp_path: Path) -> None:
+    zeiten = [datetime(2026, 1, 1, 12, 0, s, tzinfo=timezone.utc) for s in (1, 2, 3)]
+    factory, course_id = _store(tmp_path, [3, None, 1], ["x", "y", "z"], zeiten)
+    turn = _start(_service(factory), course_id)
+
+    with factory() as db:
+        folge = [db.get(AdaptiveItem, v.item_id).activity_id for v in _versuche(factory, turn)]
+    assert folge == ["z", "x", "y"]  # Plaetze 1, 3; danach der Eintrag ohne Platz
 
 
 def test_abgeben_in_beliebiger_reihenfolge(tmp_path: Path) -> None:

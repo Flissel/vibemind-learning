@@ -1,3 +1,5 @@
+import { NICHT_LESBAR } from "./aufgabe.js";
+
 // Listenkurs: reine Hilfen für die Kopfzeile „‹ Aufgabe k von n ›“ und die Abgaben im Hintergrund.
 // Der Stand kommt von der Brücke (`GET …/stand`): je Aufgabe {nummer, status, urteil, vorbewertung_id, meldung}.
 
@@ -13,6 +15,26 @@ export const LISTEN_MELDUNGEN = new Set([
   "Diese Aufgabe wird gerade bewertet.",
   "Diese Aufgabe ist schon bestätigt.",
 ]);
+
+/**
+ * Ergebnis der gewählten Aufgabe für die Leiste: nur mit Rückmeldung, die nicht „überarbeitet“ wurde.
+ * Hat die Brücke die Karte nicht auf die Fläche gebracht, trägt der Eintrag `karte` (Text für den Hinweis).
+ */
+export function listenErgebnisAus(a, verworfen) {
+  if (!a || a.status !== "rueckmeldung" || typeof a.vorbewertung_id !== "string") return null;
+  if (verworfen?.has(a.vorbewertung_id)) return null;
+  const urteil = typeof a.urteil === "string" ? a.urteil : "";
+  const ergebnis = { vorbewertung_id: a.vorbewertung_id, urteil, lesbar: urteil !== NICHT_LESBAR };
+  if (typeof a.karte === "string" && a.karte) ergebnis.karte = a.karte;
+  return ergebnis;
+}
+
+/** Der Link „Zusammenfassung (PDF)“ gilt jedem Listenkurs, auch einem beendeten, den die Seite neu öffnet. */
+export function zusammenfassungSessionId(liste, listeEnde, turn) {
+  if (liste === null && !listeEnde) return null;
+  const sid = turn?.session_id;
+  return typeof sid === "string" && sid !== "" ? sid : null;
+}
 
 const nummerVon = (a, i) => (Number.isInteger(a?.nummer) ? a.nummer : i + 1);
 

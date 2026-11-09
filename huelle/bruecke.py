@@ -499,6 +499,8 @@ class Bruecke:
         self._karten: dict[tuple[str, int], tuple[dict[str, Any], dict[str, Any]]] = {}
         # Zaehlt je Nummer die frischen Karten; eine aeltere setzen-Arbeit setzt dann ihre alte Karte nicht.
         self._kartenstand: dict[tuple[str, int], int] = {}
+        # Karte, die PenEcho nicht aufnahm (Platz belegt, Aufruf gescheitert): ihr Text fuer die Leiste, je Nummer.
+        self._kartentexte: dict[tuple[str, int], str] = {}
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
@@ -1031,7 +1033,7 @@ class Bruecke:
             sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(kurs, ende_sid, liste=turn.get("ablauf") == "liste"))
             self._zeigen(sitzung, turn)
             begriffe = ueberblick.get("begriffe")
-            return {
+            beendet = {
                 "kurs": {"course_id": kurs.course_id, "titel": kurs.titel},
                 "begriffe": begriffe if isinstance(begriffe, list) else [],
                 "turn": turn,
@@ -1039,6 +1041,10 @@ class Bruecke:
                 "flaeche": True,
                 "abgeschlossen": True,
             }
+            if sitzung.liste:
+                # Die Seite zeigt den Link auf die Zusammenfassung ("jederzeit auf Wunsch"), nur dafuer das Kennzeichen.
+                beendet["stand"] = {"ablauf": "liste"}
+            return beendet
         if sid is None:
             gestartet = _turn(self._lern.rufe(
                 "learning_session_start", "learning.session.start", course_id=kurs.course_id, schreibend=True,
@@ -1129,8 +1135,10 @@ class Bruecke:
             vorbewertung = eintrag.get("vorbewertung")
             if ok and eintrag["status"] == "offen" and isinstance(vorbewertung, dict):
                 gelesen, urteil, text = _kartenteile(vorbewertung)
-                self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+                gelandet = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
                     s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
+                self._kartentext_merken(
+                    (sitzung.sid, nummer), None if gelandet else leistentext(gelesen, urteil, text))
         return ok
 
     def _im_hintergrund_setzen(
@@ -1403,6 +1411,18 @@ class Bruecke:
         with self._abgaben_sperre:
             return {n: a for (s, n), a in self._abgaben.items() if s == sid}
 
+    def _kartentext_merken(self, schluessel: tuple[str, int], text: str | None) -> None:
+        """Ersatztext einer Karte, die nicht auf die Flaeche kam; `None` loescht ihn (Karte gelandet, ersetzt)."""
+        with self._abgaben_sperre:
+            if text:
+                self._kartentexte[schluessel] = text
+            else:
+                self._kartentexte.pop(schluessel, None)
+
+    def _kartentexte_von(self, sid: str) -> dict[int, str]:
+        with self._abgaben_sperre:
+            return {n: t for (s, n), t in self._kartentexte.items() if s == sid}
+
     def _kartenstand_von(self, sid: str, nummer: int) -> int:
         with self._abgaben_sperre:
             return self._kartenstand.get((sid, nummer), 0)
@@ -1414,6 +1434,7 @@ class Bruecke:
     def _stand_aus(self, sid: str, eintraege: list[dict[str, Any]], abgaben: dict[int, _Abgabe]) -> dict[str, Any]:
         """Status je Aufgabe: bestaetigt (Learning) > in_bewertung > fehler (Speicher) > rueckmeldung > offen."""
         aufgaben = []
+        kartentexte = self._kartentexte_von(sid)
         for e in eintraege:
             nummer, vor, abgabe = e["nummer"], e.get("vorbewertung"), abgaben.get(e["nummer"])
             meldung = None
@@ -1435,6 +1456,8 @@ class Bruecke:
                 "vorbewertung_id": kennung if isinstance(kennung, str) else None,
                 "meldung": meldung,
             })
+            if status == "rueckmeldung" and nummer in kartentexte:
+                aufgaben[-1]["karte"] = kartentexte[nummer]  # Karte nicht auf der Flaeche: Text fuer die Leiste
         aktuell = next((a["nummer"] for a in aufgaben if a["status"] != "bestaetigt"), aufgaben[-1]["nummer"])
         return {"ablauf": "liste", "aktuell": aktuell, "wartend": self._modellspur.wartend(f"{sid}:abgabe:"),
                 "aufgaben": aufgaben}
@@ -1472,6 +1495,7 @@ class Bruecke:
             laeuft = self._laeuft(sid, nummer, vorher)
             if not laeuft:
                 self._abgaben[schluessel] = _Abgabe("in_bewertung")  # eine fruehere Fehlermeldung ist damit ersetzt
+                self._kartentexte.pop(schluessel, None)
         if laeuft:
             self._laeuft_schon(sitzung)
         try:
@@ -1585,9 +1609,12 @@ class Bruecke:
                 gelesen, urteil, text = _kartenteile(vorbewertung)
                 if self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
                         s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck)):
+                    self._kartentext_merken((sitzung.sid, nummer), None)
                     self._board_merken(sitzung)
                 else:
                     log.warning("Rueckmeldung %d nicht auf der Flaeche", nummer)
+                    # Die Seite zeigt sonst nirgends, was gelesen wurde: Text fuer die Leiste im Stand.
+                    self._kartentext_merken((sitzung.sid, nummer), leistentext(gelesen, urteil, text))
         except Exception as fehler:  # noqa: BLE001 - eine Karte darf die Spur nie anhalten
             log.warning("Rueckmeldung %d nicht gesetzt: %s", nummer, _typ(fehler))
 
@@ -1627,6 +1654,7 @@ class Bruecke:
             if (alt := self._abgaben.get(schluessel)) is not None and alt.status == "fehler":
                 del self._abgaben[schluessel]
             self._karten.pop(schluessel, None)
+            self._kartentexte.pop(schluessel, None)
             self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
         gelesen, urteil, text = _kartenteile(vorbewertung)
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
@@ -1730,6 +1758,7 @@ class Bruecke:
             # Die Rueckmeldung belegt das Rueckmeldungsfeld: eine wartende Karte gilt nicht mehr.
             self._abgaben.pop(schluessel, None)
             self._karten.pop(schluessel, None)
+            self._kartentexte.pop(schluessel, None)
             self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
         text = rueckmeldung_text(turn)
         flaeche = False

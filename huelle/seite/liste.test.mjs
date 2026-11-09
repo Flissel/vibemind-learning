@@ -90,3 +90,25 @@ test("eintragSetzen: ändert den Eintrag mit dieser Nummer in einer neuen Liste"
   assert.equal(eintragSetzen(liste, 9, { status: "offen" }), liste); // unbekannte Nummer: unverändert
   assert.equal(eintragSetzen(null, 1, { status: "offen" }), null);
 });
+import { listenErgebnisAus, zusammenfassungSessionId } from "./liste.js";
+
+test("listenErgebnisAus: eine Karte, die nicht auf der Fläche steht, kommt als karte mit", () => {
+  const a = { nummer: 2, status: "rueckmeldung", urteil: "Richtig.", vorbewertung_id: "v-2", karte: "Gelesen: 2 – Richtig." };
+  assert.deepEqual(listenErgebnisAus(a, new Set()), {
+    vorbewertung_id: "v-2", urteil: "Richtig.", lesbar: true, karte: "Gelesen: 2 – Richtig.",
+  });
+  const ohne = listenErgebnisAus({ ...a, karte: undefined }, new Set());
+  assert.ok(ohne && !("karte" in ohne));
+  assert.equal(listenErgebnisAus({ ...a, status: "offen" }, new Set()), null);
+  assert.equal(listenErgebnisAus(a, new Set(["v-2"])), null);
+  assert.equal(listenErgebnisAus({ ...a, urteil: "Nicht lesbar." }, new Set()).lesbar, false);
+});
+
+test("zusammenfassungSessionId: auch ein beendeter Listenkurs hat den Link, ein anpassender nicht", () => {
+  const turn = { session_id: "abc" };
+  assert.equal(zusammenfassungSessionId({ aufgaben: [] }, false, turn), "abc");
+  assert.equal(zusammenfassungSessionId(null, true, turn), "abc");
+  assert.equal(zusammenfassungSessionId(null, false, turn), null);
+  assert.equal(zusammenfassungSessionId(null, true, { session_id: "" }), null);
+  assert.equal(zusammenfassungSessionId(null, true, null), null);
+});

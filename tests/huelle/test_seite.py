@@ -214,4 +214,4 @@ def test_zusammenfassung_link_nur_im_listenmodus() -> None:
     html = (SEITE / "index.html").read_text(encoding="utf-8")
     js = (SEITE / "huelle.js").read_text(encoding="utf-8")
     assert 'id="zusammenfassung"' in html and "Zusammenfassung (PDF)" in html
-    assert "zusammenfassung.pdf" in js and "z.liste !== null ? z.turn?.session_id" in js
+    assert "zusammenfassung.pdf" in js and "zusammenfassungSessionId(z.liste, z.listeEnde, z.turn)" in js

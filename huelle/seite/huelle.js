@@ -6,7 +6,8 @@ import {
 } from "./aufgabe.js";
 import { flaecheSpeichern } from "./flaeche.js";
 import {
-  eintragSetzen, LISTEN_MELDUNGEN, mussAbfragen, naechsteOffene, standAnnehmen, statusText, warteText,
+  eintragSetzen, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, standAnnehmen, statusText,
+  warteText, zusammenfassungSessionId,
 } from "./liste.js";
 
 const API = "/lernen/api";
@@ -59,6 +60,7 @@ const z = {
   speichert: null, // laufendes Speichern (Promise); es läuft nie mehr als eines
   token: 0, // zählt Kurswechsel: Ergebnisse eines früheren Kurses werden verworfen
   // Listenkurs (nur wenn die Brücke `stand.ablauf === "liste"` meldet; sonst null und alles wie bisher):
+  listeEnde: false, // beendeter Listenkurs, neu geöffnet: ohne Stand, aber der Link auf die Zusammenfassung gilt
   liste: null, // Stand der Brücke {ablauf, aktuell, wartend, aufgaben: [{nummer, status, urteil, vorbewertung_id, meldung}]}
   listenAufgaben: new Map(), // nummer -> task (vom Öffnen), für Leiste und „Falsch gelesen“
   gewaehlt: null, // gewählte Aufgabe; „Abgeben“, „Passt“ usw. gelten für sie
@@ -153,10 +155,7 @@ const gewaehlteAufgabe = () => z.liste?.aufgaben.find((a) => a.nummer === z.gewa
 
 /** Ergebnis der gewählten Aufgabe für die Leiste: nur mit Rückmeldung, die nicht „überarbeitet“ wurde. */
 function listenErgebnis(a) {
-  if (!a || a.status !== "rueckmeldung" || typeof a.vorbewertung_id !== "string") return null;
-  if (z.verworfen.has(a.vorbewertung_id)) return null;
-  const urteil = typeof a.urteil === "string" ? a.urteil : "";
-  return { vorbewertung_id: a.vorbewertung_id, urteil, lesbar: urteil !== NICHT_LESBAR };
+  return listenErgebnisAus(a, z.verworfen);
 }
 
 const listenMeldung = (daten) => (LISTEN_MELDUNGEN.has(daten?.meldung) ? daten.meldung : meldungFuer(daten));
@@ -200,9 +199,9 @@ function abfragePlanen() {
 
 function zusammenfassungZeigen() {
   // Nur im Listenmodus (auch am Kursende): Link auf die PDF-Route der Brücke.
-  const sid = z.liste !== null ? z.turn?.session_id : null;
+  const sid = zusammenfassungSessionId(z.liste, z.listeEnde, z.turn);
   const link = $("zusammenfassung");
-  link.hidden = typeof sid !== "string" || sid === "";
+  link.hidden = sid === null;
   if (!link.hidden) link.href = `${API}/sitzungen/${encodeURIComponent(sid)}/zusammenfassung.pdf`;
 }
 
@@ -671,6 +670,7 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
   z.rueckmeldung = null;
   abfrageStoppen();
   z.liste = null;
+  z.listeEnde = false;
   z.listenAufgaben = new Map();
   z.gewaehlt = null;
   z.verworfen = new Set();
@@ -687,7 +687,9 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
   begriffeZeigen(r.daten.begriffe);
   turnUebernehmen(r.daten.turn, r.daten.nummer);
   // Listenkurs nur, wenn die Brücke es sagt; anpassende Kurse behalten den bisherigen Kopf.
-  if (r.daten.stand?.ablauf === "liste") {
+  if (r.daten.abgeschlossen === true && r.daten.stand?.ablauf === "liste") {
+    z.listeEnde = true; // nur der Link; die Ansicht des beendeten Kurses bleibt wie sie ist
+  } else if (r.daten.stand?.ablauf === "liste") {
     for (const e of Array.isArray(r.daten.aufgaben) ? r.daten.aufgaben : []) {
       if (Number.isInteger(e?.nummer) && e.task) z.listenAufgaben.set(e.nummer, e.task);
     }

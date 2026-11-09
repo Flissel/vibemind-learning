@@ -2779,3 +2779,79 @@ def test_markdown_beim_kursende(tmp_path) -> None:
         assert "Ergebnis: eingegeben" in text and SID not in text
     finally:
         client.app.beenden()
+
+
+# ---- Schlussreview I1: eine Karte, die nicht auf die Flaeche kommt, zeigt die Leiste als Text -------------
+
+def _karte_verweigern(penecho: FakePenEcho) -> list[bool]:
+    schalter = [True]  # True = PenEcho lehnt die Karte ab
+    echt = penecho.rueckmeldung_zeigen
+
+    def zeigen(*a: Any, **k: Any) -> None:
+        if schalter[0]:
+            raise PenEchoNichtErreichbar("Platz belegt")
+        echt(*a, **k)
+
+    penecho.rueckmeldung_zeigen = zeigen  # type: ignore[method-assign]
+    return schalter
+
+
+def test_liste_hintergrundkarte_abgelehnt_stand_traegt_den_kartentext() -> None:
+    ll = ListenLern(2)
+    penecho = FakePenEcho()
+    schalter = _karte_verweigern(penecho)
+    client, penecho, _ = _listen_offen(ll, penecho)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        eintrag = _stand(client)["aufgaben"][1]
+        assert eintrag["status"] == "rueckmeldung"
+        assert eintrag["karte"].startswith("Gelesen: 2") and "Richtig." in eintrag["karte"]
+        assert "karte" not in _stand(client)["aufgaben"][0]
+        # Neue Abgabe: der alte Text gilt nicht mehr; landet die neue Karte, bleibt er weg.
+        schalter[0] = False
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        assert "karte" not in _stand(client)["aufgaben"][1]
+    finally:
+        bruecke.beenden()
+
+
+def test_liste_oeffnen_karte_abgelehnt_stand_traegt_den_kartentext() -> None:
+    ll = ListenLern(2)
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1), gelesen="7")
+    penecho = FakePenEcho()
+    _karte_verweigern(penecho)
+    client, _, offen = _listen_offen(ll, penecho)
+    try:
+        eintrag = offen["stand"]["aufgaben"][0]
+        assert eintrag["status"] == "rueckmeldung" and eintrag["karte"].startswith("Gelesen: 7")
+        assert _stand(client)["aufgaben"][0]["karte"] == eintrag["karte"]
+    finally:
+        client.app.beenden()
+
+
+# ---- Schlussreview I2: der beendete Listenkurs meldet sein Kennzeichen beim erneuten Oeffnen -----------------
+
+def test_beendeter_listenkurs_oeffnen_meldet_ablauf_liste(tmp_path) -> None:
+    ll = ListenLern(1)
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1))
+    client, _, _ = _listen_offen(ll, kursende=tmp_path / "kursende.json")
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/passt",
+                           json={"nummer": 1, "vorbewertung_id": _vid(1)}).status_code == 200
+        ll.lern.antworten["learning_course_overview"] = _ueberblick(None)
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["abgeschlossen"] is True and body["turn"]["state"] == "completed"
+        assert body["stand"]["ablauf"] == "liste"
+    finally:
+        client.app.beenden()
+
+
+def test_beendeter_anpassender_kurs_oeffnen_ohne_stand() -> None:
+    _, client, _ = _bis_zum_ende()
+    body = client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()
+    assert body["abgeschlossen"] is True and "stand" not in body
