@@ -835,7 +835,7 @@ class PenEchoMcp:
             except PenEchoNichtErreichbar as fehler:
                 log.warning("Aufgabenbild %d nicht gesetzt: %s", position, _typ(fehler))
 
-    def _zeigen(self, session_id: str, objekt_id: object = None) -> None:
+    def _zeigen(self, session_id: str, objekt_id: object = None, region: dict[str, int] | None = None) -> None:
         """Board sichtbar machen und die Aufgabe ins Bild holen (show). Ab Aufgabe 2 laege sie sonst
         unter dem Bildschirmrand; ein frisch angelegtes Board ist ohne show nicht aktiv.
 
@@ -843,7 +843,9 @@ class PenEchoMcp:
         Aufruf, sonst spielte PenEcho beim erneuten Oeffnen nur die alte Antwort ab und zeigte nichts.
         """
         argumente: dict[str, Any] = {"sessionId": session_id, "requestId": f"zeigen-{uuid4().hex}", "action": "show"}
-        if isinstance(objekt_id, str) and objekt_id:
+        if region is not None:
+            argumente["region"] = dict(region)
+        elif isinstance(objekt_id, str) and objekt_id:
             argumente["objectId"] = objekt_id[:MAX_SCHLUESSEL]
         try:
             self._werkzeug("penecho_edit_canvas", argumente)
@@ -1123,15 +1125,11 @@ class PenEchoMcp:
     def bereich_zeigen(self, session_id: str, rechteck: dict[str, int]) -> None:
         """Holt die Zeile des Bereichs (`anordnung.zeile`: Aufgabe samt Rueckmeldung) ins Bild.
 
-        PenEchos show nimmt nur eine objectId (schema.js EDIT_FIELDS.show), keine Region: gezeigt wird
-        darum der Aufgabentext der Zeile, sonst ihr oberstes Objekt. Liegt dort nichts, wird das Board
-        nur sichtbar gemacht. Fehler wie bei `_zeigen`: nur verlorene Sitzung/Flaeche gehen weiter.
+        Die Lernflaeche nimmt bei show einen Bereich (schema.js EDIT_FIELDS.show) und rahmt ihn im Lernmodus
+        ganz ein. Mit der objectId des Aufgabentexts lag das Antwortfeld halb ausserhalb (Live-Pruefung
+        09.11.). Fehler wie bei `_zeigen`: nur verlorene Sitzung/Flaeche gehen weiter.
         """
-        belegung = self._belegung(session_id, zeile(rechteck))
-        objekt_id = _an_ecke(belegung, felder(rechteck).textfeld, "text")
-        if objekt_id is None and belegung:
-            objekt_id = min(belegung, key=lambda e: (e["bounds"]["y"], e["bounds"]["x"]))["objectId"]
-        self._zeigen(session_id, objekt_id)
+        self._zeigen(session_id, region=zeile(rechteck))
 
     def _aufnahme(self, session_id: str, region: dict[str, int], timeout: float | None = None) -> bytes:
         # schema.js:666 penecho_capture_canvas: target "region" verlangt region {x,y,w,h};

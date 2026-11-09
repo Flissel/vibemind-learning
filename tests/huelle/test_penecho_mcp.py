@@ -1521,16 +1521,16 @@ def test_bereiche_melden_liest_nach_konflikt_einmal_neu(zustand: Path) -> None:
 
 
 def test_bereich_zeigen_holt_die_zeile_ins_bild(zustand: Path) -> None:
-    # PenEchos show nimmt nur objectId (schema.js EDIT_FIELDS.show); gezeigt wird der Aufgabentext der Zeile.
+    # Die Lernflaeche nimmt bei show einen Bereich (schema.js EDIT_FIELDS.show, seit 09.11.). Live rahmte die
+    # Flaeche mit objectId nur den Aufgabentext, das Antwortfeld lag halb ausserhalb; jetzt die ganze Zeile.
     fake = Fake()
     r = anordnung([False] * 3)[2]
-    objekte = [("image", "image-1", {"x": r["x"] + 600, "y": r["y"] + 400, "w": 200, "h": 200}),
-               ("text", "text-box-9", {**felder(r).textfeld, "h": 300})]
+    objekte = [("text", "text-box-9", {**felder(r).textfeld, "h": 300})]
     PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).bereich_zeigen("sess-1", r)
-    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_list_files")] == [zeile(r)]
+    assert fake.aufrufe("penecho_list_files") == []
     (zeigen,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
-    assert zeigen["action"] == "show" and zeigen["objectId"] == "text-box-9"
-    assert set(zeigen) == {"sessionId", "requestId", "action", "objectId"}
+    assert zeigen["action"] == "show" and zeigen["region"] == zeile(r)
+    assert set(zeigen) == {"sessionId", "requestId", "action", "region"}
 
 
 def test_setzen_ohne_zeigen_holt_kein_board_nach_vorn(zustand: Path) -> None:
