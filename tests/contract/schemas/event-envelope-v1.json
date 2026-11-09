@@ -68,6 +68,7 @@
         "learning.session.resume",
         "learning.course.overview",
         "learning.task.next",
+        "learning.task.list",
         "learning.task.answer",
         "learning.task.preview",
         "learning.task.confirm",

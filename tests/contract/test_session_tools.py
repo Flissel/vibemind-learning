@@ -378,3 +378,194 @@ def test_server_verdrahtet_den_leser() -> None:
     import inspect
 
     assert "handschrift_leser=evaluation_client" in inspect.getsource(server)
+
+
+# ---- feste Liste: learning_task_list und attempt_id -------------------------------------
+
+
+def _drei_aufgaben(factory, course_id: str) -> None:
+    from sqlalchemy import select
+
+    with factory() as db, db.begin():
+        concept_id = db.scalar(
+            select(AdaptiveConcept.id).where(AdaptiveConcept.course_id == course_id)
+        )
+        for index in (2, 3):
+            item_id = str(uuid4())
+            db.add(
+                AdaptiveItem(
+                    id=item_id,
+                    course_id=course_id,
+                    course_revision=1,
+                    activity_id=f"activity-{index}",
+                    item_type="single_choice",
+                    difficulty=0.3,
+                    quality_status="approved",
+                    expected_answer={"choice_id": "a"},
+                    scoring_config={
+                        "prompt": f"Frage {index}?",
+                        "options": [
+                            {"id": "a", "label": "Ja"},
+                            {"id": "b", "label": "Nein"},
+                        ],
+                        "source_refs": [f"source://course/{index}"],
+                        "hints": [],
+                        "representation": "quiz",
+                        "remediation_tags": [],
+                    },
+                    rubric=[],
+                )
+            )
+            db.add(
+                ItemConcept(
+                    item_id=item_id,
+                    concept_id=concept_id,
+                    course_id=course_id,
+                    course_revision=1,
+                )
+            )
+
+
+def _liste_dispatcher(tmp_path: Path):
+    engine, factory, course_id = _store(tmp_path)
+    _drei_aufgaben(factory, course_id)
+    dispatcher = LearningDispatcher(
+        gateways=build_session_gateways(AdaptiveSessionService(factory)),
+        receipts=InMemoryReceiptStore(),
+    )
+    return engine, dispatcher, course_id
+
+
+def _liste_starten(dispatcher, course_id: str) -> dict:
+    started = _call(
+        dispatcher,
+        LearningToolName.SESSION_START.value,
+        _event(
+            "learning.session.start",
+            course_id=course_id,
+            idempotency_key=f"start-{uuid4()}",
+            payload={
+                "course_revision": 1,
+                "mode": "training",
+                "blueprint": {"max_attempts": 3},
+                "ablauf": "liste",
+            },
+        ),
+    )
+    assert started["state"] == "completed", started
+    return started["result"]["session"]
+
+
+def _task_list(dispatcher, session_id: str):
+    return _call(
+        dispatcher,
+        "learning_task_list",
+        _event("learning.task.list", session_id=session_id),
+    )
+
+
+def test_task_list_liefert_alle_aufgaben(tmp_path: Path) -> None:
+    engine, dispatcher, course_id = _liste_dispatcher(tmp_path)
+    turn = _liste_starten(dispatcher, course_id)
+    assert turn["ablauf"] == "liste"
+    listed = _task_list(dispatcher, turn["session_id"])
+    assert listed["state"] == "completed", listed
+    assert listed["evidence"]["evidence_type"] == "application_readback"
+    assert [e["nummer"] for e in listed["result"]["aufgaben"]] == [1, 2, 3]
+    assert {e["status"] for e in listed["result"]["aufgaben"]} == {"offen"}
+    assert listed["result"]["session"]["session_id"] == turn["session_id"]
+    assert listed["result"]["session"]["ablauf"] == "liste"
+    engine.dispose()
+
+
+def test_preview_mit_attempt_id(tmp_path: Path) -> None:
+    engine, dispatcher, course_id = _liste_dispatcher(tmp_path)
+    turn = _liste_starten(dispatcher, course_id)
+    aufgaben = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"]
+    zweiter = aufgaben[1]["attempt_id"]
+    preview = _preview(
+        dispatcher, turn, {"answer": {"choice_id": "a"}, "attempt_id": zweiter}
+    )
+    assert preview["state"] == "completed", preview
+    assert preview["result"]["vorbewertung"]["attempt_id"] == zweiter
+    confirmed = _call(
+        dispatcher,
+        "learning_task_confirm",
+        _event(
+            "learning.task.confirm",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"],
+            idempotency_key=f"confirm-{uuid4()}",
+            payload={
+                "vorbewertung_id": preview["result"]["vorbewertung"]["id"],
+                "attempt_id": zweiter,
+            },
+        ),
+    )
+    assert confirmed["state"] == "completed", confirmed
+    nach = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"]
+    assert [e["status"] for e in nach] == ["offen", "bestaetigt", "offen"]
+    engine.dispose()
+
+
+def test_answer_mit_attempt_id(tmp_path: Path) -> None:
+    engine, dispatcher, course_id = _liste_dispatcher(tmp_path)
+    turn = _liste_starten(dispatcher, course_id)
+    dritter = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"][2]["attempt_id"]
+    answered = _call(
+        dispatcher,
+        "learning_task_answer",
+        _event(
+            "learning.task.answer",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"],
+            idempotency_key=f"answer-{uuid4()}",
+            payload={"answer": {"choice_id": "a"}, "attempt_id": dritter},
+        ),
+    )
+    assert answered["state"] == "completed", answered
+    nach = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"]
+    assert [e["status"] for e in nach] == ["offen", "offen", "bestaetigt"]
+    engine.dispose()
+
+
+def test_task_list_bei_anpassend_abgelehnt(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    assert turn["ablauf"] == "anpassend"
+    listed = _task_list(dispatcher, turn["session_id"])
+    assert listed["state"] == "rejected"
+    assert listed["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
+@pytest.mark.parametrize("ablauf", ["kreuz", 5, True])
+def test_start_ablauf_streng(tmp_path: Path, ablauf: object) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    started = _call(
+        dispatcher,
+        LearningToolName.SESSION_START.value,
+        _event(
+            "learning.session.start",
+            course_id=course_id,
+            idempotency_key=f"start-{uuid4()}",
+            payload={
+                "course_revision": 1,
+                "mode": "training",
+                "blueprint": {"max_attempts": 2},
+                "ablauf": ablauf,
+            },
+        ),
+    )
+    assert started["state"] == "rejected", started
+    assert started["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
+def test_attempt_id_muss_text_sein(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    result = _preview(dispatcher, turn, {"answer": {"choice_id": "a"}, "attempt_id": 5})
+    assert result["state"] == "rejected", result
+    assert result["error"]["code"] == "invalid_session_request"
+    engine.dispose()

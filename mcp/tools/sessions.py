@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 # 5 MB of PNG (model_gateway cap) is 4 * ceil(5_000_000 / 3) base64 characters.
 _MAX_PNG_BASE64_CHARS = 6_666_668
-_PREVIEW_KEYS = frozenset({"handschrift_png_base64", "answer", "korrigiert_aus"})
+_PREVIEW_KEYS = frozenset(
+    {"handschrift_png_base64", "answer", "korrigiert_aus", "attempt_id"}
+)
 
 
 SESSION_TOOL_NAMES = frozenset(
@@ -46,6 +48,7 @@ SESSION_TOOL_NAMES = frozenset(
         LearningToolName.SESSION_RESUME,
         LearningToolName.COURSE_OVERVIEW,
         LearningToolName.TASK_NEXT,
+        LearningToolName.TASK_LIST,
         LearningToolName.TASK_ANSWER,
         LearningToolName.TASK_PREVIEW,
         LearningToolName.TASK_CONFIRM,
@@ -116,6 +119,8 @@ class AdaptiveSessionGateway:
                 return self._turn_outcome(self._confirm(request))
             if request.tool is LearningToolName.TASK_NEXT:
                 return self._turn_outcome(self._current(request))
+            if request.tool is LearningToolName.TASK_LIST:
+                return self._list(request)
             if request.tool is LearningToolName.HINT_REQUEST:
                 turn = self._current(request)
                 hint = self._service.hint(
@@ -192,11 +197,14 @@ class AdaptiveSessionGateway:
         payload = request.event.payload
         revision = payload.get("course_revision")
         mode = payload.get("mode")
+        ablauf = payload.get("ablauf", "anpassend")
         blueprint = payload.get("blueprint")
         if isinstance(revision, bool) or not isinstance(revision, int):
             raise ValueError("session start requires course_revision")
         if mode not in {"training", "exam"} or not isinstance(blueprint, dict):
             raise ValueError("session start mode or blueprint is invalid")
+        if ablauf not in {"anpassend", "liste"}:
+            raise ValueError("session start ablauf is invalid")
         return self._service.start(
             SessionStartCommand(
                 course_id=str(course_id),
@@ -204,6 +212,7 @@ class AdaptiveSessionGateway:
                 actor_id=request.event.actor.actor_id,
                 mode=mode,
                 blueprint=blueprint,
+                ablauf=ablauf,
             )
         )
 
@@ -252,6 +261,7 @@ class AdaptiveSessionGateway:
         answer = request.event.payload.get("answer")
         if session_id is None or revision is None or not isinstance(answer, dict):
             raise ValueError("task answer requires session, revision, and answer")
+        attempt_id = _attempt_id(request.event.payload)
         actor_id = request.event.actor.actor_id
         # The turn after an answer carries the NEXT task, so the answered one is read first.
         answered = self._notes.vorher(str(session_id), actor_id) if self._notes else None
@@ -261,6 +271,7 @@ class AdaptiveSessionGateway:
                 actor_id=actor_id,
                 expected_session_revision=revision,
                 answer=answer,
+                attempt_id=attempt_id,
             )
         )
         if answered is not None:
@@ -274,6 +285,7 @@ class AdaptiveSessionGateway:
             raise ValueError("task preview requires session and revision")
         actor_id = request.event.actor.actor_id
         answer, png, korrigiert_aus = _preview_payload(request.event.payload)
+        attempt_id = _attempt_id(request.event.payload)
         try:
             vorbewertung = self._service.vorbewerten(
                 VorbewertungCommand(
@@ -283,6 +295,7 @@ class AdaptiveSessionGateway:
                     answer=answer,
                     handschrift_png=png,
                     korrigiert_aus=korrigiert_aus,
+                    attempt_id=attempt_id,
                 )
             )
         except PersistenceConflict:
@@ -313,10 +326,11 @@ class AdaptiveSessionGateway:
         if (
             session_id is None
             or revision is None
-            or set(payload) != {"vorbewertung_id"}
+            or not set(payload) <= {"vorbewertung_id", "attempt_id"}
             or not isinstance(vorbewertung_id, str)
         ):
             raise ValueError("task confirm requires session, revision, and vorbewertung_id")
+        attempt_id = _attempt_id(payload)
         actor_id = request.event.actor.actor_id
         answered = self._notes.vorher(str(session_id), actor_id) if self._notes else None
         turn = self._service.bestaetigen(
@@ -324,6 +338,7 @@ class AdaptiveSessionGateway:
             actor_id=actor_id,
             expected_session_revision=revision,
             vorbewertung_id=vorbewertung_id,
+            attempt_id=attempt_id,
         )
         if answered is not None:
             self._note_from_feedback(turn, answered, actor_id)
@@ -335,6 +350,17 @@ class AdaptiveSessionGateway:
         """A wrong training answer leaves one note per (session, task); never blocks the reply."""
         if self._notes is not None:
             self._notes.nachher(turn, task, actor_id)
+
+    def _list(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        turn = self._current(request)
+        eintraege = self._service.aufgabenliste(
+            turn.session_id, actor_id=request.event.actor.actor_id
+        )
+        return self._turn_outcome(
+            turn,
+            extra={"aufgaben": [e.model_dump(mode="json") for e in eintraege]},
+            intent=False,
+        )
 
     def _current(self, request: ToolRequestV1) -> SessionTurn:
         session_id = request.event.session_id
@@ -417,6 +443,13 @@ def _preview_payload(
     if not isinstance(answer, dict):
         raise ValueError("answer must be an object")
     return answer, None, korrigiert_aus
+
+
+def _attempt_id(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("attempt_id")
+    if value is not None and (not isinstance(value, str) or not value):
+        raise ValueError("attempt_id must be a non-empty string")
+    return value
 
 
 def _decode_png(encoded: object) -> bytes:
