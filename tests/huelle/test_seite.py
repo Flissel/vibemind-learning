@@ -208,3 +208,10 @@ def test_seitenleiste_haelt_katex_hilfstext_drinnen() -> None:
     css = (SEITE / "huelle.css").read_text(encoding="utf-8")
     regel = css.split("\n.leiste {")[1].split("}")[0]
     assert "position: relative" in regel
+
+
+def test_zusammenfassung_link_nur_im_listenmodus() -> None:
+    html = (SEITE / "index.html").read_text(encoding="utf-8")
+    js = (SEITE / "huelle.js").read_text(encoding="utf-8")
+    assert 'id="zusammenfassung"' in html and "Zusammenfassung (PDF)" in html
+    assert "zusammenfassung.pdf" in js and "z.liste !== null ? z.turn?.session_id" in js

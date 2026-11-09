@@ -198,7 +198,16 @@ function abfragePlanen() {
   }, ABFRAGE_MS);
 }
 
+function zusammenfassungZeigen() {
+  // Nur im Listenmodus (auch am Kursende): Link auf die PDF-Route der Brücke.
+  const sid = z.liste !== null ? z.turn?.session_id : null;
+  const link = $("zusammenfassung");
+  link.hidden = typeof sid !== "string" || sid === "";
+  if (!link.hidden) link.href = `${API}/sitzungen/${encodeURIComponent(sid)}/zusammenfassung.pdf`;
+}
+
 function listenkopfZeigen() {
+  zusammenfassungZeigen();
   const an = z.liste !== null && z.phase !== "ende";
   $("listenkopf").hidden = !an;
   if (!an) return;

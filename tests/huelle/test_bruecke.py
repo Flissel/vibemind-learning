@@ -2559,3 +2559,124 @@ def test_kursende_bericht_eines_listenkurses_mit_rechtecken(tmp_path) -> None:
         assert penecho.bericht_rechtecke == [{1: bereiche[0], 2: bereiche[1]}]
     finally:
         client.app.beenden()
+
+# ---- Teil A2, Task 6: Zusammenfassung als PDF und Textfassung -----------------------------------
+
+def _zf_offen(ll: ListenLern, penecho: FakePenEcho | None = None, **kw: Any):
+    client, penecho, _ = _listen_offen(ll, penecho, **kw)
+    return client, penecho
+
+
+def test_zusammenfassung_route() -> None:
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/pdf" and r.content.startswith(b"%PDF")
+        assert re.fullmatch(r'attachment; filename="zusammenfassung-testkurs-\d{4}-\d{2}-\d{2}\.pdf"',
+                            r.headers["content-disposition"])
+        # Fläche (ganze) plus je Aufgabe ein Bild, jedes mit eigenem Rechteck.
+        rechtecke = [rt for _, rt in penecho.aufnahme_rechtecke]
+        bereiche = anordnung([False] * 2)
+        assert rechtecke[1:] == bereiche and rechtecke[0] is not None
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_nur_fuer_listenkurse_und_bekannte_sitzungen() -> None:
+    lern = FakeLern({"learning_course_overview": _ueberblick(turn()), "learning_task_next": {"session": turn()}})
+    client, _, _ = bauen(lern)
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 400
+        assert client.get("/lernen/api/sitzungen/nicht-uuid/zusammenfassung.pdf").status_code == 404
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_ohne_flaeche_ist_trotzdem_ein_pdf() -> None:
+    ll = ListenLern(2)
+    client, penecho = _zf_offen(ll)
+    try:
+        penecho.fehler = PenEchoNichtErreichbar("weg")
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    finally:
+        client.app.beenden()
+
+
+def test_zusammenfassung_zeitbudget_laesst_restliche_bilder_weg() -> None:
+    ll = ListenLern(3)
+    client, penecho = _zf_offen(ll)
+    try:
+        zeiten = iter([0.0, 1.0, 31.0, 32.0, 33.0, 34.0])
+        client.app._uhr = lambda: next(zeiten)
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+        assert len(penecho.aufnahme_rechtecke) == 1  # nur die Fläche; das Budget war vor Aufgabe 1 verbraucht
+    finally:
+        client.app.beenden()
+
+
+def _md_dateien(ordner) -> list:
+    return sorted(ordner.glob("*.md"))
+
+
+def test_markdown_nur_mit_ordner(tmp_path) -> None:
+    import dataclasses
+
+    ll = ListenLern(2)
+    client, _ = _zf_offen(ll)
+    try:
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        client.app.beenden()
+    ll = ListenLern(2)
+    ordner = tmp_path / "wissen"
+    client, _ = _zf_offen(ll, einstellung=dataclasses.replace(E, zusammenfassung_ordner=str(ordner)))
+    try:
+        for _ in range(2):  # gleicher Tag überschreibt
+            assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        (datei,) = _md_dateien(ordner)
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-testkurs\.md", datei.name)
+        text = datei.read_text(encoding="utf-8")
+        assert ACTOR not in text and SID not in text and "## Aufgabe 1" in text and "## Begriffe" in text
+        assert not list(ordner.glob("*.tmp"))
+    finally:
+        client.app.beenden()
+
+
+def test_markdown_schreibfehler_bricht_das_pdf_nicht(tmp_path) -> None:
+    import dataclasses
+
+    blockiert = tmp_path / "datei"
+    blockiert.write_text("x", encoding="utf-8")  # ein Ordner, der keiner sein kann
+    ll = ListenLern(2)
+    client, _ = _zf_offen(ll, einstellung=dataclasses.replace(E, zusammenfassung_ordner=str(blockiert / "unten")))
+    try:
+        r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    finally:
+        client.app.beenden()
+
+
+def test_markdown_beim_kursende(tmp_path) -> None:
+    import dataclasses
+
+    datei = tmp_path / "kursende.json"
+    datei.write_text(json.dumps({f"{ACTOR}|{KURS}": SID}), encoding="utf-8")
+    ordner = tmp_path / "wissen"
+    ll = ListenLern(2)
+    for e in ll.eintraege:
+        e["status"] = "bestaetigt"
+    ll.lern.antworten["learning_course_overview"] = _ueberblick(None)
+    client, _, _ = bauen(ll.lern, kursende=datei, einstellung=dataclasses.replace(E, zusammenfassung_ordner=str(ordner)))
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()["abgeschlossen"] is True
+        (md,) = _md_dateien(ordner)
+        text = md.read_text(encoding="utf-8")
+        assert "Ergebnis: eingegeben" in text and SID not in text
+    finally:
+        client.app.beenden()

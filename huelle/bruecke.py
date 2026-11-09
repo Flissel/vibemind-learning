@@ -33,6 +33,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -59,6 +60,9 @@ from .penecho_mcp import (
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
+from .zusammenfassung import (
+    BILD_BUDGET_S, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, ergebnis_von, kernaussage, kurs_kurz,
+)
 
 log = logging.getLogger(__name__)
 
@@ -485,6 +489,8 @@ class Bruecke:
         self._spuren = [self._flaechenspur, self._modellspur]
         # Die zuletzt geoeffnete Lernsitzung: nur deren Hintergrundarbeiten laufen noch (Kurswechsel).
         self._zuletzt: str | None = None
+        # Uhr fuer das Bildbudget der Zusammenfassung (Tests ersetzen sie).
+        self._uhr: Callable[[], float] = time.monotonic
         # Abgaben der Listenkurse, je (sid, nummer); eigene kleine Sperre, nie die Flaechensperre.
         self._abgaben_sperre = threading.Lock()
         self._abgaben: dict[tuple[str, int], _Abgabe] = {}
@@ -506,6 +512,7 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/korrektur", self._r_korrektur, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/passt", self._r_passt, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/stand", self._r_stand, methods=["GET"]),
+            Route(f"{p}/sitzungen/{{sid}}/zusammenfassung.pdf", self._r_zusammenfassung, methods=["GET"]),
             Route(f"{p}/sitzungen/{{sid}}/zeigen", self._r_zeigen, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/erklaeren", self._r_erklaeren, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/hinweis", self._r_hinweis, methods=["POST"]),
@@ -815,6 +822,8 @@ class Bruecke:
         summary = turn.get("summary")
         if sitzung.bericht_gezeigt or not isinstance(summary, dict):
             return
+        if sitzung.liste and self._e.zusammenfassung_ordner:
+            self._zusammenfassung_ablegen(sitzung)
         try:
             text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung.kurs) or [])
             if rechtecke is None:
@@ -853,6 +862,104 @@ class Bruecke:
             return None
         begriffe = ueberblick.get("begriffe")
         return begriffe if isinstance(begriffe, list) else None
+
+    # ---- Zusammenfassung (Listenkurs) ---------------------------------------
+    def _zusammenfassung_bauen(self, sitzung: _Sitzung, *, bilder: bool) -> Zusammenfassung:
+        """Werte der Zusammenfassung aus der Liste bei Learning; Bilder (Flaeche, je Aufgabe) nur mit `bilder`."""
+        _, eintraege = self._liste_lesen(sitzung)
+        bereiche = self._bereiche(eintraege)
+        aufnahmen: list[bytes | None] = [None] * (len(eintraege) + 1)
+        if bilder:
+            ganz = {
+                "x": min(b["x"] for b in bereiche), "y": min(b["y"] for b in bereiche),
+                "w": max(b["x"] + b["w"] for b in bereiche) - min(b["x"] for b in bereiche),
+                "h": max(b["y"] + b["h"] for b in bereiche) - min(b["y"] for b in bereiche),
+            }
+            aufnahmen = self._aufnahmen(sitzung, [ganz, *bereiche])
+        zeilen = []
+        for e, bild in zip(eintraege, aufnahmen[1:]):
+            vor = e.get("vorbewertung")
+            prompt = e["task"].get("prompt")
+            zeilen.append(AufgabeZeile(
+                e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor),
+                kernaussage(vor) if isinstance(vor, dict) else "–", bild,
+            ))
+        return Zusammenfassung(sitzung.kurs.titel, date.today(), aufnahmen[0], tuple(zeilen),
+                               self._begriffe_zeilen(sitzung.kurs))
+
+    def _aufnahmen(self, sitzung: _Sitzung, rechtecke: list[dict[str, int]]) -> list[bytes | None]:
+        """Ein Bild je Rechteck, jedes kurz unter der Flaechensperre; das Zeitbudget gilt fuer alle zusammen.
+
+        Nach dem ersten Fehler (Flaeche nicht erreichbar) oder nach Ablauf des Budgets entfallen die uebrigen.
+        """
+        start = self._uhr()
+        ergebnis: list[bytes | None] = []
+        offen = True
+        for nummer, rechteck in enumerate(rechtecke, start=0):
+            if offen and self._uhr() - start > BILD_BUDGET_S:
+                log.warning("Zusammenfassung: Zeitbudget fuer Bilder aufgebraucht")
+                offen = False
+            bild = None
+            if offen:
+                try:
+                    bild = self._auf_flaeche(
+                        sitzung, lambda s, r=rechteck, n=max(nummer, 1): self._penecho.schnappschuss(s, n, rechteck=r)
+                    )
+                except Exception as fehler:  # noqa: BLE001 - ohne Bild gibt es das PDF trotzdem
+                    log.warning("Zusammenfassung: Bild nicht aufgenommen: %s", _typ(fehler))
+                    offen = False
+            ergebnis.append(bild)
+        return ergebnis
+
+    def _begriffe_zeilen(self, kurs: Any) -> tuple[tuple[str, str], ...]:
+        zeilen = []
+        for begriff in self._begriffe(kurs) or []:
+            titel = begriff.get("titel") if isinstance(begriff, dict) else None
+            if not isinstance(titel, str) or not titel:
+                continue
+            stand = begriff.get("beherrschung")
+            ok = isinstance(stand, (int, float)) and not isinstance(stand, bool)
+            zeilen.append((titel, f"{round(min(max(float(stand), 0.0), 1.0) * 100)} %" if ok else "noch offen"))
+        return tuple(zeilen)
+
+    def _zusammenfassung_ablegen(self, sitzung: _Sitzung, z: Zusammenfassung | None = None) -> None:
+        """Textfassung in den Wissensordner (falls eingestellt); Fehler werden nur geloggt, nie gemeldet."""
+        ordner = self._e.zusammenfassung_ordner
+        if not ordner:
+            return
+        try:
+            z = z or self._zusammenfassung_bauen(sitzung, bilder=False)
+            ziel = Path(ordner) / f"{z.datum:%Y-%m-%d}-{kurs_kurz(z.kurs)}.md"
+            ziel.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(als_markdown(z))
+                os.replace(tmp, ziel)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        except Exception as fehler:  # noqa: BLE001 - Kursende und PDF duerfen daran nie scheitern
+            log.warning("Zusammenfassung nicht abgelegt: %s", _typ(fehler))
+
+    async def _r_zusammenfassung(self, request: Request) -> Response:
+        sid = request.path_params["sid"]
+        pdf: list[tuple[bytes, str]] = []
+
+        def arbeit() -> dict[str, Any]:
+            sitzung = self._listensitzung(sid)
+            z = self._zusammenfassung_bauen(sitzung, bilder=True)
+            pdf.append((als_pdf(z), f"zusammenfassung-{kurs_kurz(z.kurs)}-{z.datum:%Y-%m-%d}.pdf"))
+            self._zusammenfassung_ablegen(sitzung, z)
+            return {}
+
+        antwort = await self._ausfuehren(arbeit, ablauf=False)
+        if antwort.status_code != 200 or not pdf:
+            return antwort
+        inhalt, name = pdf[0]
+        return Response(inhalt, media_type="application/pdf", headers={
+            "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store",
+        })
 
     def _stand_neu(self, sid: str, sitzung: _Sitzung, code: str) -> NoReturn:
         """Nach einer Ablehnung den aktuellen Stand laden; 409 mit Turn (Ruling H fuer den Text)."""

@@ -32,6 +32,8 @@ KURSE = "LEARNING_HUELLE_KURSE"
 FLAECHE_PORT = "LEARNING_HUELLE_FLAECHE_PORT"
 FLAECHE_BASIS = "LEARNING_HUELLE_FLAECHE_BASIS"
 PENECHO_PAKET = "LEARNING_HUELLE_PENECHO_PAKET"
+# Optionaler Wissensordner: dort legt die Huelle die Textfassung der Zusammenfassung ab (leer = aus).
+ZUSAMMENFASSUNG_ORDNER = "LEARNING_HUELLE_ZUSAMMENFASSUNG_ORDNER"
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ class Einstellung:
     flaeche_basis: str
     penecho_paket: str
     penecho_mcp_url: str
+    zusammenfassung_ordner: str = ""
 
     @property
     def basis_host(self) -> str:
@@ -167,4 +170,5 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         flaeche_basis=flaeche_basis,
         penecho_paket=(env.get(PENECHO_PAKET) or "").strip() or _penecho_paket_vorgabe(env),
         penecho_mcp_url=(env.get(PENECHO_MCP_URL) or "").strip() or "https://127.0.0.1:3922/mcp",
+        zusammenfassung_ordner=(env.get(ZUSAMMENFASSUNG_ORDNER) or "").strip(),
     )
