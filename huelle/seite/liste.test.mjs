@@ -50,3 +50,43 @@ test("die beiden neuen Meldungen der Brücke sind bekannt", () => {
   assert.ok(LISTEN_MELDUNGEN.has("Diese Aufgabe wird gerade bewertet."));
   assert.ok(LISTEN_MELDUNGEN.has("Diese Aufgabe ist schon bestätigt."));
 });
+
+
+import { eintragSetzen, standAnnehmen } from "./liste.js";
+
+const STAND = {
+  ablauf: "liste", aktuell: 1, wartend: 0,
+  aufgaben: [
+    { nummer: 1, status: "offen", meldung: null }, { nummer: 2, status: "offen", meldung: null },
+    { nummer: 3, status: "bestaetigt", meldung: null },
+  ],
+};
+
+test("standAnnehmen: eine Antwort, deren Anfrage vor der letzten Abgabe begann, gilt nicht", () => {
+  assert.equal(standAnnehmen(STAND, { anfrage: 4, gueltigAb: 5, sendend: new Set() }), null);
+  const neu = standAnnehmen(STAND, { anfrage: 6, gueltigAb: 5, sendend: new Set() });
+  assert.deepEqual(neu, { aktuell: 1, wartend: 0, aufgaben: STAND.aufgaben });
+  // Die eigene Antwort einer Abgabe (anfrage Infinity) gilt immer.
+  assert.ok(standAnnehmen(STAND, { anfrage: Infinity, gueltigAb: 9, sendend: new Set() }));
+});
+
+test("standAnnehmen: Nummern, deren Abgabe noch unterwegs ist, bleiben „in_bewertung“ (nicht bestätigte)", () => {
+  const neu = standAnnehmen(STAND, { anfrage: 6, gueltigAb: 5, sendend: new Set([2, 3]) });
+  assert.deepEqual(neu.aufgaben.map((a) => a.status), ["offen", "in_bewertung", "bestaetigt"]);
+  assert.equal(STAND.aufgaben[1].status, "offen"); // die Eingabe bleibt unverändert
+});
+
+test("standAnnehmen: kein Listenstand -> null", () => {
+  for (const kaputt of [null, {}, { ablauf: "liste", aufgaben: [] }, { ablauf: "anpassend", aufgaben: STAND.aufgaben }]) {
+    assert.equal(standAnnehmen(kaputt, { anfrage: 1, gueltigAb: 0, sendend: new Set() }), null);
+  }
+});
+
+test("eintragSetzen: ändert den Eintrag mit dieser Nummer in einer neuen Liste", () => {
+  const liste = { aktuell: 1, wartend: 0, aufgaben: STAND.aufgaben };
+  const neu = eintragSetzen(liste, 2, { status: "in_bewertung", meldung: null });
+  assert.deepEqual(neu.aufgaben.map((a) => a.status), ["offen", "in_bewertung", "bestaetigt"]);
+  assert.equal(liste.aufgaben[1].status, "offen");
+  assert.equal(eintragSetzen(liste, 9, { status: "offen" }), liste); // unbekannte Nummer: unverändert
+  assert.equal(eintragSetzen(null, 1, { status: "offen" }), null);
+});

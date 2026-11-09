@@ -103,6 +103,7 @@ class FakePenEcho:
         self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
         self.aufnahme_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je Schnappschuss
         self.bericht_rechtecke: list[dict[int, dict[str, int]] | None] = []
+        self.rueckmeldung_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je rueckmeldung_setzen
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -162,9 +163,12 @@ class FakePenEcho:
             raise self.merken_fehler
         return True
 
-    def rueckmeldung_setzen(self, session_id: str, aufgabe_id: str, nummer: int, titel: str, text: str) -> None:
+    def rueckmeldung_setzen(self, session_id: str, aufgabe_id: str, nummer: int, titel: str, text: str, *,
+                            rechteck: dict[str, int] | None = None) -> None:
         self.aufrufe.append(("rueckmeldung_setzen", session_id, aufgabe_id, nummer, titel, text))
-        bereich(nummer)
+        self.rueckmeldung_rechtecke.append((nummer, rechteck))
+        if rechteck is None:
+            bereich(nummer)
         self._pruefen("rueckmeldung_setzen")
 
     def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
@@ -2090,6 +2094,7 @@ class ListenLern:
             "learning_task_list": lambda kw: {"session": self.turn(), "aufgaben": copy.deepcopy(self.eintraege)},
             "learning_task_preview": self._vorbewerten,
             "learning_task_confirm": self._bestaetigen,
+            "learning_task_answer": self._beantworten,
         })
 
     def turn(self) -> dict[str, Any]:
@@ -2121,6 +2126,15 @@ class ListenLern:
         n = self._nummer(kw)
         self.eintraege[n - 1]["status"] = "bestaetigt"
         return {"session": self.turn()}
+
+    def _beantworten(self, kw: dict[str, Any]) -> dict[str, Any]:
+        if "attempt_id" not in kw["payload"]:
+            raise LearningAbgelehnt("list sessions need attempt_id", "invalid_session_request")
+        n = self._nummer(kw)
+        self.eintraege[n - 1]["status"] = "bestaetigt"
+        t = self.turn()
+        t["feedback"] = {"state": "correct", "score": 1.0, "rationale_codes": [], "source_refs": []}
+        return {"session": t}
 
     def vorschauen(self) -> list[dict[str, Any]]:
         return _aufrufe(self.lern, "learning_task_preview")
@@ -2160,7 +2174,7 @@ def test_abgeben_antwortet_sofort() -> None:
         assert [a["nummer"] for a in offen["aufgaben"]] == [1, 2, 3]
         r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})
         assert r.status_code == 202, r.text
-        assert r.json() == {"nummer": 2, "status": "in_bewertung", "wartend": 1}
+        assert {k: v for k, v in r.json().items() if k != "stand"} == {"nummer": 2, "status": "in_bewertung", "wartend": 1}
         stand = _stand(client)
         assert stand["ablauf"] == "liste" and stand["wartend"] == 1 and stand["aktuell"] == 1
         assert [_status(stand, n) for n in (1, 2, 3)] == ["offen", "in_bewertung", "offen"]
@@ -2409,3 +2423,139 @@ def test_alte_setzen_arbeit_ueberschreibt_die_frische_karte_nicht() -> None:
         assert sorted(n for n, _ in penecho.rechtecke) == [1, 2, 3]  # die Aufgabe selbst kam trotzdem
     finally:
         bruecke.beenden()
+
+# ---- Review 4789823: Stand in 202/409, alte Nummernwege im Listenkurs ----------------------------------
+
+NICHT_IM_LISTENMODUS = "Bitte geben Sie diese Aufgabe über „Abgeben“ ab."
+
+
+def test_abgeben_202_und_laeuft_schon_tragen_den_stand() -> None:
+    ll = ListenLern(2)
+    halt = ll.halten(1)
+    client, _, _ = _listen_offen(ll)
+    bruecke = client.app
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 202
+        stand = r.json()["stand"]
+        assert stand["ablauf"] == "liste" and stand["wartend"] == 1
+        assert [a["status"] for a in stand["aufgaben"]] == ["in_bewertung", "offen"]
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 409 and r.json()["code"] == "laeuft_schon"
+        assert [a["status"] for a in r.json()["stand"]["aufgaben"]] == ["in_bewertung", "offen"]
+    finally:
+        halt.set()
+        bruecke.beenden()
+
+
+def test_antwort_im_listenkurs_mit_attempt_id_und_rechteck() -> None:
+    ll = ListenLern(3)
+    ll.eintraege[1]["task"]["type"] = "code"
+    client, penecho, _ = _listen_offen(ll)
+    bereiche = anordnung([False] * 3)
+    try:
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"nummer": 2, "answer": {"text": "x"}})
+        assert r.status_code == 200, r.text
+        (kw,) = _aufrufe(ll.lern, "learning_task_answer")
+        assert kw["payload"] == {"answer": {"text": "x"}, "attempt_id": ll.eintraege[1]["attempt_id"]}
+        assert kw["schreibend"] is True
+        body = r.json()
+        assert body["ablauf"] == "liste" and body["weiter_zu"] == 3
+        assert [a["status"] for a in body["aufgaben"]] == ["offen", "bestaetigt", "offen"]
+        assert body["rueckmeldung"] == "Richtig – gut gemacht." and body["flaeche"] is True
+        # Rueckmeldung am Rechteck der Liste, kein Setzen am alten Raster, kein automatisches Weiter.
+        assert penecho.rueckmeldung_rechtecke == [(2, bereiche[1])]
+        neu = [a[0] for a in penecho.aufrufe[vorher:]]
+        assert "aufgabe_setzen" not in neu
+        assert "learning_task_next" not in [t for t, _ in ll.lern.aufrufe[-3:]]
+    finally:
+        client.app.beenden()
+
+
+def test_weiter_im_listenkurs_zeigt_aktuell_ohne_altes_raster() -> None:
+    ll = ListenLern(3)
+    ll.eintraege[2]["vorbewertung"] = _vor(vid=_vid(3))
+    client, penecho, _ = _listen_offen(ll)
+    bruecke = client.app
+    bereiche = anordnung([False] * 3)
+    try:
+        # Passt ausser der Reihe (3 vor 1): completed = 1, die alte Rechnung saehe Aufgabe 2.
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 3, "vorbewertung_id": _vid(3)})
+        assert r.status_code == 200 and r.json()["weiter_zu"] == 1
+        assert bruecke._sitzungen[SID].nummer == 1
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ablauf"] == "liste" and body["aktuell"] == 1 and body["nummer"] == 1
+        assert [a["status"] for a in body["aufgaben"]] == ["offen", "offen", "bestaetigt"]
+        neu = penecho.aufrufe[vorher:]
+        assert "aufgabe_setzen" not in [a[0] for a in neu]
+        assert ("bereich_zeigen", "pe-1", bereiche[0]) in neu
+        assert all(r is not None for _, r in penecho.rechtecke)  # nie das alte Raster
+        assert bruecke._sitzungen[SID].nummer == 1
+    finally:
+        bruecke.beenden()
+
+
+def test_neustart_listensitzung_bekommt_keine_alte_nummer() -> None:
+    ll = ListenLern(2)
+    ll.eintraege[1]["status"] = "bestaetigt"  # ausser der Reihe: completed = 1, aktuell = 1
+    client, _, penecho = bauen(ll.lern)
+    try:
+        assert _stand(client)["aktuell"] == 1
+        sitzung = client.app._sitzungen[SID]
+        assert sitzung.liste is True and sitzung.nummer is None
+        r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+        assert r.status_code == 200 and r.json()["nummer"] == 1
+        assert sitzung.nummer == 1 and "aufgabe_setzen" not in penecho.namen()
+    finally:
+        client.app.beenden()
+
+
+def test_abgelehnte_alte_antwort_setzt_keine_alte_nummer() -> None:
+    ll = ListenLern(2)
+    ll.eintraege[1]["status"] = "bestaetigt"
+    client, _, _ = _listen_offen(ll)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        assert sitzung.nummer == 1
+        # Alter Body mit revision: Learning lehnt ohne attempt_id ab, `_stand_neu` antwortet 409.
+        r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"value": 1}})
+        assert r.status_code == 409 and "turn" in r.json()
+        assert sitzung.nummer == 1
+    finally:
+        client.app.beenden()
+
+
+def test_zeichnung_im_listenkurs_abgelehnt() -> None:
+    ll = ListenLern(2, typ="penecho_canvas")
+    client, penecho, _ = _listen_offen(ll)
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeichnung", json={"revision": 1})
+        assert r.status_code == 409
+        body = r.json()
+        assert body["code"] == "nicht_im_listenmodus" and body["meldung"] == NICHT_IM_LISTENMODUS
+        assert body["stand"]["ablauf"] == "liste"
+        assert "schnappschuss" not in penecho.namen()
+        assert "learning_canvas_open" not in ll.lern.tools()
+    finally:
+        client.app.beenden()
+
+
+def test_kursende_bericht_eines_listenkurses_mit_rechtecken(tmp_path) -> None:
+    datei = tmp_path / "kursende.json"
+    datei.write_text(json.dumps({f"{ACTOR}|{KURS}": SID}), encoding="utf-8")
+    ll = ListenLern(2)
+    for e in ll.eintraege:
+        e["status"] = "bestaetigt"
+    ll.lern.antworten["learning_course_overview"] = _ueberblick(None)
+    client, _, penecho = bauen(ll.lern, kursende=datei)
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200 and r.json()["abgeschlossen"] is True
+        bereiche = anordnung([False] * 2)
+        assert penecho.bericht_rechtecke == [{1: bereiche[0], 2: bereiche[1]}]
+    finally:
+        client.app.beenden()

@@ -5,7 +5,9 @@ import {
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import { flaecheSpeichern } from "./flaeche.js";
-import { LISTEN_MELDUNGEN, mussAbfragen, naechsteOffene, statusText, warteText } from "./liste.js";
+import {
+  eintragSetzen, LISTEN_MELDUNGEN, mussAbfragen, naechsteOffene, standAnnehmen, statusText, warteText,
+} from "./liste.js";
 
 const API = "/lernen/api";
 
@@ -62,6 +64,9 @@ const z = {
   gewaehlt: null, // gewählte Aufgabe; „Abgeben“, „Passt“ usw. gelten für sie
   verworfen: new Set(), // vorbewertung_id, deren Knöpfe „Überarbeiten“ ausgeblendet hat
   abfrage: null, // Zeitgeber der Standabfrage
+  folge: 0, // laufende Nummer der Anfragen, die einen Stand bringen
+  gueltigAb: 0, // Stände aus Anfragen davor gelten nicht (letzte Abgabe begonnen oder beantwortet)
+  sendend: new Set(), // Nummern, deren Abgabe gerade unterwegs ist
 };
 
 // ---- Hilfen -------------------------------------------------------------------------------
@@ -156,13 +161,21 @@ function listenErgebnis(a) {
 
 const listenMeldung = (daten) => (LISTEN_MELDUNGEN.has(daten?.meldung) ? daten.meldung : meldungFuer(daten));
 
-/** Stand der Brücke übernehmen; ohne gültige gewählte Aufgabe gilt `aktuell`. Plant die Abfrage. */
-function listeUebernehmen(stand) {
-  if (stand?.ablauf !== "liste" || !Array.isArray(stand.aufgaben) || stand.aufgaben.length === 0) return;
-  z.liste = { aktuell: stand.aktuell, wartend: stand.wartend, aufgaben: stand.aufgaben };
-  if (!stand.aufgaben.some((a) => a.nummer === z.gewaehlt)) z.gewaehlt = stand.aktuell;
+/**
+ * Stand der Brücke übernehmen, wenn er noch gilt (`standAnnehmen`: keine Antwort von vor der letzten
+ * Abgabe, unterwegs befindliche Abgaben bleiben „in_bewertung“). Ohne gültige gewählte Aufgabe gilt
+ * `aktuell`. Plant die Abfrage. `anfrage`: Nummer der Anfrage (`neueAnfrage()`), Infinity = eigene Antwort.
+ */
+function standAnwenden(stand, anfrage) {
+  const neu = standAnnehmen(stand, { anfrage, gueltigAb: z.gueltigAb, sendend: z.sendend });
+  if (!neu) return false;
+  z.liste = neu;
+  if (!neu.aufgaben.some((a) => a.nummer === z.gewaehlt)) z.gewaehlt = neu.aktuell;
   abfragePlanen();
+  return true;
 }
+
+const neueAnfrage = () => { z.folge += 1; return z.folge; };
 
 function abfrageStoppen() {
   if (z.abfrage !== null) clearTimeout(z.abfrage);
@@ -177,14 +190,11 @@ function abfragePlanen() {
     z.abfrage = null;
     const t = z.turn;
     if (token !== z.token || !t || !z.liste) return;
+    const nr = neueAnfrage();
     const r = await api("GET", `/sitzungen/${t.session_id}/stand`);
     if (token !== z.token || !z.liste) return;
-    if (r.ok) {
-      listeUebernehmen(r.daten);
-      listeZeigen();
-    } else {
-      abfragePlanen(); // der alte Stand sagt noch „wird bewertet“: später noch einmal
-    }
+    if (r.ok && standAnwenden(r.daten, nr)) listeZeigen();
+    else abfragePlanen(); // fehlgeschlagen oder veraltet: der eigene Stand sagt noch „wird bewertet“
   }, ABFRAGE_MS);
 }
 
@@ -218,9 +228,11 @@ function listeZeigen() {
 async function aufgabeWaehlen(nummer) {
   const t = z.turn;
   if (!t || !z.liste || !z.liste.aufgaben.some((a) => a.nummer === nummer)) return;
+  const wechsel = z.gewaehlt !== nummer;
   z.gewaehlt = nummer;
   z.korrektur = null;
   z.hinweis = null;
+  if (wechsel && z.phase === "aufgabe" && t.state === "active") { hilfeLeeren(); karteAufgabe(); }
   listeZeigen();
   const r = await api("POST", `/sitzungen/${t.session_id}/zeigen`, { nummer });
   if (!r.ok && z.turn === t && z.gewaehlt === nummer) {
@@ -237,36 +249,45 @@ function aufgabeBlaettern(schritt) {
 }
 
 // Eine Fehlerantwort im Listenkurs: ruhiger Hinweis; mit `stand` (409) gilt danach der Stand der Brücke.
-function listenFehler(r) {
-  if (r.daten?.stand) listeUebernehmen(r.daten.stand);
+function listenFehler(r, anfrage) {
+  if (r.daten?.stand) standAnwenden(r.daten.stand, anfrage);
   z.hinweis = listenMeldung(r.daten);
   listeZeigen();
 }
 
-// Abgeben sperrt nichts: das Bild wird aufgenommen, die Bewertung läuft im Hintergrund.
+// Abgeben sperrt nichts: das Bild wird aufgenommen, die Bewertung läuft im Hintergrund. Die Nummer gilt
+// ab dem Klick als „in_bewertung“ (`sendend`); Abfragen von vor der Abgabe werden verworfen.
 async function listenAbgeben() {
   const t = z.turn;
   const a = gewaehlteAufgabe();
   if (!t || !a || a.status === "in_bewertung" || a.status === "bestaetigt") return;
+  const nummer = a.nummer;
   const vorher = { status: a.status, meldung: a.meldung };
   z.hinweis = null;
   z.korrektur = null;
   banner("");
-  a.status = "in_bewertung"; // sofort, damit ein zweiter Klick nichts doppelt schickt
-  a.meldung = null;
+  z.sendend.add(nummer);
+  z.gueltigAb = neueAnfrage();
+  z.liste = eintragSetzen(z.liste, nummer, { status: "in_bewertung", meldung: null });
   listeZeigen();
   const token = z.token;
-  const r = await api("POST", `/sitzungen/${t.session_id}/abgeben`, { nummer: a.nummer });
+  const r = await api("POST", `/sitzungen/${t.session_id}/abgeben`, { nummer });
   if (token !== z.token) return;
+  z.sendend.delete(nummer);
+  z.gueltigAb = neueAnfrage(); // was vor dieser Antwort losging, kennt sie nicht
+  // Eigene Antwort: ihr Stand gilt (202 und 409 tragen ihn); ohne Stand den vorigen Status der Nummer.
+  if (!(r.daten?.stand && standAnwenden(r.daten.stand, Infinity)) && r.status !== 202) {
+    z.liste = eintragSetzen(z.liste, nummer, vorher);
+  }
   if (r.status === 202) {
-    if (Number.isInteger(r.daten.wartend)) z.liste.wartend = r.daten.wartend;
     abfragePlanen();
     listeZeigen();
     void speichern(false);
     return;
   }
-  if (!r.daten?.stand) Object.assign(a, vorher);
-  listenFehler(r);
+  z.hinweis = listenMeldung(r.daten);
+  abfragePlanen(); // 409 laeuft_schon: die Nummer wird bewertet, die Seite fragt nach
+  listeZeigen();
 }
 
 async function listenPasst() {
@@ -278,20 +299,26 @@ async function listenPasst() {
   banner("");
   sperren(true);
   const token = z.token;
+  const nr = neueAnfrage();
   const r = await api("POST", `/sitzungen/${t.session_id}/passt`,
     { nummer: a.nummer, vorbewertung_id: ergebnis.vorbewertung_id });
   if (token !== z.token) return;
   sperren(false);
-  if (!r.ok) { listenFehler(r); return; }
-  if (r.daten.turn) z.turn = r.daten.turn;
-  if (Array.isArray(r.daten.begriffe)) begriffeZeigen(r.daten.begriffe);
-  listeUebernehmen(r.daten);
-  const weiter = Number.isInteger(r.daten.weiter_zu) ? r.daten.weiter_zu : naechsteOffene(z.liste.aufgaben, a.nummer);
-  if (weiter !== null) z.gewaehlt = weiter;
+  if (!r.ok) { listenFehler(r, nr); return; }
+  gebuchtUebernehmen(r.daten, nr, a.nummer);
   z.korrektur = null;
   zeigen(); // neue offene Aufgabe in der Seitenleiste, am Kursende die Bewertung
   void speichern(false);
   void notizenLaden();
+}
+
+// Nach Passt oder Antwort: Turn, Begriffe, Stand; die gewählte Aufgabe wird `weiter_zu`.
+function gebuchtUebernehmen(daten, nr, nummer) {
+  if (daten.turn) z.turn = daten.turn;
+  if (Array.isArray(daten.begriffe)) begriffeZeigen(daten.begriffe);
+  standAnwenden(daten, nr);
+  const weiter = Number.isInteger(daten.weiter_zu) ? daten.weiter_zu : naechsteOffene(z.liste?.aufgaben, nummer);
+  if (weiter !== null) z.gewaehlt = weiter;
 }
 
 async function listenKorrektur() {
@@ -309,16 +336,70 @@ async function listenKorrektur() {
   z.hinweis = null;
   sperren(true);
   const token = z.token;
+  const nr = neueAnfrage();
   const r = await api("POST", `/sitzungen/${t.session_id}/korrektur`,
     { nummer: a.nummer, vorbewertung_id: ergebnis.vorbewertung_id, answer: antwort });
   if (token !== z.token) return;
   sperren(false);
-  if (!r.ok) { listenFehler(r); return; }
-  listeUebernehmen(r.daten.stand);
+  if (!r.ok) { listenFehler(r, nr); return; }
+  standAnwenden(r.daten.stand, nr);
   z.korrektur = null;
   // Karte nicht auf der Fläche (z. B. kein Platz): die Brücke schickt die Rückmeldung als Text.
   z.hinweis = typeof r.daten.karte === "string" && r.daten.karte ? r.daten.karte : null;
   listeZeigen();
+  void speichern(false);
+}
+
+// Antwort aus der Seitenleiste (Typ `code`) für die gewählte Aufgabe; danach Rückmeldung, kein Auto-Weiter.
+async function listenAntworten(antwort) {
+  const t = z.turn;
+  const nummer = z.gewaehlt;
+  if (!t || nummer === null || z.busy) return;
+  sperren(true);
+  banner("");
+  const token = z.token;
+  const nr = neueAnfrage();
+  const r = await api("POST", `/sitzungen/${t.session_id}/antwort`, { nummer, answer: antwort });
+  if (token !== z.token) return;
+  sperren(false);
+  if (!r.ok) { banner(listenMeldung(r.daten)); listenFehler(r, nr); return; }
+  gebuchtUebernehmen(r.daten, nr, nummer);
+  const state = r.daten.turn?.feedback?.state ?? null;
+  const text = typeof r.daten.rueckmeldung === "string" ? r.daten.rueckmeldung : "";
+  if (!state && !text) { await listenWeiter(); return; }
+  z.rueckmeldung = { state, text };
+  z.phase = "rueckmeldung";
+  zeigen();
+  void notizenLaden();
+}
+
+/**
+ * „Weiter“ im Listenkurs (auch nach einem 409 mit Turn): Stand neu laden, die Brücke holt `aktuell` ins
+ * Bild. Die gewählte Aufgabe bleibt, wenn es sie noch offen gibt; sonst `aktuell`.
+ */
+async function listenWeiter(bannerBehalten = false) {
+  const t = z.turn;
+  if (!t) return;
+  sperren(true);
+  if (bannerBehalten !== true) banner("");
+  const token = z.token;
+  const nr = neueAnfrage();
+  const r = await api("POST", `/sitzungen/${t.session_id}/weiter`);
+  if (token !== z.token) return;
+  sperren(false);
+  if (!r.ok) { listenFehler(r, nr); return; }
+  z.rueckmeldung = null;
+  z.phase = "aufgabe";
+  neueAufgabe(bannerBehalten === true);
+  if (r.daten.turn) z.turn = r.daten.turn;
+  standAnwenden(r.daten, nr);
+  const gewaehlt = gewaehlteAufgabe();
+  if (!gewaehlt || gewaehlt.status === "bestaetigt") z.gewaehlt = r.daten.aktuell ?? z.liste?.aktuell ?? null;
+  zeigen();
+  // Die Brücke zeigt `aktuell`; ist eine andere Aufgabe gewählt, diese ins Bild holen.
+  if (z.gewaehlt !== null && z.gewaehlt !== r.daten.aktuell && z.turn?.state === "active") {
+    void api("POST", `/sitzungen/${z.turn.session_id}/zeigen`, { nummer: z.gewaehlt });
+  }
   void speichern(false);
 }
 
@@ -336,15 +417,23 @@ function hilfeZeigen(inhalt) {
 
 function karteAufgabe() {
   const t = z.turn;
-  const task = t.task;
+  // Listenkurs: die Karte gilt der gewählten Aufgabe (Antwortfeld für Typ `code`, `{nummer, answer}`).
+  const task = (z.liste ? z.listenAufgaben.get(z.gewaehlt) : null) ?? t.task;
   const math = task.presentation?.math === true;
   z.aufgabeMathe = math;
   const sperrText = sperrHinweis(t);
-  const hilfeKnoepfe = [
+  // „Erklär mir das“ und „Hinweis“ fragen die Brücke zur Aufgabe des Turns; nur bei dieser anbieten.
+  const hilfeKnoepfe = !z.liste || task.id === t.task?.id ? [
     el("button", { type: "button", id: "erklaeren", text: "Erklär mir das", onclick: () => erklaeren() }),
     el("button", { type: "button", id: "hinweis", text: "Hinweis", onclick: hinweis }),
-  ];
+  ] : [];
   const sperre = sperrText ? el("p", { class: "hinweistext sperrhinweis", text: sperrText }) : null;
+  if (z.liste && task.type === "code" && gewaehlteAufgabe()?.status === "bestaetigt") {
+    $("karte").replaceChildren(
+      setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
+      el("p", { class: "hinweistext", text: "Diese Aufgabe ist schon bestätigt." }));
+    return;
+  }
   if (task.type !== "code") {
     // Alles andere wird auf der Fläche beantwortet; Abgeben, Passt usw. sitzen in der Leiste über der Fläche.
     $("karte").replaceChildren(...ohneLeere(
@@ -487,11 +576,12 @@ function flaechenHinweisZeigen(daten) {
 async function flaecheVerbinden() {
   const kurs = z.kurs;
   if (!kurs) return;
+  const nr = neueAnfrage();
   const r = await api("POST", `/kurse/${kurs.course_id}/oeffnen`);
   if (z.kurs !== kurs) return;
   if (!r.ok) { fehlerBehandeln(r); return; }
   flaechenHinweisZeigen(r.daten);
-  if (z.liste && r.daten.stand?.ablauf === "liste") { listeUebernehmen(r.daten.stand); listeZeigen(); }
+  if (z.liste && standAnwenden(r.daten.stand, nr)) listeZeigen();
 }
 
 async function notizenLaden() {
@@ -526,6 +616,12 @@ function turnUebernehmen(turn, nummer) {
 }
 
 function fehlerBehandeln(r) {
+  if (z.liste) {
+    // Listenkurs: kein alter Weiter-Weg; der Stand kommt neu von der Brücke (sie zeigt `aktuell`).
+    banner(listenMeldung(r.daten));
+    if (r.status === 409 && (r.daten?.turn || r.daten?.stand)) void listenWeiter(true);
+    return;
+  }
   banner(meldungFuer(r.daten));
   // Bei 409 mit Turn: den aktuellen Stand zeigen.
   if (r.status === 409 && r.daten?.turn) {
@@ -569,10 +665,13 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
   z.listenAufgaben = new Map();
   z.gewaehlt = null;
   z.verworfen = new Set();
+  z.sendend = new Set();
+  z.gueltigAb = 0;
   neueAufgabe();
   zeigen();
   begriffeZeigen([]);
   $("notizen-box").hidden = true;
+  const nr = neueAnfrage();
   const r = await api("POST", `/kurse/${kurs.course_id}/${aktion === "neu" ? "neu" : "oeffnen"}`);
   if (z.kurs !== kurs) return;
   if (!r.ok) { fehlerBehandeln(r); return; }
@@ -584,7 +683,7 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
       if (Number.isInteger(e?.nummer) && e.task) z.listenAufgaben.set(e.nummer, e.task);
     }
     z.gewaehlt = Number.isInteger(r.daten.nummer) ? r.daten.nummer : r.daten.stand.aktuell;
-    listeUebernehmen(r.daten.stand);
+    standAnwenden(r.daten.stand, nr);
   }
   flaechenHinweisZeigen(r.daten);
   if (r.daten.flaeche === false && !flaechenHinweis(r.daten)) banner(TEXT.flaecheWeg);
@@ -593,6 +692,7 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
 }
 
 async function antwortSenden(antwort) {
+  if (z.liste) { await listenAntworten(antwort); return; }
   const t = z.turn;
   sperren(true);
   banner("");
@@ -617,6 +717,7 @@ function rueckmeldungZeigen(daten) {
 }
 
 async function weiter(bannerBehalten = false) {
+  if (z.liste) { await listenWeiter(bannerBehalten); return; }
   const t = z.turn;
   sperren(true);
   if (bannerBehalten !== true) banner("");

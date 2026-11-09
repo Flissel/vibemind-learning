@@ -40,6 +40,29 @@ export function warteText(wartend) {
   return wartend === 1 ? "1 Abgabe wird bewertet" : `${wartend} Abgaben werden bewertet`;
 }
 
+/**
+ * Ob und wie ein Stand der Brücke übernommen wird; null heißt verwerfen.
+ * - `anfrage`: laufende Nummer der Anfrage, die ihn brachte (die eigene Antwort einer Abgabe: Infinity).
+ * - `gueltigAb`: Nummer zur letzten Abgabe (gesetzt bei deren Beginn und bei deren Antwort). Eine
+ *   Anfrage, die davor begann, kann die Abgabe noch nicht kennen: veraltet.
+ * - `sendend`: Nummern, deren Abgabe noch unterwegs ist; sie bleiben „in_bewertung“ (außer bestätigt).
+ * Liefert {aktuell, wartend, aufgaben} als neue Liste; die Eingabe bleibt unverändert.
+ */
+export function standAnnehmen(stand, { anfrage, gueltigAb, sendend }) {
+  if (stand?.ablauf !== "liste" || !Array.isArray(stand.aufgaben) || stand.aufgaben.length === 0) return null;
+  if (anfrage < gueltigAb) return null;
+  const aufgaben = stand.aufgaben.map((a) => (sendend?.has(a?.nummer) && a.status !== "bestaetigt"
+    ? { ...a, status: "in_bewertung", meldung: null }
+    : a));
+  return { aktuell: stand.aktuell, wartend: stand.wartend, aufgaben };
+}
+
+/** Neue Liste, in der der Eintrag mit dieser Nummer `aenderung` trägt; ohne diese Nummer unverändert. */
+export function eintragSetzen(liste, nummer, aenderung) {
+  if (!liste || !Array.isArray(liste.aufgaben) || !liste.aufgaben.some((a) => a?.nummer === nummer)) return liste;
+  return { ...liste, aufgaben: liste.aufgaben.map((a) => (a?.nummer === nummer ? { ...a, ...aenderung } : a)) };
+}
+
 /** Die Seite fragt den Stand ab, solange eine Aufgabe bewertet wird. */
 export function mussAbfragen(aufgaben) {
   return Array.isArray(aufgaben) && aufgaben.some((a) => a?.status === "in_bewertung");
