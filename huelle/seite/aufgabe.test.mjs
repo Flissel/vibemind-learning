@@ -151,24 +151,17 @@ test("sperrHinweis: bei offener Aufgabe der feste Text, sonst nichts", () => {
 
 import { begriffTitel } from "./aufgabe.js";
 
-test("begriffTitel: Slug wird lesbar, alles andere bleibt", () => {
-  assert.equal(begriffTitel("ablauf-kurvendiskussion"), "Ablauf kurvendiskussion");
-  assert.equal(begriffTitel("ableitungsregeln"), "Ableitungsregeln");
-  assert.equal(begriffTitel("größe-änderung"), "Größe änderung");
-  assert.equal(begriffTitel("Ableitung der Sinusfunktion"), "Ableitung der Sinusfunktion");
-  assert.equal(begriffTitel("Kettenregel"), "Kettenregel");
-  assert.equal(begriffTitel("a--b"), "a--b");
-  assert.equal(begriffTitel(""), "");
+// Dieselbe Fall-Liste prueft auch die Python-Seite (tests/huelle/test_zusammenfassung.py): PDF und Seitenleiste
+// zeigen jeden Begriff gleich. Live 09.11.: „Hebbare definitionsluecke“ statt „Hebbare Definitionslücke“.
+test("begriffTitel: Slug wird lesbarer deutscher Titel, alles andere bleibt (gemeinsame Fall-Liste)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const faelle = JSON.parse(await readFile(new URL("../../tests/huelle/begriff_titel_faelle.json", import.meta.url), "utf8"));
+  assert.ok(faelle.length >= 30);
+  for (const [roh, erwartet] of faelle) assert.equal(begriffTitel(roh), erwartet, roh);
+  assert.equal(begriffTitel(null), "");
 });
 
 import { begriffeZusammenfassen, flaechenHinweis } from "./aufgabe.js";
-
-test("begriffTitel: Unterstrich wie Bindestrich", () => {
-  assert.equal(begriffTitel("hinreichende_bedingung"), "Hinreichende bedingung");
-  assert.equal(begriffTitel("hinreichende-bedingung"), "Hinreichende bedingung");
-  assert.equal(begriffTitel("a_b-c"), "A b c");
-  assert.equal(begriffTitel("a__b"), "a__b");
-});
 
 test("begriffeZusammenfassen: gleiche Anzeigetitel werden eins, hoehere Beherrschung gewinnt", () => {
   const aus = begriffeZusammenfassen([

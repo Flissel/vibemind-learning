@@ -43,7 +43,6 @@ class AufgabeZeile:
 class Zusammenfassung:
     kurs: str
     datum: date
-    flaeche: bytes | None
     aufgaben: tuple[AufgabeZeile, ...]
     begriffe: tuple[tuple[str, str], ...]
 
@@ -86,13 +85,71 @@ def kernaussage(vorbewertung: dict[str, Any]) -> str:
 _SLUG = re.compile(r"^[a-z0-9äöüß]+([-_][a-z0-9äöüß]+)*$")
 
 
+# Slug -> deutscher Titel. Gleiche Regeln in seite/aufgabe.js (`begriffTitel`); beide pruefen dieselbe
+# Fall-Liste tests/huelle/begriff_titel_faelle.json.
+_VOKALE = "aeiouäöü"
+_SZ_ANFANG = (("ausser", "außer"), ("groess", "größ"), ("gross", "groß"), ("schliess", "schließ"))
+_KLEINWOERTER = frozenset({
+    "der", "die", "das", "des", "dem", "den", "ein", "eine", "einer", "eines", "einem", "einen", "im", "in",
+    "an", "am", "auf", "aus", "mit", "von", "vom", "zum", "zur", "und", "oder", "bei", "beim", "für", "über",
+    "ohne", "nach", "außerhalb", "innerhalb", "unter", "zwischen", "als", "bis", "gegen", "pro", "je",
+})
+_ADJEKTIV = re.compile(r"(ig|lich|isch|bar|al|iv|ell|ant|ent|end|ar|ief|sam|haft|los)(e|er|es|en|em)$")
+_KEIN_VERB = re.compile(r"(ionen|ungen|heiten|keiten)$")
+
+
+def _umlaute(wort: str) -> str:
+    """ae/oe/ue -> ä/ö/ü, ausser nach Vokal (neue, Feuer), nach q, vor ll/nt/nz (aktuell, kongruent) und in
+    „koeff“ (Koeffizient). Wortanfaenge wie „ausser“/„groess“ bekommen ihr ß."""
+    for alt, neu in _SZ_ANFANG:
+        if wort.startswith(alt):
+            wort = neu + wort[len(alt):]
+            break
+    aus: list[str] = []
+    i = 0
+    while i < len(wort):
+        paar, vor, nach = wort[i:i + 2], wort[i - 1] if i else "", wort[i + 2:i + 4]
+        if paar in ("ae", "oe", "ue") and not (vor and vor in _VOKALE):
+            behalten = (paar == "ue" and (vor == "q" or nach in ("ll", "nt", "nz"))) or \
+                       (paar == "oe" and vor == "k" and nach == "ff")
+            if not behalten:
+                aus.append({"ae": "ä", "oe": "ö", "ue": "ü"}[paar])
+                i += 2
+                continue
+        aus.append(wort[i])
+        i += 1
+    return "".join(aus)
+
+
 def begriff_titel(titel: object) -> str:
-    """Slugs aus dem Graphen (`ablauf-kurvendiskussion`) lesbar machen, sonst unveraendert (wie aufgabe.js)."""
+    """Slugs aus dem Graphen (`hebbare-definitionsluecke`) als deutschen Titel („Hebbare Definitionslücke“),
+    sonst unveraendert. Substantive gross; Adjektive vor einem Wort, ein Verb am Ende und kleine Woerter
+    („im“, „des“) klein; ein vokalloses erstes Wort ist ein Formelzeichen („y-Achsenabschnitt“, „pq-Formel“)."""
     t = str(titel if titel is not None else "")
     if " " in t or not _SLUG.fullmatch(t):
         return t
-    s = re.sub(r"[-_]", " ", t)
-    return s[:1].upper() + s[1:]
+    w = [_umlaute(teil) for teil in re.split(r"[-_]", t)]
+    n = len(w)
+
+    def adjektiv(i: int) -> bool:
+        return i < n - 1 and w[i + 1] not in _KLEINWOERTER and bool(_ADJEKTIV.search(w[i]))
+
+    def gross(s: str) -> str:
+        return s[:1].upper() + s[1:]
+
+    zeichen = n > 1 and not any(c in _VOKALE for c in w[0])
+    aus = []
+    for i, wort in enumerate(w):
+        if i == 0:
+            aus.append(wort if zeichen else gross(wort))
+        elif wort in _KLEINWOERTER or adjektiv(i):
+            aus.append(wort)
+        elif (i == n - 1 and wort.endswith("en") and not _KEIN_VERB.search(wort)
+              and w[i - 1] not in _KLEINWOERTER and not adjektiv(i - 1)):
+            aus.append(wort)  # Verb am Ende: „Ableitungen bilden“
+        else:
+            aus.append(gross(wort))
+    return f"{aus[0]}-{' '.join(aus[1:])}" if zeichen else " ".join(aus)
 
 
 def begriffe_zusammenfassen(begriffe: list[Any]) -> list[dict[str, Any]]:
@@ -239,15 +296,33 @@ class _Seite:
         self.y -= menge
 
 
-def _titelseite(z: Zusammenfassung) -> Figure:
+def _urteil_kurz(kernaussage: str) -> str:
+    """Der erste Satz der Rueckmeldung („Noch nicht richtig.“); „–“ (noch keine Rueckmeldung) wird leer."""
+    k = _einzeilig(kernaussage)
+    if not k or k == "–":
+        return ""
+    return re.split(r"(?<=[.!?])\s", k, maxsplit=1)[0]
+
+
+def _titelseiten(z: Zusammenfassung) -> list[Figure]:
+    """Kurs, Datum und eine Uebersicht je Aufgabe (Ergebnis, Urteil). Ein Bild der ganzen Flaeche gibt es nicht
+    mehr: bei vielen Aufgaben war es ein unlesbarer Streifen (live 09.11.: 74 x 888 Pixel fuer 16 Aufgaben);
+    jede Aufgabe hat ihr eigenes Bild auf ihrer Seite."""
+    seiten: list[Figure] = []
     s = _Seite()
     s.text(z.kurs, groesse=20, fett=True, breite=44, max_zeilen=3)
     s.text(f"Zusammenfassung vom {_datum(z.datum)}", groesse=12, farbe="#555555")
     s.luft()
-    s.text("Gesamte Fläche", groesse=11, fett=True)
-    unten = 0.06
-    _bild_zeigen(s.fig, z.flaeche, (0.09, unten, 0.82, max(0.1, s.y - unten - 0.01)))
-    return s.fig
+    s.text("Übersicht", groesse=11, fett=True)
+    for a in z.aufgaben:
+        if s.y < 0.07:
+            seiten.append(s.fig)
+            s = _Seite()
+            s.text("Übersicht (Fortsetzung)", groesse=11, fett=True)
+        urteil = _urteil_kurz(a.kernaussage)
+        s.text(f"Aufgabe {a.nummer}: {a.ergebnis}" + (f" – {urteil}" if urteil else ""), max_zeilen=2)
+    seiten.append(s.fig)
+    return seiten
 
 
 def _aufgabenseite(a: AufgabeZeile) -> Figure:
@@ -280,11 +355,11 @@ def _begriffeseiten(z: Zusammenfassung) -> list[Figure]:
 
 
 def als_pdf(z: Zusammenfassung) -> bytes:
-    """A4 hoch: Seite 1 Kurs, Datum, Flaechenbild; je Aufgabe eine Seite; zum Schluss „Begriffe“."""
+    """A4 hoch: Seite 1 Kurs, Datum, Uebersicht; je Aufgabe eine Seite; zum Schluss „Begriffe“."""
     puffer = io.BytesIO()
     # fonttype 42: die Schrift (DejaVu Sans, liegt matplotlib bei) steckt als TrueType im PDF, der Text bleibt lesbar.
     with matplotlib.rc_context({"font.family": "DejaVu Sans", "pdf.fonttype": 42}):
         with PdfPages(puffer) as pdf:
-            for fig in [_titelseite(z), *(_aufgabenseite(a) for a in z.aufgaben), *_begriffeseiten(z)]:
+            for fig in [*_titelseiten(z), *(_aufgabenseite(a) for a in z.aufgaben), *_begriffeseiten(z)]:
                 pdf.savefig(fig)
     return puffer.getvalue()

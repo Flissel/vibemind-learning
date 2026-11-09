@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import io
+import json
+import re
 from datetime import date
+from pathlib import Path
 
 import pypdf
 
@@ -28,7 +31,6 @@ def _zusammenfassung(*, bilder: bool = True) -> Zusammenfassung:
     return Zusammenfassung(
         kurs="Mathe Übung",
         datum=date(2026, 11, 9),
-        flaeche=png,
         aufgaben=(
             AufgabeZeile(1, "Wie groß ist x?", "-1,5", "Richtig. Gut gemacht.", png),
             AufgabeZeile(2, "Zeichnen Sie die Gerade.", "siehe Bild", "Noch nicht richtig. Überarbeiten Sie Ihr Ergebnis.", png),
@@ -50,20 +52,46 @@ def test_pdf_hat_seiten_und_umlaute() -> None:
     assert "Mathe Übung" in seiten[0] and "09.11.2026" in seiten[0]
 
 
+def test_titelseite_zeigt_uebersicht_statt_flaechenbild() -> None:
+    # Live 09.11.: bei 16 Aufgaben war das Bild der ganzen Flaeche auf Seite 1 ein unlesbarer Streifen
+    # (PenEcho liefert es mit 74 x 888 Pixeln). Seite 1 zeigt jetzt je Aufgabe Ergebnis und Urteil.
+    pdf = als_pdf(_zusammenfassung())
+    seite = _text(pdf)[0]
+    assert "Übersicht" in seite
+    assert "Aufgabe 1: -1,5 – Richtig." in seite
+    assert "Aufgabe 2: siehe Bild – Noch nicht richtig." in seite
+    assert "Gesamte Fläche" not in seite
+    # matplotlib legt alle Bilder als gemeinsame Ressourcen ab; gezeichnet wird ein Bild per „/I… Do“.
+    seiten = pypdf.PdfReader(io.BytesIO(pdf)).pages
+    assert not re.search(rb"/I\d+ Do", seiten[0].get_contents().get_data())
+    assert re.search(rb"/I\d+ Do", seiten[1].get_contents().get_data())
+
+
+def test_titelseite_offene_aufgabe_und_viele_aufgaben() -> None:
+    aufgaben = tuple(AufgabeZeile(n, f"Frage {n}", "offen", "–", None) for n in range(1, 61))
+    seiten = _text(als_pdf(Zusammenfassung("Kurs", date(2026, 11, 9), aufgaben, ())))
+    assert "Aufgabe 1: offen" in seiten[0] and "Aufgabe 1: offen –" not in seiten[0]
+    # 60 Zeilen passen nicht auf eine Seite: die Uebersicht laeuft weiter, danach je Aufgabe eine Seite.
+    ueberblick = [s for s in seiten if "Übersicht" in s]
+    assert len(ueberblick) >= 2 and "Aufgabe 60: offen" in ueberblick[-1]
+    assert seiten[:len(ueberblick)] == ueberblick
+    assert len(seiten) == len(ueberblick) + 60 + 1
+
+
 def test_pdf_ohne_bilder() -> None:
     pdf = als_pdf(_zusammenfassung(bilder=False))
     assert pdf.startswith(b"%PDF") and len(pypdf.PdfReader(io.BytesIO(pdf)).pages) == 4
 
 
 def test_pdf_kaputtes_bild_und_dollar_zeichen() -> None:
-    z = Zusammenfassung("Kurs $x$", date(2026, 11, 9), b"kein bild",
+    z = Zusammenfassung("Kurs $x$", date(2026, 11, 9),
                         (AufgabeZeile(1, "Lösen Sie $x^2$", "$5", "ok", b"\x89PNG kaputt"),), ())
     seiten = _text(als_pdf(z))
     assert len(seiten) == 3 and "x²" in seiten[1] and "$5" in seiten[1]
 
 
 def test_markdown_format() -> None:
-    z = Zusammenfassung("Kurs", date(2026, 11, 9), b"png",
+    z = Zusammenfassung("Kurs", date(2026, 11, 9),
                         (AufgabeZeile(1, "Frage 1", "42", "Richtig. Gut gemacht.", b"png"),), (("Begriff", "80 %"),))
     text = als_markdown(z)
     zeilen = text.splitlines()
@@ -121,7 +149,7 @@ def test_formeln_als_lesbarer_text() -> None:
 
 
 def test_pdf_setzt_formeln_lesbar() -> None:
-    z = Zusammenfassung("Kurs", date(2026, 11, 9), None,
+    z = Zusammenfassung("Kurs", date(2026, 11, 9),
                         (AufgabeZeile(1, r"Bestimmen Sie $\frac{1}{x}$ für $x \to \infty$.", "0", "ok", None),), ())
     seite = _text(als_pdf(z))[1]
     assert "1/x" in seite and "∞" in seite and "\\frac" not in seite and "$" not in seite
@@ -137,12 +165,20 @@ def test_begriffe_zusammenfassen() -> None:
         {"titel": "Graph der Funktion"},
     ]
     assert begriffe_zusammenfassen(begriffe) == [
-        {"titel": "Ablauf kurvendiskussion", "beherrschung": 0.6},
+        {"titel": "Ablauf Kurvendiskussion", "beherrschung": 0.6},
         {"titel": "Ableitung", "beherrschung": 0.4},
         {"titel": "Graph der Funktion"},
     ]
-    assert begriff_titel("ablauf-kurvendiskussion") == "Ablauf kurvendiskussion"
-    assert begriff_titel("Schon lesbar") == "Schon lesbar" and begriff_titel("f'(x)") == "f'(x)"
+
+
+def test_begriff_titel_gemeinsame_faelle() -> None:
+    # Live 09.11.: „Hebbare definitionsluecke“ statt „Hebbare Definitionslücke“. Dieselbe Liste prueft
+    # huelle/seite/aufgabe.test.mjs, damit PDF und Seitenleiste jeden Begriff gleich zeigen.
+    faelle = json.loads((Path(__file__).parent / "begriff_titel_faelle.json").read_text(encoding="utf-8"))
+    assert len(faelle) >= 30
+    falsch = [(roh, begriff_titel(roh), soll) for roh, soll in faelle if begriff_titel(roh) != soll]
+    assert falsch == []
+    assert begriff_titel(None) == ""
 
 
 def test_kurs_kurz() -> None:

@@ -870,28 +870,23 @@ class Bruecke:
 
     # ---- Zusammenfassung (Listenkurs) ---------------------------------------
     def _zusammenfassung_bauen(self, sitzung: _Sitzung, *, bilder: bool) -> Zusammenfassung:
-        """Werte der Zusammenfassung aus der Liste bei Learning; Bilder (Flaeche, je Aufgabe) nur mit `bilder`."""
+        """Werte der Zusammenfassung aus der Liste bei Learning; ein Bild je Aufgabe nur mit `bilder`.
+
+        Die ganze Flaeche wird nicht mehr aufgenommen: PenEcho liefert sie bei vielen Aufgaben so klein, dass
+        nichts zu lesen ist (live 09.11.: 74 x 888 Pixel fuer 16 Aufgaben).
+        """
         _, eintraege = self._liste_lesen(sitzung)
         bereiche = self._bereiche(eintraege)
-        aufnahmen: list[bytes | None] = [None] * (len(eintraege) + 1)
-        if bilder:
-            ganz = {
-                "x": min(b["x"] for b in bereiche), "y": min(b["y"] for b in bereiche),
-                "w": max(b["x"] + b["w"] for b in bereiche) - min(b["x"] for b in bereiche),
-                "h": max(b["y"] + b["h"] for b in bereiche) - min(b["y"] for b in bereiche),
-            }
-            # Erst die Aufgaben, die ganze Flaeche zuletzt (langsamste, heikelste Aufnahme).
-            bilder_roh = self._aufnahmen(sitzung, [*bereiche, ganz])
-            aufnahmen = [bilder_roh[-1], *bilder_roh[:-1]]
+        aufnahmen: list[bytes | None] = self._aufnahmen(sitzung, bereiche) if bilder else [None] * len(eintraege)
         zeilen = []
-        for e, bild in zip(eintraege, aufnahmen[1:]):
+        for e, bild in zip(eintraege, aufnahmen):
             vor = e.get("vorbewertung")
             prompt = e["task"].get("prompt")
             zeilen.append(AufgabeZeile(
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor),
                 kernaussage(vor) if isinstance(vor, dict) else "–", bild,
             ))
-        return Zusammenfassung(sitzung.kurs.titel, date.today(), aufnahmen[0], tuple(zeilen),
+        return Zusammenfassung(sitzung.kurs.titel, date.today(), tuple(zeilen),
                                self._begriffe_zeilen(sitzung.kurs))
 
     @staticmethod

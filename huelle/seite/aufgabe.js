@@ -202,12 +202,53 @@ export function prozent(r, bild) {
   };
 }
 
-// Begriffstitel aus dem Graphen sind oft Slugs (`ablauf-kurvendiskussion`): lesbar machen, sonst unveraendert.
+// Begriffstitel aus dem Graphen sind oft Slugs (`hebbare-definitionsluecke`): als deutschen Titel zeigen
+// („Hebbare Definitionslücke“), sonst unveraendert. Gleiche Regeln wie `begriff_titel` in zusammenfassung.py;
+// beide pruefen die Fall-Liste tests/huelle/begriff_titel_faelle.json.
+const VOKALE = "aeiouäöü";
+const SZ_ANFANG = [["ausser", "außer"], ["groess", "größ"], ["gross", "groß"], ["schliess", "schließ"]];
+const KLEINWOERTER = new Set([
+  "der", "die", "das", "des", "dem", "den", "ein", "eine", "einer", "eines", "einem", "einen", "im", "in",
+  "an", "am", "auf", "aus", "mit", "von", "vom", "zum", "zur", "und", "oder", "bei", "beim", "für", "über",
+  "ohne", "nach", "außerhalb", "innerhalb", "unter", "zwischen", "als", "bis", "gegen", "pro", "je",
+]);
+const ADJEKTIV = /(ig|lich|isch|bar|al|iv|ell|ant|ent|end|ar|ief|sam|haft|los)(e|er|es|en|em)$/;
+const KEIN_VERB = /(ionen|ungen|heiten|keiten)$/;
+
+function umlaute(wort) {
+  for (const [alt, neu] of SZ_ANFANG) {
+    if (wort.startsWith(alt)) { wort = neu + wort.slice(alt.length); break; }
+  }
+  let aus = "";
+  for (let i = 0; i < wort.length;) {
+    const paar = wort.slice(i, i + 2), vor = i ? wort[i - 1] : "", nach = wort.slice(i + 2, i + 4);
+    if (["ae", "oe", "ue"].includes(paar) && !(vor && VOKALE.includes(vor))) {
+      const behalten = (paar === "ue" && (vor === "q" || ["ll", "nt", "nz"].includes(nach)))
+        || (paar === "oe" && vor === "k" && nach === "ff");
+      if (!behalten) { aus += { ae: "ä", oe: "ö", ue: "ü" }[paar]; i += 2; continue; }
+    }
+    aus += wort[i];
+    i += 1;
+  }
+  return aus;
+}
+
 export function begriffTitel(titel) {
   const t = String(titel ?? "");
   if (t.includes(" ") || !/^[a-z0-9äöüß]+([-_][a-z0-9äöüß]+)*$/.test(t)) return t;
-  const s = t.replace(/[-_]/g, " ");
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  const w = t.split(/[-_]/).map(umlaute);
+  const n = w.length;
+  const adjektiv = (i) => i < n - 1 && !KLEINWOERTER.has(w[i + 1]) && ADJEKTIV.test(w[i]);
+  const gross = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const zeichen = n > 1 && ![...w[0]].some((c) => VOKALE.includes(c));
+  const aus = w.map((wort, i) => {
+    if (i === 0) return zeichen ? wort : gross(wort);
+    if (KLEINWOERTER.has(wort) || adjektiv(i)) return wort;
+    if (i === n - 1 && wort.endsWith("en") && !KEIN_VERB.test(wort)
+      && !KLEINWOERTER.has(w[i - 1]) && !adjektiv(i - 1)) return wort; // Verb am Ende: „Ableitungen bilden“
+    return gross(wort);
+  });
+  return zeichen ? `${aus[0]}-${aus.slice(1).join(" ")}` : aus.join(" ");
 }
 
 /** Begriffe mit gleichem Anzeigetitel (ohne Gross-/Kleinschreibung) werden einer; hoehere Beherrschung gewinnt (null/fehlend am niedrigsten). */

@@ -2612,12 +2612,6 @@ def _zf_offen(ll: ListenLern, penecho: FakePenEcho | None = None, **kw: Any):
     return client, penecho
 
 
-def _vereinigung(bereiche: list[dict[str, int]]) -> dict[str, int]:
-    x0, y0 = min(b["x"] for b in bereiche), min(b["y"] for b in bereiche)
-    return {"x": x0, "y": y0, "w": max(b["x"] + b["w"] for b in bereiche) - x0,
-            "h": max(b["y"] + b["h"] for b in bereiche) - y0}
-
-
 def test_zusammenfassung_route() -> None:
     ll = ListenLern(2)
     client, penecho = _zf_offen(ll)
@@ -2627,11 +2621,9 @@ def test_zusammenfassung_route() -> None:
         assert r.headers["content-type"] == "application/pdf" and r.content.startswith(b"%PDF")
         assert re.fullmatch(r'attachment; filename="zusammenfassung-testkurs-\d{4}-\d{2}-\d{2}\.pdf"',
                             r.headers["content-disposition"])
-        # Erst je Aufgabe ein Bild mit eigenem Rechteck, die ganze Fläche zuletzt (die langsamste, heikelste Aufnahme).
+        # Je Aufgabe ein Bild mit eigenem Rechteck; die ganze Fläche wird nicht aufgenommen.
         rechtecke = [rt for _, rt in penecho.aufnahme_rechtecke]
-        bereiche = anordnung([False] * 2)
-        assert rechtecke[:2] == bereiche and len(rechtecke) == 3
-        assert rechtecke[2] == _vereinigung(bereiche)
+        assert rechtecke == anordnung([False] * 2)
     finally:
         client.app.beenden()
 
@@ -2679,21 +2671,21 @@ def test_zusammenfassung_zeitlimit_je_aufnahme_ist_der_rest_des_budgets() -> Non
         zeiten = iter([0.0, 1.0, 12.0, 31.0, 40.0])
         client.app._uhr = lambda: next(zeiten)
         assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
-        assert penecho.aufnahme_timeouts == [29.0, 18.0]  # die ganze Fläche (Rest -1 s) entfällt
+        assert penecho.aufnahme_timeouts == [29.0, 18.0]
     finally:
         client.app.beenden()
 
 
-def test_zusammenfassung_ganze_flaeche_fehlt_aufgabenbilder_bleiben() -> None:
+def test_zusammenfassung_nimmt_nur_die_aufgabenbereiche_auf() -> None:
+    # Live 09.11.: das Bild der ganzen Flaeche kam bei 16 Aufgaben mit 74 x 888 Pixeln, unlesbar. Es entfaellt;
+    # jede Aufgabe hat ihr eigenes Bild.
     ll = ListenLern(2)
     client, penecho = _zf_offen(ll)
     try:
         bereiche = anordnung([False] * 2)
-        ganz = _vereinigung(bereiche)
-        penecho.aufnahme_fehler = lambda rt: PenEchoNichtErreichbar("werkzeug") if rt == ganz else None
         r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
         assert r.status_code == 200 and r.content.startswith(b"%PDF")
-        assert [rt for _, rt in penecho.aufnahme_rechtecke] == [*bereiche, ganz]
+        assert [rt for _, rt in penecho.aufnahme_rechtecke] == bereiche
     finally:
         client.app.beenden()
 
@@ -2705,7 +2697,7 @@ def test_zusammenfassung_werkzeugfehler_einer_aufgabe_stoppt_nicht() -> None:
         bereiche = anordnung([False] * 3)
         penecho.aufnahme_fehler = lambda rt: PenEchoNichtErreichbar("werkzeug") if rt == bereiche[0] else None
         assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
-        assert len(penecho.aufnahme_rechtecke) == 4
+        assert len(penecho.aufnahme_rechtecke) == 3
     finally:
         client.app.beenden()
 
@@ -2777,8 +2769,8 @@ def test_zusammenfassung_jpeg_aufnahmen_kommen_als_png_ins_pdf(monkeypatch) -> N
         penecho.bild = _jpeg()
         assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
         (z,) = gesehen
-        bilder = [z.flaeche, *(a.bild for a in z.aufgaben)]
-        assert len(bilder) == 3
+        bilder = [a.bild for a in z.aufgaben]
+        assert len(bilder) == 2
         assert all(b is not None and b.startswith(b"\x89PNG\r\n\x1a\n") for b in bilder)
     finally:
         client.app.beenden()
@@ -2792,9 +2784,9 @@ def test_zusammenfassung_unlesbares_bild_faellt_einzeln_weg_mit_warnung(monkeypa
         penecho.bild = b"kein bild"
         with caplog.at_level("WARNING"):
             assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
-        assert len(penecho.aufnahme_rechtecke) == 3  # jede Aufnahme versucht, keine bricht die Reihe ab
+        assert len(penecho.aufnahme_rechtecke) == 2  # jede Aufnahme versucht, keine bricht die Reihe ab
         (z,) = gesehen
-        assert z.flaeche is None and all(a.bild is None for a in z.aufgaben)
+        assert all(a.bild is None for a in z.aufgaben)
         assert "Bild unlesbar" in caplog.text
     finally:
         client.app.beenden()
@@ -2812,7 +2804,7 @@ def test_zusammenfassung_begriffe_ohne_slug_dubletten(monkeypatch) -> None:
     try:
         assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
         (z,) = gesehen
-        assert z.begriffe == (("Ablauf kurvendiskussion", "60 %"), ("Ableitung", "noch offen"))
+        assert z.begriffe == (("Ablauf Kurvendiskussion", "60 %"), ("Ableitung", "noch offen"))
     finally:
         client.app.beenden()
 
