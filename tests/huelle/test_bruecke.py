@@ -2021,6 +2021,9 @@ class MerkSpur:
     def wartend(self, praefix: str) -> int:
         return sum(1 for s, _ in self.arbeiten if s.startswith(praefix))
 
+    def zustand(self, schluessel: str) -> str | None:
+        return "wartet" if any(s == schluessel for s, _ in self.arbeiten) else None
+
     def abarbeiten(self, sperre: Any) -> None:
         # Wie Spur: kleiner Vorrang zuerst, sonst in der Reihenfolge des Einreihens.
         arbeiten = sorted(self.arbeiten, key=lambda a: self.vorrang[a[0]])
@@ -2855,3 +2858,60 @@ def test_beendeter_anpassender_kurs_oeffnen_ohne_stand() -> None:
     _, client, _ = _bis_zum_ende()
     body = client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()
     assert body["abgeschlossen"] is True and "stand" not in body
+
+
+# ---- Schlussreview Runde 2: die Seite fragt weiter, solange die Karte noch unterwegs ist ------------------
+
+def _karte_haelt_und_scheitert(penecho: FakePenEcho) -> threading.Event:
+    """Die Flaechenspur haengt in `rueckmeldung_zeigen`, bis das Ereignis gesetzt ist; dann lehnt PenEcho ab."""
+    frei = threading.Event()
+
+    def zeigen(*_a: Any, **_k: Any) -> None:
+        assert frei.wait(5), "Karte nie freigegeben"
+        raise PenEchoNichtErreichbar("Platz belegt")
+
+    penecho.rueckmeldung_zeigen = zeigen  # type: ignore[method-assign]
+    return frei
+
+
+def test_liste_karte_unterwegs_stand_meldet_karte_ausstehend() -> None:
+    ll = ListenLern(2)
+    penecho = FakePenEcho()
+    client, penecho, _ = _listen_offen(ll, penecho)
+    bruecke = client.app
+    frei = _karte_haelt_und_scheitert(penecho)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        _bis(lambda: bruecke._modellspur.wartend(f"{SID}:abgabe:") == 0
+             and bruecke._flaechenspur.zustand(f"{SID}:rueckmeldung:2") == "laeuft", 2)
+        eintrag = _stand(client)["aufgaben"][1]
+        assert eintrag["status"] == "rueckmeldung" and eintrag["karte_ausstehend"] is True
+        assert "karte" not in eintrag
+        frei.set()
+        _bis(lambda: _ruhig(bruecke), 2)
+        eintrag = _stand(client)["aufgaben"][1]
+        assert eintrag["karte"].startswith("Gelesen: 2") and "karte_ausstehend" not in eintrag
+    finally:
+        frei.set()
+        bruecke.beenden()
+
+
+def test_liste_oeffnen_karte_der_zweiten_aufgabe_unterwegs_karte_ausstehend() -> None:
+    ll = ListenLern(2)
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="7")
+    penecho = FakePenEcho()
+    frei = _karte_haelt_und_scheitert(penecho)
+    client, _, _ = bauen(ll.lern, penecho)
+    bruecke = client.app
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+        assert r.status_code == 200, r.text
+        eintrag = r.json()["stand"]["aufgaben"][1]
+        assert eintrag["status"] == "rueckmeldung" and eintrag["karte_ausstehend"] is True
+        frei.set()
+        _bis(lambda: bruecke._flaechenspur.wartend(f"{SID}:setzen:") == 0, 2)
+        eintrag = _stand(client)["aufgaben"][1]
+        assert eintrag["karte"].startswith("Gelesen: 7") and "karte_ausstehend" not in eintrag
+    finally:
+        frei.set()
+        bruecke.beenden()

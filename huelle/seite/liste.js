@@ -87,5 +87,6 @@ export function eintragSetzen(liste, nummer, aenderung) {
 
 /** Die Seite fragt den Stand ab, solange eine Aufgabe bewertet wird. */
 export function mussAbfragen(aufgaben) {
-  return Array.isArray(aufgaben) && aufgaben.some((a) => a?.status === "in_bewertung");
+  // Auch solange die Brücke eine Karte noch auf die Fläche setzt: scheitert sie, kommt ihr Text als `karte`.
+  return Array.isArray(aufgaben) && aufgaben.some((a) => a?.status === "in_bewertung" || a?.karte_ausstehend === true);
 }

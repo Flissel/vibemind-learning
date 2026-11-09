@@ -1419,6 +1419,11 @@ class Bruecke:
             else:
                 self._kartentexte.pop(schluessel, None)
 
+    def _karte_unterwegs(self, sid: str, nummer: int) -> bool:
+        """Wartet oder laeuft eine Flaechenarbeit, die diese Nummer samt Karte setzt? Die Spur raeumt am Ende auf."""
+        return (self._flaechenspur.zustand(f"{sid}:rueckmeldung:{nummer}") is not None
+                or self._flaechenspur.zustand(f"{sid}:setzen:{nummer}") is not None)
+
     def _kartentexte_von(self, sid: str) -> dict[int, str]:
         with self._abgaben_sperre:
             return {n: t for (s, n), t in self._kartentexte.items() if s == sid}
@@ -1458,6 +1463,9 @@ class Bruecke:
             })
             if status == "rueckmeldung" and nummer in kartentexte:
                 aufgaben[-1]["karte"] = kartentexte[nummer]  # Karte nicht auf der Flaeche: Text fuer die Leiste
+            elif status == "rueckmeldung" and self._karte_unterwegs(sid, nummer):
+                # Die Karte ist noch nicht versucht: die Seite fragt weiter, bis sie steht oder `karte` da ist.
+                aufgaben[-1]["karte_ausstehend"] = True
         aktuell = next((a["nummer"] for a in aufgaben if a["status"] != "bestaetigt"), aufgaben[-1]["nummer"])
         return {"ablauf": "liste", "aktuell": aktuell, "wartend": self._modellspur.wartend(f"{sid}:abgabe:"),
                 "aufgaben": aufgaben}

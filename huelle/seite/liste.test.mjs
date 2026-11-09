@@ -112,3 +112,9 @@ test("zusammenfassungSessionId: auch ein beendeter Listenkurs hat den Link, ein 
   assert.equal(zusammenfassungSessionId(null, true, { session_id: "" }), null);
   assert.equal(zusammenfassungSessionId(null, true, null), null);
 });
+
+test("mussAbfragen auch, solange eine Karte noch auf die Fläche kommt (karte_ausstehend)", () => {
+  assert.equal(mussAbfragen([o, { status: "rueckmeldung", karte_ausstehend: true }]), true);
+  assert.equal(mussAbfragen([o, { status: "rueckmeldung", karte: "Gelesen: 2" }]), false);
+  assert.equal(mussAbfragen([o, { status: "rueckmeldung", karte_ausstehend: false }]), false);
+});
