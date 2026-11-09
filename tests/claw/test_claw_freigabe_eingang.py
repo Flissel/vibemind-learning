@@ -90,6 +90,7 @@ def api(monkeypatch: pytest.MonkeyPatch) -> Iterator[Api]:
 def eingang(monkeypatch: pytest.MonkeyPatch) -> FakeEingang:
     fake = FakeEingang()
     monkeypatch.setattr(werkzeuge, "_eingang", lambda: fake)
+    monkeypatch.setattr(werkzeuge, "_melde_runner", lambda arbeit: arbeit())  # synchron
     return fake
 
 
@@ -123,14 +124,40 @@ def test_meldefehler_aendert_rueckgabe_nicht(api: Api, monkeypatch: pytest.Monke
             raise RuntimeError("boom")
 
     monkeypatch.setattr(werkzeuge, "_eingang", lambda: Kaputt())
+    monkeypatch.setattr(werkzeuge, "_melde_runner", lambda arbeit: arbeit())
     out = werkzeuge.werkstatt_freigabe_anzeigen(COURSE)
     assert out["ok"] is True and out["daten"]["nummer"] == 3
+
+
+def test_meldung_laeuft_in_eigenem_faden_ohne_zu_blockieren(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    frei = threading.Event()
+    lief_in: list[threading.Thread] = []
+
+    class Haengt(FakeEingang):
+        def eintragen(self, *a: Any, **k: Any) -> str:
+            lief_in.append(threading.current_thread())
+            frei.wait(5)  # toter Eingang
+            return "fg-aaaaaaaaaa"
+
+    monkeypatch.setattr(werkzeuge, "_eingang", lambda: Haengt())
+    out = werkzeuge.werkstatt_freigabe_anzeigen(COURSE)  # kehrt zurueck, obwohl der Eingang haengt
+    try:
+        assert out["ok"] is True and out["daten"]["nummer"] == 3
+        for _ in range(100):
+            if lief_in:
+                break
+            threading.Event().wait(0.02)
+        assert lief_in and lief_in[0] is not threading.main_thread() and lief_in[0].daemon
+    finally:
+        frei.set()
 
 
 def test_auftrag_ruft_anzeigen_im_prozess() -> None:
     fake = FakeEingang(auftraege=[
         {"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}},
         {"id": "a2", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": "../x"}},
+        {"id": "a6", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": "kurs\n"}},
+        {"id": "a7", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": "kürs"}},
         {"id": "a3", "art": "kurs_freigabe_zeigen", "nutzlast": {}},
         {"id": "a4", "art": "fremd", "nutzlast": {"course_id": COURSE}},
         {"id": "a5", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": "wirft"}},
@@ -141,12 +168,13 @@ def test_auftrag_ruft_anzeigen_im_prozess() -> None:
         gerufen.append(course_id)
         if course_id == "wirft":
             raise PermissionError("geheime Meldung /freigabe/abc")
-        return {"ok": True, "daten": {}}
+        return {"ok": True, "daten": {"link_geoeffnet": True}}
 
-    assert freigabe_eingang.abholer_einmal(fake, anzeigen=anzeigen, freigaben_lesen=lambda c: []) == 5
+    assert freigabe_eingang.abholer_einmal(fake, anzeigen=anzeigen, freigaben_lesen=lambda c: []) == 7
     assert gerufen == [COURSE, "wirft"]
     assert fake.ergebnisse == [
-        ("a1", True, None), ("a2", False, "ungueltig"), ("a3", False, "ungueltig"),
+        ("a1", True, None), ("a2", False, "ungueltig"), ("a6", False, "ungueltig"),
+        ("a7", False, "ungueltig"), ("a3", False, "ungueltig"),
         ("a4", False, "unbekannte_art"), ("a5", False, "PermissionError"),
     ]
 
@@ -159,6 +187,25 @@ def test_anzeigen_ok_false_wird_fehler() -> None:
     assert fake.ergebnisse == [("a1", False, "anzeigen_fehlgeschlagen")]
 
 
+@pytest.mark.parametrize("daten", [
+    {"link_geoeffnet": False, "handy_link_gesendet": False}, {}, None,
+])
+def test_ohne_link_kein_erfolg(daten: dict[str, Any] | None) -> None:
+    fake = FakeEingang(auftraege=[{"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}}])
+    freigabe_eingang.abholer_einmal(
+        fake, anzeigen=lambda c: {"ok": True, "daten": daten}, freigaben_lesen=lambda c: []
+    )
+    assert fake.ergebnisse == [("a1", False, "kein_link")]
+
+
+def test_handy_link_allein_genuegt() -> None:
+    fake = FakeEingang(auftraege=[{"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}}])
+    freigabe_eingang.abholer_einmal(
+        fake, anzeigen=lambda c: {"ok": True, "daten": {"handy_link_gesendet": True}}, freigaben_lesen=lambda c: []
+    )
+    assert fake.ergebnisse == [("a1", True, None)]
+
+
 def test_freigegeben_schliesst() -> None:
     fake = FakeEingang(offene=[
         {"kennung": "fg-1", "quelle_ref": "kurs:fertig"},
@@ -167,6 +214,8 @@ def test_freigegeben_schliesst() -> None:
         {"kennung": "fg-4", "quelle_ref": "pr:1"},
         {"kennung": "fg-5", "quelle_ref": "kurs:a/b"},
         {"kennung": "fg-6", "quelle_ref": "kurs:kaputt"},
+        {"kennung": "fg-7", "quelle_ref": "kurs:fertig\n"},
+        {"kennung": "fg-8", "quelle_ref": "kurs:fertigä"},
     ])
     zustand = {"fertig": "freigegeben", "offen": "angefordert"}
 
@@ -198,17 +247,21 @@ def test_geheimnis_nie_gesendet(api: Api, monkeypatch: pytest.MonkeyPatch, caplo
     monkeypatch.setattr(werkzeuge, "_browser_oeffnen", lambda url: opened.append(url) or True)
     fake = FakeEingang(auftraege=[
         {"id": "a1", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}},
+        {"id": "a2", "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": COURSE}},
     ], offene=[{"kennung": "fg-1", "quelle_ref": f"kurs:{COURSE}"}])
     monkeypatch.setattr(werkzeuge, "_eingang", lambda: fake)
+    monkeypatch.setattr(werkzeuge, "_melde_runner", lambda arbeit: arbeit())
     with caplog.at_level(logging.DEBUG):
         freigabe_eingang.abholer_einmal(fake, freigaben_lesen=lambda c: [{"zustand": "angefordert"}])
         freigabe_eingang.abholer_einmal(fake, freigaben_lesen=lambda c: [{"zustand": "freigegeben"}])
-    geheimnis = opened[-1].rsplit("/", 1)[1]
-    assert geheimnis
+    assert len(opened) == 4
+    geheimnisse = [u.rsplit("/", 1)[1] for u in opened]
     gesendet = json.dumps([fake.eintraege, fake.geschlossen, fake.ergebnisse], default=str)
     assert fake.eintraege and fake.ergebnisse
-    assert geheimnis not in gesendet and "/freigabe/" not in gesendet
-    assert geheimnis not in caplog.text and "/freigabe/" not in caplog.text
+    assert "/freigabe/" not in gesendet and "/freigabe/" not in caplog.text
+    for url, geheimnis in zip(opened, geheimnisse):
+        assert geheimnis and geheimnis not in gesendet and geheimnis not in caplog.text
+        assert url not in gesendet and url not in caplog.text
 
 
 def test_client_sendet_keinen_freigabe_link(tmp_path: Path) -> None:
@@ -259,13 +312,28 @@ def test_schleife_ueberlebt_fehler_und_stoppt() -> None:
     assert zaehler["n"] == 3
 
 
-def test_starte_abholer_ist_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = FakeEingang()
+def test_starte_abholer_ist_daemon() -> None:
     stop = threading.Event()
-    monkeypatch.setattr(threading, "Event", lambda: stop)
-    faden = freigabe_eingang.starte_abholer(fake)  # type: ignore[arg-type]
+    faden = freigabe_eingang.starte_abholer(FakeEingang(), stop)  # type: ignore[arg-type]
     try:
         assert faden is not None and faden.daemon
     finally:
         stop.set()
         faden.join(2)  # type: ignore[union-attr]
+
+
+def test_schleife_wartet_vor_dem_ersten_durchlauf() -> None:
+    stop = threading.Event()
+    stop.set()  # sofort gestoppt: kein Durchlauf, nicht einmal der erste
+
+    class Client(FakeEingang):
+        def auftraege(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("darf nicht laufen")
+
+    freigabe_eingang.abholer_schleife(Client(), stop, takt_s=0.0)
+
+
+def test_umgebungsschluessel_werden_aus_env_datei_geladen() -> None:
+    from spaces.learning.claw import server
+
+    assert {"FREIGABE_URL", "FREIGABE_SCHLUESSEL_DATEI"} <= set(server._ENV_KEYS)

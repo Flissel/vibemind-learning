@@ -9,6 +9,7 @@ Zweige stehen hier, der passende gewinnt zur Laufzeit.
 """
 
 import hmac
+import logging
 import os
 import sys
 from pathlib import Path
@@ -43,6 +44,9 @@ _ENV_KEYS = (
     "LEARNING_CLAW_FREIGABE_BASIS",
     "LEARNING_CLAW_TELEGRAM_SKRIPT",
     "LEARNING_CLAW_LOG_DIR",
+    # Freigabe-Eingang (optional): Basis der Sales-UI und Pfad der Schluesseldatei.
+    "FREIGABE_URL",
+    "FREIGABE_SCHLUESSEL_DATEI",
 )
 
 # Das Token kommt nur aus der Prozessumgebung (Startskript), nie aus einer Datei.
@@ -282,8 +286,8 @@ def main() -> None:
     starte_melder()
     try:
         starte_abholer()  # nur im Claw-Prozess: nur hier kennt die Freigabeseite ihr Geheimnis
-    except Exception:  # darf den Start nie verhindern
-        pass
+    except Exception as error:  # darf den Start nie verhindern
+        logging.getLogger(__name__).warning("Freigabe-Abholer nicht gestartet (%s)", type(error).__name__)
     uvicorn.run(build_app(server, token, port), **uvicorn_settings(host, port))
 
 

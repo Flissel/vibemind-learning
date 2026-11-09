@@ -1027,19 +1027,36 @@ def _eingang() -> Any:
     return freigabe_eingang.aus_umgebung()
 
 
+def _im_faden(arbeit: Callable[[], None]) -> None:
+    """Startet die Meldung in einem kurzlebigen Daemon-Faden: FastMCP fuehrt sync-Werkzeuge im
+    Ereignisschleifen-Faden aus; ein toter Eingang (10 s Timeout) darf die Freigabeseite nicht blockieren."""
+    threading.Thread(target=arbeit, name="freigabe-melden", daemon=True).start()
+
+
+_melde_runner: Callable[[Callable[[], None]], None] = _im_faden
+
+
 def _freigabe_melden(inhalt: dict[str, Any]) -> None:
     """Meldet eine vorbereitete Kursfreigabe an den Eingang; aendert nie die Antwort des Werkzeugs."""
     try:
         if inhalt["blockiert"] or inhalt["nichts_zu_veroeffentlichen"]:
             return
-        eingang = _eingang()
-        if eingang is None:
-            return
+        course_id = str(inhalt["course_id"])
+        nummer = int(inhalt["nummer"])
         titel = f"Kurs „{str(inhalt['titel']).replace('@', '')}“ freigeben"[:200]
-        eingang.eintragen(
-            "kursfreigabe", f"kurs:{inhalt['course_id']}", titel, None,
-            {"course_id": inhalt["course_id"], "nummer": inhalt["nummer"]},
-        )
+
+        def arbeit() -> None:
+            try:
+                eingang = _eingang()
+                if eingang is not None:
+                    eingang.eintragen(
+                        "kursfreigabe", f"kurs:{course_id}", titel, None,
+                        {"course_id": course_id, "nummer": nummer},
+                    )
+            except Exception as error:
+                logger.warning("Freigabe-Eingang: Meldung fehlgeschlagen (%s)", type(error).__name__)
+
+        _melde_runner(arbeit)
     except Exception as error:
         logger.warning("Freigabe-Eingang: Meldung fehlgeschlagen (%s)", type(error).__name__)
 

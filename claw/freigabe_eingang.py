@@ -35,7 +35,7 @@ TIMEOUT_S = 10
 TAKT_S = 60.0
 _PFAD = "/api/freigaben"
 ART_ZEIGEN = "kurs_freigabe_zeigen"
-_KURS_ID = re.compile(r"^[\w.\-]{1,128}$")
+_KURS_ID = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
 _VERBOTEN = ("/freigabe/",)
 
 
@@ -126,7 +126,7 @@ def aus_umgebung() -> FreigabeEingang | None:
 
 
 def _kurs_id(wert: object) -> str | None:
-    return wert if isinstance(wert, str) and _KURS_ID.match(wert) else None
+    return wert if isinstance(wert, str) and _KURS_ID.fullmatch(wert) else None
 
 
 def _anzeigen_standard(course_id: str) -> dict[str, Any]:
@@ -166,8 +166,13 @@ def _auftrag_bearbeiten(client: Any, auftrag: dict[str, Any], anzeigen: Callable
         LOG.warning("Freigabe-Abholer: Anzeigen fehlgeschlagen (%s)", type(e).__name__)
         client.ergebnis(auftrag_id, False, type(e).__name__)
         return
-    if isinstance(antwort, dict) and antwort.get("ok") is False:
+    if not isinstance(antwort, dict) or antwort.get("ok") is not True:
         client.ergebnis(auftrag_id, False, "anzeigen_fehlgeschlagen")
+        return
+    daten = antwort.get("daten")
+    if not isinstance(daten, dict) or not (daten.get("link_geoeffnet") or daten.get("handy_link_gesendet")):
+        # Sonst meldete der Server dem Betreiber "Link gesendet", obwohl nichts ankam.
+        client.ergebnis(auftrag_id, False, "kein_link")
         return
     client.ergebnis(auftrag_id, True)
 
@@ -205,21 +210,25 @@ def abholer_einmal(
 
 def abholer_schleife(client: Any, stop: threading.Event, takt_s: float = TAKT_S, **kwargs: Any) -> None:
     """Laeuft bis `stop` gesetzt wird; ein Fehler in einem Durchlauf wird nur nach Typ geloggt."""
-    while not stop.is_set():
+    # Erst warten, dann arbeiten: so zeigt kein Link auf den Port, bevor uvicorn ihn bindet.
+    while not stop.wait(takt_s):
         try:
             abholer_einmal(client, **kwargs)
         except Exception as e:
             LOG.warning("Freigabe-Abholer: Durchlauf fehlgeschlagen (%s)", type(e).__name__)
-        stop.wait(takt_s)
 
 
-def starte_abholer(client: FreigabeEingang | None = None) -> threading.Thread | None:
+def starte_abholer(
+    client: FreigabeEingang | None = None, stop: threading.Event | None = None
+) -> threading.Thread | None:
     """Daemon-Faden im Claw-Prozess; `None`, wenn der Client nicht eingerichtet ist."""
     client = client or aus_umgebung()
     if client is None:
+        LOG.info("Freigabe-Abholer: aus (Freigabe-Eingang nicht eingerichtet)")
         return None
     faden = threading.Thread(
-        target=abholer_schleife, args=(client, threading.Event()), name="freigabe-abholer", daemon=True
+        target=abholer_schleife, args=(client, stop or threading.Event()), name="freigabe-abholer", daemon=True
     )
     faden.start()
+    LOG.info("Freigabe-Abholer: gestartet")
     return faden
