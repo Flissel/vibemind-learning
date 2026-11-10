@@ -18,8 +18,12 @@ from urllib.parse import unquote, urlsplit
 import httpx
 import websockets
 
+from .person import PERSON_COOKIE
 from .sperre import CLOUD_PFADE, KI_PFADE, Sperre
 from .zugang import COOKIE
+
+# Die eigenen Cookies der Huelle (Notweg und Person) gehen nie an PenEcho.
+_HUELLE_COOKIES = frozenset({COOKIE, PERSON_COOKIE})
 
 Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -131,9 +135,9 @@ def ist_cloud_pfad(pfad: str) -> bool:
 
 
 def _ohne_zugang(wert: str) -> str | None:
-    """Der Cookie-Kopf ohne das Zugangscookie der Huelle; None, wenn nichts uebrig bleibt."""
+    """Der Cookie-Kopf ohne die Cookies der Huelle (Zugang, Person); None, wenn nichts uebrig bleibt."""
     rest = [t.strip() for t in wert.split(";")]
-    rest = [t for t in rest if t and t.split("=", 1)[0].strip() != COOKIE]
+    rest = [t for t in rest if t and t.split("=", 1)[0].strip() not in _HUELLE_COOKIES]
     return "; ".join(rest) or None
 
 

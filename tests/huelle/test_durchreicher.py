@@ -506,6 +506,39 @@ def test_zugangscookie_geht_nicht_an_penecho_websocket(fake: tuple[FakePenEcho, 
     assert upstream.kopf.get("cookie") == "a=b"
 
 
+def test_personencookie_geht_nicht_an_penecho(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", headers=[
+        (b"cookie", b"huelle_person=geheim; penecho_ai_session_x=abc; huelle_zugang=auch"),
+    ]))
+    assert upstream.kopf["cookie"] == "penecho_ai_session_x=abc"
+    asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/", headers=[(b"cookie", b"huelle_person=geheim")]))
+    assert "cookie" not in upstream.kopf
+
+
+def test_personencookie_geht_nicht_an_penecho_websocket(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+
+    async def lauf() -> None:
+        scope = {"type": "websocket", "path": "/api/mcp/canvas", "raw_path": b"/api/mcp/canvas", "query_string": b"",
+                 "headers": [(b"origin", b"https://lernen.example.test"),
+                             (b"cookie", b"huelle_person=geheim; a=b")]}
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        eingang.put_nowait({"type": "websocket.connect"})
+
+        async def send(m: dict[str, Any]) -> None:
+            if m["type"] == "websocket.accept":
+                eingang.put_nowait({"type": "websocket.receive", "text": "hi"})
+            if m["type"] == "websocket.send":
+                eingang.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+        await asyncio.wait_for(Durchreicher(url, _frei(), EIGEN)(scope, eingang.get, send), timeout=10)
+
+    asyncio.run(lauf())
+    assert "huelle_person" not in upstream.kopf.get("cookie", "")
+    assert upstream.kopf.get("cookie") == "a=b"
+
+
 def test_websockets_kopf_argument_je_version() -> None:
     from spaces.learning.huelle.durchreicher import _kopf_argument
 
