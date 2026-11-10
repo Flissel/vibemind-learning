@@ -894,7 +894,6 @@ def test_ablage_was_der_lernmodus_nicht_braucht_403(fake: tuple[FakePenEcho, str
         ("PUT", f"/api/canvases/{BOARD_A}/project", b""),
         ("GET", "/api/canvas-projects", b""), ("POST", "/api/canvas-projects", b""),
         ("DELETE", "/api/canvas-projects/project-aaaaaaaa", b""),
-        ("GET", "/api/canvases", b"limit=24&offset=0"),  # Bibliotheksseite (nicht im Lernmodus)
         ("PUT", "/api/canvases", b""), ("HEAD", f"/api/canvases/{BOARD_A}", b""),
         # Umgehungen: PenEcho (WHATWG-URL) loest .. und %2e auf; geprueft wird der rohe Pfad exakt.
         ("GET", f"/api/canvases/x/../{BOARD_B}", b""), ("GET", f"/x/../api/canvases/{BOARD_B}", b""),
@@ -916,3 +915,165 @@ def test_ablage_inhaber_und_ohne_ablage_wie_bisher(fake: tuple[FakePenEcho, str]
     upstream.ablage.clear()
     status, _, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), f"/api/canvases/{BOARD_B}", state=ALS_A))
     assert status == 200 and upstream.ablage == [("GET", f"/api/canvases/{BOARD_B}", b"", b"")]
+
+
+# ---- Runde 2: Lernmodus-Allowlist fuer Personen ------------------------------------------------------------
+
+INHABER = "lh-1-inhaber"
+ALS_INHABER = {"actor_id": INHABER}
+
+
+def _mit_allowlist(url: str) -> Durchreicher:
+    return Durchreicher(url, _frei(), EIGEN, ablage=_ablage(ABLAGE), inhaber=INHABER)
+
+
+def _http(url: str, pfad: str, *, methode: str = "GET", state: dict[str, Any] | None = ALS_A,
+          query: bytes = b"") -> tuple[int, bytes]:
+    status, _, teile = asyncio.run(_lauf(_mit_allowlist(url), pfad, methode=methode, state=state, query=query,
+                                         headers=KOPF_A, body=b"{}" if methode not in ("GET", "HEAD") else b""))
+    return status, b"".join(t for _, t in teile)
+
+
+def _ws(url: str, pfad: str, *, state: dict[str, Any] | None = ALS_A, query: bytes = b"") -> list[dict[str, Any]]:
+    """Websocket ueber den Durchreicher; Ergebnis: alle gesendeten Nachrichten (Fake-PenEcho antwortet mit echo)."""
+    gesendet: list[dict[str, Any]] = []
+
+    async def lauf() -> None:
+        scope: dict[str, Any] = {"type": "websocket", "path": pfad, "raw_path": pfad.encode(), "query_string": query,
+                                 "headers": [(b"origin", b"https://lernen.example.test"), *KOPF_A]}
+        if state is not None:
+            scope["state"] = state
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        eingang.put_nowait({"type": "websocket.connect"})
+
+        async def send(m: dict[str, Any]) -> None:
+            gesendet.append(m)
+            if m["type"] == "websocket.accept":
+                eingang.put_nowait({"type": "websocket.receive", "text": "hi"})
+            if m["type"] == "websocket.send":
+                eingang.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+        await asyncio.wait_for(_mit_allowlist(url)(scope, eingang.get, send), timeout=10)
+
+    asyncio.run(lauf())
+    return gesendet
+
+
+GESPERRT_HTTP = [
+    # Canvas-Agent: Dateien und Laufwerke des Inhaber-PCs, Projekte, Verlauf, Upload
+    ("GET", "/api/canvas-agent/host-roots", b""), ("GET", "/api/canvas-agent/roots", b""),
+    ("GET", "/api/canvas-agent/roots/r1/entries", b"approved=1"),
+    ("POST", "/api/canvas-agent/projects/from-host-root", b""), ("POST", "/api/canvas-agent/projects", b""),
+    ("GET", "/api/canvas-agent/projects", b""), ("PUT", "/api/canvas-agent/projects/p1/history", b""),
+    ("DELETE", "/api/canvas-agent/projects/p1", b""), ("POST", "/api/canvas-agent/files", b""),
+    # Einstellungen: Anbieter, Schluessel, CLI-Pfade
+    ("GET", "/api/settings", b""), ("POST", "/api/settings", b""), ("GET", "/api/settings/connections", b""),
+    ("POST", "/api/settings/connections", b""), ("POST", "/api/settings/connections/inspect-cli", b""),
+    ("POST", "/api/settings/connections/models", b""),
+    # Notizen
+    ("GET", "/api/notes", b""), ("POST", "/api/notes/sync", b""), ("DELETE", "/api/notes/n1", b""),
+    # Unbekannt oder nicht im Lernmodus
+    ("GET", "/api/unbekannt", b""), ("GET", "/api", b""), ("GET", "/api/v1/credits", b""),
+    ("GET", "/api/widget-fetch", b"url=https://example.test"), ("POST", "/api/mcp/rpc", b""),
+    ("GET", "/api/mcp/status", b""), ("POST", "/api/mcp/configure", b""), ("GET", "/api/cloud/status", b""),
+    ("POST", "/api/cloud/sign-out", b""), ("POST", "/api/suggest/preferences", b""), ("POST", "/api/plugins", b""),
+    ("DELETE", "/api/plugins/p1", b""), ("POST", "/api/local-access/open", b""), ("GET", "/api/favorites", b""),
+    ("GET", "/api/debug/log", b""), ("POST", "/api/config", b""), ("GET", "/api/ai/command", b""),
+    ("GET", "/plugins/private/p1.md", b""), ("POST", "/index.html", b""),
+    # Kodierungs- und Pfad-Umgehungen
+    ("GET", "/api/canvas%2Dagent/host-roots", b""), ("GET", "/api/%73ettings", b""), ("GET", "/API/settings", b""),
+    ("GET", "/Api/Notes", b""), ("GET", "//api/settings", b""), ("GET", "/api//settings", b""),
+    ("GET", "/x/../api/settings", b""), ("GET", "/api/./settings", b""), ("GET", "/api/config.js/../settings", b""),
+    ("POST", "/api/ai/command/../../api/settings", b""), ("GET", "/%2e%2e/api/settings", b""),
+    ("GET", "/plugins/private/../private/p1.md", b""), ("GET", "/Plugins/Private/p1.md", b""),
+]
+
+
+@pytest.mark.parametrize(("methode", "pfad", "query"), GESPERRT_HTTP)
+def test_person_gesperrte_routen_403(fake: tuple[FakePenEcho, str], methode: str, pfad: str, query: bytes) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    upstream.ablage.clear()
+    status, body = _http(url, pfad, methode=methode, query=query)
+    assert status == 403 and body.decode() == "Nicht erlaubt."
+    assert upstream.aufrufe == [] and upstream.ablage == []
+
+
+@pytest.mark.parametrize(("methode", "pfad", "query"), [f for f in GESPERRT_HTTP if "%" not in f[1]
+                                                        and "/../" not in f[1] and "//" not in f[1]])
+def test_inhaber_gesperrte_routen_wie_bisher(fake: tuple[FakePenEcho, str], methode: str, pfad: str,
+                                             query: bytes) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, _ = _http(url, pfad, methode=methode, query=query, state=ALS_INHABER)
+    assert status in (200, 201) and upstream.aufrufe, (methode, pfad)
+
+
+def test_ohne_kennung_gilt_die_allowlist(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    assert _http(url, "/api/settings", state=None)[0] == 403
+    assert _http(url, "/widget-renderer.js", state=None)[0] == 200  # oeffentliche Datei der Weiche
+    assert upstream.aufrufe == ["/widget-renderer.js"]
+
+
+def test_ohne_inhaber_keine_allowlist(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/api/settings", state=ALS_A))
+    assert status == 200 and upstream.aufrufe == ["/api/settings"]
+
+
+def test_person_lernmodus_routen_gehen_durch(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    for methode, pfad, query in [("GET", "/", b"lernen=1&flaeche=lf-x"), ("GET", "/index.html", b""),
+                                 ("GET", "/app.js", b""), ("HEAD", "/app.js", b""), ("GET", "/style.css", b""),
+                                 ("GET", "/vendor/mathjax-3.2.2/es5/tex-svg.js", b""), ("GET", "/quelltext", b""),
+                                 ("GET", "/widget-host.html", b""), ("GET", "/api/config.js", b""),
+                                 ("GET", "/api/config", b""), ("POST", "/api/ai/command", b""),
+                                 ("POST", "/api/suggest", b""), ("GET", "/api/suggest/status", b""),
+                                 ("GET", "/api/plugins", b""), ("GET", "/__huelle/speichern.js", b"")]:
+        status, _ = _http(url, pfad, methode=methode, query=query)
+        assert status == 200, (methode, pfad)
+    # Eigenes Board ueber die Ablage-Pruefung
+    upstream.ablage.clear()
+    assert _http(url, f"/api/canvases/{BOARD_A}")[0] == 200
+    assert upstream.ablage[-1][:2] == ("GET", f"/api/canvases/{BOARD_A}")
+    assert _http(url, "/api/canvases", methode="POST")[0] == 201
+
+
+def test_person_ki_sperre_bleibt_davor(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.aufrufe.clear()
+    gesperrt = Durchreicher(url, Sperre(), EIGEN, ablage=_ablage(ABLAGE), inhaber=INHABER)
+    status, _, _ = asyncio.run(_lauf(gesperrt, "/api/ai/command", methode="POST", state=ALS_A, body=b"{}"))
+    assert status == 423 and upstream.aufrufe == []
+
+
+def test_person_websockets_nur_mcp_und_abgleich(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    for pfad, query in (("/api/mcp/canvas", b""), ("/api/abgleich", b"raum=r1")):
+        gesendet = _ws(url, pfad, query=query)
+        assert gesendet[0]["type"] == "websocket.accept", pfad
+        assert {"type": "websocket.send", "text": "echo:hi"} in gesendet, pfad
+    for pfad in ("/api/canvas-agent/socket", "/api/canvas-agent/socket/", "/api/mcp/cloud-canvas", "/api/x",
+                 "/api/mcp/canvas/", "/API/mcp/canvas", "/api/mcp/%63anvas", "/x/../api/canvas-agent/socket", "/"):
+        assert _ws(url, pfad) == [{"type": "websocket.close", "code": 1008}], pfad
+    assert _ws(url, "/api/canvas-agent/socket", state=None) == [{"type": "websocket.close", "code": 1008}]
+
+
+def test_inhaber_websocket_canvas_agent_wie_bisher(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    gesendet = _ws(url, "/api/canvas-agent/socket", state=ALS_INHABER)
+    assert gesendet[0]["type"] == "websocket.accept"
+
+
+@pytest.mark.parametrize("query", [b"limit", b"limit=", b"limit=24&offset=0", b"metadataOnly=1&limit=5", b""])
+def test_ablage_liste_query_wird_metadataonly(fake: tuple[FakePenEcho, str], query: bytes) -> None:
+    # ?limit lieferte ueber die Bibliotheksseite Seiten- und Projektzahlen der ganzen Ablage.
+    upstream, url = fake
+    upstream.ablage.clear()
+    status, daten = _ablage_lauf(url, "/api/canvases", query=query)
+    assert status == 200 and daten == {"canvases": [BOARDS[0]]}
+    assert upstream.ablage == [("GET", "/api/canvases", b"metadataOnly=1", b"")]

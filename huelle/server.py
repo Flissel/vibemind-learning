@@ -52,6 +52,8 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         rahmen_herkuenfte=einstellung.seiten_herkuenfte,
         # PenEchos Server-Ablage: jede Person nur die Boards, die die Bruecke ihren Sitzungen zugeordnet hat.
         ablage=bruecke.eigene_dokumente,
+        # Jede andere Kennung (Personen-Cookie) erreicht nur die Lernmodus-Routen (Allowlist).
+        inhaber=einstellung.actor_id,
     )
     flaeche = FlaechenWeiche(einstellung, durchreicher, katalog)
     return Weiche(einstellung, seite_app(einstellung), bruecke), flaeche, bruecke

@@ -13,7 +13,7 @@ import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 import websockets
@@ -138,6 +138,61 @@ def ist_cloud_pfad(pfad: str) -> bool:
     return _trifft(pfad, CLOUD_PFADE)
 
 
+# Lernmodus-Allowlist fuer Personen (nicht den Inhaber). Ermittelt aus der Lernflaeche (src/client/app,
+# public/index.html, src/server/main.js); Fundstellen im Bericht zur Abschluss-Korrektur, Runde 2.
+# /api/canvases und /api/canvas-projects gehen weiter an die Ablage-Pruefung (`_ablage_person`).
+_LERN_API: dict[str, frozenset[str]] = {
+    "/api/config.js": frozenset({"GET", "HEAD"}),   # <script> in index.html
+    "/api/config": frozenset({"GET"}),
+    "/api/ai/command": frozenset({"POST"}),         # KI beim Ueben (ai-runtime.js); die KI-Sperre steht davor
+    "/api/suggest": frozenset({"POST"}),            # Vorschlaege (smart-suggestions.js); KI-Sperre davor
+    "/api/suggest/status": frozenset({"GET"}),
+    "/api/plugins": frozenset({"GET"}),             # Plugin-Katalog der Widgets (core.js loadPluginDocuments)
+}
+_LERN_ABLAGE = ("/api/canvases", "/api/canvas-projects")
+_LERN_WS = frozenset({"/api/mcp/canvas", "/api/abgleich"})  # MCP-Flaeche (mcp-runtime.js), Abgleich (gruppe.js)
+# Statisch erlaubt ist jedes GET/HEAD ausserhalb von /api/, ausser den privaten Plugins des Inhabers.
+_STATISCH_GESPERRT = ("/plugins/private/",)
+
+
+def _schlicht(roh: str) -> bool:
+    """Ein Rohpfad, den PenEcho (WHATWG-URL) genau so sieht: ohne %-Kodierung, `//`, `.`- oder `..`-Segmente."""
+    if not roh.startswith("/") or "%" in roh or "//" in roh:
+        return False
+    return not any(teil in (".", "..") for teil in roh.split("/")[1:])
+
+
+def _ist_api(roh: str) -> bool:
+    klein = roh.casefold()
+    return klein == "/api" or klein.startswith("/api/")
+
+
+def _rohpfad(scope: Scope) -> str:
+    """Der rohe Pfad ohne Query, wie ihn der Durchreicher weiterreicht."""
+    return (scope.get("raw_path") or scope["path"].encode("utf-8")).split(b"?", 1)[0].decode("latin-1")
+
+
+def person_http_erlaubt(scope: Scope) -> bool:
+    """Lernmodus-Allowlist fuer eine HTTP-Anfrage einer Person: exakte Rohpfade je Methode, sonst nichts unter /api/."""
+    roh = _rohpfad(scope)
+    methode = scope.get("method", "")
+    if not _schlicht(roh):
+        return False
+    if _ist_api(roh):
+        if any(roh == p or roh.startswith(p + "/") for p in _LERN_ABLAGE):
+            return True  # die Ablage-Pruefung entscheidet je Methode und Board
+        return methode in _LERN_API.get(roh, frozenset())
+    if roh.casefold().startswith(_STATISCH_GESPERRT):
+        return False
+    return methode in ("GET", "HEAD")
+
+
+def person_ws_erlaubt(scope: Scope) -> bool:
+    """Websockets einer Person: nur MCP-Flaeche und Abgleich (exakter Rohpfad; Query erlaubt)."""
+    roh = _rohpfad(scope)
+    return _schlicht(roh) and roh in _LERN_WS
+
+
 def _ohne_zugang(wert: str) -> str | None:
     """Der Cookie-Kopf ohne die Cookies der Huelle (Zugang, Person); None, wenn nichts uebrig bleibt."""
     rest = [t.strip() for t in wert.split(";")]
@@ -196,14 +251,19 @@ class Durchreicher:
     `ablage`: Kennung -> documentIds, die diese Person in PenEchos Server-Ablage erreicht (None = alle, der
     Inhaber); die Kennung setzt die Flaechen-Weiche (`scope["state"]["actor_id"]`). Ohne `ablage` bleibt die
     Ablage ungefiltert.
+
+    `inhaber`: die Inhaber-Kennung (Notweg). Ist sie gesetzt, gilt fuer jede andere Kennung (und ohne Kennung)
+    die Lernmodus-Allowlist (`person_http_erlaubt`, `person_ws_erlaubt`); ohne `inhaber` keine Allowlist.
     """
 
     def __init__(
         self, penecho_url: str, sperre: Sperre, eigene_herkuenfte: frozenset[str],
         *, rahmen_herkuenfte: tuple[str, ...] = (),
         ablage: Callable[[str], frozenset[str] | None] | None = None,
+        inhaber: str | None = None,
     ) -> None:
         self._ablage = ablage
+        self._inhaber = inhaber
         teile = urlsplit(penecho_url)
         self._basis = f"{teile.scheme}://{teile.netloc}"
         self._netloc = teile.netloc
@@ -379,6 +439,9 @@ class Durchreicher:
             ]})
             await send({"type": "http.response.body", "body": body})
             return
+        if self._eingeschraenkt(scope) and not person_http_erlaubt(scope):
+            await _klartext(send, 403, NICHT_ERLAUBT)
+            return
         if _trifft(scope["path"], ("/__huelle",)):
             await self._eigene_datei(scope, send)
             return
@@ -447,6 +510,13 @@ class Durchreicher:
                 return  # Antwort lief schon; der Abbruch zeigt sich dem Browser als Abbruch
             await _klartext(send, 502, NICHT_ERREICHBAR)
 
+    def _eingeschraenkt(self, scope: Scope) -> bool:
+        """Gilt fuer diese Anfrage die Lernmodus-Allowlist? Ja fuer jede Kennung ausser dem Inhaber."""
+        if self._inhaber is None:
+            return False
+        state = scope.get("state")
+        return (state.get("actor_id") if isinstance(state, dict) else None) != self._inhaber
+
     # --- Server-Ablage (Boards) je Person ----------------------------------------------
 
     async def _eigene_boards(self, scope: Scope) -> frozenset[str] | None:
@@ -464,13 +534,13 @@ class Durchreicher:
         mit PUT /<id>; ein verlorenes Board findet der Browser ueber die Liste (`metadataOnly=1`, documentId) und
         laedt es mit GET /<id>; Umbenennen ist PATCH /<id>. Gepruefte Pfade sind exakt (roh), sonst 403.
         """
-        roh = (scope.get("raw_path") or scope["path"].encode("utf-8")).decode("latin-1")
+        roh = _rohpfad(scope)
         methode = scope["method"]
         if roh == "/api/canvases":
             if methode == "POST":  # neues Board; PenEcho lehnt eine vorhandene id ab (409), ueberschreibt nie
                 await self._weiterreichen(scope, receive, send)
                 return
-            if methode == "GET" and "limit" not in parse_qs(scope.get("query_string", b"").decode("latin-1")):
+            if methode == "GET":  # jede Query wird zu metadataOnly=1, die Antwort nur {"canvases": [...]}
                 await self._liste_gefiltert(scope, send, eigene)
                 return
         else:
@@ -520,9 +590,13 @@ class Durchreicher:
         return None
 
     async def _liste_gefiltert(self, scope: Scope, send: Send, eigene: frozenset[str]) -> None:
-        """PenEchos Liste, aber nur mit den Boards der Person (documentId); sonst unveraendert."""
+        """PenEchos Liste nur mit den Boards der Person (documentId), immer `metadataOnly=1` und nur `canvases`.
+
+        Die Query des Browsers geht nicht weiter: `?limit` (Bibliotheksseite) lieferte sonst Seiten- und Projektzahlen
+        der ganzen Ablage. Der Lernmodus fragt nur `?metadataOnly=1` (canvas-documents.js 693, persistence.js 604).
+        """
         try:
-            status, daten = await self._ablage_lesen(scope, _pfad_und_query(scope))
+            status, daten = await self._ablage_lesen(scope, "/api/canvases?metadataOnly=1")
         except _AblageWeg:
             await _json_antwort(send, 502, {"error": NICHT_ERREICHBAR})
             return
@@ -531,9 +605,9 @@ class Durchreicher:
             await _json_antwort(send, 502 if status == 200 else status,
                                 daten if isinstance(daten, dict) and status != 200 else {"error": NICHT_ERREICHBAR})
             return
-        daten["canvases"] = [b for b in boards if isinstance(b, dict) and isinstance(b.get("documentId"), str)
-                             and b["documentId"] in eigene]
-        await _json_antwort(send, 200, daten)
+        await _json_antwort(send, 200, {"canvases": [
+            b for b in boards if isinstance(b, dict) and isinstance(b.get("documentId"), str) and b["documentId"] in eigene
+        ]})
 
     # --- Websocket ----------------------------------------------------------------------
 
@@ -551,6 +625,9 @@ class Durchreicher:
         ki_pfad = ist_ki_pfad(scope["path"])
         if ki_pfad and self._sperre.gesperrt():
             await send({"type": "websocket.close", "code": 1008, "reason": SPERR_TEXT})
+            return
+        if self._eingeschraenkt(scope) and not person_ws_erlaubt(scope):
+            await send({"type": "websocket.close", "code": 1008})
             return
         kopf: list[tuple[str, str]] = []
         for n, w in scope["headers"]:
