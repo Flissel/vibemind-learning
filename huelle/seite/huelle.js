@@ -5,13 +5,15 @@ import {
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
-import { flaecheSpeichern } from "./flaeche.js";
+import { flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern } from "./flaeche.js";
 import {
   eintragSetzen, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, standAnnehmen, statusText,
   warteText, zusammenfassungSessionId,
 } from "./liste.js";
 
 const API = "/lernen/api";
+// Teil B: Flächen-Kennung dieses Tabs (sessionStorage); geht in die Adresse der Fläche und an jede API-Anfrage.
+const KENNUNG = flaechenKennung();
 
 // Feste Texte (Plan, global.md).
 const TEXT = {
@@ -116,7 +118,7 @@ async function api(methode, pfad, body) {
     const antwort = await fetch(API + pfad, {
       method: methode,
       credentials: "same-origin",
-      headers: body === undefined ? {} : { "content-type": "application/json" },
+      headers: { ...flaechenKopf(KENNUNG), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const daten = await antwort.json().catch(() => ({}));
@@ -949,6 +951,9 @@ async function passt() {
 
 // ---- Start --------------------------------------------------------------------------------------------
 async function start() {
+  // Die Fläche lädt erst mit der Kennung; so meldet sich dieser Tab gleich mit ihr als canvasId beim MCP.
+  const rahmen = $("rahmen");
+  rahmen.src = flaechenAdresse(rahmen.dataset.src, KENNUNG);
   layoutSetzen(speicher("lesen", "huelle-layout"));
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
   $("korrektur").addEventListener("submit", (ereignis) => { ereignis.preventDefault(); void korrekturSenden(); });

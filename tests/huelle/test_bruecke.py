@@ -26,7 +26,7 @@ from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import (
-    URTEILE, Aufgabenbild, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
+    URTEILE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
 )
 from spaces.learning.huelle.person import PERSON_COOKIE, person_cookie
 from spaces.learning.huelle.sperre import Sperre
@@ -121,8 +121,9 @@ class FakePenEcho:
         if self.fehler is not None:
             raise self.fehler
 
-    def sitzung(self, schluessel: str, titel: str) -> str:
-        self.aufrufe.append(("sitzung", schluessel, titel))
+    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None) -> str:
+        self.aufrufe.append(("sitzung", schluessel, titel) if canvas_id is None
+                            else ("sitzung", schluessel, titel, canvas_id))
         return "pe-1"
 
     def vergessen(self, schluessel: str) -> None:
@@ -3148,7 +3149,7 @@ def _envelope_mcp(gesehen: list[dict[str, Any]]):
 
 
 def _ganz(einstellung: Any, lh: LearnHouse | None, umschlaege: list[dict[str, Any]],
-          api_koepfe: list[httpx.Headers]) -> Weiche:
+          api_koepfe: list[httpx.Headers], penecho: Any = None) -> Weiche:
     """Weiche + Bruecke wie im Server, mit Fakes fuer LearnHouse, learning-mcp, learning-api und PenEcho."""
     def api(request: httpx.Request) -> httpx.Response:
         api_koepfe.append(request.headers)
@@ -3160,8 +3161,8 @@ def _ganz(einstellung: Any, lh: LearnHouse | None, umschlaege: list[dict[str, An
 
     lern = LernMcp("http://learning-mcp.test/mcp", transport=httpx.MockTransport(_envelope_mcp(umschlaege)))
     katalog = Katalog(einstellung, httpx.Client(transport=httpx.MockTransport(lh or LearnHouse())))
-    bruecke = Bruecke(einstellung, lern, FakePenEcho(), Sperre(), httpx.Client(transport=httpx.MockTransport(api)),
-                      katalog=katalog)  # type: ignore[arg-type]
+    bruecke = Bruecke(einstellung, lern, penecho or FakePenEcho(), Sperre(),
+                      httpx.Client(transport=httpx.MockTransport(api)), katalog=katalog)  # type: ignore[arg-type]
     return Weiche(einstellung, seite, bruecke)
 
 
@@ -3414,3 +3415,143 @@ def test_oeffnen_durch_b_laesst_a_sitzung_und_hintergrund() -> None:
     assert (PA, SID_PA) in aufrufe
     # Jede Sitzung geht nur unter ihrer eigenen Kennung an Learning (auch Bs, die `_frei` nachliest).
     assert all({SID_PA: PA, SID_PB: PB}[sid] == akt for akt, sid in aufrufe if sid is not None)
+
+
+# ---- Teil B, Task 6: jede Person arbeitet auf der Flaeche ihres Tabs ---------------------------------------
+
+KA = "lf-" + "a" * 32
+KA2 = "lf-" + "c" * 32
+KB = "lf-" + "b" * 32
+KOPF = "X-Lernflaeche"
+
+
+class TabMcp:
+    """PenEchos MCP (direct HTTP) mit Tabs: start_session bindet an die canvasId, sonst an `ohne`.
+
+    Je Werkzeugaufruf (name, arguments); so sieht der Test, an welche sessionId (= welchen Tab) jede
+    Aenderung ging. Ein Board je Tab (`doc-<tab>`); mit documentId bleibt es dieses Board.
+    """
+
+    def __init__(self) -> None:
+        self.aufrufe: list[tuple[str, dict[str, Any]]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"capabilities": {}}},
+                                  headers={"mcp-session-id": "m" * 64})
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        name, args = body["params"]["name"], body["params"]["arguments"]
+        self.aufrufe.append((name, args))
+        if name == "penecho_start_session":
+            tab = args.get("canvasId", "ohne")
+            sc: dict[str, Any] = {"sessionId": "pe-" + tab, "documentId": args.get("documentId") or "doc-" + tab}
+        elif name == "penecho_inspect_session":
+            sc = {"sessionId": args["sessionId"], "documentId": "doc-" + args["sessionId"].removeprefix("pe-")}
+        elif name == "penecho_read_file":
+            sc = {"content": json.dumps({"revision": 1})}
+        elif name == "penecho_list_files":
+            sc = {"entries": []}
+        else:
+            sc = {"applied": True, "objectId": "text-box-1"}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+            "structuredContent": sc, "content": [{"type": "text", "text": json.dumps(sc)}]}})
+
+    def starts(self) -> list[dict[str, Any]]:
+        return [a for n, a in self.aufrufe if n == "penecho_start_session"]
+
+    def flaechen(self, ab: int = 0, bis: int | None = None) -> set[str]:
+        """sessionIds aller Aufrufe an eine Flaeche (alles ausser start_session) im Ausschnitt."""
+        return {a["sessionId"] for n, a in self.aufrufe[ab:bis] if "sessionId" in a}
+
+
+def _tab_penecho(tmp_path: Any, mcp: TabMcp) -> PenEchoMcp:
+    zustand = tmp_path / "penecho"
+    (zustand / "direct-http").mkdir(parents=True)
+    (zustand / "direct-http" / "identity.json").write_text(
+        json.dumps({"accessToken": "t" * 64, "certificatePem": "unbenutzt-im-mock"}), encoding="utf-8")
+    return PenEchoMcp(zustand, transport=httpx.MockTransport(mcp))
+
+
+def _tab(weiche: Weiche, actor: str, kennung: str | None) -> TestClient:
+    browser = _browser(weiche, f"{PERSON_COOKIE}={person_cookie(SCHLUESSEL, actor)}")
+    if kennung is not None:
+        browser.headers[KOPF] = kennung
+    return browser
+
+
+def test_zwei_personen_eigene_flaeche(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("DEBUG")
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    a, b = _tab(weiche, PA, KA), _tab(weiche, PB, KB)
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    nach_a = len(mcp.aufrufe)
+    assert b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    # Je Person eine Sitzung auf der eigenen Flaeche: start_session je mit der canvasId ihres Tabs.
+    starts = mcp.starts()
+    assert [s["canvasId"] for s in starts] == [KA, KB]
+    assert starts[0]["sessionKey"] != starts[1]["sessionKey"]
+    # Die Aufgabe von A ging nur an As Flaeche, die von B nur an Bs.
+    assert mcp.flaechen(0, nach_a) == {"pe-" + KA}
+    assert mcp.flaechen(nach_a) == {"pe-" + KB}
+    assert any(n == "penecho_edit_canvas" and a_["sessionId"] == "pe-" + KB for n, a_ in mcp.aufrufe[nach_a:])
+    # Abwechselnd weiter: jede Flaechenarbeit landet auf der Flaeche der Person, die fragt.
+    for browser, sid, eigene in ((a, SID_PA, KA), (b, SID_PB, KB), (a, SID_PA, KA)):
+        vorher = len(mcp.aufrufe)
+        browser.post(f"/lernen/api/sitzungen/{sid}/abgeben", json={"revision": 1})
+        assert mcp.flaechen(vorher) == {"pe-" + eigene}
+    # B schickt die Kennung von A: B bleibt auf der eigenen Flaeche, As Flaeche bekommt nichts von B.
+    b.headers[KOPF] = KA
+    vorher = len(mcp.aufrufe)
+    b.post(f"/lernen/api/sitzungen/{SID_PB}/abgeben", json={"revision": 1})
+    assert mcp.flaechen(vorher) == {"pe-" + KB}
+    assert [s["canvasId"] for s in mcp.starts()] == [KA, KB]
+    # Die Kennungen sind Zugangsdaten zur Flaeche eines Tabs: nie im Log.
+    assert KA[3:] not in caplog.text and KB[3:] not in caplog.text
+
+
+def test_neuer_tab_uebernimmt_eigene_sitzung(tmp_path) -> None:
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    alt = _tab(weiche, PA, KA)
+    assert alt.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    # Dieselbe Person oeffnet den Kurs in einem neuen Tab: die Huelle bindet ihre Sitzung per documentId
+    # an die neue canvasId; die Aufgabe kommt dort wieder ins Bild.
+    neu = _tab(weiche, PA, KA2)
+    vorher = len(mcp.aufrufe)
+    assert neu.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    start = mcp.starts()[-1]
+    assert start["canvasId"] == KA2 and start["documentId"] == "doc-" + KA
+    assert mcp.flaechen(vorher) == {"pe-" + KA2}
+    assert any(n == "penecho_edit_canvas" for n, _ in mcp.aufrufe[vorher:])
+    # Ab jetzt laeuft alles fuer diese Sitzung ueber den neuen Tab, nie ueber "den zuletzt verbundenen Browser".
+    vorher = len(mcp.aufrufe)
+    neu.post(f"/lernen/api/sitzungen/{SID_PA}/abgeben", json={"revision": 1})
+    assert mcp.flaechen(vorher) == {"pe-" + KA2}
+    assert all("canvasId" in s for s in mcp.starts())
+    # Eine Anfrage ohne Kopf (z. B. der Link auf die Zusammenfassung) aendert die Bindung nicht.
+    neu.headers.pop(KOPF)
+    vorher = len(mcp.aufrufe)
+    neu.post(f"/lernen/api/sitzungen/{SID_PA}/abgeben", json={"revision": 1})
+    assert mcp.flaechen(vorher) == {"pe-" + KA2}
+    assert len(mcp.starts()) == 2
+
+
+@pytest.mark.parametrize("kopf", [None, "", "lf-" + "A" * 32, "lf-" + "a" * 31, "lf-" + "a" * 33, "x" + KA,
+                                  "lf-" + "g" * 32])
+def test_ohne_kopf_wie_bisher(tmp_path, caplog: pytest.LogCaptureFixture, kopf: str | None) -> None:
+    caplog.set_level("DEBUG")
+    mcp = TabMcp()
+    weiche = _ganz(E, None, [], [], penecho=_tab_penecho(tmp_path, mcp))
+    inhaber = _browser(weiche, f"{COOKIE}={token_erzeugen(SCHLUESSEL)}")  # Telegram-Notweg
+    if kopf is not None:
+        inhaber.headers[KOPF] = kopf
+    r = inhaber.post(f"/lernen/api/kurse/{KURS}/oeffnen")
+    assert r.status_code == 200, r.text  # ungueltiger Kopf: kein Fehler, nur wie ohne
+    # Genau der Aufruf von bisher: kein canvasId, PenEcho waehlt den Browser wie vor Teil B.
+    assert mcp.starts() == [{"title": mcp.starts()[0]["title"], "sessionKey": "learning-huelle:" + SID, "restore": True}]
+    assert mcp.flaechen() == {"pe-ohne"}
+    if kopf:
+        assert kopf not in caplog.text

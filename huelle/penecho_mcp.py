@@ -271,6 +271,11 @@ def _sitzungsschluessel(schluessel: str) -> str:
     return SCHLUESSEL_PRAEFIX + hashlib.sha256(schluessel.encode("utf-8")).hexdigest()
 
 
+def _tab_marke(canvas_id: str) -> str:
+    """Kurzer Hash der Flaechen-Kennung eines Tabs: fuer Merkdatei und sessionKey, nie die Kennung selbst."""
+    return hashlib.sha256(canvas_id.encode("utf-8")).hexdigest()[:32]
+
+
 class PenEchoNichtErreichbar(Exception):
     """PenEcho antwortet nicht oder lehnt die Anfrage ab."""
 
@@ -350,6 +355,10 @@ class PenEchoQuelleVeraltet(PenEchoNichtErreichbar):
     """PenEcho meldet SOURCE_CONFLICT oder PATCH_CONFLICT: die Datei hat sich seit dem Lesen geaendert."""
 
 
+class PenEchoSchluesselBelegt(PenEchoNichtErreichbar):
+    """PenEcho meldet session_key_conflict: der sessionKey ist an ein anderes Board oder einen anderen Tab gebunden."""
+
+
 _SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
 # canvas-documents.js (PenEcho 1.4.2): Wiederherstellen einer nie gesicherten Flaeche.
 _VERLOREN_CODES = frozenset({"STORAGE_UNAVAILABLE", "DOCUMENT_NOT_FOUND"})
@@ -400,6 +409,8 @@ class PenEchoMcp:
         self._ersatzdatei = self._merkdatei.with_name("flaechen.json")
         # PenEcho-Dokument-ID des Boards je Lernsitzung (Schluessel -> documentId), BOARD_SPEICHERN.md.
         self._dokumentdatei = self._merkdatei.with_name("dokumente.json")
+        # Teil B: Flaechen-Kennung (canvasId des Tabs), an die die gemerkte Sitzung gebunden ist (Schluessel -> canvasId).
+        self._tabdatei = self._merkdatei.with_name("tabs.json")
 
     # ---- Verbindung -------------------------------------------------------
     def _identity(self) -> dict[str, Any]:
@@ -537,6 +548,8 @@ class PenEchoMcp:
                 raise PenEchoNichtSichtbar(code)
             if code in ("SOURCE_CONFLICT", "PATCH_CONFLICT"):
                 raise PenEchoQuelleVeraltet(code)
+            if code == "session_key_conflict":
+                raise PenEchoSchluesselBelegt(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -622,7 +635,7 @@ class PenEchoMcp:
             self._merken(karte)
 
     # ---- Oeffentliche Methoden -------------------------------------------
-    def sitzung(self, schluessel: str, titel: str) -> str:
+    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None) -> str:
         """PenEcho-Sitzung (eine Flaeche) zu `schluessel`, der Learning-Sitzungs-ID (Ruling L).
 
         schema.js:656-658 penecho_start_session: title (Pflicht), sessionKey, restore (bool).
@@ -631,7 +644,13 @@ class PenEchoMcp:
         Nach einem Neustart findet PenEcho das Board ueber den sessionKey wieder. Meldet PenEcho die
         Flaeche als verloren, wird das gemerkte Dokument (dokumente.json) in jedem verbundenen Browser
         gesucht; erst wenn es nirgends liegt, entsteht eine neue Flaeche unter neuem Schluessel.
+
+        `canvas_id` (Teil B): die Flaechen-Kennung des Tabs der Person (`lf-<32 hex>`, von der Bruecke geprueft).
+        Dann bindet die Sitzung genau an diesen Tab (`_sitzung_im_tab`). Ohne sie bleibt alles wie oben;
+        eine schon an einen Tab gebundene Sitzung bleibt dabei, wo sie ist.
         """
+        if canvas_id is not None:
+            return self._sitzung_im_tab(schluessel, titel, canvas_id)
         bekannt = self._gemerkt().get(schluessel)
         if bekannt:
             return bekannt
@@ -662,6 +681,52 @@ class PenEchoMcp:
         karte = self._gemerkt()
         karte[schluessel] = session_id
         self._merken(karte)
+        return session_id
+
+    def _sitzung_im_tab(self, schluessel: str, titel: str, canvas_id: str) -> str:
+        """Sitzung zu `schluessel` auf dem Tab `canvas_id` (Teil B: eine Flaeche je Person und Tab).
+
+        Gemerkt und an diesen Tab gebunden: dieselbe Sitzung. Sonst penecho_start_session mit canvasId und, wenn
+        gemerkt, der documentId des Boards; PenEcho oeffnet dann genau dieses Board in diesem Tab
+        (canvas-documents.js, mcp_start_session mit documentId). So uebernimmt ein neuer Tab derselben Person ihr
+        Board. Der sessionKey ist je Lernsitzung und Tab eigen, denn PenEcho bindet einen Schluessel fest an eine
+        canvasId (service.js, session_key_conflict). Nie die Suche in allen Browsern wie bei `sitzung` ohne Tab:
+        die anderen Tabs sind die Flaechen anderer Personen. Gemerkt wird nur ein Hash der Kennung.
+        """
+        marke = _tab_marke(canvas_id)
+        bekannt = self._gemerkt().get(schluessel)
+        tabs = self._gemerkt(self._tabdatei)
+        if bekannt and tabs.get(schluessel) == marke:
+            return bekannt
+        dokumente = self._gemerkt(self._dokumentdatei)
+        schluessel_tab = _sitzungsschluessel(f"{schluessel}@{marke}")
+        frisch = schluessel_tab[: MAX_SCHLUESSEL - 9] + "#" + uuid4().hex[:8]
+        argumente: dict[str, Any] = {
+            "title": titel, "sessionKey": schluessel_tab, "restore": True, "canvasId": canvas_id,
+        }
+        if dokumente.get(schluessel):
+            argumente["documentId"] = dokumente[schluessel]
+        try:
+            ergebnis = self._werkzeug("penecho_start_session", argumente)
+        except PenEchoSchluesselBelegt:
+            # Der Schluessel dieses Tabs zeigt bei PenEcho noch auf ein frueheres Board der Lernsitzung (das Board
+            # wurde inzwischen ersetzt): derselbe Tab, das aktuelle Board, ein frischer Schluessel.
+            ergebnis = self._werkzeug("penecho_start_session", {**argumente, "sessionKey": frisch})
+        except PenEchoFlaecheVerloren:
+            # Das Board liegt weder in diesem Tab noch in PenEchos Ablage: ein neues Board in diesem Tab.
+            log.warning("PenEcho-Board nicht gefunden, neue Flaeche im Tab")
+            ohne = {k: v for k, v in argumente.items() if k != "documentId"}
+            ergebnis = self._werkzeug("penecho_start_session", {**ohne, "sessionKey": frisch})
+        struktur = self._struktur(ergebnis)
+        session_id = struktur.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            raise PenEchoNichtErreichbar("sessionId")
+        self._dokument_merken(schluessel, struktur.get("documentId"), dokumente)
+        karte = self._gemerkt()
+        karte[schluessel] = session_id
+        self._merken(karte)
+        tabs[schluessel] = marke
+        self._merken(tabs, self._tabdatei)
         return session_id
 
     def _gemerktes_board_oeffnen(self, argumente: dict[str, Any], dokument: str | None) -> dict[str, Any] | None:

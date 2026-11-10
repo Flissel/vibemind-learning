@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { flaecheSpeichern } from "./flaeche.js";
+import { flaecheSpeichern, flaechenAdresse, flaechenKennung, flaechenKopf, KENNUNG_SCHLUESSEL } from "./flaeche.js";
 
 const FLAECHE = "https://flaeche.example.test";
 
@@ -86,4 +86,66 @@ test("ohne Flaeche: ok false, nichts gesendet", async () => {
     { ok: false, grund: "keine Fläche", code: "keine_flaeche" });
   assert.deepEqual(await flaecheSpeichern(null, { fenster: a.fenster }), { ok: false, grund: "keine Fläche", code: "keine_flaeche" });
   assert.deepEqual(a.gesendet, []);
+});
+
+// ---- Teil B, Task 6: eigene Fläche je Tab ----------------------------------------------------------------
+
+function speicherAttrappe(start = {}) {
+  const werte = new Map(Object.entries(start));
+  return { werte, getItem: (k) => (werte.has(k) ? werte.get(k) : null), setItem: (k, v) => werte.set(k, String(v)) };
+}
+
+test("Flächen-Kennung: je Tab aus crypto.getRandomValues, liegt in sessionStorage unter lernflaeche-kennung", () => {
+  assert.equal(KENNUNG_SCHLUESSEL, "lernflaeche-kennung");
+  const speicher = speicherAttrappe();
+  const groessen = [];
+  const zufall = (feld) => { groessen.push(feld.length); feld.set(Array.from({ length: feld.length }, (_, i) => i * 17)); return feld; };
+  const kennung = flaechenKennung({ speicher, zufall });
+  assert.match(kennung, /^lf-[0-9a-f]{32}$/);
+  assert.equal(kennung, "lf-00112233445566778899aabbccddeeff");
+  assert.deepEqual(groessen, [16]); // 16 Byte -> 32 hex
+  assert.equal(speicher.werte.get("lernflaeche-kennung"), kennung);
+  // Neu laden im selben Tab: dieselbe Kennung, kein neuer Zufall.
+  assert.equal(flaechenKennung({ speicher, zufall: () => assert.fail("kein neuer Zufall") }), kennung);
+});
+
+test("Flächen-Kennung: ungültiger gespeicherter Wert wird ersetzt, ohne Speicher trotzdem eine Kennung", () => {
+  const zufall = (feld) => feld.fill(255);
+  for (const alt of ["", "lf-xyz", "lf-" + "A".repeat(32), "lf-" + "a".repeat(33)]) {
+    const speicher = speicherAttrappe({ "lernflaeche-kennung": alt });
+    assert.equal(flaechenKennung({ speicher, zufall }), "lf-" + "f".repeat(32), alt);
+    assert.equal(speicher.werte.get("lernflaeche-kennung"), "lf-" + "f".repeat(32));
+  }
+  const kaputt = { getItem: () => { throw new Error("gesperrt"); }, setItem: () => { throw new Error("gesperrt"); } };
+  assert.equal(flaechenKennung({ speicher: kaputt, zufall }), "lf-" + "f".repeat(32));
+  assert.equal(flaechenKennung({ speicher: null, zufall }), "lf-" + "f".repeat(32));
+});
+
+test("Flächen-Adresse: die Kennung geht als &flaeche= in die iframe-URL", () => {
+  const k = "lf-" + "a".repeat(32);
+  assert.equal(flaechenAdresse(`${FLAECHE}/?lernen=1`, k), `${FLAECHE}/?lernen=1&flaeche=${k}`);
+  assert.equal(flaechenAdresse("http://127.0.0.1:8151/?lernen=1", k), `http://127.0.0.1:8151/?lernen=1&flaeche=${k}`);
+  // Ungültige Kennung oder Adresse: unverändert (dann wie bisher, ohne eigene Fläche).
+  assert.equal(flaechenAdresse(`${FLAECHE}/?lernen=1`, "x"), `${FLAECHE}/?lernen=1`);
+  assert.equal(flaechenAdresse("kaputt", k), "kaputt");
+});
+
+test("Flächen-Kopf: X-Lernflaeche mit der Kennung, ohne gültige Kennung kein Kopf", () => {
+  const k = "lf-" + "b".repeat(32);
+  assert.deepEqual(flaechenKopf(k), { "X-Lernflaeche": k });
+  assert.deepEqual(flaechenKopf("x"), {});
+  assert.deepEqual(flaechenKopf(null), {});
+});
+
+test("huelle.js setzt die iframe-URL und schickt den Kopf an jede API-Anfrage", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const huelle = await readFile(new URL("./huelle.js", import.meta.url), "utf8");
+  const seite = await readFile(new URL("./index.html", import.meta.url), "utf8");
+  assert.match(huelle, /const KENNUNG = flaechenKennung\(\);/);
+  assert.match(huelle, /rahmen\.src = flaechenAdresse\(rahmen\.dataset\.src, KENNUNG\);/);
+  assert.match(huelle, /headers: \{ \.\.\.flaechenKopf\(KENNUNG\), \.\.\.\(body === undefined \? \{\} : \{ "content-type": "application\/json" \}\) \}/);
+  assert.equal((huelle.match(/fetch\(/g) || []).length, 1); // nur api() fragt die Brücke
+  // Der Rahmen lädt erst mit Kennung (sonst meldete sich der Tab zuerst ohne sie beim MCP).
+  assert.match(seite, /<iframe id="rahmen" data-src="<!--FLAECHE-->\/\?lernen=1" title="Fläche"><\/iframe>/);
+  assert.doesNotMatch(seite, /<iframe id="rahmen" src=/);
 });

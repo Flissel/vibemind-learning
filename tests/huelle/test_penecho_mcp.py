@@ -1558,3 +1558,117 @@ def test_setzen_ohne_zeigen_holt_kein_board_nach_vorn(zustand: Path) -> None:
         "sess-1", "t3", "Rechne", 3, mit_ergebnisfeld=True, rechteck=r, zeigen=False)
     edits = [a["arguments"]["action"] for a in unsichtbar.aufrufe("penecho_edit_canvas")]
     assert edits == ["create_text", "draw_ink"]
+
+
+# ---- Teil B, Task 6: eigene Flaeche je Person und Tab (canvasId) ---------------------------------------------
+
+KA = "lf-" + "a" * 32
+KB = "lf-" + "b" * 32
+
+
+def _tab_fake(fake: Fake, *, konflikt: int = 0, verloren: bool = False):
+    """start_session: sessionId und documentId je canvasId (ein Tab = eine Flaeche); mit documentId bleibt es dieses.
+
+    `konflikt`: so oft session_key_conflict, wenn documentId mitkommt (Bindung des Schluessels zeigt auf ein
+    anderes Dokument). `verloren`: start_session mit documentId meldet STORAGE_UNAVAILABLE.
+    """
+    echt = fake.__call__
+    rest = {"konflikt": konflikt}
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") != "tools/call" or body["params"]["name"] != "penecho_start_session":
+            return echt(request)
+        fake.anfragen.append((body, request.headers))
+        args = body["params"]["arguments"]
+        if args.get("documentId") and rest["konflikt"] > 0:
+            rest["konflikt"] -= 1
+            return _fehler(body, "session_key_conflict")
+        if args.get("documentId") and verloren:
+            return _fehler(body, "STORAGE_UNAVAILABLE")
+        tab = args.get("canvasId", "ohne")
+        return _ok(body, {"sessionId": "pe-" + tab, "documentId": args.get("documentId") or "doc-" + tab})
+
+    return antwort
+
+
+def _starts(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_start_session")]
+
+
+def test_sitzung_mit_flaeche_bindet_an_die_canvas_id(zustand: Path) -> None:
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake)))
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    (start,) = _starts(fake)
+    assert start["canvasId"] == KA and start["restore"] is True and start["title"] == TITEL
+    assert "documentId" not in start  # noch kein Board gemerkt: PenEcho legt es in diesem Tab an
+    assert start["sessionKey"].startswith("learning-huelle:") and len(start["sessionKey"]) <= 128
+    assert start["sessionKey"] != "learning-huelle:" + LERN_SID  # eigener Schluessel je Tab
+    assert set(start) <= _ERLAUBT["penecho_start_session"]
+    # Derselbe Tab: keine neue Sitzung, auch nicht nach einem Neustart der Huelle.
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    assert PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake))).sitzung(
+        LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    assert len(_starts(fake)) == 1
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-" + KA}
+    # Ohne Kennung (Telegram-Notweg, Hintergrund): die gebundene Sitzung bleibt, nichts Neues.
+    assert c.sitzung(LERN_SID, TITEL) == "pe-" + KA
+    assert len(_starts(fake)) == 1
+
+
+def test_neuer_tab_bindet_dasselbe_board_per_document_id(zustand: Path) -> None:
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake)))
+    c.sitzung(LERN_SID, TITEL, canvas_id=KA)
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KB) == "pe-" + KB
+    alt, neu = _starts(fake)
+    # Der neue Tab bekommt genau das Board der Lernsitzung (documentId), unter eigenem Schluessel.
+    assert neu["canvasId"] == KB and neu["documentId"] == "doc-" + KA
+    assert neu["sessionKey"] != alt["sessionKey"]
+    assert _merkdatei(zustand, "sitzungen.json") == {LERN_SID: "pe-" + KB}
+    # Nie die Suche in anderen Browsern (das waeren die Tabs anderer Personen).
+    assert fake.aufrufe("penecho_list_canvases") == [] and fake.aufrufe("penecho_open_canvas") == []
+    # Zurueck in den ersten Tab: wieder dessen Schluessel, wieder mit dem Board.
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    assert _starts(fake)[2]["sessionKey"] == alt["sessionKey"] and _starts(fake)[2]["documentId"] == "doc-" + KA
+
+
+def test_alte_sitzung_ohne_tab_wird_beim_ersten_tab_gebunden(zustand: Path) -> None:
+    """Vor Teil B gemerkte Sitzung (ohne canvasId): der erste Tab bindet das gemerkte Board an sich."""
+    fake = Fake()
+    alt = _client(zustand, fake)
+    assert alt.sitzung(LERN_SID, TITEL) == "sess-1"
+    _dokument_merken(zustand)
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake)))
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    assert _starts(fake)[1]["canvasId"] == KA and _starts(fake)[1]["documentId"] == DOK
+
+
+def test_schluessel_belegt_dann_frischer_schluessel_auf_derselben_flaeche(zustand: Path) -> None:
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake, konflikt=1)))
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    erst, zweit = _starts(fake)
+    assert zweit["canvasId"] == KA and zweit["documentId"] == DOK
+    assert zweit["sessionKey"].startswith(erst["sessionKey"][:100]) and "#" in zweit["sessionKey"]
+    assert len(zweit["sessionKey"]) <= 128
+
+
+def test_verlorenes_board_im_tab_gibt_neues_board_in_diesem_tab(zustand: Path) -> None:
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake, verloren=True)))
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    erst, zweit = _starts(fake)
+    assert erst["documentId"] == DOK
+    assert zweit["canvasId"] == KA and "documentId" not in zweit and zweit["sessionKey"] != erst["sessionKey"]
+    assert fake.aufrufe("penecho_list_canvases") == [] and fake.aufrufe("penecho_open_canvas") == []
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-" + KA}
+
+
+def test_ohne_canvas_id_genau_wie_bisher(zustand: Path) -> None:
+    fake = Fake()
+    assert _client(zustand, fake).sitzung(LERN_SID, TITEL, canvas_id=None) == "sess-1"
+    assert _starts(fake) == [{"title": TITEL, "sessionKey": "learning-huelle:" + LERN_SID, "restore": True}]

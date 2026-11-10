@@ -22,6 +22,10 @@ Wer fragt, steht je Anfrage in `request.state.actor_id` (die Weiche setzt es aus
 Kennung antwortet die Bruecke 403. Jede Sitzung gehoert der Kennung, mit der sie geoeffnet wurde; eine
 Sitzung einer anderen Kennung ist unsichtbar (404). Welche Kurse eine Kennung oeffnen darf, sagt der
 Katalog (Notweg: Umgebung; sonst LearnHouse). Geloggt werden nur Typnamen.
+
+Eigene Flaeche je Person (Teil B): die Seite schickt die Flaechen-Kennung ihres Tabs im Kopf `X-Lernflaeche`. Die
+Sitzung merkt sich die Kennung (`_flaeche_binden`), jeder Flaechenaufruf laeuft ueber die Sitzung auf genau diesem
+Tab. Ohne gueltigen Kopf bleibt alles wie bisher (Telegram-Notweg, alte Tabs).
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -144,6 +149,13 @@ _SCHON_ABGEGEBEN_CODES = frozenset({
 })
 _SERVICE_HEADER = "X-LearnHouse-Learning-Service-Key"
 _ACTOR_HEADER = "X-Learning-Actor"
+# Teil B, eigene Flaeche je Person: die Seite vergibt je Tab eine Kennung und schickt sie mit jeder Anfrage. Sie ist
+# die canvasId, mit der sich die Flaeche dieses Tabs beim PenEcho-MCP meldet. Nie loggen.
+FLAECHEN_KOPF = b"x-lernflaeche"
+FLAECHEN_KENNUNG = re.compile(r"lf-[0-9a-f]{32}")
+MAX_FLAECHEN = 10_000  # gemerkte Kennung -> Person; darueber faellt die aelteste heraus
+# Kennung der laufenden Anfrage (gueltig oder None); `run_in_threadpool` nimmt sie in die Arbeit mit.
+_FLAECHE: ContextVar[str | None] = ContextVar("lernflaeche", default=None)
 # Bilder der Aufgaben (gezeichnete Graphen, Terminalfenster) liegen bei learning-api; die Seite holt sie
 # ueber die eigene Route. Gleiches Namensmuster wie der Fork (practice.py `_MEDIA_PATH`).
 MEDIEN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(png|jpg|webp)$")
@@ -180,6 +192,7 @@ class _Sitzung:
     tutor_aufgabe: str | None = None
     bericht_gezeigt: bool = False   # Bericht dieser Sitzung steht auf dem Board
     liste: bool = False             # Listenkurs (Turn mit `ablauf == "liste"`): Routen mit `nummer`
+    flaeche: str | None = None      # Teil B: Flaechen-Kennung (canvasId) des Tabs der Person; None = wie bisher
 
 
 @dataclass(frozen=True)
@@ -195,6 +208,18 @@ def _uuid(wert: str) -> str | None:
         return str(UUID(str(wert)))
     except ValueError:
         return None
+
+
+def _flaeche_aus(scope: dict[str, Any]) -> str | None:
+    """Flaechen-Kennung aus dem Kopf X-Lernflaeche; fehlt sie oder passt sie nicht genau, None (wie ohne Kopf)."""
+    for name, wert in scope.get("headers") or ():
+        if name.lower() == FLAECHEN_KOPF:
+            try:
+                kennung = wert.decode("ascii")
+            except UnicodeDecodeError:
+                return None
+            return kennung if FLAECHEN_KENNUNG.fullmatch(kennung) else None
+    return None
 
 
 def _task(turn: dict[str, Any]) -> dict[str, Any] | None:
@@ -504,6 +529,8 @@ class Bruecke:
         self._spuren = [self._flaechenspur, self._modellspur]
         # Die zuletzt geoeffnete Lernsitzung je Kennung: nur deren Hintergrundarbeiten laufen noch (Kurswechsel).
         self._zuletzt: dict[str, str] = {}
+        # Teil B: Flaechen-Kennung -> Person, die sie zuerst geschickt hat. Eine fremde Kennung bindet nie.
+        self._flaechen: dict[str, str] = {}
         # Uhr fuer das Bildbudget der Zusammenfassung (Tests ersetzen sie).
         self._uhr: Callable[[], float] = time.monotonic
         # Abgaben der Listenkurse, je (sid, nummer); eigene kleine Sperre, nie die Flaechensperre.
@@ -545,6 +572,12 @@ class Bruecke:
             if not isinstance(actor, str) or ACTOR_MUSTER.fullmatch(actor) is None:
                 await self._json(403, {"meldung": NICHT_ERLAUBT})(scope, receive, send)
                 return
+            marke = _FLAECHE.set(_flaeche_aus(scope))
+            try:
+                await self._app(scope, receive, send)
+            finally:
+                _FLAECHE.reset(marke)
+            return
         await self._app(scope, receive, send)
 
     def beenden(self) -> None:
@@ -684,6 +717,7 @@ class Bruecke:
         if bekannt is not None:
             if kurse is not None and all(k.course_id != bekannt.kurs.course_id for k in kurse):
                 raise _Antwort(403, dict(_KEIN_ZUGANG))
+            self._flaeche_binden(bekannt)
             return norm, bekannt, None
         try:
             turn = _turn(self._rufe(actor, "learning_task_next", "learning.task.next", session_id=norm))
@@ -703,6 +737,7 @@ class Bruecke:
         sitzung = _Sitzung(kurs, norm, actor, task["id"] if task else None,
                            _nummer(turn) if task and not liste else None, liste=liste)
         self._sitzungen[norm] = sitzung
+        self._flaeche_binden(sitzung)
         if actor not in self._zuletzt:
             # Nach einem Neustart der Huelle ist die erste Sitzung, mit der die Seite spricht, die offene;
             # sonst kaemen die Karten der Hintergrund-Abgaben erst nach einem erneuten Oeffnen.
@@ -710,21 +745,48 @@ class Bruecke:
         return norm, sitzung, turn
 
     # ---- PenEcho ----------------------------------------------------------
+    def _flaeche_binden(self, sitzung: _Sitzung) -> None:
+        """Flaechen-Kennung dieser Anfrage (Kopf X-Lernflaeche) an die Sitzung binden (Teil B).
+
+        Die Sitzung gehoert schon der fragenden Person (`_sitzung`, `_oeffnen`). Eine Kennung gehoert der ersten
+        Person, die sie schickt; eine fremde zaehlt wie keine, die Sitzung bleibt auf ihrer Flaeche. Ohne Kopf
+        bleibt die Bindung, wie sie ist. Kommt die Person aus einem neuen Tab, kommt die aktuelle Aufgabe dort
+        neu ins Bild (`auf_flaeche`); das Board selbst bindet `PenEchoMcp.sitzung` per documentId um.
+        """
+        kennung = _FLAECHE.get()
+        if kennung is None or kennung == sitzung.flaeche:
+            return
+        besitzer = self._flaechen.setdefault(kennung, sitzung.actor)
+        if len(self._flaechen) > MAX_FLAECHEN:
+            self._flaechen.pop(next(iter(self._flaechen)), None)
+        if besitzer != sitzung.actor:
+            log.warning("Flaechen-Kennung einer anderen Person, nicht gebunden")
+            return
+        sitzung.flaeche = kennung
+        sitzung.auf_flaeche = False
+
+    def _penecho_sitzung(self, sitzung: _Sitzung, titel: str) -> str:
+        flaeche = sitzung.flaeche
+        if flaeche is None:
+            return self._penecho.sitzung(sitzung.sid, titel)  # ohne Kennung genau wie bisher
+        return self._penecho.sitzung(sitzung.sid, titel, canvas_id=flaeche)
+
     def _auf_flaeche(self, sitzung: _Sitzung, aktion: Callable[[str], T]) -> T:
         """Canvas-Aufruf auf der Flaeche dieser Lernsitzung (Ruling L).
 
         Kennt PenEcho die Sitzung nicht mehr, einmal neu anlegen und wiederholen. Alles unter der
-        Flaechensperre, auch die Wahl der Sitzung.
+        Flaechensperre, auch die Wahl der Sitzung. Mit Flaechen-Kennung (Teil B) ist das die Sitzung auf dem
+        Tab der Person, nie die des zuletzt verbundenen Browsers.
         """
         titel = f"{sitzung.kurs.titel} · {date.today():%d.%m.%Y}"
         with self._flaeche_sperre:
-            session_id = self._penecho.sitzung(sitzung.sid, titel)
+            session_id = self._penecho_sitzung(sitzung, titel)
             try:
                 ergebnis = aktion(session_id)
             except PenEchoSitzungUnbekannt:
                 sitzung.board = None
                 self._penecho.vergessen(sitzung.sid)
-                session_id = self._penecho.sitzung(sitzung.sid, titel)
+                session_id = self._penecho_sitzung(sitzung, titel)
                 ergebnis = aktion(session_id)
             sitzung.board = session_id
         return ergebnis
@@ -1116,6 +1178,7 @@ class Bruecke:
             self._zuletzt[actor] = ende_sid
             sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(
                 kurs, ende_sid, actor, liste=turn.get("ablauf") == "liste"))
+            self._flaeche_binden(sitzung)
             self._zeigen(sitzung, turn)
             begriffe = ueberblick.get("begriffe")
             beendet = {
@@ -1150,6 +1213,7 @@ class Bruecke:
         sitzung = self._sitzungen.get(sid)
         if sitzung is None or sitzung.kurs.course_id != kurs.course_id or sitzung.actor != actor:
             sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid, actor)
+        self._flaeche_binden(sitzung)
         self._zuletzt[actor] = sid  # Hintergrundarbeiten frueherer Sitzungen dieser Person entfallen ab hier
         sitzung.liste = turn.get("ablauf") == "liste"
         liste: dict[str, Any] = {}

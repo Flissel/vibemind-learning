@@ -99,10 +99,11 @@ def test_seite_traegt_katex_kopf_und_rahmen() -> None:
     assert '<script defer src="katex/katex.min.js"></script>' in html
     assert '<link rel="stylesheet" href="katex/katex.min.css">' in html
     assert "jsdelivr" not in html
-    # Die Flaeche kommt von der eigenen Flaechen-Herkunft, nicht von der Seite (Ruling J).
-    assert f'<iframe id="rahmen" src="https://{HOST}:8443/?lernen=1"' in html
+    # Die Flaeche kommt von der eigenen Flaechen-Herkunft, nicht von der Seite (Ruling J). Teil B: der Rahmen laedt
+    # erst, wenn huelle.js die Flaechen-Kennung des Tabs anhaengt (data-src, siehe seite/flaeche.test.mjs).
+    assert f'<iframe id="rahmen" data-src="https://{HOST}:8443/?lernen=1"' in html
     lokal = _hole(seite_app(E), "/lernen/", host="127.0.0.1:8150")[1]["body"].decode("utf-8")
-    assert '<iframe id="rahmen" src="http://127.0.0.1:8151/?lernen=1"' in lokal
+    assert '<iframe id="rahmen" data-src="http://127.0.0.1:8151/?lernen=1"' in lokal
     for text in ("Fläche groß", "Geteilt"):
         assert text in html
 
