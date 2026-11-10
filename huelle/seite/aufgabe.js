@@ -131,6 +131,8 @@ export const FESTE_MELDUNGEN = new Set([
   "Ungültige Eingabe.",
   "Die aktuelle Aufgabe ist keine Zeichenaufgabe.",
   "Während der Aufgabe hilft „Erklär mir das“.",
+  "Ihr Zugang zu diesem Kurs besteht nicht mehr. Öffnen Sie die Kursübersicht.",
+  "Die Kursübersicht ist gerade nicht erreichbar. Bitte versuchen Sie es gleich noch einmal.",
   // Fläche zuerst (bruecke.py).
   "Diese Aufgabe beantworten Sie in der Seitenleiste.",
   "Bei dieser Aufgabe gibt es nichts Gelesenes zu korrigieren.",
@@ -143,6 +145,18 @@ export const FESTE_MELDUNGEN = new Set([
 export function meldungFuer(daten) {
   const m = daten && typeof daten.meldung === "string" ? daten.meldung : "";
   return FESTE_MELDUNGEN.has(m) ? m : ALLGEMEIN;
+}
+
+/**
+ * Welcher Kurs beim Start gewaehlt ist: `?kurs=<id>` aus der Uebergabe (Kursuebersicht), sonst der gemerkte,
+ * sonst der erste. Nur Kurse aus der eigenen Liste; ohne Kurse null.
+ */
+export function kursVorwahl(suche, kurse, gemerkt) {
+  const ids = kurse.map((k) => k.course_id);
+  const gewuenscht = new URLSearchParams(suche).get("kurs");
+  if (gewuenscht && ids.includes(gewuenscht)) return gewuenscht;
+  if (gemerkt && ids.includes(gemerkt)) return gemerkt;
+  return ids[0] ?? null;
 }
 
 /** Nach einem 409 mit Turn: hat der Turn eine offene Aufgabe, ruft die Seite `weiter` (Flaeche, Sperre). */

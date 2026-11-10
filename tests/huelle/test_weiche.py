@@ -7,7 +7,8 @@ import json
 from typing import Any
 
 from spaces.learning.huelle.einstellung import einstellung_lesen
-from spaces.learning.huelle.weiche import FlaechenWeiche, Weiche
+from spaces.learning.huelle.person import PERSON_COOKIE, person_aus_cookie, person_cookie
+from spaces.learning.huelle.weiche import ABGELAUFEN, FlaechenWeiche, Weiche
 from spaces.learning.huelle.zugang import COOKIE, token_erzeugen
 
 SCHLUESSEL = "k" * 40
@@ -26,9 +27,11 @@ E = einstellung_lesen({
 class Aufzeichner:
     def __init__(self, name: str, aufrufe: list[str]) -> None:
         self.name, self.aufrufe = name, aufrufe
+        self.personen: list[object] = []  # scope["state"]["actor_id"] je Aufruf
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         self.aufrufe.append(self.name)
+        self.personen.append(scope.get("state", {}).get("actor_id"))
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"ok"})
 
@@ -42,10 +45,12 @@ def _weichen() -> tuple[Weiche, FlaechenWeiche, list[str]]:
 
 def _anfrage(app: Any, path: str, *, art: str = "http", host: str = HOST, cookie: str | None = None,
              methode: str = "GET", origin: str | None = None,
-             raw_path: bytes | None = None) -> list[dict[str, Any]]:
+             raw_path: bytes | None = None, cookie_kopf: str | None = None) -> list[dict[str, Any]]:
     headers = [(b"host", host.encode())]
     if cookie is not None:
         headers.append((b"cookie", f"{COOKIE}={cookie}".encode()))
+    if cookie_kopf is not None:
+        headers.append((b"cookie", cookie_kopf.encode("utf-8")))
     if origin is not None:
         headers.append((b"origin", origin.encode()))
     scope = {"type": art, "method": methode, "path": path, "headers": headers}
@@ -244,3 +249,130 @@ def test_oeffentliche_penecho_datei_roher_pfad_exakt_geht_durch() -> None:
         gesendet = _anfrage(flaeche, "/widget-renderer.js", host=FLAECHE_HOST, raw_path=roh)
         assert _start(gesendet)["status"] == 200, roh
         assert aufrufe == ["durch"]
+
+
+# ---- Uebergabe aus LearnHouse und Personen-Cookie (Teil B) -----------------------------------------
+
+E_LH = einstellung_lesen({
+    "LEARNING_HUELLE_BASIS": f"https://{HOST}",
+    "LEARNING_HUELLE_FLAECHE_BASIS": f"https://{FLAECHE_HOST}",
+    "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+    "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
+    "LEARNING_HUELLE_ACTOR": "lh-1-test",
+    "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "11111111-1111-4111-8111-111111111111", "titel": "T"}]),
+    "LEARNING_HUELLE_LEARNHOUSE_URL": "http://learnhouse.test",
+})
+KURS_B = "55555555-5555-4555-8555-555555555555"
+
+
+def _weichen_lh(einstellung: Any = E_LH) -> tuple[Weiche, FlaechenWeiche, Aufzeichner, Aufzeichner, Aufzeichner]:
+    aufrufe: list[str] = []
+    seite, api, durch = Aufzeichner("seite", aufrufe), Aufzeichner("api", aufrufe), Aufzeichner("durch", aufrufe)
+    return Weiche(einstellung, seite, api), FlaechenWeiche(einstellung, durch), seite, api, durch
+
+
+def _uebergabe_token(actor: str, kurs: str | None, *, ablauf: int | None = None) -> str:
+    import base64
+    import hashlib
+    import hmac
+    import time
+
+    ablauf = int(time.time()) + 120 if ablauf is None else ablauf
+    payload = base64.urlsafe_b64encode(f"{actor}|{kurs or ''}|{ablauf}".encode()).decode().rstrip("=")
+    key = hashlib.sha256(b"uebergabe:" + SCHLUESSEL.encode()).digest()
+    return f"{payload}.{hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:48]}"
+
+
+def _person(actor: str) -> str:
+    return f"{PERSON_COOKIE}={person_cookie(SCHLUESSEL, actor)}"
+
+
+def test_uebergabe_setzt_personen_cookie_und_leitet_weiter() -> None:
+    seiten, _, seite, api, _ = _weichen_lh()
+    gesendet = _anfrage(seiten, f"/lernen/uebergabe/{_uebergabe_token('lh-1-person-a', KURS_B)}")
+    antwort = _start(gesendet)
+    assert antwort["status"] == 200
+    kopf = dict(antwort["headers"])
+    assert kopf[b"content-type"] == b"text/html; charset=utf-8"
+    cookie = kopf[b"set-cookie"].decode()
+    name, _, rest = cookie.partition("=")
+    assert name == PERSON_COOKIE
+    wert = rest.split(";", 1)[0]
+    assert person_aus_cookie(SCHLUESSEL, wert) == "lh-1-person-a"
+    for teil in ("HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=43200"):
+        assert teil in cookie
+    csp = kopf[b"content-security-policy"].decode()
+    assert "default-src 'none'" in csp and "script-src" not in csp
+    assert kopf[b"cache-control"] == b"no-store" and kopf[b"referrer-policy"] == b"no-referrer"
+    html = gesendet[1]["body"].decode("utf-8")
+    assert f'<meta http-equiv="refresh" content="0;url=/lernen/?kurs={KURS_B}">' in html
+    assert f'<a href="/lernen/?kurs={KURS_B}">Weiter zum Lernen</a>' in html
+    assert "<script" not in html
+    assert seite.aufrufe == []
+    # Ohne Kurs: auf die Seite ohne Vorwahl.
+    html = _anfrage(seiten, f"/lernen/uebergabe/{_uebergabe_token('lh-1-person-a', None)}")[1]["body"].decode()
+    assert 'content="0;url=/lernen/"' in html
+
+
+def test_uebergabe_ungueltig_oder_abgelaufen_403() -> None:
+    import time
+
+    seiten, _, _, _, _ = _weichen_lh()
+    for token in ("muell", "é", _uebergabe_token("lh-1-person-a", KURS_B, ablauf=int(time.time()) - 1),
+                  person_cookie(SCHLUESSEL, "lh-1-person-a"), _gut()):
+        gesendet = _anfrage(seiten, f"/lernen/uebergabe/{token}")
+        assert _start(gesendet)["status"] == 403, token
+        assert all(k != b"set-cookie" for k, _ in _start(gesendet)["headers"])
+        assert gesendet[1]["body"].decode() == ABGELAUFEN
+
+
+def test_uebergabe_nicht_auf_dem_flaechen_port() -> None:
+    _, flaeche, _, _, durch = _weichen_lh()
+    gesendet = _anfrage(flaeche, f"/lernen/uebergabe/{_uebergabe_token('lh-1-person-a', KURS_B)}", host=FLAECHE_HOST)
+    assert _start(gesendet)["status"] in (403, 404)
+    assert all(k != b"set-cookie" for k, _ in _start(gesendet)["headers"])
+    assert durch.aufrufe == []
+
+
+def test_actor_je_anfrage_aus_dem_cookie() -> None:
+    seiten, flaeche, seite, api, durch = _weichen_lh()
+    a, b = _person("lh-1-person-a"), _person("lh-1-person-b")
+    assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=a))["status"] == 200
+    assert _start(_anfrage(seiten, "/lernen/", cookie_kopf=b))["status"] == 200
+    # Das Personen-Cookie gewinnt gegen das Zugangscookie (Notweg).
+    assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=f"{COOKIE}={_gut()}; {b}"))["status"] == 200
+    # Nur das Zugangscookie: die Inhaber-Kennung aus der Umgebung.
+    assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie=_gut()))["status"] == 200
+    # Ein ungueltiges Personen-Cookie neben einem gueltigen Zugangscookie: Notweg.
+    kaputt = f"{PERSON_COOKIE}=muell"
+    assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=f"{kaputt}; {COOKIE}={_gut()}"))["status"] == 200
+    assert api.personen == ["lh-1-person-a", "lh-1-person-b", "lh-1-test", "lh-1-test"]
+    assert seite.personen == ["lh-1-person-b"]
+    # Die Flaechen-Weiche nimmt beide Cookies an.
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=a))["status"] == 200
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie=_gut()))["status"] == 200
+    assert durch.personen == ["lh-1-person-a", "lh-1-test"]
+
+
+def test_ohne_gueltiges_cookie_403_und_kein_actor() -> None:
+    seiten, flaeche, seite, api, durch = _weichen_lh()
+    abgelaufen = f"{PERSON_COOKIE}={person_cookie(SCHLUESSEL, 'lh-1-person-a', jetzt=1_000_000)}"
+    for kopf in (f"{PERSON_COOKIE}=muell", abgelaufen, f"{PERSON_COOKIE}=é",
+                 f"{PERSON_COOKIE}={_uebergabe_token('lh-1-person-a', KURS_B)}"):
+        assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=kopf))["status"] == 403, kopf
+        assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=kopf))["status"] == 403, kopf
+    assert api.aufrufe == [] and durch.aufrufe == []
+
+
+def test_ohne_learnhouse_url_nur_der_notweg() -> None:
+    seiten, flaeche, seite, api, durch = _weichen_lh(E)
+    # Die Uebergabe gibt es dann nicht: ohne Cookie 403 wie jede andere Seite, kein Personen-Cookie.
+    gesendet = _anfrage(seiten, f"/lernen/uebergabe/{_uebergabe_token('lh-1-person-a', KURS_B)}")
+    assert _start(gesendet)["status"] == 403
+    assert all(k != b"set-cookie" for k, _ in _start(gesendet)["headers"])
+    # Ein Personen-Cookie gilt nicht; das Zugangscookie wie bisher mit der Inhaber-Kennung.
+    assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=_person("lh-1-person-a")))["status"] == 403
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=_person("lh-1-person-a")))["status"] == 403
+    kopf = f"{_person('lh-1-person-a')}; {COOKIE}={_gut()}"
+    assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=kopf))["status"] == 200
+    assert api.personen == ["lh-1-test"]

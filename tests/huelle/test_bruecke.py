@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import dataclasses
 import io
 import json
 import re
@@ -22,12 +23,16 @@ from spaces.learning.huelle.bruecke import (
 )
 from spaces.learning.huelle.anordnung import anordnung
 from spaces.learning.huelle.einstellung import einstellung_lesen
+from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import (
     URTEILE, Aufgabenbild, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
 )
+from spaces.learning.huelle.person import PERSON_COOKIE, person_cookie
 from spaces.learning.huelle.sperre import Sperre
 from spaces.learning.huelle.tafel import aufgabentext
+from spaces.learning.huelle.weiche import Weiche
+from spaces.learning.huelle.zugang import COOKIE, token_erzeugen
 
 KURS = "11111111-1111-4111-8111-111111111111"
 FREMD = "22222222-2222-4222-8222-222222222222"
@@ -72,8 +77,10 @@ class FakeLern:
     def __init__(self, antworten: dict[str, Any]) -> None:
         self.antworten = antworten
         self.aufrufe: list[tuple[str, dict[str, Any]]] = []
+        self.akteure: list[str] = []  # Kennung je Aufruf; die Bruecke muss sie immer nennen
 
-    def rufe(self, tool: str, event_type: str, **kw: Any) -> dict[str, Any]:
+    def rufe(self, tool: str, event_type: str, *, actor_id: str, **kw: Any) -> dict[str, Any]:
+        self.akteure.append(actor_id)
         self.aufrufe.append((tool, kw))
         wert = self.antworten[tool]
         if isinstance(wert, list):
@@ -205,12 +212,19 @@ def _api_leer(request: httpx.Request) -> httpx.Response:
 
 
 def bauen(lern: FakeLern, penecho: FakePenEcho | None = None, *, api=_api_leer,
-          sperre: Sperre | None = None, einstellung=E, kursende=None) -> tuple[TestClient, Sperre, FakePenEcho]:
+          sperre: Sperre | None = None, einstellung=E, kursende=None, katalog: Katalog | None = None,
+          actor: str = ACTOR) -> tuple[TestClient, Sperre, FakePenEcho]:
     sperre = sperre or Sperre()
     penecho = penecho or FakePenEcho()
     http = httpx.Client(transport=httpx.MockTransport(api))
-    bruecke = Bruecke(einstellung, lern, penecho, sperre, http, kursende)  # type: ignore[arg-type]
-    return TestClient(bruecke), sperre, penecho
+    bruecke = Bruecke(einstellung, lern, penecho, sperre, http, kursende, katalog=katalog)  # type: ignore[arg-type]
+    return als(TestClient(bruecke), actor), sperre, penecho
+
+
+def als(client: TestClient, actor: str) -> TestClient:
+    """Wie die Weiche: die Kennung der Person steht je Anfrage in `scope["state"]["actor_id"]`."""
+    client.app_state["actor_id"] = actor
+    return client
 
 
 def _offen(lern: FakeLern, penecho: FakePenEcho | None = None, **kw: Any):
@@ -320,13 +334,15 @@ def test_oeffnen_erneuert_unbekannte_penecho_sitzung_einmal() -> None:
     assert penecho.namen() == ["sitzung", "aufgabe_setzen", "vergessen", "sitzung", "aufgabe_setzen"]
 
 
-def test_unbekannter_kurs_404() -> None:
+def test_unbekannter_kurs_404_fremder_kurs_403() -> None:
+    # Teil B: ein Kurs ausserhalb der eigenen Liste ist kein Zugang (403); keine Kurskennung bleibt 404.
     lern = FakeLern({})
     client, _, _ = bauen(lern)
-    assert client.post(f"/lernen/api/kurse/{FREMD}/oeffnen").status_code == 404
+    kein_zugang = {"fehler": "kein_zugang", "text": KEIN_ZUGANG_MEHR, "meldung": KEIN_ZUGANG_MEHR}
+    for r in (client.post(f"/lernen/api/kurse/{FREMD}/oeffnen"), client.post(f"/lernen/api/kurse/{FREMD}/neu"),
+              client.get(f"/lernen/api/kurse/{FREMD}/bewertung"), client.get(f"/lernen/api/notizen?course_id={FREMD}")):
+        assert r.status_code == 403 and r.json() == kein_zugang
     assert client.post("/lernen/api/kurse/kein-uuid/oeffnen").status_code == 404
-    assert client.get(f"/lernen/api/kurse/{FREMD}/bewertung").status_code == 404
-    assert client.get(f"/lernen/api/notizen?course_id={FREMD}").status_code == 404
     assert client.get("/lernen/api/notizen").status_code == 404
     assert lern.aufrufe == []
 
@@ -659,7 +675,7 @@ def test_erklaeren_und_hinweis() -> None:
 
 # ---- Actor, Notizen, Bewertung ----------------------------------------------------
 
-def test_actor_kommt_nur_aus_einstellung() -> None:
+def test_actor_kommt_nur_aus_der_anfrage_der_weiche() -> None:
     umschlaege: list[dict[str, Any]] = []
 
     def mcp(request: httpx.Request) -> httpx.Response:
@@ -677,9 +693,10 @@ def test_actor_kommt_nur_aus_einstellung() -> None:
         api_koepfe.append(request.headers)
         return httpx.Response(200, json={"notes": []})
 
-    lern = LernMcp("http://learning-mcp.test/mcp", E.actor_id, transport=httpx.MockTransport(mcp))
+    # Ohne eigene Kennung im Client: jede Anfrage muss sie nennen (die Weiche setzt sie).
+    lern = LernMcp("http://learning-mcp.test/mcp", transport=httpx.MockTransport(mcp))
     http = httpx.Client(transport=httpx.MockTransport(api))
-    client = TestClient(Bruecke(E, lern, FakePenEcho(), Sperre(), http))  # type: ignore[arg-type]
+    client = als(TestClient(Bruecke(E, lern, FakePenEcho(), Sperre(), http)), ACTOR)  # type: ignore[arg-type]
     boese = {"X-Learning-Actor": "boese-person", "X-LearnHouse-Learning-Service-Key": "x" * 40}
     assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers=boese,
                        json={"actor": {"actor_id": "boese-person"}}).status_code == 200
@@ -3063,3 +3080,239 @@ def test_liste_oeffnen_karte_der_zweiten_aufgabe_unterwegs_karte_ausstehend() ->
     finally:
         frei.set()
         bruecke.beenden()
+
+
+# ---- Teil B: Person je Anfrage, Kurse je Person -------------------------------------------------------
+
+LH = "http://learnhouse.test"
+KURS_P = "55555555-5555-4555-8555-555555555555"
+SID_PA = "66666666-6666-4666-8666-666666666661"
+SID_PB = "66666666-6666-4666-8666-666666666662"
+E_LH = dataclasses.replace(E, learnhouse_url=LH)
+
+
+class LearnHouse:
+    """Dienstroute `GET /api/v1/learning/personen/{actor}/kurse` (Task 2 im Fork)."""
+
+    def __init__(self) -> None:
+        self.kurse: dict[str, list[dict[str, str]]] = {
+            "lh-1-person-a": [{"course_id": KURS_P, "titel": "Kurs B"}],
+            "lh-1-person-b": [{"course_id": KURS_P, "titel": "Kurs B"}],
+        }
+        self.weg = False
+        self.anfragen: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        assert request.headers["X-LearnHouse-Learning-Service-Key"] == SCHLUESSEL
+        actor = request.url.path.split("/")[-2]
+        self.anfragen.append(actor)
+        if self.weg:
+            raise httpx.ConnectError("weg")
+        if actor not in self.kurse:
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return httpx.Response(200, json={"kurse": self.kurse[actor]})
+
+
+class Uhr:
+    def __init__(self) -> None:
+        self.t = 100.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _katalog(lh: LearnHouse, uhr: Any = None) -> Katalog:
+    return Katalog(E_LH, httpx.Client(transport=httpx.MockTransport(lh)), uhr=uhr or time.monotonic)
+
+
+def _person_lern() -> FakeLern:
+    return FakeLern({"learning_course_overview": _ueberblick(turn(course_id=KURS_P)),
+                     "learning_task_next": {"session": turn(course_id=KURS_P)}})
+
+
+def _envelope_mcp(gesehen: list[dict[str, Any]]):
+    """learning-mcp: jede Person hat ihre eigene Sitzung im Kurs B."""
+    def mcp(request: httpx.Request) -> httpx.Response:
+        rpc = json.loads(request.content)
+        event = rpc["params"]["arguments"]
+        gesehen.append(event)
+        sid = {"lh-1-person-a": SID_PA, "lh-1-person-b": SID_PB}.get(event["actor"]["actor_id"], SID)
+        kurs = event.get("course_id", KURS_P)
+        sitzung = {**turn(course_id=kurs), "session_id": sid}
+        result = (_ueberblick(sitzung) if rpc["params"]["name"] == "learning_course_overview"
+                  else {"session": sitzung})
+        text = json.dumps({"state": "completed", "result": result})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {
+            "content": [{"type": "text", "text": text}], "isError": False}})
+    return mcp
+
+
+def _ganz(einstellung: Any, lh: LearnHouse | None, umschlaege: list[dict[str, Any]],
+          api_koepfe: list[httpx.Headers]) -> Weiche:
+    """Weiche + Bruecke wie im Server, mit Fakes fuer LearnHouse, learning-mcp, learning-api und PenEcho."""
+    def api(request: httpx.Request) -> httpx.Response:
+        api_koepfe.append(request.headers)
+        return httpx.Response(200, json={"notes": []})
+
+    async def seite(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    lern = LernMcp("http://learning-mcp.test/mcp", transport=httpx.MockTransport(_envelope_mcp(umschlaege)))
+    katalog = Katalog(einstellung, httpx.Client(transport=httpx.MockTransport(lh or LearnHouse())))
+    bruecke = Bruecke(einstellung, lern, FakePenEcho(), Sperre(), httpx.Client(transport=httpx.MockTransport(api)),
+                      katalog=katalog)  # type: ignore[arg-type]
+    return Weiche(einstellung, seite, bruecke)
+
+
+def _browser(weiche: Weiche, cookie: str) -> TestClient:
+    return TestClient(weiche, base_url="https://lernen.example.test",
+                      headers={"cookie": cookie, "origin": "https://lernen.example.test"})
+
+
+def test_actor_kommt_aus_dem_cookie() -> None:
+    umschlaege: list[dict[str, Any]] = []
+    koepfe: list[httpx.Headers] = []
+    lh = LearnHouse()
+    weiche = _ganz(E_LH, lh, umschlaege, koepfe)
+    a = _browser(weiche, f"{PERSON_COOKIE}={person_cookie(SCHLUESSEL, 'lh-1-person-a')}")
+    b = _browser(weiche, f"{PERSON_COOKIE}={person_cookie(SCHLUESSEL, 'lh-1-person-b')}")
+    for browser, actor, sid in ((a, "lh-1-person-a", SID_PA), (b, "lh-1-person-b", SID_PB)):
+        vorher = len(umschlaege)
+        assert browser.get("/lernen/api/kurse").json() == [{"course_id": KURS_P, "titel": "Kurs B"}]
+        r = browser.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+        assert r.status_code == 200, r.text
+        assert r.json()["turn"]["session_id"] == sid
+        assert browser.get(f"/lernen/api/notizen?course_id={KURS_P}").status_code == 200
+        assert {u["actor"]["actor_id"] for u in umschlaege[vorher:]} == {actor}
+        assert koepfe[-1]["X-Learning-Actor"] == actor
+    assert lh.anfragen and set(lh.anfragen) == {"lh-1-person-a", "lh-1-person-b"}
+    # Beide Sitzungen bleiben je Person erhalten: A arbeitet nach dem Oeffnen von B in ihrer eigenen weiter.
+    vorher = len(umschlaege)
+    assert a.post(f"/lernen/api/sitzungen/{SID_PA}/weiter").status_code == 200
+    assert {u["actor"]["actor_id"] for u in umschlaege[vorher:]} == {"lh-1-person-a"}
+
+
+def test_notweg_nutzt_inhaber_kennung() -> None:
+    for einstellung in (E, E_LH):  # ohne und mit LearnHouse: der Telegram-Zugang bleibt der Inhaber
+        umschlaege: list[dict[str, Any]] = []
+        koepfe: list[httpx.Headers] = []
+        lh = LearnHouse()
+        weiche = _ganz(einstellung, lh, umschlaege, koepfe)
+        inhaber = _browser(weiche, f"{COOKIE}={token_erzeugen(SCHLUESSEL)}")
+        assert inhaber.get("/lernen/api/kurse").json() == [{"course_id": KURS, "titel": "Testkurs"}]
+        assert inhaber.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+        assert inhaber.get(f"/lernen/api/notizen?course_id={KURS}").status_code == 200
+        assert umschlaege and {u["actor"]["actor_id"] for u in umschlaege} == {ACTOR}
+        assert koepfe[-1]["X-Learning-Actor"] == ACTOR
+        assert lh.anfragen == []  # der Notweg fragt LearnHouse nie
+
+
+def test_bruecke_ohne_kennung_der_weiche_403() -> None:
+    lern = FakeLern({})
+    bruecke = Bruecke(E, lern, FakePenEcho(), Sperre(), httpx.Client(transport=httpx.MockTransport(_api_leer)))  # type: ignore[arg-type]
+    client = TestClient(bruecke)
+    assert client.get("/lernen/api/kurse").status_code == 403
+    assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 403
+    for falsch in ("", "a b", "x" * 200, 7):
+        client.app_state["actor_id"] = falsch
+        assert client.get("/lernen/api/kurse").status_code == 403, falsch
+    assert lern.aufrufe == []
+
+
+def test_entfernte_person_kommt_nicht_mehr_rein() -> None:
+    lh, uhr = LearnHouse(), Uhr()
+    lern = _person_lern()
+    client, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh, uhr), actor="lh-1-person-a")
+    assert client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert set(lern.akteure) == {"lh-1-person-a"}
+    del lh.kurse["lh-1-person-a"]  # im Fork aus dem Anbieter entfernt (Dienstroute jetzt 404)
+    uhr.t += 30
+    assert client.get("/lernen/api/kurse").status_code == 200  # Puffer, hoechstens 60 s
+    uhr.t += 30
+    kein_zugang = {"fehler": "kein_zugang", "text": KEIN_ZUGANG_MEHR, "meldung": KEIN_ZUGANG_MEHR}
+    vorher = len(lern.aufrufe)
+    for r in (client.get("/lernen/api/kurse"), client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen"),
+              client.post(f"/lernen/api/kurse/{KURS_P}/neu"), client.post(f"/lernen/api/sitzungen/{SID}/weiter"),
+              client.post(f"/lernen/api/sitzungen/{SID}/hinweis")):
+        assert r.status_code == 403 and r.json() == kein_zugang
+    assert len(lern.aufrufe) == vorher
+
+
+def test_fremde_sitzung_nicht_sichtbar() -> None:
+    lh = LearnHouse()
+    lern = _person_lern()
+    client_a, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh), actor="lh-1-person-a")
+    assert client_a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    client_b = als(TestClient(client_a.app), "lh-1-person-b")
+    vorher = len(lern.aufrufe)
+    for r in (client_b.post(f"/lernen/api/sitzungen/{SID}/weiter"), client_b.get(f"/lernen/api/sitzungen/{SID}/stand"),
+              client_b.post(f"/lernen/api/sitzungen/{SID}/hinweis"),
+              client_b.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"revision": 1, "answer": {"choice_id": "a"}})):
+        assert r.status_code == 404, r.text
+    assert len(lern.aufrufe) == vorher  # die gemerkte Sitzung von A geht nie unter B an Learning
+    assert client_a.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 200
+    # Nicht im Speicher (etwa nach einem Neustart): Learning wird als B gefragt und lehnt ab -> 404.
+    lern2 = FakeLern({"learning_task_next": LearningAbgelehnt("session belongs to another learner",
+                                                               "session_access_denied")})
+    client_b2, _, _ = bauen(lern2, einstellung=E_LH, katalog=_katalog(lh), actor="lh-1-person-b")
+    assert client_b2.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 404
+    assert lern2.akteure == ["lh-1-person-b"]
+
+
+def test_uebersicht_weg_503() -> None:
+    lh = LearnHouse()
+    lh.weg = True
+    lern = _person_lern()
+    client, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh), actor="lh-1-person-a")
+    weg = {"fehler": "uebersicht_weg", "text": UEBERSICHT_WEG, "meldung": UEBERSICHT_WEG}
+    for r in (client.get("/lernen/api/kurse"), client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen"),
+              client.post(f"/lernen/api/kurse/{KURS_P}/neu")):
+        assert r.status_code == 503 and r.json() == weg
+    assert lern.aufrufe == []
+
+
+def test_fremder_kurs_403() -> None:
+    lh = LearnHouse()
+    lern = _person_lern()
+    client, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh), actor="lh-1-person-a")
+    kein_zugang = {"fehler": "kein_zugang", "text": KEIN_ZUGANG_MEHR, "meldung": KEIN_ZUGANG_MEHR}
+    # KURS ist der Kurs des Notwegs, aber nicht in der Liste von person-a.
+    for r in (client.post(f"/lernen/api/kurse/{KURS}/oeffnen"), client.post(f"/lernen/api/kurse/{KURS}/neu"),
+              client.get(f"/lernen/api/kurse/{KURS}/bewertung")):
+        assert r.status_code == 403 and r.json() == kein_zugang
+    assert lern.aufrufe == []
+    # Eine Sitzung, die Learning person-a in einem fremden Kurs nennt, bleibt unsichtbar.
+    lern2 = FakeLern({"learning_task_next": {"session": turn(course_id=KURS)}})
+    client2, _, _ = bauen(lern2, einstellung=E_LH, katalog=_katalog(lh), actor="lh-1-person-a")
+    assert client2.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 404
+
+
+def test_kursende_je_person(tmp_path) -> None:
+    lh = LearnHouse()
+    datei = tmp_path / "kursende.json"
+    ende = turn(None, state="completed", course_id=KURS_P)
+    lern = FakeLern({"learning_course_overview": _ueberblick(turn(course_id=KURS_P)),
+                     "learning_task_next": [{"session": turn(course_id=KURS_P)}, {"session": ende}]})
+    client, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh), actor="lh-1-person-a", kursende=datei)
+    assert client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert client.post(f"/lernen/api/sitzungen/{SID}/weiter").status_code == 200
+    assert json.loads(datei.read_text(encoding="utf-8")) == {f"lh-1-person-a|{KURS_P}": SID}
+
+
+def test_lern_mcp_kennung_je_aufruf() -> None:
+    gesehen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        gesehen.append(json.loads(request.content)["params"]["arguments"]["actor"])
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {
+            "content": [{"type": "text", "text": json.dumps({"result": {}})}], "isError": False}})
+
+    ohne = LernMcp("http://m.test/mcp", transport=httpx.MockTransport(handler))
+    with pytest.raises(ValueError):
+        ohne.rufe("learning_task_next", "x")  # ohne Kennung kein Aufruf, nie stillschweigend der Inhaber
+    ohne.rufe("learning_task_next", "x", actor_id="lh-1-person-a")
+    LernMcp("http://m.test/mcp", ACTOR, transport=httpx.MockTransport(handler)).rufe(
+        "learning_task_next", "x", actor_id="lh-1-person-b")
+    assert gesehen == [{"actor_id": "lh-1-person-a", "actor_type": "local_user"},
+                       {"actor_id": "lh-1-person-b", "actor_type": "local_user"}]

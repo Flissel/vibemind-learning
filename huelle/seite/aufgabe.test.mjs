@@ -446,3 +446,25 @@ test("Karte nicht auf der Fläche: Urteil als Hinweis in der Leiste", () => {
   const unl = ergebnisAus({ urteil: "Nicht lesbar.", vorbewertung: { id: "v9", lesbar: false }, karte: "Nicht lesbar." });
   assert.match(ergebnisHinweis(unl), /Selbst eintippen/);
 });
+
+import { kursVorwahl } from "./aufgabe.js";
+
+test("meldungFuer: Texte der Kursuebersicht (Teil B) bleiben", () => {
+  for (const m of [
+    "Ihr Zugang zu diesem Kurs besteht nicht mehr. Öffnen Sie die Kursübersicht.",
+    "Die Kursübersicht ist gerade nicht erreichbar. Bitte versuchen Sie es gleich noch einmal.",
+  ]) {
+    assert.ok(FESTE_MELDUNGEN.has(m), m);
+    assert.equal(meldungFuer({ fehler: "x", text: m, meldung: m }), m);
+  }
+});
+
+test("kursVorwahl: ?kurs= vor gemerktem Kurs, nur Kurse der Liste", () => {
+  const kurse = [{ course_id: "a-1" }, { course_id: "b-2" }];
+  assert.equal(kursVorwahl("?kurs=b-2", kurse, "a-1"), "b-2");
+  assert.equal(kursVorwahl("?kurs=fremd", kurse, "a-1"), "a-1");
+  assert.equal(kursVorwahl("?x=1", kurse, "b-2"), "b-2");
+  assert.equal(kursVorwahl("", kurse, "weg"), "a-1");
+  assert.equal(kursVorwahl("?kurs=", kurse, null), "a-1");
+  assert.equal(kursVorwahl("?kurs=b-2", [], null), null);
+});

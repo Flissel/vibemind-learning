@@ -3,18 +3,28 @@
 Seiten-Port (`LEARNING_HUELLE_BASIS`): nur `/lernen/*` (Zugang, Seite, API); schreibende Anfragen
 nur mit eigener `Origin`. Flaechen-Port (`LEARNING_HUELLE_FLAECHE_BASIS`): nur PenEcho; `/lernen/*` gibt
 es dort nicht. PenEcho-Widgets laufen mit der Flaechen-Herkunft und erreichen die Seite so nicht.
+
+Wer fragt (Teil B): die Weiche legt je Anfrage `scope["state"]["actor_id"]` fest; das ist der eine Weg,
+auf dem die Kennung zur Bruecke kommt (`request.state.actor_id`). Ein gueltiges Personen-Cookie
+(`huelle_person`, gesetzt von `/lernen/uebergabe/<token>`) gewinnt; sonst gilt das Zugangscookie des
+Notwegs (`huelle_zugang`) mit der Inhaber-Kennung aus der Umgebung. Ohne `LEARNING_HUELLE_LEARNHOUSE_URL`
+gibt es weder die Uebergabe noch Personen-Cookies.
 """
 
 from __future__ import annotations
 
+import html
 from collections.abc import Awaitable, Callable
 from http.cookies import CookieError, SimpleCookie
 from typing import Any
 
 from .einstellung import Einstellung
+from .person import PERSON_COOKIE, PERSON_GUELTIG, person_aus_cookie, person_cookie
+from .uebergabe import uebergabe_lesen
 from .zugang import COOKIE, GUELTIG_SEKUNDEN, token_erzeugen, token_gueltig
 
 ZUGANG_PREFIX = "/lernen/zugang/"
+UEBERGABE_PREFIX = "/lernen/uebergabe/"
 ABGELAUFEN = "Dieser Link ist abgelaufen oder ungültig."
 NICHT_ERLAUBT = "Nicht erlaubt."
 WEITER = "Weiter zum Lernen"
@@ -33,12 +43,17 @@ _OEFFENTLICH_ROH = frozenset(p.encode() for p in OEFFENTLICHE_PENECHO_DATEIEN)
 # Die Zugangsseite setzt das Cookie mit 200 und leitet erst dann weiter: so ist die Navigation zu
 # /lernen/ eine eigene (same-site), und das SameSite=Strict-Cookie geht mit, auch wenn der Link aus
 # einer anderen App (Telegram) kam. Kein Skript, daher passt die strenge CSP.
-_ZUGANG_HTML = (
-    "<!doctype html>\n<html lang=\"de\">\n<head>\n<meta charset=\"utf-8\">\n"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-    "<meta http-equiv=\"refresh\" content=\"0;url=/lernen/\">\n<title>Lernen</title>\n</head>\n"
-    f"<body>\n<p><a href=\"/lernen/\">{WEITER}</a></p>\n</body>\n</html>\n"
-)
+def _weiter_html(ziel: str) -> str:
+    ziel = html.escape(ziel, quote=True)
+    return (
+        "<!doctype html>\n<html lang=\"de\">\n<head>\n<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<meta http-equiv=\"refresh\" content=\"0;url={ziel}\">\n<title>Lernen</title>\n</head>\n"
+        f"<body>\n<p><a href=\"{ziel}\">{WEITER}</a></p>\n</body>\n</html>\n"
+    )
+
+
+_ZUGANG_HTML = _weiter_html("/lernen/")
 _ZUGANG_CSP = b"default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 Scope = dict[str, Any]
@@ -75,26 +90,41 @@ def _ist_lernen(path: str) -> bool:
 
 
 class _Tor:
-    """Gemeinsame Pruefung: erlaubter Host des Ports und gueltiges Zugangscookie."""
+    """Gemeinsame Pruefung: erlaubter Host des Ports und gueltiges Cookie; legt die Kennung der Anfrage fest."""
 
     def __init__(self, einstellung: Einstellung, hosts: frozenset[str]) -> None:
         self._e = einstellung
         self._hosts = hosts
 
-    def _cookie_gueltig(self, headers: dict[bytes, bytes]) -> bool:
+    def _person(self, headers: dict[bytes, bytes]) -> str | None:
+        """Kennung aus den Cookies: Personen-Cookie vor Zugangscookie (Notweg); sonst None."""
         roh = headers.get(b"cookie", b"").decode("latin-1")
         try:
             jar: SimpleCookie = SimpleCookie()
             jar.load(roh)
         except CookieError:
-            return False
+            return None
+        person = jar.get(PERSON_COOKIE)
+        if person is not None and self._e.learnhouse_url:
+            actor = person_aus_cookie(self._e.dienst_schluessel, person.value)
+            if actor is not None:
+                return actor
         eintrag = jar.get(COOKIE)
-        return eintrag is not None and token_gueltig(self._e.dienst_schluessel, eintrag.value)
+        if eintrag is not None and token_gueltig(self._e.dienst_schluessel, eintrag.value):
+            return self._e.actor_id
+        return None
 
     def _erlaubt(self, scope: Scope) -> bool:
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         host = headers.get(b"host", b"").decode("latin-1").lower()
-        return host in self._hosts and self._cookie_gueltig(headers)
+        if host not in self._hosts:
+            return False
+        actor = self._person(headers)
+        if actor is None:
+            return False
+        # Der eine Weg der Kennung zur Bruecke (request.state.actor_id); ueberschreibt jeden Vorwert.
+        scope["state"] = {**(scope.get("state") or {}), "actor_id": actor}
+        return True
 
     @staticmethod
     async def _abweisen(scope: Scope, send: Send) -> None:
@@ -123,7 +153,24 @@ class Weiche(_Tor):
             return
         wert = token_erzeugen(self._e.dienst_schluessel)
         cookie = f"{COOKIE}={wert}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={GUELTIG_SEKUNDEN}"
-        body = _ZUGANG_HTML.encode("utf-8")
+        await self._cookie_setzen(send, cookie, _ZUGANG_HTML)
+
+    async def _uebergabe(self, send: Send, token: str) -> None:
+        """Uebergabe aus LearnHouse: Personen-Cookie (12 h) setzen, dann auf den Kurs weiterleiten."""
+        try:
+            actor_id, course_id = uebergabe_lesen(self._e.dienst_schluessel, token)
+        except ValueError:
+            await _text(send, 403, ABGELAUFEN)
+            return
+        wert = person_cookie(self._e.dienst_schluessel, actor_id)
+        cookie = f"{PERSON_COOKIE}={wert}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={PERSON_GUELTIG}"
+        # course_id ist eine kanonische UUID (vom Leser geprueft) und damit URL-sicher.
+        ziel = f"/lernen/?kurs={course_id}" if course_id else "/lernen/"
+        await self._cookie_setzen(send, cookie, _weiter_html(ziel))
+
+    @staticmethod
+    async def _cookie_setzen(send: Send, cookie: str, seite: str) -> None:
+        body = seite.encode("utf-8")
         await send({
             "type": "http.response.start", "status": 200,
             "headers": [
@@ -146,6 +193,10 @@ class Weiche(_Tor):
         path = scope.get("path", "")
         if art == "http" and scope.get("method") == "GET" and path.startswith(ZUGANG_PREFIX):
             await self._zugang(send, path[len(ZUGANG_PREFIX):])
+            return
+        if (art == "http" and scope.get("method") == "GET" and path.startswith(UEBERGABE_PREFIX)
+                and self._e.learnhouse_url):
+            await self._uebergabe(send, path[len(UEBERGABE_PREFIX):])
             return
         if not self._erlaubt(scope):
             await self._abweisen(scope, send)

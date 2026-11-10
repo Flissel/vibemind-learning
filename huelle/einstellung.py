@@ -34,6 +34,9 @@ FLAECHE_BASIS = "LEARNING_HUELLE_FLAECHE_BASIS"
 PENECHO_PAKET = "LEARNING_HUELLE_PENECHO_PAKET"
 # Optionaler Wissensordner: dort legt die Huelle die Textfassung der Zusammenfassung ab (leer = aus).
 ZUSAMMENFASSUNG_ORDNER = "LEARNING_HUELLE_ZUSAMMENFASSUNG_ORDNER"
+# Optional (Teil B): LearnHouse-API fuer Uebergabe und Kurse je Person. Leer = nur der Notweg
+# (Zugangscookie mit LEARNING_HUELLE_ACTOR und LEARNING_HUELLE_KURSE), genau wie bisher.
+LEARNHOUSE_URL = "LEARNING_HUELLE_LEARNHOUSE_URL"
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,7 @@ class Einstellung:
     penecho_paket: str
     penecho_mcp_url: str
     zusammenfassung_ordner: str = ""
+    learnhouse_url: str = ""
 
     @property
     def basis_host(self) -> str:
@@ -132,6 +136,22 @@ def _port(env: Mapping[str, str], name: str, vorgabe: int) -> int:
     return port
 
 
+def _learnhouse_url(env: Mapping[str, str]) -> str:
+    """Leer oder eine http(s)-Basisadresse ohne Query, Fragment und Zugangsdaten (ohne `/` am Ende)."""
+    roh = (env.get(LEARNHOUSE_URL) or "").strip().rstrip("/")
+    if not roh:
+        return ""
+    try:
+        teile = urlsplit(roh)
+        teile.port  # noqa: B018 - prueft die Portangabe
+    except ValueError:
+        raise RuntimeError(f"{LEARNHOUSE_URL} ist keine http(s)-Adresse") from None
+    if (teile.scheme.lower() not in ("http", "https") or not teile.hostname or teile.query or teile.fragment
+            or "@" in teile.netloc):
+        raise RuntimeError(f"{LEARNHOUSE_URL} ist keine http(s)-Adresse")
+    return roh
+
+
 def _penecho_paket_vorgabe(env: Mapping[str, str]) -> str:
     """Die PenEcho-Installation der PC-Einrichtung (Plan, Task 10)."""
     return os.path.join(env.get("LOCALAPPDATA") or "", "VibeMind", "penecho", "node_modules", "penecho")
@@ -171,4 +191,5 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         penecho_paket=(env.get(PENECHO_PAKET) or "").strip() or _penecho_paket_vorgabe(env),
         penecho_mcp_url=(env.get(PENECHO_MCP_URL) or "").strip() or "https://127.0.0.1:3922/mcp",
         zusammenfassung_ordner=(env.get(ZUSAMMENFASSUNG_ORDNER) or "").strip(),
+        learnhouse_url=_learnhouse_url(env),
     )

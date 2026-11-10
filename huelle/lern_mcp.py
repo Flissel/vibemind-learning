@@ -1,7 +1,8 @@
 """MCP-Client der Huelle fuer Learning (JSON-RPC `tools/call` ueber HTTP).
 
-Der Umschlag folgt `contracts/mcp_models.EventEnvelopeV1`. Die Lernenden-ID kommt nur aus
-der Einstellung (Konstruktor), nie aus einer Anfrage. Fehler werden nur als Typname geloggt.
+Der Umschlag folgt `contracts/mcp_models.EventEnvelopeV1`. Die Lernenden-ID nennt der Aufrufer je Aufruf
+(`actor_id`, in der Bruecke aus `request.state.actor_id` der Weiche), nie der Body einer Anfrage. Ohne
+Kennung gibt es keinen Aufruf. Fehler werden nur als Typname geloggt.
 """
 
 from __future__ import annotations
@@ -56,13 +57,14 @@ class LernMcp:
     def __init__(
         self,
         mcp_url: str,
-        actor_id: str,
+        actor_id: str | None = None,
         *,
         transport: httpx.BaseTransport | None = None,
         timeout: float = TIMEOUT_S,
     ) -> None:
         self._url = mcp_url
-        self._actor = {"actor_id": actor_id, "actor_type": "local_user"}
+        # Nur noch Vorgabe fuer Aufrufer ohne Personen (Tests); die Huelle nennt die Kennung je Aufruf.
+        self._vorgabe = actor_id
         self._client = httpx.Client(transport=transport, timeout=timeout, follow_redirects=False)
 
     def rufe(
@@ -76,11 +78,15 @@ class LernMcp:
         payload: dict[str, Any] | None = None,
         schreibend: bool = False,
         confirmation: dict[str, Any] | None = None,
+        actor_id: str | None = None,
     ) -> dict[str, Any]:
+        kennung = actor_id or self._vorgabe
+        if not kennung:
+            raise ValueError("Learning-Aufruf ohne Kennung")
         event: dict[str, Any] = {
             "version": "1",
             "event_type": event_type,
-            "actor": dict(self._actor),
+            "actor": {"actor_id": kennung, "actor_type": "local_user"},
             "payload": payload or {},
         }
         if course_id is not None:

@@ -18,7 +18,10 @@ gelesen“/„Selbst eintippen“: getippte Antwort mit `korrigiert_aus`) und `p
 buchen). „Ueberarbeiten“ braucht keine Route. Die Bruecke merkt sich keine Vorbewertung: ihre
 Kennung kommt von der Seite, Learning prueft sie (auch nach einem Neustart der Huelle).
 
-Die Lernenden-ID kommt nur aus der Einstellung. Geloggt werden nur Typnamen.
+Wer fragt, steht je Anfrage in `request.state.actor_id` (die Weiche setzt es aus dem Cookie); ohne gueltige
+Kennung antwortet die Bruecke 403. Jede Sitzung gehoert der Kennung, mit der sie geoeffnet wurde; eine
+Sitzung einer anderen Kennung ist unsichtbar (404). Welche Kurse eine Kennung oeffnen darf, sagt der
+Katalog (Notweg: Umgebung; sonst LearnHouse). Geloggt werden nur Typnamen.
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ from .anordnung import ZuVieleAufgaben, anordnung
 from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
 from .hintergrund import Spur
+from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar,
@@ -60,6 +64,7 @@ from .penecho_mcp import (
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
+from .uebergabe import ACTOR_MUSTER
 from .zusammenfassung import (
     BILD_BUDGET_S, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von,
     kernaussage, kurs_kurz,
@@ -91,6 +96,10 @@ SMILEY_UNBEKANNT = "Bitte wählen Sie eines der drei Gesichter."
 ZU_VIELE_STICHWORTE = "Bitte nennen Sie höchstens drei Stichworte."
 # Von der Huelle: Bedienfehler, die die eigene Seite nicht ausloest.
 UNBEKANNTER_KURS = "Diesen Kurs gibt es hier nicht."
+NICHT_ERLAUBT = "Nicht erlaubt."
+# Teil B: Kurse je Person (Texte aus dem Katalog); `meldung` traegt denselben Text fuer die Seite.
+_KEIN_ZUGANG = {"fehler": "kein_zugang", "text": KEIN_ZUGANG_MEHR, "meldung": KEIN_ZUGANG_MEHR}
+_UEBERSICHT_WEG = {"fehler": "uebersicht_weg", "text": UEBERSICHT_WEG, "meldung": UEBERSICHT_WEG}
 UNGUELTIG = "Ungültige Eingabe."
 KEINE_ZEICHENAUFGABE = "Die aktuelle Aufgabe ist keine Zeichenaufgabe."
 ERKLAER_FRAGE = "Erklär mir das."
@@ -161,6 +170,7 @@ class _Antwort(Exception):
 class _Sitzung:
     kurs: Kurs
     sid: str                        # Learning-Sitzung; zugleich Schluessel der Flaeche (Ruling L)
+    actor: str                      # Kennung der Person, die sie geoeffnet hat; nur sie sieht sie
     aufgabe_id: str | None = None   # aktuelle Aufgabe laut letztem Turn
     nummer: int | None = None       # Flaechenbereich der aktuellen Aufgabe (Ruling B)
     auf_flaeche: bool = False       # aktuelle Aufgabe steht schon auf der Flaeche
@@ -468,13 +478,15 @@ class Bruecke:
         sperre: Sperre,
         http: httpx.Client,
         kursende: Path | None = None,
+        *,
+        katalog: Katalog | None = None,
     ) -> None:
         self._e = einstellung
         self._lern = lern
         self._penecho = penecho
         self._sperre = sperre
         self._http = http
-        self._kurse = {k.course_id: k for k in einstellung.kurse}
+        self._katalog = katalog or Katalog(einstellung)
         self._sitzungen: dict[str, _Sitzung] = {}
         # Learnings Ueberblick kennt nur aktive Sitzungen. Damit ein Neuladen nach dem Kursende
         # nicht stumm neu startet, merkt sich die Huelle den abgeschlossenen Durchlauf
@@ -490,8 +502,8 @@ class Bruecke:
         # Listenkurse: die Vorbewertung einer Abgabe (Modellaufruf) laeuft hier, nie unter einer Sperre.
         self._modellspur = Spur("modell")
         self._spuren = [self._flaechenspur, self._modellspur]
-        # Die zuletzt geoeffnete Lernsitzung: nur deren Hintergrundarbeiten laufen noch (Kurswechsel).
-        self._zuletzt: str | None = None
+        # Die zuletzt geoeffnete Lernsitzung je Kennung: nur deren Hintergrundarbeiten laufen noch (Kurswechsel).
+        self._zuletzt: dict[str, str] = {}
         # Uhr fuer das Bildbudget der Zusammenfassung (Tests ersetzen sie).
         self._uhr: Callable[[], float] = time.monotonic
         # Abgaben der Listenkurse, je (sid, nummer); eigene kleine Sperre, nie die Flaechensperre.
@@ -526,6 +538,13 @@ class Bruecke:
         ])
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            # Nur die Weiche setzt die Kennung (Cookie); ohne sie gibt es nichts, auch nicht den Inhaber.
+            state = scope.get("state")
+            actor = state.get("actor_id") if isinstance(state, dict) else None
+            if not isinstance(actor, str) or ACTOR_MUSTER.fullmatch(actor) is None:
+                await self._json(403, {"meldung": NICHT_ERLAUBT})(scope, receive, send)
+                return
         await self._app(scope, receive, send)
 
     def beenden(self) -> None:
@@ -556,6 +575,10 @@ class Bruecke:
         except LearningAbgelehnt as fehler:
             return self._json(409, {"meldung": fehler.nachricht, "code": fehler.code})
         return self._json(status, body)
+
+    def _rufe(self, actor: str, tool: str, event_type: str, **kw: Any) -> dict[str, Any]:
+        """Learning-Aufruf im Namen dieser Kennung (nie ohne)."""
+        return self._lern.rufe(tool, event_type, actor_id=actor, **kw)
 
     @staticmethod
     async def _body(request: Request) -> dict[str, Any]:
@@ -604,11 +627,12 @@ class Bruecke:
         except OSError as fehler:
             log.warning("Kursende nicht gespeichert: %s", _typ(fehler))
 
-    def _ende_schluessel(self, kurs: Kurs) -> str:
-        return f"{self._e.actor_id}|{kurs.course_id}"
+    @staticmethod
+    def _ende_schluessel(actor: str, kurs: Kurs) -> str:
+        return f"{actor}|{kurs.course_id}"
 
-    def _ende_setzen(self, kurs: Kurs, sid: str | None) -> None:
-        schluessel = self._ende_schluessel(kurs)
+    def _ende_setzen(self, actor: str, kurs: Kurs, sid: str | None) -> None:
+        schluessel = self._ende_schluessel(actor, kurs)
         if self._kursende.get(schluessel) == sid:
             return
         if sid is None:
@@ -617,38 +641,72 @@ class Bruecke:
             self._kursende[schluessel] = sid
         self._kursende_schreiben()
 
-    def _kurs(self, course_id: str) -> Kurs:
-        kurs = self._kurse.get(_uuid(course_id) or "")
-        if kurs is None:
+    def _kurse_von(self, actor: str) -> tuple[Kurs, ...]:
+        """Kurse dieser Kennung laut Katalog; 403 `kein_zugang` (entfernt), 503 `uebersicht_weg`."""
+        try:
+            return self._katalog.kurse(actor)
+        except KeinZugang:
+            raise _Antwort(403, dict(_KEIN_ZUGANG)) from None
+        except UebersichtWeg:
+            raise _Antwort(503, dict(_UEBERSICHT_WEG)) from None
+
+    def _kurs(self, actor: str, course_id: str) -> Kurs:
+        """Ein Kurs aus der Liste dieser Kennung; keine Kurskennung 404, nicht in der Liste 403."""
+        norm = _uuid(course_id)
+        if norm is None:
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
+        kurs = next((k for k in self._kurse_von(actor) if k.course_id == norm), None)
+        if kurs is None:
+            raise _Antwort(403, dict(_KEIN_ZUGANG))
         return kurs
 
-    def _sitzung(self, sid: str) -> tuple[str, _Sitzung, dict[str, Any] | None]:
-        """Sitzung aus dem Speicher; sonst einmal `learning_task_next` lesen und den Kurs pruefen."""
+    def _kurse_der_sitzung(self, actor: str) -> tuple[Kurs, ...] | None:
+        """Fuer Sitzungsrouten: eine entfernte Person 403; ist LearnHouse gerade weg, None (eine schon
+        geoeffnete eigene Sitzung laeuft weiter, Learning prueft den Besitz)."""
+        try:
+            return self._katalog.kurse(actor)
+        except KeinZugang:
+            raise _Antwort(403, dict(_KEIN_ZUGANG)) from None
+        except UebersichtWeg:
+            log.warning("Kursuebersicht weg, Sitzung ohne Kurspruefung")
+            return None
+
+    def _sitzung(self, actor: str, sid: str) -> tuple[str, _Sitzung, dict[str, Any] | None]:
+        """Sitzung dieser Kennung aus dem Speicher; sonst einmal `learning_task_next` (als diese Kennung)
+        lesen und den Kurs pruefen. Eine Sitzung einer anderen Kennung ist unsichtbar (404)."""
         norm = _uuid(sid)
         if norm is None:
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
         bekannt = self._sitzungen.get(norm)
+        if bekannt is not None and bekannt.actor != actor:
+            raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
+        kurse = self._kurse_der_sitzung(actor)
         if bekannt is not None:
+            if kurse is not None and all(k.course_id != bekannt.kurs.course_id for k in kurse):
+                raise _Antwort(403, dict(_KEIN_ZUGANG))
             return norm, bekannt, None
         try:
-            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=norm))
+            turn = _turn(self._rufe(actor, "learning_task_next", "learning.task.next", session_id=norm))
         except LearningAbgelehnt:
             # Fremde oder unbekannte Sitzung: Learning prueft den Besitz, die Huelle sagt nur 404.
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS}) from None
-        kurs = self._kurse.get(_uuid(str(turn.get("course_id"))) or "")
+        kurs_id = _uuid(str(turn.get("course_id")))
+        kurs = next((k for k in kurse or () if k.course_id == kurs_id), None)
         if kurs is None:
+            # Fremder Kurs; ohne Kursuebersicht ist eine ungemerkte Sitzung nicht pruefbar.
+            if kurse is None:
+                raise _Antwort(503, dict(_UEBERSICHT_WEG))
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
         task = _task(turn)
         liste = turn.get("ablauf") == "liste"
         # Im Listenkurs kommt die Nummer nur aus der Liste (oeffnen, weiter, passt), nie aus `completed + 1`.
-        sitzung = _Sitzung(kurs, norm, task["id"] if task else None,
+        sitzung = _Sitzung(kurs, norm, actor, task["id"] if task else None,
                            _nummer(turn) if task and not liste else None, liste=liste)
         self._sitzungen[norm] = sitzung
-        if self._zuletzt is None:
+        if actor not in self._zuletzt:
             # Nach einem Neustart der Huelle ist die erste Sitzung, mit der die Seite spricht, die offene;
             # sonst kaemen die Karten der Hintergrund-Abgaben erst nach einem erneuten Oeffnen.
-            self._zuletzt = norm
+            self._zuletzt[actor] = norm
         return norm, sitzung, turn
 
     # ---- PenEcho ----------------------------------------------------------
@@ -686,7 +744,7 @@ class Bruecke:
         if task is None:
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
             if turn.get("state") == "completed":
-                self._ende_setzen(sitzung.kurs, sitzung.sid)
+                self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
                 self._bericht(sitzung, turn, self._bericht_rechtecke(sitzung, turn))
             self._frei(sitzung)
             return None, False
@@ -749,7 +807,8 @@ class Bruecke:
             if andere is sitzung:
                 continue
             try:
-                turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=andere_sid))
+                turn = _turn(self._rufe(andere.actor, "learning_task_next", "learning.task.next",
+                                        session_id=andere_sid))
             except LearningWeg as fehler:
                 log.warning("Sperre bleibt, Sitzung nicht lesbar: %s", _typ(fehler))
                 self._sperre.unbekannt()
@@ -770,13 +829,20 @@ class Bruecke:
             if task is not None and _sperrt(turn):
                 self._sperre.offen(task["id"])
                 return
-        bekannt = {s.kurs.course_id for s in list(self._sitzungen.values())} | {sitzung.kurs.course_id}
-        for kurs in self._e.kurse:
+        bekannt = {s.kurs.course_id for s in list(self._sitzungen.values()) if s.actor == sitzung.actor}
+        bekannt.add(sitzung.kurs.course_id)
+        try:
+            eigene = self._katalog.kurse(sitzung.actor)
+        except (KeinZugang, UebersichtWeg) as fehler:
+            log.warning("Sperre bleibt, Kurse nicht lesbar: %s", _typ(fehler))
+            self._sperre.unbekannt()
+            return
+        for kurs in eigene:
             if kurs.course_id in bekannt:
                 continue
             try:
-                ueberblick = self._lern.rufe(
-                    "learning_course_overview", "learning.course.overview", course_id=kurs.course_id
+                ueberblick = self._rufe(
+                    sitzung.actor, "learning_course_overview", "learning.course.overview", course_id=kurs.course_id
                 )
             except (LearningWeg, LearningAbgelehnt) as fehler:
                 log.warning("Sperre bleibt, Ueberblick fehlgeschlagen: %s", _typ(fehler))
@@ -789,7 +855,7 @@ class Bruecke:
                 if andere_sid is not None:
                     liste = laufend.get("ablauf") == "liste"
                     self._sitzungen.setdefault(andere_sid, _Sitzung(
-                        kurs, andere_sid, task["id"], None if liste else _nummer(laufend), liste=liste))
+                        kurs, andere_sid, sitzung.actor, task["id"], None if liste else _nummer(laufend), liste=liste))
                 if _sperrt(laufend):
                     self._sperre.offen(task["id"])
                     return
@@ -830,7 +896,7 @@ class Bruecke:
         if sitzung.liste and self._e.zusammenfassung_ordner:
             self._zusammenfassung_ablegen(sitzung)
         try:
-            text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung.kurs) or [])
+            text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung) or [])
             if rechtecke is None:
                 nummern = tuple(n for n, _ in bericht_aufgaben(summary) if 1 <= n <= BEREICHE)
                 lage: dict[str, Any] = {}
@@ -858,10 +924,11 @@ class Bruecke:
             return {}
         return {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege}
 
-    def _begriffe(self, kurs: Any) -> list[Any] | None:
+    def _begriffe(self, sitzung: _Sitzung) -> list[Any] | None:
         """Aktuelle Beherrschung nach einer Abgabe; None, wenn Learning sie gerade nicht liefert."""
         try:
-            ueberblick = self._lern.rufe("learning_course_overview", "learning.course.overview", course_id=kurs.course_id)
+            ueberblick = self._rufe(sitzung.actor, "learning_course_overview", "learning.course.overview",
+                                    course_id=sitzung.kurs.course_id)
         except (LearningWeg, LearningAbgelehnt) as fehler:
             log.warning("Begriffe nach Abgabe nicht geladen: %s", _typ(fehler))
             return None
@@ -887,7 +954,7 @@ class Bruecke:
                 kernaussage(vor) if isinstance(vor, dict) else "–", bild,
             ))
         return Zusammenfassung(sitzung.kurs.titel, date.today(), tuple(zeilen),
-                               self._begriffe_zeilen(sitzung.kurs))
+                               self._begriffe_zeilen(sitzung))
 
     @staticmethod
     def _aufnahme_fehler_einzeln(fehler: Exception) -> bool:
@@ -927,10 +994,10 @@ class Bruecke:
                 log.warning("Zusammenfassung: Bild unlesbar: %s", _typ(fehler))
         return ergebnis
 
-    def _begriffe_zeilen(self, kurs: Any) -> tuple[tuple[str, str], ...]:
+    def _begriffe_zeilen(self, sitzung: _Sitzung) -> tuple[tuple[str, str], ...]:
         zeilen = []
         # Wie auf der Seite: Slug-Titel lesbar, gleiche Titel einmal (A2, Befund 6).
-        for begriff in begriffe_zusammenfassen(self._begriffe(kurs) or []):
+        for begriff in begriffe_zusammenfassen(self._begriffe(sitzung) or []):
             titel = begriff.get("titel")
             if not isinstance(titel, str) or not titel:
                 continue
@@ -961,10 +1028,11 @@ class Bruecke:
 
     async def _r_zusammenfassung(self, request: Request) -> Response:
         sid = request.path_params["sid"]
+        actor = request.state.actor_id
         pdf: list[tuple[bytes, str]] = []
 
         def arbeit() -> dict[str, Any]:
-            sitzung = self._listensitzung(sid)
+            sitzung = self._listensitzung(actor, sid)
             z = self._zusammenfassung_bauen(sitzung, bilder=True)
             pdf.append((als_pdf(z), f"zusammenfassung-{kurs_kurz(z.kurs)}-{z.datum:%Y-%m-%d}.pdf"))
             self._zusammenfassung_ablegen(sitzung, z)
@@ -980,7 +1048,7 @@ class Bruecke:
 
     def _stand_neu(self, sid: str, sitzung: _Sitzung, code: str) -> NoReturn:
         """Nach einer Ablehnung den aktuellen Stand laden; 409 mit Turn (Ruling H fuer den Text)."""
-        turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+        turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
         if sitzung.liste:
             # Alter Weg in einem Listenkurs: nichts aus `completed + 1` vormerken (die Liste setzt die Nummer).
             task = _task(turn)
@@ -994,47 +1062,53 @@ class Bruecke:
 
     # ---- Routen -----------------------------------------------------------
     async def _r_kurse(self, request: Request) -> JSONResponse:
-        return self._json(200, [{"course_id": k.course_id, "titel": k.titel} for k in self._e.kurse])
+        actor = request.state.actor_id
+        return await self._ausfuehren(
+            lambda: [{"course_id": k.course_id, "titel": k.titel} for k in self._kurse_von(actor)], ablauf=False)
 
     async def _r_oeffnen(self, request: Request) -> JSONResponse:
         course_id = request.path_params["course_id"]
-        return await self._ausfuehren(lambda: self._oeffnen(course_id), ablauf=True)
+        actor = request.state.actor_id
+        return await self._ausfuehren(lambda: self._oeffnen(actor, course_id), ablauf=True)
 
     async def _r_neu(self, request: Request) -> JSONResponse:
         course_id = request.path_params["course_id"]
-        return await self._ausfuehren(lambda: self._oeffnen(course_id, neu=True), ablauf=True)
+        actor = request.state.actor_id
+        return await self._ausfuehren(lambda: self._oeffnen(actor, course_id, neu=True), ablauf=True)
 
-    def _abgeschlossen(self, kurs: Kurs) -> tuple[str, dict[str, Any]] | None:
+    def _abgeschlossen(self, actor: str, kurs: Kurs) -> tuple[str, dict[str, Any]] | None:
         """Der gemerkte abgeschlossene Durchlauf, wenn Learning ihn noch als beendet zeigt."""
-        sid = self._kursende.get(self._ende_schluessel(kurs))
+        sid = self._kursende.get(self._ende_schluessel(actor, kurs))
         if sid is None:
             return None
         try:
-            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(actor, "learning_task_next", "learning.task.next", session_id=sid))
         except LearningAbgelehnt as fehler:
             log.warning("Gemerktes Kursende abgelehnt, vergessen: %s", _typ(fehler))
-            self._ende_setzen(kurs, None)
+            self._ende_setzen(actor, kurs, None)
             return None
         if _task(turn) is not None or turn.get("state") != "completed":
-            self._ende_setzen(kurs, None)
+            self._ende_setzen(actor, kurs, None)
             return None
         return sid, turn
 
-    def _oeffnen(self, course_id: str, *, neu: bool = False) -> dict[str, Any]:
-        kurs = self._kurs(course_id)
-        ueberblick = self._lern.rufe("learning_course_overview", "learning.course.overview", course_id=kurs.course_id)
+    def _oeffnen(self, actor: str, course_id: str, *, neu: bool = False) -> dict[str, Any]:
+        kurs = self._kurs(actor, course_id)
+        ueberblick = self._rufe(actor, "learning_course_overview", "learning.course.overview",
+                                course_id=kurs.course_id)
         revision = ueberblick.get("course_revision")
         if isinstance(revision, bool) or not isinstance(revision, int):
             raise _Antwort(409, {"meldung": KEIN_KURS})
         laufend = ueberblick.get("session")
         sid = _uuid(str(laufend.get("session_id"))) if isinstance(laufend, dict) else None
         if neu:
-            self._ende_setzen(kurs, None)
-        elif sid is None and (ende := self._abgeschlossen(kurs)) is not None:
+            self._ende_setzen(actor, kurs, None)
+        elif sid is None and (ende := self._abgeschlossen(actor, kurs)) is not None:
             # Kursende: den beendeten Durchlauf zeigen (Bewertung), nichts neu starten.
             ende_sid, turn = ende
-            self._zuletzt = ende_sid
-            sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(kurs, ende_sid, liste=turn.get("ablauf") == "liste"))
+            self._zuletzt[actor] = ende_sid
+            sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(
+                kurs, ende_sid, actor, liste=turn.get("ablauf") == "liste"))
             self._zeigen(sitzung, turn)
             begriffe = ueberblick.get("begriffe")
             beendet = {
@@ -1050,8 +1124,8 @@ class Bruecke:
                 beendet["stand"] = {"ablauf": "liste"}
             return beendet
         if sid is None:
-            gestartet = _turn(self._lern.rufe(
-                "learning_session_start", "learning.session.start", course_id=kurs.course_id, schreibend=True,
+            gestartet = _turn(self._rufe(
+                actor, "learning_session_start", "learning.session.start", course_id=kurs.course_id, schreibend=True,
                 # Teil A2: neue Durchlaeufe sind feste Listen; fortgesetzte behalten, was Learning meldet.
                 payload={"course_revision": revision, "mode": "training", "blueprint": dict(TRAINING_BLUEPRINT),
                          "ablauf": "liste"},
@@ -1059,15 +1133,17 @@ class Bruecke:
             sid = _uuid(str(gestartet.get("session_id")))
             if sid is None:
                 raise LearningWeg("session_id")
-        turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+        turn = _turn(self._rufe(actor, "learning_task_next", "learning.task.next", session_id=sid))
         # Learning nennt fuer diesen Kurs genau diese Sitzung: aeltere gemerkte Sitzungen des Kurses
         # (abgebrochen, ersetzt) wuerden sonst die Sperre mit ihrer alten Aufgabe zuhalten.
-        for alt in [k for k, s in self._sitzungen.items() if s.kurs.course_id == kurs.course_id and k != sid]:
+        # Nur Sitzungen dieser Kennung: andere Personen im selben Kurs behalten ihre.
+        for alt in [k for k, s in self._sitzungen.items()
+                    if s.actor == actor and s.kurs.course_id == kurs.course_id and k != sid]:
             del self._sitzungen[alt]
         sitzung = self._sitzungen.get(sid)
-        if sitzung is None or sitzung.kurs.course_id != kurs.course_id:
-            sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid)
-        self._zuletzt = sid  # Hintergrundarbeiten frueherer Sitzungen entfallen ab hier
+        if sitzung is None or sitzung.kurs.course_id != kurs.course_id or sitzung.actor != actor:
+            sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid, actor)
+        self._zuletzt[actor] = sid  # Hintergrundarbeiten frueherer Sitzungen dieser Person entfallen ab hier
         sitzung.liste = turn.get("ablauf") == "liste"
         liste: dict[str, Any] = {}
         # Ein Turn ohne `ablauf` (alte Sitzung) laeuft anpassend wie bisher.
@@ -1170,19 +1246,22 @@ class Bruecke:
 
     async def _r_antwort(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
+        actor = request.state.actor_id
         return await self._mit_body(request, lambda body: (
-            self._listen_antwort(sid, body) if "nummer" in body else self._antwort(sid, body)), ablauf=True)
+            self._listen_antwort(actor, sid, body) if "nummer" in body else self._antwort(actor, sid, body)),
+            ablauf=True)
 
-    def _antwort(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _antwort(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision, answer = body.get("revision"), body.get("answer")
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1 or not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
-        sid, sitzung, _ = self._sitzung(sid_roh)
+        sid, sitzung, _ = self._sitzung(actor, sid_roh)
         beantwortet_id = sitzung.aufgabe_id or f"r{revision}"
         beantwortet_nr = sitzung.nummer
         try:
-            result = self._lern.rufe(
-                "learning_task_answer", "learning.task.answer", session_id=sid, expected_revision=revision,
+            result = self._rufe(
+                sitzung.actor, "learning_task_answer", "learning.task.answer", session_id=sid,
+                expected_revision=revision,
                 payload={"answer": answer}, schreibend=True,
             )
         except LearningAbgelehnt as fehler:
@@ -1204,18 +1283,19 @@ class Bruecke:
         """
         sitzung.auf_flaeche = False
         nummer = self._vormerken(sitzung, turn)
-        return {"turn": turn, "nummer": nummer, "begriffe": self._begriffe(sitzung.kurs)}
+        return {"turn": turn, "nummer": nummer, "begriffe": self._begriffe(sitzung)}
 
     async def _r_weiter(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._ausfuehren(lambda: self._weiter(sid), ablauf=True)
+        actor = request.state.actor_id
+        return await self._ausfuehren(lambda: self._weiter(actor, sid), ablauf=True)
 
-    def _weiter(self, sid_roh: str) -> dict[str, Any]:
-        sid, sitzung, turn = self._sitzung(sid_roh)
+    def _weiter(self, actor: str, sid_roh: str) -> dict[str, Any]:
+        sid, sitzung, turn = self._sitzung(actor, sid_roh)
         if sitzung.liste:
             return self._listen_weiter(sitzung)
         if turn is None:
-            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
         nummer, flaeche = self._zeigen(sitzung, turn)
         if flaeche:
             self._board_merken(sitzung)
@@ -1227,31 +1307,37 @@ class Bruecke:
     # Flaechensperre, der Modellaufruf in die Modellspur.
     async def _r_abgeben(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
+        actor = request.state.actor_id
         try:
             body = await self._body(request)
         except _Antwort as antwort:
             return self._json(antwort.status, antwort.body)
         if "nummer" in body:
-            return await self._ausfuehren(lambda: self._listen_abgeben(sid, body), ablauf=False, status=202)
-        return await self._ausfuehren(lambda: self._abgeben(sid, body), ablauf=True)
+            return await self._ausfuehren(lambda: self._listen_abgeben(actor, sid, body), ablauf=False, status=202)
+        return await self._ausfuehren(lambda: self._abgeben(actor, sid, body), ablauf=True)
 
     async def _r_korrektur(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
+        actor = request.state.actor_id
         return await self._mit_body(request, lambda body: (
-            self._listen_korrektur(sid, body) if "nummer" in body else self._korrektur(sid, body)), ablauf=True)
+            self._listen_korrektur(actor, sid, body) if "nummer" in body else self._korrektur(actor, sid, body)),
+            ablauf=True)
 
     async def _r_passt(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
+        actor = request.state.actor_id
         return await self._mit_body(request, lambda body: (
-            self._listen_passt(sid, body) if "nummer" in body else self._passt(sid, body)), ablauf=True)
+            self._listen_passt(actor, sid, body) if "nummer" in body else self._passt(actor, sid, body)), ablauf=True)
 
     async def _r_stand(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._ausfuehren(lambda: self._stand(self._listensitzung(sid)), ablauf=False)
+        actor = request.state.actor_id
+        return await self._ausfuehren(lambda: self._stand(self._listensitzung(actor, sid)), ablauf=False)
 
     async def _r_zeigen(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._mit_body(request, lambda body: self._listen_zeigen(sid, body), ablauf=False)
+        actor = request.state.actor_id
+        return await self._mit_body(request, lambda body: self._listen_zeigen(actor, sid, body), ablauf=False)
 
     def _flaechenaufgabe(
         self, sid: str, sitzung: _Sitzung, revision: int, turn: dict[str, Any] | None
@@ -1261,7 +1347,7 @@ class Bruecke:
         Prueft vor Schnappschuss und Modellaufruf: Revision der Seite, Aufgabe auf der Flaeche.
         """
         if turn is None:
-            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
         task = _task(turn)
         if task is None:
             self._stand_neu(sid, sitzung, "session_state_conflict")
@@ -1271,9 +1357,9 @@ class Bruecke:
             raise _Antwort(400, {"meldung": KEINE_FLAECHENAUFGABE})
         return task, _nummer(turn)
 
-    def _abgeben(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _abgeben(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision = _revision_aus(body)
-        sid, sitzung, turn = self._sitzung(sid_roh)
+        sid, sitzung, turn = self._sitzung(actor, sid_roh)
         task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
         # Deterministische Typen: nur das Ergebnisfeld (die Handschrift); Rubrik-Typen: der ganze Bereich.
         if task.get("type") in DETERMINISTISCHE_TYPEN:
@@ -1288,13 +1374,13 @@ class Bruecke:
         payload = {"handschrift_png_base64": base64.b64encode(png).decode("ascii")}
         return self._vorbewerten(sid, sitzung, revision, task, nummer, payload)
 
-    def _korrektur(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _korrektur(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision = _revision_aus(body)
         kennung = _vorbewertung_id_aus(body)
         answer = body.get("answer")
         if not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
-        sid, sitzung, turn = self._sitzung(sid_roh)
+        sid, sitzung, turn = self._sitzung(actor, sid_roh)
         task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
         if task.get("type") not in DETERMINISTISCHE_TYPEN:
             # Rubrik-Typen haben nichts Gelesenes (Spec): nur „Passt“ und „Überarbeiten“.
@@ -1307,8 +1393,9 @@ class Bruecke:
     ) -> dict[str, Any]:
         """`learning_task_preview`, dann die Karte zur Aufgabe; die Revision bleibt unveraendert."""
         try:
-            result = self._lern.rufe(
-                "learning_task_preview", "learning.task.preview", session_id=sid, expected_revision=revision,
+            result = self._rufe(
+                sitzung.actor, "learning_task_preview", "learning.task.preview", session_id=sid,
+                expected_revision=revision,
                 payload=payload, schreibend=True,
             )
         except LearningAbgelehnt as fehler:
@@ -1329,13 +1416,14 @@ class Bruecke:
             antwort["karte"] = leistentext(gelesen, urteil, text)
         return antwort
 
-    def _passt(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _passt(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision = _revision_aus(body)
         kennung = _vorbewertung_id_aus(body)
-        sid, sitzung, _ = self._sitzung(sid_roh)
+        sid, sitzung, _ = self._sitzung(actor, sid_roh)
         try:
-            result = self._lern.rufe(
-                "learning_task_confirm", "learning.task.confirm", session_id=sid, expected_revision=revision,
+            result = self._rufe(
+                sitzung.actor, "learning_task_confirm", "learning.task.confirm", session_id=sid,
+                expected_revision=revision,
                 payload={"vorbewertung_id": kennung}, schreibend=True,
             )
         except LearningAbgelehnt as fehler:
@@ -1344,7 +1432,7 @@ class Bruecke:
         # Gebucht wie `antwort`: KI frei, naechste Aufgabe merken; die Karte steht schon auf der Flaeche.
         self._frei(sitzung)
         if turn.get("state") == "completed":
-            self._ende_setzen(sitzung.kurs, sitzung.sid)
+            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
             self._bericht(sitzung, turn)
         antwort = {"rueckmeldung": None, **self._gebucht(sitzung, turn)}
         self._board_merken(sitzung)
@@ -1364,18 +1452,18 @@ class Bruecke:
     # ---- Listenkurs: Abgaben im Hintergrund, Stand je Aufgabe ----------------------------------------
     # Die Abgabestaende (`_abgaben`) leben nur im Speicher. Learning weiss, was bestaetigt ist und welche
     # Vorbewertung zuletzt gespeichert wurde; der Speicher ergaenzt nur „wird bewertet“ und „Fehler“.
-    def _listensitzung(self, sid_roh: str) -> _Sitzung:
-        _, sitzung, _ = self._sitzung(sid_roh)
+    def _listensitzung(self, actor: str, sid_roh: str) -> _Sitzung:
+        _, sitzung, _ = self._sitzung(actor, sid_roh)
         if not sitzung.liste:
             raise _Antwort(400, {"meldung": UNGUELTIG})
         return sitzung
 
     def _noch_offen(self, sitzung: _Sitzung) -> bool:
         """Ob Hintergrundarbeiten dieser Sitzung noch auf die Flaeche duerfen (zuletzt geoeffnet, nicht ersetzt)."""
-        return self._zuletzt == sitzung.sid and self._sitzungen.get(sitzung.sid) is sitzung
+        return self._zuletzt.get(sitzung.actor) == sitzung.sid and self._sitzungen.get(sitzung.sid) is sitzung
 
     def _liste_lesen(self, sitzung: _Sitzung) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        result = self._lern.rufe("learning_task_list", "learning.task.list", session_id=sitzung.sid)
+        result = self._rufe(sitzung.actor, "learning_task_list", "learning.task.list", session_id=sitzung.sid)
         return _turn(result), _listeneintraege(result)
 
     @staticmethod
@@ -1497,14 +1585,14 @@ class Bruecke:
         raise _Antwort(409, {"code": "schon_bestaetigt", "meldung": SCHON_BESTAETIGT,
                              "stand": self._stand_aus(sitzung.sid, eintraege, self._abgabestaende(sitzung.sid))})
 
-    def _listen_abgeben(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _listen_abgeben(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Bild jetzt aufnehmen, die Vorbewertung in die Modellspur; Antwort sofort (202).
 
         Die Nummer wird belegt, bevor das Bild kommt: eine zweite Abgabe derselben Nummer bekommt 409
         `laeuft_schon`. Scheitert etwas vor dem Einreihen, gilt wieder der vorige Stand der Nummer.
         """
         nummer = self._listennummer(body)
-        sitzung = self._listensitzung(sid_roh)
+        sitzung = self._listensitzung(actor, sid_roh)
         sid = sitzung.sid
         schluessel, arbeit = (sid, nummer), f"{sid}:abgabe:{nummer}"
         with self._abgaben_sperre:
@@ -1574,8 +1662,8 @@ class Bruecke:
         nummer = eintrag["nummer"]
         schluessel = (sitzung.sid, nummer)
         try:
-            result = self._lern.rufe(
-                "learning_task_preview", "learning.task.preview", session_id=sitzung.sid,
+            result = self._rufe(
+                sitzung.actor, "learning_task_preview", "learning.task.preview", session_id=sitzung.sid,
                 expected_revision=revision, payload=payload, schreibend=True,
             )
             vorbewertung = result.get("vorbewertung")
@@ -1635,14 +1723,14 @@ class Bruecke:
         except Exception as fehler:  # noqa: BLE001 - eine Karte darf die Spur nie anhalten
             log.warning("Rueckmeldung %d nicht gesetzt: %s", nummer, _typ(fehler))
 
-    def _listen_korrektur(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _listen_korrektur(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """„Falsch gelesen“ im Listenkurs: wie `_korrektur` (synchron, kurz), mit `attempt_id` und Rechteck."""
         nummer = self._listennummer(body)
         kennung = _vorbewertung_id_aus(body)
         answer = body.get("answer")
         if not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
-        sitzung = self._listensitzung(sid_roh)
+        sitzung = self._listensitzung(actor, sid_roh)
         sid, schluessel = sitzung.sid, (sitzung.sid, nummer)
         if self._laeuft(sid, nummer, self._abgabestaende(sid).get(nummer)):
             self._laeuft_schon(sitzung)
@@ -1655,8 +1743,8 @@ class Bruecke:
             raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
         rechteck = self._bereiche(eintraege)[nummer - 1]
         try:
-            result = self._lern.rufe(
-                "learning_task_preview", "learning.task.preview", session_id=sid,
+            result = self._rufe(
+                sitzung.actor, "learning_task_preview", "learning.task.preview", session_id=sid,
                 expected_revision=self._revision_von(turn), schreibend=True,
                 payload={"answer": answer, "korrigiert_aus": kennung, "attempt_id": eintrag["attempt_id"]},
             )
@@ -1685,7 +1773,7 @@ class Bruecke:
         antwort["stand"] = self._stand(sitzung)
         return antwort
 
-    def _listen_passt(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _listen_passt(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Vorbewertung der Nummer buchen, die naechste offene Aufgabe in Listenfolge zeigen.
 
         Antwort: `stand` plus `weiter_zu` (None am Kursende), `turn` und `begriffe`. Am Kursende wie heute
@@ -1693,13 +1781,13 @@ class Bruecke:
         """
         nummer = self._listennummer(body)
         kennung = _vorbewertung_id_aus(body)
-        sitzung = self._listensitzung(sid_roh)
+        sitzung = self._listensitzung(actor, sid_roh)
         vorher, eintraege = self._liste_lesen(sitzung)
         eintrag = self._eintrag_zu(eintraege, nummer)
         bereiche = self._bereiche(eintraege)
         try:
-            result = self._lern.rufe(
-                "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
+            result = self._rufe(
+                sitzung.actor, "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
                 expected_revision=self._revision_von(vorher), schreibend=True,
                 payload={"vorbewertung_id": kennung, "attempt_id": eintrag["attempt_id"]},
             )
@@ -1733,7 +1821,7 @@ class Bruecke:
         """
         self._listen_sperre(sitzung, turn)
         if turn.get("state") == "completed":
-            self._ende_setzen(sitzung.kurs, sitzung.sid)
+            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
             self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
         stand = self._stand_nach_buchung(sitzung, eintraege, nummer)
         self._listen_vormerken(sitzung, turn, stand["aktuell"])
@@ -1743,9 +1831,9 @@ class Bruecke:
             ziel = bereiche[weiter_zu - 1]
             self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
         self._board_merken(sitzung)
-        return {**stand, "weiter_zu": weiter_zu, "turn": turn, "begriffe": self._begriffe(sitzung.kurs)}
+        return {**stand, "weiter_zu": weiter_zu, "turn": turn, "begriffe": self._begriffe(sitzung)}
 
-    def _listen_antwort(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _listen_antwort(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Antwort aus der Seitenleiste (Typ `code`) im Listenkurs: mit `attempt_id` buchen, Rueckmeldung ans
         Rechteck der Nummer. Kein automatisches Weiter: die Seite zeigt die Rueckmeldung, dann `weiter`.
         """
@@ -1753,7 +1841,7 @@ class Bruecke:
         answer = body.get("answer")
         if not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
-        sitzung = self._listensitzung(sid_roh)
+        sitzung = self._listensitzung(actor, sid_roh)
         sid, schluessel = sitzung.sid, (sitzung.sid, nummer)
         if self._laeuft(sid, nummer, self._abgabestaende(sid).get(nummer)):
             self._laeuft_schon(sitzung)
@@ -1763,8 +1851,8 @@ class Bruecke:
             self._schon_bestaetigt(sitzung, eintraege)
         bereiche = self._bereiche(eintraege)
         try:
-            result = self._lern.rufe(
-                "learning_task_answer", "learning.task.answer", session_id=sid,
+            result = self._rufe(
+                sitzung.actor, "learning_task_answer", "learning.task.answer", session_id=sid,
                 expected_revision=self._revision_von(vorher), schreibend=True,
                 payload={"answer": answer, "attempt_id": eintrag["attempt_id"]},
             )
@@ -1795,7 +1883,7 @@ class Bruecke:
         self._listen_vormerken(sitzung, turn, stand["aktuell"])
         bereiche = self._bereiche(eintraege)
         if turn.get("state") == "completed":
-            self._ende_setzen(sitzung.kurs, sitzung.sid)
+            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
             self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
         ziel = bereiche[stand["aktuell"] - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
@@ -1813,10 +1901,10 @@ class Bruecke:
             neu = [{**e, "status": "bestaetigt"} if e["nummer"] == nummer else e for e in eintraege]
         return self._stand_aus(sitzung.sid, neu, abgaben)
 
-    def _listen_zeigen(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _listen_zeigen(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Die gewaehlte Aufgabe ins Bild holen (`bereich_zeigen`)."""
         nummer = self._listennummer(body)
-        sitzung = self._listensitzung(sid_roh)
+        sitzung = self._listensitzung(actor, sid_roh)
         _, eintraege = self._liste_lesen(sitzung)
         self._eintrag_zu(eintraege, nummer)
         rechteck = self._bereiche(eintraege)[nummer - 1]
@@ -1825,13 +1913,14 @@ class Bruecke:
 
     async def _r_zeichnung(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._mit_body(request, lambda body: self._zeichnung(sid, body), ablauf=True)
+        actor = request.state.actor_id
+        return await self._mit_body(request, lambda body: self._zeichnung(actor, sid, body), ablauf=True)
 
-    def _zeichnung(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _zeichnung(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision = body.get("revision")
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
             raise _Antwort(400, {"meldung": UNGUELTIG})
-        sid, sitzung, _ = self._sitzung(sid_roh)
+        sid, sitzung, _ = self._sitzung(actor, sid_roh)
         if sitzung.liste:
             # Ruling T5-c: die Seite ruft diese Route nicht (mehr); Zeichnungen gehen im Listenkurs ueber `abgeben`.
             raise _Antwort(409, {"code": "nicht_im_listenmodus", "meldung": NICHT_IM_LISTENMODUS,
@@ -1847,7 +1936,7 @@ class Bruecke:
             log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
             raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
         # 2. Aktueller Stand: Revision der Seite muss stimmen (sonst Doppelabgabe).
-        stand = _turn(self._lern.rufe("learning_progress_show", "learning.progress.show", session_id=sid))
+        stand = _turn(self._rufe(sitzung.actor, "learning_progress_show", "learning.progress.show", session_id=sid))
         task = _task(stand)
         if stand.get("session_revision") != revision or task is None:
             self._stand_neu(sid, sitzung, "session_revision_conflict" if task else "session_state_conflict")
@@ -1855,11 +1944,11 @@ class Bruecke:
             raise _Antwort(400, {"meldung": KEINE_ZEICHENAUFGABE})
         activity_id = task["id"]
         # Dieselbe Referenz fuer dieselbe Sitzung: die Learning-Flaeche bindet sie beim ersten Oeffnen.
-        ref = "hu-z-" + uuid5(_NAMENSRAUM, f"{sid}:{self._e.actor_id}").hex
+        ref = "hu-z-" + uuid5(_NAMENSRAUM, f"{sid}:{sitzung.actor}").hex
         try:
             # 3. open -> save -> submit wie deployment/zeichnen_routes.py.
-            offen = self._lern.rufe(
-                "learning_canvas_open", "learning.canvas.open", session_id=sid,
+            offen = self._rufe(
+                sitzung.actor, "learning_canvas_open", "learning.canvas.open", session_id=sid,
                 payload={"activity_id": activity_id, "session_ref": ref},
             )
             canvas = offen.get("canvas")
@@ -1876,15 +1965,17 @@ class Bruecke:
                     "asset_ref": f"artifact://learning/canvas/{sid}/{canvas_rev + 1}/snapshot.png",
                 }],
             }
-            self._lern.rufe(
-                "learning_canvas_save", "learning.canvas.save", session_id=sid, expected_revision=canvas_rev,
+            self._rufe(
+                sitzung.actor, "learning_canvas_save", "learning.canvas.save", session_id=sid,
+                expected_revision=canvas_rev,
                 schreibend=True,
                 payload={"session_ref": ref, "document": dokument,
                          "snapshot_png_base64": base64.b64encode(png).decode("ascii")},
             )
             abgabe = f"{sid}:{revision}"
-            eingereicht = self._lern.rufe(
-                "learning_canvas_submit", "learning.canvas.submit", session_id=sid, expected_revision=canvas_rev + 1,
+            eingereicht = self._rufe(
+                sitzung.actor, "learning_canvas_submit", "learning.canvas.submit", session_id=sid,
+                expected_revision=canvas_rev + 1,
                 schreibend=True,
                 # Die Person hat auf der Seite „Abgeben“ gedrueckt; das ist die Bestaetigung.
                 confirmation={"confirmed": True, "approval_ref": "hu-zeichnung-" + uuid5(_NAMENSRAUM, abgabe).hex[:16]},
@@ -1911,14 +2002,15 @@ class Bruecke:
             "rueckmeldung": text,
             "nummer": naechste,
             "flaeche": flaeche,
-            "begriffe": self._begriffe(sitzung.kurs),
+            "begriffe": self._begriffe(sitzung),
         }
 
     async def _r_erklaeren(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._mit_body(request, lambda body: self._erklaeren(sid, body), ablauf=False)
+        actor = request.state.actor_id
+        return await self._mit_body(request, lambda body: self._erklaeren(actor, sid, body), ablauf=False)
 
-    def _erklaeren(self, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _erklaeren(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         frage = body.get("frage")
         rueckfrage = isinstance(frage, str) and bool(frage.strip())
         if frage is None or (isinstance(frage, str) and not frage.strip()):
@@ -1926,13 +2018,13 @@ class Bruecke:
         if not isinstance(frage, str) or len(frage) > MAX_FRAGE:
             raise _Antwort(400, {"meldung": UNGUELTIG})
         frage = frage.strip()
-        sid, sitzung, _ = self._sitzung(sid_roh)
+        sid, sitzung, _ = self._sitzung(actor, sid_roh)
         # "Erklär mir das" und jede neue Aufgabe beginnen ein neues Gespraech.
         if not rueckfrage or sitzung.tutor_aufgabe != sitzung.aufgabe_id:
             sitzung.tutor, sitzung.tutor_aufgabe = [], sitzung.aufgabe_id
         # Stufe 1 ohne Schnappschuss: learning_tutor_ask nimmt kein Bild an.
-        result = self._lern.rufe(
-            "learning_tutor_ask", "learning.tutor.ask", course_id=sitzung.kurs.course_id, session_id=sid,
+        result = self._rufe(
+            sitzung.actor, "learning_tutor_ask", "learning.tutor.ask", course_id=sitzung.kurs.course_id, session_id=sid,
             payload={"question": _mit_verlauf(sitzung.tutor, frage)},
         )
         tutor = result.get("tutor")
@@ -1946,18 +2038,20 @@ class Bruecke:
 
     async def _r_hinweis(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
-        return await self._ausfuehren(lambda: self._hinweis(sid), ablauf=False)
+        actor = request.state.actor_id
+        return await self._ausfuehren(lambda: self._hinweis(actor, sid), ablauf=False)
 
-    def _hinweis(self, sid_roh: str) -> dict[str, Any]:
-        sid, _, turn = self._sitzung(sid_roh)
+    def _hinweis(self, actor: str, sid_roh: str) -> dict[str, Any]:
+        sid, sitzung, turn = self._sitzung(actor, sid_roh)
         if turn is None:
-            turn = _turn(self._lern.rufe("learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
         task = _task(turn)
         if task is None:
             raise _Antwort(409, {"meldung": KEIN_HINWEIS})
         try:
-            result = self._lern.rufe(
-                "learning_hint_request", "learning.hint.request", session_id=sid, payload={"task_id": task["id"]},
+            result = self._rufe(
+                sitzung.actor, "learning_hint_request", "learning.hint.request", session_id=sid,
+                payload={"task_id": task["id"]},
             )
         except LearningAbgelehnt as fehler:
             meldung = KEIN_HINWEIS_PRUEFUNG if "exam" in fehler.nachricht else KEIN_HINWEIS
@@ -1968,9 +2062,9 @@ class Bruecke:
         return {"hinweis": text}
 
     # ---- learning-api (REST) ---------------------------------------------
-    def _api(self, methode: str, pfad: str, *, json_body: dict[str, Any] | None = None,
+    def _api(self, methode: str, pfad: str, actor: str, *, json_body: dict[str, Any] | None = None,
              params: dict[str, str] | None = None) -> httpx.Response:
-        kopf = {_SERVICE_HEADER: self._e.dienst_schluessel, _ACTOR_HEADER: self._e.actor_id}
+        kopf = {_SERVICE_HEADER: self._e.dienst_schluessel, _ACTOR_HEADER: actor}
         try:
             return self._http.request(
                 methode, self._e.api_url.rstrip("/") + pfad, headers=kopf, json=json_body, params=params,
@@ -2067,11 +2161,12 @@ class Bruecke:
 
     async def _r_notizen(self, request: Request) -> JSONResponse:
         course_id = request.query_params.get("course_id", "")
-        return await self._ausfuehren(lambda: self._notizen(course_id), ablauf=False)
+        actor = request.state.actor_id
+        return await self._ausfuehren(lambda: self._notizen(actor, course_id), ablauf=False)
 
-    def _notizen(self, course_id: str) -> dict[str, Any]:
-        kurs = self._kurs(course_id)
-        daten = self._api_json(self._api("GET", "/api/v1/notizen", params={"quelle": "bewertung"}))
+    def _notizen(self, actor: str, course_id: str) -> dict[str, Any]:
+        kurs = self._kurs(actor, course_id)
+        daten = self._api_json(self._api("GET", "/api/v1/notizen", actor, params={"quelle": "bewertung"}))
         notizen = daten.get("notes")
         if not isinstance(notizen, list):
             raise LearningWeg("notes")
@@ -2082,19 +2177,21 @@ class Bruecke:
 
     async def _r_bewertung(self, request: Request) -> JSONResponse:
         course_id = request.path_params["course_id"]
+        actor = request.state.actor_id
         if request.method == "GET":
-            return await self._ausfuehren(lambda: self._bewertung_lesen(course_id), ablauf=False)
-        return await self._mit_body(request, lambda body: self._bewertung_abgeben(course_id, body), ablauf=False)
+            return await self._ausfuehren(lambda: self._bewertung_lesen(actor, course_id), ablauf=False)
+        return await self._mit_body(
+            request, lambda body: self._bewertung_abgeben(actor, course_id, body), ablauf=False)
 
-    def _bewertung_lesen(self, course_id: str) -> dict[str, Any]:
-        kurs = self._kurs(course_id)
-        antwort = self._api("GET", f"/api/v1/kursbewertung/{kurs.course_id}")
+    def _bewertung_lesen(self, actor: str, course_id: str) -> dict[str, Any]:
+        kurs = self._kurs(actor, course_id)
+        antwort = self._api("GET", f"/api/v1/kursbewertung/{kurs.course_id}", actor)
         if antwort.status_code == 404:
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
         return self._api_json(antwort)
 
-    def _bewertung_abgeben(self, course_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        kurs = self._kurs(course_id)
+    def _bewertung_abgeben(self, actor: str, course_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        kurs = self._kurs(actor, course_id)
         smiley, stichworte = body.get("smiley"), body.get("stichworte", [])
         if not isinstance(smiley, str) or smiley not in SMILEYS:
             raise _Antwort(400, {"code": "smiley_unbekannt", "meldung": SMILEY_UNBEKANNT})
@@ -2102,7 +2199,7 @@ class Bruecke:
             raise _Antwort(400, {"code": "invalid_request", "meldung": UNGUELTIG})
         if len(stichworte) > 3:
             raise _Antwort(400, {"code": "zu_viele_stichworte", "meldung": ZU_VIELE_STICHWORTE})
-        antwort = self._api("POST", "/api/v1/kursbewertung", json_body={
+        antwort = self._api("POST", "/api/v1/kursbewertung", actor, json_body={
             "course_id": kurs.course_id,
             "kurs_titel": kurs.titel,
             "smiley": smiley,

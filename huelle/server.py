@@ -14,6 +14,7 @@ import httpx
 from .bruecke import Bruecke
 from .durchreicher import Durchreicher
 from .einstellung import Einstellung, einstellung_lesen
+from .katalog import TIMEOUT_S, Katalog
 from .lern_mcp import LernMcp
 from .penecho_mcp import PenEchoMcp
 from .seite_app import seite_app
@@ -39,12 +40,14 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
     )
     bruecke = Bruecke(
         einstellung,
-        LernMcp(einstellung.mcp_url, einstellung.actor_id),
+        # Ohne Vorgabe-Kennung: jeder Aufruf nennt die Kennung der Anfrage (request.state.actor_id).
+        LernMcp(einstellung.mcp_url),
         PenEchoMcp(Path(einstellung.penecho_state), url=einstellung.penecho_mcp_url),
         sperre,
         httpx.Client(timeout=30.0, follow_redirects=False),
         # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).
         Path(einstellung.penecho_state).parent / "learning-huelle" / "kursende.json",
+        katalog=Katalog(einstellung, httpx.Client(timeout=TIMEOUT_S, follow_redirects=False)),
     )
     return Weiche(einstellung, seite_app(einstellung), bruecke), FlaechenWeiche(einstellung, durchreicher), bruecke
 

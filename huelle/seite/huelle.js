@@ -1,7 +1,8 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
   antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
-  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, leistenKnoepfe, leistenZustand, meldungFuer,
+  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kursVorwahl, leistenKnoepfe, leistenZustand,
+  meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import { flaecheSpeichern } from "./flaeche.js";
@@ -964,8 +965,8 @@ async function start() {
   z.kurse = r.daten;
   const wahl = $("kurs");
   wahl.replaceChildren(...z.kurse.map((k) => el("option", { value: k.course_id, text: k.titel })));
-  const gemerkt = speicher("lesen", "huelle-kurs");
-  if (gemerkt && z.kurse.some((k) => k.course_id === gemerkt)) wahl.value = gemerkt;
+  // `?kurs=` aus der Übergabe der Kursübersicht wählt vor; sonst der gemerkte Kurs.
+  wahl.value = kursVorwahl(location.search, z.kurse, speicher("lesen", "huelle-kurs"));
   wahl.addEventListener("change", () => {
     speicher("schreiben", "huelle-kurs", wahl.value);
     void kursOeffnen(z.kurse.find((k) => k.course_id === wahl.value));
