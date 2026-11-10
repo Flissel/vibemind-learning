@@ -10,7 +10,7 @@ export const ZEITLIMIT_MS = 15000; // laenger als das Zeitlimit der Flaeche (10 
 export const KENNUNG_SCHLUESSEL = "lernflaeche-kennung";
 const KENNUNG_MUSTER = /^lf-[0-9a-f]{32}$/;
 
-export function flaechenKennung({ speicher, zufall = (feld) => globalThis.crypto.getRandomValues(feld) } = {}) {
+export function flaechenKennung({ speicher, zufall } = {}) {
   try {
     // Schon der Zugriff auf sessionStorage wirft, wenn der Browser Speicher sperrt.
     if (speicher === undefined) speicher = globalThis.sessionStorage;
@@ -19,20 +19,29 @@ export function flaechenKennung({ speicher, zufall = (feld) => globalThis.crypto
   } catch {
     // gesperrter Speicher: dann gilt die Kennung nur bis zum Neuladen
   }
-  const feld = zufall(new Uint8Array(16));
+  return neueFlaechenKennung({ speicher, zufall });
+}
+
+// Immer eine neue Kennung (auch wenn die gespeicherte gueltig ist) und in sessionStorage ablegen.
+export function neueFlaechenKennung({ speicher, zufall = (feld) => globalThis.crypto.getRandomValues(feld) } = {}) {
+  const feld = new Uint8Array(16);
+  zufall(feld);
   const neu = "lf-" + Array.from(feld, (b) => b.toString(16).padStart(2, "0")).join("");
   try {
+    if (speicher === undefined) speicher = globalThis.sessionStorage;
     speicher?.setItem(KENNUNG_SCHLUESSEL, neu);
   } catch {
-    // wie oben
+    // gesperrter Speicher: die Kennung gilt nur bis zum Neuladen
   }
   return neu;
 }
 
-export function flaechenAdresse(basis, kennung) {
+// `basis` darf relativ sein (data-src="/?lernen=1" ohne eigene Flaechenadresse): sie wird gegen die Adresse der
+// Seite aufgeloest, damit die Kennung immer in der URL steht.
+export function flaechenAdresse(basis, kennung, herkunft = globalThis.location?.href) {
   if (typeof kennung !== "string" || !KENNUNG_MUSTER.test(kennung)) return basis;
   try {
-    const url = new URL(basis);
+    const url = new URL(basis, herkunft);
     url.searchParams.set("flaeche", kennung);
     return url.toString();
   } catch {
@@ -42,6 +51,54 @@ export function flaechenAdresse(basis, kennung) {
 
 export function flaechenKopf(kennung) {
   return typeof kennung === "string" && KENNUNG_MUSTER.test(kennung) ? { "X-Lernflaeche": kennung } : {};
+}
+
+// Fix-Runde 1: gehoert die Kennung des Tabs einer anderen Person (Personenwechsel im selben Tab), antwortet die
+// Bruecke wie ohne Flaeche und setzt den Kopf `X-Lernflaeche-Kennung: belegt`. Die Seite vergibt dann eine neue
+// Kennung, laedt die Flaeche mit ihr neu und wiederholt die ausloesende Anfrage hoechstens einmal.
+export const BELEGT_KOPF = "x-lernflaeche-kennung";
+export const WARTEN_MS = 10000; // laengstens so lange auf das Neuladen der Flaeche warten
+
+export function kennungBelegt(antwort) {
+  try {
+    return antwort?.headers?.get?.(BELEGT_KOPF) === "belegt";
+  } catch {
+    return false;
+  }
+}
+
+export function flaecheErneuern({ rahmen, speicher, zufall, wartenMs = WARTEN_MS } = {}) {
+  const kennung = neueFlaechenKennung({ speicher, zufall });
+  if (!rahmen?.dataset?.src) return Promise.resolve(kennung);
+  return new Promise((fertig) => {
+    let uhr = null;
+    const geladen = () => {
+      clearTimeout(uhr);
+      rahmen.removeEventListener("load", geladen);
+      fertig(kennung);
+    };
+    uhr = setTimeout(geladen, wartenMs);
+    rahmen.addEventListener("load", geladen);
+    rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
+  });
+}
+
+// Nur Anfragen, die nichts buchen, werden wiederholt (lesen, oeffnen, weiter, zeigen); eine Antwort oder Abgabe
+// ginge sonst doppelt ein oder liefe gegen die frische, leere Flaeche. Dort reicht die neue Kennung fuer den
+// naechsten Versuch der Person.
+export function wiederholbar(methode, pfad) {
+  if (methode === "GET") return true;
+  return /\/(oeffnen|weiter|zeigen)$/.test(String(pfad).split("?")[0]);
+}
+
+export async function mitFlaechenKennung(senden, { erneuern, wiederholbar: nochmal }) {
+  const erst = await senden();
+  if (!erst?.belegt) return erst;
+  await erneuern();
+  if (!nochmal) return erst;
+  const zweit = await senden();
+  if (zweit?.belegt) await erneuern(); // keine zweite Wiederholung; die Seite zeigt „Flaeche verbinden“
+  return zweit;
 }
 
 // `code` (maschinenlesbar, die Seite entscheidet nur danach): gespeichert | geaendert | leer | kein_knopf |

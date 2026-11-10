@@ -3555,3 +3555,82 @@ def test_ohne_kopf_wie_bisher(tmp_path, caplog: pytest.LogCaptureFixture, kopf: 
     assert mcp.flaechen() == {"pe-ohne"}
     if kopf:
         assert kopf not in caplog.text
+
+
+# ---- Task 6, Fix-Runde 1 ---------------------------------------------------------------------------------------
+
+BELEGT_KOPF = "x-lernflaeche-kennung"
+
+
+def test_fremde_kennung_ohne_eigene_flaeche_nie_der_alte_weg(tmp_path) -> None:
+    """Personenwechsel im selben Tab: sessionStorage behaelt As Kennung, Bs Sitzung war nie an eine Flaeche gebunden.
+
+    Nie der alte Weg (start_session ohne canvasId = zuletzt verbundener Browser): die Antwort ist wie bei nicht
+    erreichbarer Flaeche, dazu der Kopf `X-Lernflaeche-Kennung: belegt`. Mit neuer Kennung bekommt B die eigene.
+    """
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    a = _tab(weiche, PA, KA)
+    r = a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+    assert r.status_code == 200 and r.json()["flaeche"] is True and BELEGT_KOPF not in r.headers
+    b = _tab(weiche, PB, KA)
+    vorher = len(mcp.aufrufe)
+    r = b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+    assert r.status_code == 200, r.text
+    assert r.json()["flaeche"] is False and r.headers[BELEGT_KOPF] == "belegt"
+    r = b.post(f"/lernen/api/sitzungen/{SID_PB}/abgeben", json={"revision": 1})
+    assert r.headers[BELEGT_KOPF] == "belegt"
+    # Nichts an As Flaeche, nichts an "den zuletzt verbundenen Browser", kein start_session ohne canvasId.
+    assert mcp.aufrufe[vorher:] == []
+    # Die Seite erneuert die Kennung: jetzt die eigene Flaeche von B.
+    b.headers[KOPF] = KB
+    r = b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+    assert r.status_code == 200 and r.json()["flaeche"] is True and BELEGT_KOPF not in r.headers
+    assert mcp.starts()[-1]["canvasId"] == KB and mcp.flaechen(vorher) == {"pe-" + KB}
+    assert all("canvasId" in s for s in mcp.starts())
+
+
+def test_fremde_kennung_bei_gebundener_sitzung_meldet_belegt(tmp_path) -> None:
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    a, b = _tab(weiche, PA, KA), _tab(weiche, PB, KB)
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    b.headers[KOPF] = KA
+    vorher = len(mcp.aufrufe)
+    r = b.post(f"/lernen/api/sitzungen/{SID_PB}/abgeben", json={"revision": 1})
+    assert r.headers[BELEGT_KOPF] == "belegt"  # die Seite erneuert die Kennung
+    assert mcp.flaechen(vorher) <= {"pe-" + KB}  # B bleibt auf der eigenen Flaeche, nie As
+
+
+def test_lesende_anfragen_binden_nicht_um(tmp_path) -> None:
+    """Tab 1 fragt weiter den Stand ab, Tab 2 hat die Sitzung uebernommen: die Bindung bleibt bei Tab 2."""
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    alt, neu = _tab(weiche, PA, KA), _tab(weiche, PA, KA2)
+    assert alt.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert neu.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    alt.get(f"/lernen/api/sitzungen/{SID_PA}/stand")
+    alt.post(f"/lernen/api/sitzungen/{SID_PA}/hinweis")
+    alt.post(f"/lernen/api/sitzungen/{SID_PA}/erklaeren", json={})
+    alt.get(f"/lernen/api/notizen?course_id={KURS_P}")
+    ohne = _tab(weiche, PA, None)
+    vorher = len(mcp.aufrufe)
+    ohne.post(f"/lernen/api/sitzungen/{SID_PA}/abgeben", json={"revision": 1})
+    assert mcp.flaechen(vorher) == {"pe-" + KA2}
+    # Eine aendernde Anfrage aus Tab 1 holt die Sitzung dagegen zurueck.
+    vorher = len(mcp.aufrufe)
+    alt.post(f"/lernen/api/sitzungen/{SID_PA}/abgeben", json={"revision": 1})
+    assert mcp.flaechen(vorher) == {"pe-" + KA}
+
+
+def test_personen_cookie_ohne_kopf_wie_bisher(tmp_path) -> None:
+    """Alter Tab einer LearnHouse-Person (Seite vor Teil B, ohne Kopf): bisheriges Verhalten."""
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    a = _tab(weiche, PA, None)
+    r = a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+    assert r.status_code == 200 and r.json()["flaeche"] is True and BELEGT_KOPF not in r.headers
+    assert mcp.starts() == [{"title": mcp.starts()[0]["title"], "sessionKey": "learning-huelle:" + SID_PA,
+                             "restore": True}]
+    assert mcp.flaechen() == {"pe-ohne"}

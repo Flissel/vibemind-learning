@@ -25,7 +25,11 @@ Katalog (Notweg: Umgebung; sonst LearnHouse). Geloggt werden nur Typnamen.
 
 Eigene Flaeche je Person (Teil B): die Seite schickt die Flaechen-Kennung ihres Tabs im Kopf `X-Lernflaeche`. Die
 Sitzung merkt sich die Kennung (`_flaeche_binden`), jeder Flaechenaufruf laeuft ueber die Sitzung auf genau diesem
-Tab. Ohne gueltigen Kopf bleibt alles wie bisher (Telegram-Notweg, alte Tabs).
+Tab. Ohne gueltigen Kopf bleibt alles wie bisher (Telegram-Notweg, alte Tabs). Nur Routen, die etwas aendern
+(`UMBINDEN`), holen eine Sitzung auf einen anderen Tab; lesende (`stand`, `hinweis`, ...) nie. Schickt eine Person die
+gueltige Kennung einer anderen Person (Personenwechsel im selben Tab), antwortet die Bruecke mit dem Kopf
+`X-Lernflaeche-Kennung: belegt`; eine Sitzung ohne eigene Flaeche nimmt dann nie den alten Weg (zuletzt verbundener
+Browser), sondern gilt als ohne Flaeche, bis eine eigene Kennung kommt. Die Seite vergibt darauf eine neue Kennung.
 """
 
 from __future__ import annotations
@@ -154,8 +158,23 @@ _ACTOR_HEADER = "X-Learning-Actor"
 FLAECHEN_KOPF = b"x-lernflaeche"
 FLAECHEN_KENNUNG = re.compile(r"lf-[0-9a-f]{32}")
 MAX_FLAECHEN = 10_000  # gemerkte Kennung -> Person; darueber faellt die aelteste heraus
-# Kennung der laufenden Anfrage (gueltig oder None); `run_in_threadpool` nimmt sie in die Arbeit mit.
-_FLAECHE: ContextVar[str | None] = ContextVar("lernflaeche", default=None)
+# Antwortkopf, wenn die Kennung der Anfrage einer anderen Person gehoert: die Seite vergibt dann eine neue.
+BELEGT_KOPF = b"x-lernflaeche-kennung"
+BELEGT = b"belegt"
+# Nur diese Routen (POST, letzter Pfadteil) binden eine Sitzung an den Tab der Anfrage; lesende nie.
+UMBINDEN = frozenset({"oeffnen", "neu", "antwort", "weiter", "zeichnung", "abgeben", "korrektur", "passt", "zeigen"})
+
+
+@dataclass
+class _Anfrage:
+    """Flaechenstand der laufenden Anfrage; `run_in_threadpool` nimmt ihn in die Arbeit mit (dasselbe Objekt)."""
+
+    kennung: str | None             # gueltige Kennung aus dem Kopf X-Lernflaeche, sonst None
+    umbinden: bool                  # Route darf die Sitzung an diesen Tab holen
+    belegt: bool = False            # Kennung gehoert einer anderen Person: Antwortkopf setzen
+
+
+_ANFRAGE: ContextVar[_Anfrage | None] = ContextVar("lernflaeche", default=None)
 # Bilder der Aufgaben (gezeichnete Graphen, Terminalfenster) liegen bei learning-api; die Seite holt sie
 # ueber die eigene Route. Gleiches Namensmuster wie der Fork (practice.py `_MEDIA_PATH`).
 MEDIEN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(png|jpg|webp)$")
@@ -193,6 +212,9 @@ class _Sitzung:
     bericht_gezeigt: bool = False   # Bericht dieser Sitzung steht auf dem Board
     liste: bool = False             # Listenkurs (Turn mit `ablauf == "liste"`): Routen mit `nummer`
     flaeche: str | None = None      # Teil B: Flaechen-Kennung (canvasId) des Tabs der Person; None = wie bisher
+    # Kam eine fremde Kennung, solange die Sitzung keine eigene Flaeche hat: nie der alte Weg (auch nicht im
+    # Hintergrund), bis eine eigene Kennung oder eine Anfrage ganz ohne Kopf kommt.
+    kennung_pflicht: bool = False
 
 
 @dataclass(frozen=True)
@@ -572,11 +594,20 @@ class Bruecke:
             if not isinstance(actor, str) or ACTOR_MUSTER.fullmatch(actor) is None:
                 await self._json(403, {"meldung": NICHT_ERLAUBT})(scope, receive, send)
                 return
-            marke = _FLAECHE.set(_flaeche_aus(scope))
+            pfad = str(scope.get("path") or "")
+            anfrage = _Anfrage(_flaeche_aus(scope),
+                               scope.get("method") == "POST" and pfad.rstrip("/").rsplit("/", 1)[-1] in UMBINDEN)
+
+            async def senden(nachricht: dict[str, Any]) -> None:
+                if nachricht.get("type") == "http.response.start" and anfrage.belegt:
+                    nachricht = {**nachricht, "headers": [*nachricht.get("headers", ()), (BELEGT_KOPF, BELEGT)]}
+                await send(nachricht)
+
+            marke = _ANFRAGE.set(anfrage)
             try:
-                await self._app(scope, receive, send)
+                await self._app(scope, receive, senden)
             finally:
-                _FLAECHE.reset(marke)
+                _ANFRAGE.reset(marke)
             return
         await self._app(scope, receive, send)
 
@@ -749,25 +780,44 @@ class Bruecke:
         """Flaechen-Kennung dieser Anfrage (Kopf X-Lernflaeche) an die Sitzung binden (Teil B).
 
         Die Sitzung gehoert schon der fragenden Person (`_sitzung`, `_oeffnen`). Eine Kennung gehoert der ersten
-        Person, die sie schickt; eine fremde zaehlt wie keine, die Sitzung bleibt auf ihrer Flaeche. Ohne Kopf
-        bleibt die Bindung, wie sie ist. Kommt die Person aus einem neuen Tab, kommt die aktuelle Aufgabe dort
-        neu ins Bild (`auf_flaeche`); das Board selbst bindet `PenEchoMcp.sitzung` per documentId um.
+        Person, die sie schickt; eine fremde bindet nie: die Antwort traegt `X-Lernflaeche-Kennung: belegt`, und
+        eine Sitzung ohne eigene Flaeche nimmt nicht den alten Weg (`kennung_pflicht`). Ohne Kopf bleibt die
+        Bindung, wie sie ist. Nur aendernde Routen (`UMBINDEN`) holen die Sitzung auf einen anderen Tab; kommt die
+        Person aus einem neuen Tab, kommt die aktuelle Aufgabe dort neu ins Bild (`auf_flaeche`); das Board selbst
+        bindet `PenEchoMcp.sitzung` per documentId um.
         """
-        kennung = _FLAECHE.get()
-        if kennung is None or kennung == sitzung.flaeche:
+        anfrage = _ANFRAGE.get()
+        if anfrage is None:
+            return  # Hintergrundarbeit: keine Anfrage, nichts zu binden
+        kennung = anfrage.kennung
+        if kennung is None:
+            if anfrage.umbinden:
+                sitzung.kennung_pflicht = False  # Anfrage ganz ohne Kopf (alter Tab, Notweg): wie bisher
+            return
+        if kennung == sitzung.flaeche:
             return
         besitzer = self._flaechen.setdefault(kennung, sitzung.actor)
         if len(self._flaechen) > MAX_FLAECHEN:
             self._flaechen.pop(next(iter(self._flaechen)), None)
         if besitzer != sitzung.actor:
             log.warning("Flaechen-Kennung einer anderen Person, nicht gebunden")
+            anfrage.belegt = True
+            if sitzung.flaeche is None:
+                sitzung.kennung_pflicht = True
             return
+        if not anfrage.umbinden:
+            return  # lesende Anfrage aus einem anderen Tab: die Sitzung bleibt, wo sie ist
         sitzung.flaeche = kennung
+        sitzung.kennung_pflicht = False
         sitzung.auf_flaeche = False
 
     def _penecho_sitzung(self, sitzung: _Sitzung, titel: str) -> str:
         flaeche = sitzung.flaeche
         if flaeche is None:
+            anfrage = _ANFRAGE.get()
+            if sitzung.kennung_pflicht or (anfrage is not None and anfrage.belegt):
+                # Fremde Kennung, keine eigene Flaeche: nie der zuletzt verbundene Browser.
+                raise PenEchoNichtErreichbar("flaeche_belegt")
             return self._penecho.sitzung(sitzung.sid, titel)  # ohne Kennung genau wie bisher
         return self._penecho.sitzung(sitzung.sid, titel, canvas_id=flaeche)
 

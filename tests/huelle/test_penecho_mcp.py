@@ -1569,8 +1569,8 @@ KB = "lf-" + "b" * 32
 def _tab_fake(fake: Fake, *, konflikt: int = 0, verloren: bool = False):
     """start_session: sessionId und documentId je canvasId (ein Tab = eine Flaeche); mit documentId bleibt es dieses.
 
-    `konflikt`: so oft session_key_conflict, wenn documentId mitkommt (Bindung des Schluessels zeigt auf ein
-    anderes Dokument). `verloren`: start_session mit documentId meldet STORAGE_UNAVAILABLE.
+    `konflikt`: so oft session_key_conflict, wenn documentId mitkommt und der Schluessel der feste ist (ohne `#`;
+    seine Bindung zeigt auf ein anderes Dokument). `verloren`: start_session mit documentId meldet STORAGE_UNAVAILABLE.
     """
     echt = fake.__call__
     rest = {"konflikt": konflikt}
@@ -1581,7 +1581,7 @@ def _tab_fake(fake: Fake, *, konflikt: int = 0, verloren: bool = False):
             return echt(request)
         fake.anfragen.append((body, request.headers))
         args = body["params"]["arguments"]
-        if args.get("documentId") and rest["konflikt"] > 0:
+        if args.get("documentId") and "#" not in args["sessionKey"] and rest["konflikt"] > 0:
             rest["konflikt"] -= 1
             return _fehler(body, "session_key_conflict")
         if args.get("documentId") and verloren:
@@ -1672,3 +1672,39 @@ def test_ohne_canvas_id_genau_wie_bisher(zustand: Path) -> None:
     fake = Fake()
     assert _client(zustand, fake).sitzung(LERN_SID, TITEL, canvas_id=None) == "sess-1"
     assert _starts(fake) == [{"title": TITEL, "sessionKey": "learning-huelle:" + LERN_SID, "restore": True}]
+
+
+# ---- Task 6, Fix-Runde 1 ---------------------------------------------------------------------------------------
+
+def test_schluessel_belegt_und_dann_verloren_gibt_neues_board_mit_frischem_schluessel(zustand: Path) -> None:
+    """Der Wiederholungsversuch nach session_key_conflict findet das Board nicht: neues Board, frischer Schluessel."""
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake, konflikt=1, verloren=True)))
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    erst, zweit, dritt = _starts(fake)
+    assert "#" not in erst["sessionKey"] and erst["documentId"] == DOK
+    assert "#" in zweit["sessionKey"] and zweit["documentId"] == DOK
+    assert dritt["canvasId"] == KA and "documentId" not in dritt and "#" in dritt["sessionKey"]
+    assert fake.aufrufe("penecho_list_canvases") == [] and fake.aufrufe("penecho_open_canvas") == []
+    assert _merkdatei(zustand, DOKUMENTE) == {LERN_SID: "doc-" + KA}
+
+
+def test_frischer_schluessel_wird_gemerkt(zustand: Path) -> None:
+    """Wie `ersatz` im alten Weg: nach `vergessen` (oder Neustart) gleich der frische Schluessel, kein neuer Konflikt."""
+    _dokument_merken(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake, konflikt=5)))
+    c.sitzung(LERN_SID, TITEL, canvas_id=KA)
+    frisch = _starts(fake)[1]["sessionKey"]
+    assert "#" in frisch
+    c.vergessen(LERN_SID)
+    neu = PenEchoMcp(zustand, transport=httpx.MockTransport(_tab_fake(fake, konflikt=5)))
+    assert neu.sitzung(LERN_SID, TITEL, canvas_id=KA) == "pe-" + KA
+    starts = _starts(fake)
+    assert len(starts) == 3 and starts[2]["sessionKey"] == frisch and starts[2]["documentId"] == DOK
+    # Der alte Weg (ohne Tab) behaelt seinen eigenen Ersatz-Schluessel; der Tab-Schluessel stoert ihn nicht.
+    neu.vergessen(LERN_SID)
+    alt = Fake()
+    assert _client(zustand, alt).sitzung(LERN_SID, TITEL) == "sess-1"
+    assert _starts(alt)[0]["sessionKey"] == "learning-huelle:" + LERN_SID

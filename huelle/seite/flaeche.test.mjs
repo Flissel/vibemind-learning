@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { flaecheSpeichern, flaechenAdresse, flaechenKennung, flaechenKopf, KENNUNG_SCHLUESSEL } from "./flaeche.js";
+import {
+  BELEGT_KOPF, flaecheErneuern, flaecheSpeichern, flaechenAdresse, flaechenKennung, flaechenKopf, KENNUNG_SCHLUESSEL,
+  kennungBelegt, mitFlaechenKennung, wiederholbar,
+} from "./flaeche.js";
 
 const FLAECHE = "https://flaeche.example.test";
 
@@ -141,11 +144,92 @@ test("huelle.js setzt die iframe-URL und schickt den Kopf an jede API-Anfrage", 
   const { readFile } = await import("node:fs/promises");
   const huelle = await readFile(new URL("./huelle.js", import.meta.url), "utf8");
   const seite = await readFile(new URL("./index.html", import.meta.url), "utf8");
-  assert.match(huelle, /const KENNUNG = flaechenKennung\(\);/);
-  assert.match(huelle, /rahmen\.src = flaechenAdresse\(rahmen\.dataset\.src, KENNUNG\);/);
-  assert.match(huelle, /headers: \{ \.\.\.flaechenKopf\(KENNUNG\), \.\.\.\(body === undefined \? \{\} : \{ "content-type": "application\/json" \}\) \}/);
-  assert.equal((huelle.match(/fetch\(/g) || []).length, 1); // nur api() fragt die Brücke
+  assert.match(huelle, /let kennung = flaechenKennung\(\);/);
+  // Fix-Runde 1: ohne data-src (fremde Seite, Test) bleibt der Rahmen unberührt.
+  assert.match(huelle, /if \(rahmen\.dataset\.src\) rahmen\.src = flaechenAdresse\(rahmen\.dataset\.src, kennung\);/);
+  assert.match(huelle, /headers: \{ \.\.\.flaechenKopf\(kennung\), \.\.\.\(body === undefined \? \{\} : \{ "content-type": "application\/json" \}\) \}/);
+  assert.match(huelle, /belegt: kennungBelegt\(antwort\)/);
+  // api() geht über mitFlaechenKennung: „belegt“ -> neue Kennung, Rahmen neu, höchstens eine Wiederholung.
+  assert.match(huelle, /return mitFlaechenKennung\(\(\) => anfrage\(methode, pfad, body\), \{/);
+  assert.match(huelle, /kennung = await flaecheErneuern\(\{ rahmen: \$\("rahmen"\) \}\);/);
+  assert.match(huelle, /wiederholbar: wiederholbar\(methode, pfad\),/);
+  assert.equal((huelle.match(/fetch\(/g) || []).length, 1); // nur anfrage() fragt die Brücke
   // Der Rahmen lädt erst mit Kennung (sonst meldete sich der Tab zuerst ohne sie beim MCP).
   assert.match(seite, /<iframe id="rahmen" data-src="<!--FLAECHE-->\/\?lernen=1" title="Fläche"><\/iframe>/);
   assert.doesNotMatch(seite, /<iframe id="rahmen" src=/);
+});
+
+// ---- Task 6, Fix-Runde 1 ---------------------------------------------------------------------------------------
+
+test("Flächen-Adresse: relative Basis wird absolut, die Kennung steht immer in der URL", () => {
+  const k = "lf-" + "a".repeat(32);
+  assert.equal(flaechenAdresse("/?lernen=1", k, "https://lernen.example.test/lernen/"),
+    `https://lernen.example.test/?lernen=1&flaeche=${k}`);
+  assert.equal(flaechenAdresse("?lernen=1", k, "http://127.0.0.1:8151/"), `http://127.0.0.1:8151/?lernen=1&flaeche=${k}`);
+});
+
+test("Kennzeichen belegt: nur der Kopf X-Lernflaeche-Kennung: belegt", () => {
+  const antwort = (wert) => ({ headers: { get: (n) => (n.toLowerCase() === "x-lernflaeche-kennung" ? wert : null) } });
+  assert.equal(BELEGT_KOPF, "x-lernflaeche-kennung");
+  assert.equal(kennungBelegt(antwort("belegt")), true);
+  assert.equal(kennungBelegt(antwort(null)), false);
+  assert.equal(kennungBelegt(antwort("anders")), false);
+  assert.equal(kennungBelegt(null), false);
+});
+
+function rahmenAttrappe(src = `${FLAECHE}/?lernen=1`) {
+  const hoerer = [];
+  return {
+    dataset: src === null ? {} : { src }, src: "", hoerer,
+    addEventListener: (art, f) => { if (art === "load") hoerer.push(f); },
+    removeEventListener: (art, f) => { const i = hoerer.indexOf(f); if (i >= 0) hoerer.splice(i, 1); },
+  };
+}
+
+test("Fläche erneuern: neue Kennung in sessionStorage, Rahmen lädt mit ihr neu, wartet auf load", async () => {
+  const alt = "lf-" + "a".repeat(32);
+  const speicher = speicherAttrappe({ "lernflaeche-kennung": alt });
+  const rahmen = rahmenAttrappe();
+  const zufall = (feld) => feld.fill(0xcd);
+  const warten = flaecheErneuern({ rahmen, speicher, zufall, wartenMs: 5000 });
+  const neu = "lf-" + "cd".repeat(16);
+  assert.equal(speicher.werte.get("lernflaeche-kennung"), neu); // auch wenn die alte gültig war
+  assert.equal(rahmen.src, `${FLAECHE}/?lernen=1&flaeche=${neu}`);
+  assert.equal(rahmen.hoerer.length, 1);
+  rahmen.hoerer[0]();
+  assert.equal(await warten, neu);
+  assert.equal(rahmen.hoerer.length, 0);
+  // Ohne load: nach der Wartezeit weiter. Ohne data-src: Rahmen unberührt.
+  const still = rahmenAttrappe();
+  assert.equal(await flaecheErneuern({ rahmen: still, speicher, zufall, wartenMs: 10 }), neu);
+  const ohne = rahmenAttrappe(null);
+  assert.equal(await flaecheErneuern({ rahmen: ohne, speicher, zufall, wartenMs: 10 }), neu);
+  assert.equal(ohne.src, "");
+});
+
+test("mitFlaechenKennung: belegt -> erneuern und höchstens eine Wiederholung", async () => {
+  const ablauf = async (antworten, wiederholbar) => {
+    const gesendet = [];
+    let erneuert = 0;
+    const r = await mitFlaechenKennung(async () => { gesendet.push(1); return antworten.shift(); },
+      { erneuern: async () => { erneuert += 1; }, wiederholbar });
+    return { r, gesendet: gesendet.length, erneuert };
+  };
+  const ok = { ok: true, belegt: false, daten: { flaeche: true } };
+  const belegt = { ok: true, belegt: true, daten: { flaeche: false } };
+  assert.deepEqual(await ablauf([ok], true), { r: ok, gesendet: 1, erneuert: 0 });
+  assert.deepEqual(await ablauf([belegt, ok], true), { r: ok, gesendet: 2, erneuert: 1 });
+  // Scheitert es erneut: neue Kennung, aber keine zweite Wiederholung (die Seite zeigt „Fläche verbinden“).
+  assert.deepEqual(await ablauf([belegt, belegt, ok], true), { r: belegt, gesendet: 2, erneuert: 2 });
+  // Nicht wiederholbar (z. B. Antwort buchen): erneuern, nicht noch einmal senden.
+  assert.deepEqual(await ablauf([belegt, ok], false), { r: belegt, gesendet: 1, erneuert: 1 });
+});
+
+test("wiederholbar: nur Anfragen, die nichts doppelt buchen", () => {
+  for (const [m, p] of [["GET", "/kurse"], ["POST", "/kurse/k/oeffnen"], ["POST", "/sitzungen/s/weiter"], ["POST", "/sitzungen/s/zeigen"]]) {
+    assert.equal(wiederholbar(m, p), true, p);
+  }
+  for (const p of ["/sitzungen/s/antwort", "/sitzungen/s/abgeben", "/sitzungen/s/passt", "/sitzungen/s/korrektur", "/kurse/k/neu"]) {
+    assert.equal(wiederholbar("POST", p), false, p);
+  }
 });

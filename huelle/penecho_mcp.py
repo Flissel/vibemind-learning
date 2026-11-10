@@ -699,24 +699,35 @@ class PenEchoMcp:
         if bekannt and tabs.get(schluessel) == marke:
             return bekannt
         dokumente = self._gemerkt(self._dokumentdatei)
-        schluessel_tab = _sitzungsschluessel(f"{schluessel}@{marke}")
-        frisch = schluessel_tab[: MAX_SCHLUESSEL - 9] + "#" + uuid4().hex[:8]
+        # Wie `ersatz` ohne Tab: ein frischer Schluessel bleibt gemerkt (flaechen.json, unter `<sid>@<marke>`, nie
+        # unter dem Schluessel ohne Tab), sonst kaeme nach `vergessen` oder einem Neustart erst wieder der Konflikt.
+        tab_schluessel = f"{schluessel}@{marke}"
+        ersatz = self._gemerkt(self._ersatzdatei)
+        basis = _sitzungsschluessel(tab_schluessel)
+        frisch = basis[: MAX_SCHLUESSEL - 9] + "#" + uuid4().hex[:8]
         argumente: dict[str, Any] = {
-            "title": titel, "sessionKey": schluessel_tab, "restore": True, "canvasId": canvas_id,
+            "title": titel, "sessionKey": ersatz.get(tab_schluessel) or basis, "restore": True,
+            "canvasId": canvas_id,
         }
         if dokumente.get(schluessel):
             argumente["documentId"] = dokumente[schluessel]
         try:
-            ergebnis = self._werkzeug("penecho_start_session", argumente)
-        except PenEchoSchluesselBelegt:
-            # Der Schluessel dieses Tabs zeigt bei PenEcho noch auf ein frueheres Board der Lernsitzung (das Board
-            # wurde inzwischen ersetzt): derselbe Tab, das aktuelle Board, ein frischer Schluessel.
-            ergebnis = self._werkzeug("penecho_start_session", {**argumente, "sessionKey": frisch})
+            try:
+                ergebnis = self._werkzeug("penecho_start_session", argumente)
+            except PenEchoSchluesselBelegt:
+                # Der Schluessel dieses Tabs zeigt bei PenEcho noch auf ein frueheres Board der Lernsitzung (das Board
+                # wurde inzwischen ersetzt): derselbe Tab, das aktuelle Board, ein frischer Schluessel.
+                ergebnis = self._werkzeug("penecho_start_session", {**argumente, "sessionKey": frisch})
+                ersatz[tab_schluessel] = frisch
         except PenEchoFlaecheVerloren:
-            # Das Board liegt weder in diesem Tab noch in PenEchos Ablage: ein neues Board in diesem Tab.
+            # Das Board liegt weder in diesem Tab noch in PenEchos Ablage (auch nach dem Wiederholungsversuch mit
+            # frischem Schluessel): ein neues Board in diesem Tab, frischer Schluessel.
             log.warning("PenEcho-Board nicht gefunden, neue Flaeche im Tab")
             ohne = {k: v for k, v in argumente.items() if k != "documentId"}
             ergebnis = self._werkzeug("penecho_start_session", {**ohne, "sessionKey": frisch})
+            ersatz[tab_schluessel] = frisch
+        if ersatz.get(tab_schluessel) == frisch:
+            self._merken(ersatz, self._ersatzdatei)
         struktur = self._struktur(ergebnis)
         session_id = struktur.get("sessionId")
         if not isinstance(session_id, str) or not session_id:

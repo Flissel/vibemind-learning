@@ -5,7 +5,10 @@ import {
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
-import { flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern } from "./flaeche.js";
+import {
+  flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, kennungBelegt, mitFlaechenKennung,
+  wiederholbar,
+} from "./flaeche.js";
 import {
   eintragSetzen, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, standAnnehmen, statusText,
   warteText, zusammenfassungSessionId,
@@ -13,7 +16,8 @@ import {
 
 const API = "/lernen/api";
 // Teil B: Flächen-Kennung dieses Tabs (sessionStorage); geht in die Adresse der Fläche und an jede API-Anfrage.
-const KENNUNG = flaechenKennung();
+let kennung = flaechenKennung();
+let erneuerung = null; // laufende Erneuerung der Kennung; gleichzeitige „belegt“-Antworten teilen sie
 
 // Feste Texte (Plan, global.md).
 const TEXT = {
@@ -113,19 +117,39 @@ function banner(text) {
   b.hidden = !text;
 }
 
-async function api(methode, pfad, body) {
+async function anfrage(methode, pfad, body) {
   try {
     const antwort = await fetch(API + pfad, {
       method: methode,
       credentials: "same-origin",
-      headers: { ...flaechenKopf(KENNUNG), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...flaechenKopf(kennung), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const daten = await antwort.json().catch(() => ({}));
-    return { status: antwort.status, ok: antwort.ok, daten };
+    return { status: antwort.status, ok: antwort.ok, daten, belegt: kennungBelegt(antwort) };
   } catch {
-    return { status: 0, ok: false, daten: {} };
+    return { status: 0, ok: false, daten: {}, belegt: false };
   }
+}
+
+// Die Kennung dieses Tabs gehoert einer anderen Person (Personenwechsel im selben Tab): neue Kennung, die Flaeche
+// laedt mit ihr neu. Kein Fehlertext; scheitert es erneut, zeigt die Antwort wie bisher „Flaeche verbinden“.
+function kennungErneuern() {
+  erneuerung ??= (async () => {
+    try {
+      kennung = await flaecheErneuern({ rahmen: $("rahmen") });
+    } finally {
+      erneuerung = null;
+    }
+  })();
+  return erneuerung;
+}
+
+function api(methode, pfad, body) {
+  return mitFlaechenKennung(() => anfrage(methode, pfad, body), {
+    erneuern: kennungErneuern,
+    wiederholbar: wiederholbar(methode, pfad),
+  });
 }
 
 const mathe = () => z.turn?.task?.presentation?.math === true;
@@ -953,7 +977,7 @@ async function passt() {
 async function start() {
   // Die Fläche lädt erst mit der Kennung; so meldet sich dieser Tab gleich mit ihr als canvasId beim MCP.
   const rahmen = $("rahmen");
-  rahmen.src = flaechenAdresse(rahmen.dataset.src, KENNUNG);
+  if (rahmen.dataset.src) rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
   layoutSetzen(speicher("lesen", "huelle-layout"));
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
   $("korrektur").addEventListener("submit", (ereignis) => { ereignis.preventDefault(); void korrekturSenden(); });
