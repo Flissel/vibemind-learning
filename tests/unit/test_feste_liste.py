@@ -311,6 +311,25 @@ def test_aufgabenliste(tmp_path: Path) -> None:
     assert liste[1].task.expected_answer is None
 
 
+def test_aufgabenliste_liefert_die_getippte_antwort(tmp_path: Path) -> None:
+    # Live 09.11.: im PDF stand bei getippten Antworten nur „eingetippt“; die Antwort lag schon in der
+    # Vorbewertung, die Liste gab sie nicht heraus.
+    factory, course_id = _store(tmp_path, [1, 2, 3])
+    service = _service(factory)
+    turn = _start(service, course_id)
+    v1, v2, v3 = _versuche(factory, turn)
+
+    vor2 = _vor(service, turn, v2, factory)
+    _antwort(service, turn, v1, factory)
+    liste = service.aufgabenliste(turn.session_id, actor_id=ACTOR)
+
+    assert vor2.antwort == _richtig(factory, v2)
+    assert liste[1].vorbewertung is not None and liste[1].vorbewertung.antwort == _richtig(factory, v2)
+    # Gebucht ohne Vorbewertung: die gebuchte Antwort steht am Eintrag.
+    assert liste[0].vorbewertung is None and liste[0].antwort == _richtig(factory, v1)
+    assert liste[1].antwort is None and liste[2].antwort is None
+
+
 def test_aufgabenliste_nur_fuer_listen(tmp_path: Path) -> None:
     factory, course_id = _store(tmp_path, [1, 2, 3])
     service = _service(factory)

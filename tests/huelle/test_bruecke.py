@@ -2792,6 +2792,23 @@ def test_zusammenfassung_unlesbares_bild_faellt_einzeln_weg_mit_warnung(monkeypa
         client.app.beenden()
 
 
+def test_zusammenfassung_zeigt_getippte_antworten(monkeypatch) -> None:
+    # Live 09.11.: getippte Antworten standen als „eingetippt“ im PDF. Learning liefert sie jetzt mit:
+    # in der Vorbewertung (offen) oder am Eintrag (gebucht ohne Vorbewertung).
+    gesehen = _zf_mitschneiden(monkeypatch)
+    ll = ListenLern(3)
+    ll.eintraege[0]["vorbewertung"] = {**_vor(vid=_vid(1), gelesen=None, quelle="getippt"), "antwort": {"text": "x = 2"}}
+    ll.eintraege[1]["status"] = "bestaetigt"
+    ll.eintraege[1]["antwort"] = {"value": 0.25}
+    client, _ = _zf_offen(ll)
+    try:
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        (z,) = gesehen
+        assert [a.ergebnis for a in z.aufgaben] == ["x = 2", "0,25", "offen"]
+    finally:
+        client.app.beenden()
+
+
 def test_zusammenfassung_begriffe_ohne_slug_dubletten(monkeypatch) -> None:
     # Abnahme A2 (Befund 6): `ablauf-x` und `ablauf_x` standen doppelt im PDF; die Seite fasst sie schon zusammen.
     gesehen = _zf_mitschneiden(monkeypatch)

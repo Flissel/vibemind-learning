@@ -883,7 +883,7 @@ class Bruecke:
             vor = e.get("vorbewertung")
             prompt = e["task"].get("prompt")
             zeilen.append(AufgabeZeile(
-                e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor),
+                e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
                 kernaussage(vor) if isinstance(vor, dict) else "–", bild,
             ))
         return Zusammenfassung(sitzung.kurs.titel, date.today(), tuple(zeilen),

@@ -204,6 +204,8 @@ class Vorbewertung(BaseModel):
     score: float | None
     accepted: bool | None
     feedback: TurnFeedback | None
+    # The typed answer as sent (quelle "getippt"); handwriting has its reading in gelesen_text.
+    antwort: dict[str, object] | None = None
 
 
 class ListenEintrag(BaseModel):
@@ -216,6 +218,8 @@ class ListenEintrag(BaseModel):
     task: PublicTask
     status: Literal["offen", "bestaetigt"]
     vorbewertung: Vorbewertung | None
+    # The booked answer of a task answered without a preview (otherwise the preview tells it).
+    antwort: dict[str, object] | None = None
 
 
 class AuditReceipt(BaseModel):
@@ -438,13 +442,14 @@ class AdaptiveSessionService:
                 .where(LearningAttempt.session_id == row.id)
                 .order_by(LearningAttempt.ordinal)
             ).all()
-            gebucht = set(
-                db.scalars(
-                    select(LearningResponse.attempt_id)
+            gebucht = {
+                attempt_id: answer
+                for attempt_id, answer in db.execute(
+                    select(LearningResponse.attempt_id, LearningResponse.answer)
                     .join(LearningAttempt, LearningAttempt.id == LearningResponse.attempt_id)
                     .where(LearningAttempt.session_id == row.id)
-                )
-            )
+                ).all()
+            }
             eintraege: list[ListenEintrag] = []
             for attempt in versuche:
                 item = db.get(AdaptiveItem, attempt.item_id)
@@ -458,6 +463,7 @@ class AdaptiveSessionService:
                     )
                     .limit(1)
                 )
+                gebuchte_antwort = gebucht.get(attempt.id)
                 eintraege.append(
                     ListenEintrag(
                         attempt_id=attempt.id,
@@ -466,6 +472,11 @@ class AdaptiveSessionService:
                         status="bestaetigt" if attempt.id in gebucht else "offen",
                         vorbewertung=(
                             self._vorbewertung_aus(neueste, item) if neueste is not None else None
+                        ),
+                        antwort=(
+                            dict(gebuchte_antwort)
+                            if neueste is None and isinstance(gebuchte_antwort, dict)
+                            else None
                         ),
                     )
                 )
@@ -567,6 +578,11 @@ class AdaptiveSessionService:
             score=bewertung.score if bewertung is not None else None,
             accepted=bewertung.accepted if bewertung is not None else None,
             feedback=self._feedback_aus(bewertung) if bewertung is not None else None,
+            antwort=(
+                dict(stored.answer)
+                if stored.quelle == "getippt" and isinstance(stored.answer, dict)
+                else None
+            ),
         )
 
     def bestaetigen(
@@ -703,6 +719,11 @@ class AdaptiveSessionService:
             score=bewertung.score if bewertung is not None else None,
             accepted=bewertung.accepted if bewertung is not None else None,
             feedback=self._feedback_aus(bewertung) if bewertung is not None else None,
+            antwort=(
+                dict(stored.answer)
+                if stored.quelle == "getippt" and isinstance(stored.answer, dict)
+                else None
+            ),
         )
 
     @staticmethod

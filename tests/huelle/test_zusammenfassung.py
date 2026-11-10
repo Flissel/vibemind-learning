@@ -7,6 +7,7 @@ import json
 import re
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pypdf
 
@@ -133,6 +134,52 @@ def test_ergebnis_eingetippt_nie_siehe_bild() -> None:
     # Abnahme A2 (Befund 6): eine eingetippte Antwort hat kein Gelesenes, ist aber kein Bild.
     assert ergebnis_von("bestaetigt", {"quelle": "getippt", "gelesen_text": None}) == "eingetippt"
     assert ergebnis_von("offen", {"quelle": "handschrift", "gelesen_text": None}) == "siehe Bild"
+
+
+AUSWAHL = {"type": "single_choice", "presentation": {},
+           "options": [{"id": "a", "label": "Gerade"}, {"id": "b", "label": "Ungerade"}]}
+
+
+def test_ergebnis_getippte_antwort_als_klartext() -> None:
+    # Live 09.11.: bei getippten Antworten stand nur „eingetippt“; Learning liefert die Antwort jetzt mit.
+    def getippt(antwort: dict[str, Any]) -> dict[str, Any]:
+        return {"quelle": "getippt", "gelesen_text": None, "antwort": antwort}
+
+    assert ergebnis_von("offen", getippt({"choice_id": "b"}), AUSWAHL) == "Ungerade"
+    mehrfach = {**AUSWAHL, "type": "multiple_choice"}
+    assert ergebnis_von("offen", getippt({"choice_ids": ["a", "b"]}), mehrfach) == "Gerade, Ungerade"
+    reihe = {**AUSWAHL, "type": "ordering"}
+    assert ergebnis_von("offen", getippt({"order": ["b", "a"]}), reihe) == "Ungerade → Gerade"
+    zahl = {"type": "numeric", "options": [], "presentation": {"unit": "cm"}}
+    assert ergebnis_von("bestaetigt", getippt({"value": -1.5}), zahl) == "-1,5 cm"
+    assert ergebnis_von("bestaetigt", getippt({"value": 2.0}), {**zahl, "presentation": {}}) == "2"
+    offen = {"type": "open", "options": [], "presentation": {}}
+    assert ergebnis_von("offen", getippt({"text": "  f'(x) = 3x²\n  + 1 "}), offen) == "f'(x) = 3x² + 1"
+    paare = {"type": "matching", "options": [], "presentation": {
+        "left": [{"id": "b1", "label": "x²"}, {"id": "b2", "label": "x³"}],
+        "right": [{"id": "r1", "label": "gerade"}, {"id": "r2", "label": "ungerade"}]}}
+    assert ergebnis_von("offen", getippt({"pairs": {"b1": "r1", "b2": "r2"}}), paare) == "x² → gerade; x³ → ungerade"
+
+
+def test_ergebnis_getippt_ohne_verwertbare_antwort() -> None:
+    # Unbekannte Kennungen bleiben stehen, leerer Text und fremde Formen ergeben „eingetippt“ wie bisher.
+    def getippt(antwort: Any) -> dict[str, Any]:
+        return {"quelle": "getippt", "gelesen_text": None, "antwort": antwort}
+
+    assert ergebnis_von("offen", getippt({"choice_id": "z"}), AUSWAHL) == "z"
+    assert ergebnis_von("offen", getippt({"text": "   "}), AUSWAHL) == "eingetippt"
+    assert ergebnis_von("offen", getippt({"etwas": 1}), AUSWAHL) == "eingetippt"
+    assert ergebnis_von("offen", getippt(None), AUSWAHL) == "eingetippt"
+    assert ergebnis_von("offen", getippt({"value": True}), None) == "eingetippt"
+    # Ohne Aufgabe (alte Aufrufer) bleibt es beim bisherigen Verhalten.
+    assert ergebnis_von("offen", getippt({"choice_id": "b"})) == "b"
+
+
+def test_ergebnis_gebucht_ohne_vorbewertung() -> None:
+    zahl = {"type": "numeric", "options": [], "presentation": {}}
+    assert ergebnis_von("bestaetigt", None, zahl, {"value": 7}) == "7"
+    assert ergebnis_von("bestaetigt", None, zahl, None) == "eingegeben"
+    assert ergebnis_von("offen", None, zahl, None) == "offen"
 
 
 def test_formeln_als_lesbarer_text() -> None:

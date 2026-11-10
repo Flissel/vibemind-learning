@@ -245,6 +245,7 @@ def test_vorbewerten_aendert_nichts_am_lernstand(tmp_path: Path) -> None:
     assert vor.art == "deterministic"
     assert vor.score == 1.0 and vor.accepted is True
     assert vor.gelesen_text == "A"
+    assert vor.antwort is None  # Handschrift: das Gelesene steht in gelesen_text
     assert vor.feedback is not None and vor.feedback.state == "correct"
     # The reader sees exactly the public task, never the expected answer.
     assert leser.calls == [(turn.task.model_dump(mode="json"), PNG)]
@@ -324,6 +325,7 @@ def test_korrektur_bewertet_ohne_leser(tmp_path: Path) -> None:
     assert len(leser.calls) == 1
     assert korrigiert.quelle == "getippt"
     assert korrigiert.score == 1.0
+    assert korrigiert.antwort == _richtig(turn)
     with factory() as db:
         row = db.get(LearningVorbewertung, korrigiert.id)
         assert row.korrigiert_aus == gelesen.id

@@ -57,18 +57,66 @@ def _einzeilig(text: object) -> str:
     return " ".join(str(text).split())
 
 
-def ergebnis_von(status: str, vorbewertung: dict[str, Any] | None) -> str:
-    """Das Gelesene der Vorbewertung; eingetippt (ohne Gelesenes) „eingetippt“, Handschrift ohne Gelesenes
-    (Rubrik) „siehe Bild“, ohne Vorbewertung „eingegeben“/„offen“.
+def _beschriftungen(eintraege: object) -> dict[str, str]:
+    """Kennung -> Beschriftung aus einer Liste von `{id, label}`."""
+    if not isinstance(eintraege, list):
+        return {}
+    return {str(e["id"]): str(e["label"]) for e in eintraege
+            if isinstance(e, dict) and isinstance(e.get("id"), str) and isinstance(e.get("label"), str)}
 
-    Den getippten Text liefert Learnings Vorbewertung nicht mit; „siehe Bild“ waere dafuer falsch (A2, Befund 6).
+
+def _zahl_deutsch(wert: float | int) -> str:
+    text = format(wert, ".12g")
+    return text.replace(".", ",")
+
+
+def antwort_klartext(task: dict[str, Any] | None, antwort: object) -> str | None:
+    """Eine getippte Antwort (Format des Forks) als lesbarer Text; None, wenn nichts Verwertbares darin steht.
+
+    Auswahl, Reihenfolge und Zuordnung zeigen die Beschriftungen der Aufgabe, unbekannte Kennungen bleiben stehen.
+    """
+    if not isinstance(antwort, dict):
+        return None
+    task = task if isinstance(task, dict) else {}
+    darstellung = task.get("presentation") if isinstance(task.get("presentation"), dict) else {}
+    optionen = _beschriftungen(task.get("options"))
+    if isinstance(antwort.get("text"), str):
+        return _einzeilig(antwort["text"]) or None
+    wert = antwort.get("value")
+    if isinstance(wert, int | float) and not isinstance(wert, bool):
+        einheit = darstellung.get("unit")
+        zahl = _zahl_deutsch(wert)
+        return f"{zahl} {einheit}" if isinstance(einheit, str) and einheit.strip() else zahl
+    if isinstance(antwort.get("choice_id"), str):
+        return optionen.get(antwort["choice_id"], antwort["choice_id"]) or None
+    for schluessel, trenner in (("choice_ids", ", "), ("order", " → ")):
+        ids = antwort.get(schluessel)
+        if isinstance(ids, list) and ids and all(isinstance(i, str) for i in ids):
+            return trenner.join(optionen.get(i, i) for i in ids)
+    paare = antwort.get("pairs")
+    if isinstance(paare, dict) and paare:
+        links, rechts = _beschriftungen(darstellung.get("left")), _beschriftungen(darstellung.get("right"))
+        return "; ".join(f"{links.get(str(l), l)} → {rechts.get(str(r), r)}" for l, r in paare.items())
+    return None
+
+
+def ergebnis_von(status: str, vorbewertung: dict[str, Any] | None, task: dict[str, Any] | None = None,
+                 antwort: object = None) -> str:
+    """Das Gelesene der Vorbewertung oder die getippte Antwort als Klartext; sonst „eingetippt“, Handschrift
+    ohne Gelesenes (Rubrik) „siehe Bild“, ohne Vorbewertung die gebuchte Antwort oder „eingegeben“/„offen“.
+
+    `antwort` ist die gebuchte Antwort einer Aufgabe ohne Vorbewertung (Learning: Listeneintrag `antwort`).
     """
     if isinstance(vorbewertung, dict):
         gelesen = vorbewertung.get("gelesen_text")
         if isinstance(gelesen, str) and gelesen.strip():
             return _einzeilig(gelesen)
-        return "eingetippt" if vorbewertung.get("quelle") == "getippt" else "siehe Bild"
-    return "eingegeben" if status == "bestaetigt" else "offen"
+        if vorbewertung.get("quelle") == "getippt":
+            return antwort_klartext(task, vorbewertung.get("antwort")) or "eingetippt"
+        return "siehe Bild"
+    if status == "bestaetigt":
+        return antwort_klartext(task, antwort) or "eingegeben"
+    return "offen"
 
 
 def kernaussage(vorbewertung: dict[str, Any]) -> str:
