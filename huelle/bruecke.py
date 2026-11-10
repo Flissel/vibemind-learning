@@ -833,7 +833,14 @@ class Bruecke:
         bekannt.add(sitzung.kurs.course_id)
         try:
             eigene = self._katalog.kurse(sitzung.actor)
-        except (KeinZugang, UebersichtWeg) as fehler:
+        except KeinZugang:
+            # Diese Person ist entfernt: sie hat keine Kurse mehr, die die Sperre halten koennten. Nur ihre
+            # Kurse entfallen; die Sperre fuer alle anderen richtet sich weiter nach deren Sitzungen.
+            log.warning("Kurse einer entfernten Person uebersprungen")
+            eigene = ()
+        except UebersichtWeg as fehler:
+            # LearnHouse weg: ein ungemerkter Kurs dieser Person koennte eine offene Pruefungsaufgabe haben.
+            # Nicht pruefbar, also bleibt es gesperrt (wie ein gescheiterter Ueberblick), bis LearnHouse antwortet.
             log.warning("Sperre bleibt, Kurse nicht lesbar: %s", _typ(fehler))
             self._sperre.unbekannt()
             return

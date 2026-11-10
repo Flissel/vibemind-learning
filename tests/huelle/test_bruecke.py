@@ -3316,3 +3316,101 @@ def test_lern_mcp_kennung_je_aufruf() -> None:
         "learning_task_next", "x", actor_id="lh-1-person-b")
     assert gesehen == [{"actor_id": "lh-1-person-a", "actor_type": "local_user"},
                        {"actor_id": "lh-1-person-b", "actor_type": "local_user"}]
+
+
+# ---- Teil B, Fix-Runde 1 -------------------------------------------------------------------------
+
+PA, PB = "lh-1-person-a", "lh-1-person-b"
+SID_X = "66666666-6666-4666-8666-666666666669"
+
+
+def _zwei_personen(mode: str = "training") -> tuple[FakeLern, TestClient, TestClient, LearnHouse, Uhr, Sperre]:
+    """A und B im selben Kurs KURS_P, jede mit eigener Sitzung (Learning antwortet je Kennung)."""
+    lern: FakeLern
+
+    def sitzung_von(actor: str) -> dict[str, Any]:
+        return {**turn(course_id=KURS_P, mode=mode), "session_id": {PA: SID_PA, PB: SID_PB}[actor]}
+
+    def naechste(kw: dict[str, Any]) -> dict[str, Any]:
+        actor = {SID_PA: PA, SID_PB: PB}.get(kw["session_id"])
+        if actor != lern.akteure[-1]:
+            raise LearningAbgelehnt("session belongs to another learner", "session_access_denied")
+        return {"session": sitzung_von(actor)}
+
+    lern = FakeLern({"learning_course_overview": lambda kw: _ueberblick(sitzung_von(lern.akteure[-1])),
+                     "learning_task_next": naechste,
+                     "learning_hint_request": {"hint": "Denken Sie an X."}})
+    lh, uhr, sperre = LearnHouse(), Uhr(), Sperre()
+    a, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh, uhr), actor=PA, sperre=sperre)
+    b = als(TestClient(a.app), PB)
+    return lern, a, b, lh, uhr, sperre
+
+
+def test_frei_entfernte_person_sperrt_die_ki_nicht_fuer_alle() -> None:
+    lern, a, b, lh, uhr, sperre = _zwei_personen()
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert sperre.gesperrt() is False  # B uebt, A uebt: KI frei
+    bruecke = a.app
+    # A wird entfernt; eine Arbeit von A (z. B. Hintergrund nach Ablauf des Puffers) gibt danach frei.
+    del lh.kurse[PA]
+    uhr.t += 60
+    sperre.offen("eben-gebucht")
+    bruecke._frei(bruecke._sitzungen[SID_PA])
+    assert sperre.gesperrt() is False  # B hat keine Pruefungsaufgabe offen: die KI bleibt fuer B frei
+    # Faellt dagegen LearnHouse aus, bleibt es zu (unbekannte Kurse koennten eine Pruefungsaufgabe haben).
+    lh.weg = True
+    sperre.offen("eben-gebucht")
+    bruecke._frei(bruecke._sitzungen[SID_PB])
+    assert sperre.gesperrt() is True
+
+
+def test_learnhouse_weg_gemerkte_sitzung_laeuft_ungemerkte_503() -> None:
+    lern, a, _, lh, uhr, _ = _zwei_personen()
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    lh.weg = True
+    uhr.t += 60
+    r = a.post(f"/lernen/api/sitzungen/{SID_PA}/weiter")
+    assert r.status_code == 200, r.text
+    assert a.post(f"/lernen/api/sitzungen/{SID_PA}/hinweis").json() == {"hinweis": "Denken Sie an X."}
+    # Nicht gemerkt (Huelle neu gestartet): Learning kennt As Sitzung, der Kurs ist aber nicht pruefbar -> 503.
+    neu, _, _ = bauen(lern, einstellung=E_LH, katalog=_katalog(lh, uhr), actor=PA)
+    r = neu.post(f"/lernen/api/sitzungen/{SID_PA}/weiter")
+    assert r.status_code == 503
+    assert r.json() == {"fehler": "uebersicht_weg", "text": UEBERSICHT_WEG, "meldung": UEBERSICHT_WEG}
+    assert SID_PA not in neu.app._sitzungen
+    # Eine fremde oder unbekannte Sitzung bleibt 404 (Learning lehnt sie fuer A ab).
+    assert neu.post(f"/lernen/api/sitzungen/{SID_X}/weiter").status_code == 404
+
+
+def test_gemerkte_sitzung_kurs_aus_der_liste_gefallen_403() -> None:
+    lern, a, _, lh, uhr, _ = _zwei_personen()
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    lh.kurse[PA] = [{"course_id": KURS, "titel": "Anderer Kurs"}]  # noch Mitglied, Kurs P nicht mehr
+    uhr.t += 60
+    vorher = len(lern.aufrufe)
+    kein_zugang = {"fehler": "kein_zugang", "text": KEIN_ZUGANG_MEHR, "meldung": KEIN_ZUGANG_MEHR}
+    for r in (a.post(f"/lernen/api/sitzungen/{SID_PA}/weiter"), a.post(f"/lernen/api/sitzungen/{SID_PA}/hinweis"),
+              a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")):
+        assert r.status_code == 403 and r.json() == kein_zugang
+    assert len(lern.aufrufe) == vorher
+
+
+def test_oeffnen_durch_b_laesst_a_sitzung_und_hintergrund() -> None:
+    lern, a, b, _, _, _ = _zwei_personen()
+    bruecke = a.app
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").json()["turn"]["session_id"] == SID_PA
+    assert b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").json()["turn"]["session_id"] == SID_PB
+    # Bs Oeffnen raeumt nur Bs aeltere Sitzungen ab: As Sitzung bleibt gemerkt und gehoert A.
+    assert bruecke._sitzungen[SID_PA].actor == PA and bruecke._sitzungen[SID_PB].actor == PB
+    # Je Person die zuletzt geoeffnete Sitzung: As Hintergrundarbeiten laufen nach Bs Oeffnen weiter.
+    assert bruecke._zuletzt == {PA: SID_PA, PB: SID_PB}
+    assert bruecke._noch_offen(bruecke._sitzungen[SID_PA]) is True
+    assert bruecke._noch_offen(bruecke._sitzungen[SID_PB]) is True
+    # As naechster Schritt geht als A an Learning, mit As Sitzung (kein Neuaufbau ueber Learning als B).
+    vorher = len(lern.aufrufe)
+    assert a.post(f"/lernen/api/sitzungen/{SID_PA}/weiter").status_code == 200
+    aufrufe = list(zip(lern.akteure[vorher:], (kw.get("session_id") for _, kw in lern.aufrufe[vorher:])))
+    assert (PA, SID_PA) in aufrufe
+    # Jede Sitzung geht nur unter ihrer eigenen Kennung an Learning (auch Bs, die `_frei` nachliest).
+    assert all({SID_PA: PA, SID_PB: PB}[sid] == akt for akt, sid in aufrufe if sid is not None)
