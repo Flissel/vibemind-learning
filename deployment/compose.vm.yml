@@ -18,7 +18,7 @@ services:
     pull_policy: never
   learnhouse-web:
     build: !reset null
-    image: ${LEARNHOUSE_WEB_IMAGE:-vibemind-learnhouse-web:learning-3362a8c1}
+    image: ${LEARNHOUSE_WEB_IMAGE:-vibemind-learnhouse-web:learning-e6ed9223}
     pull_policy: never
   learning-api:
     pull_policy: never
