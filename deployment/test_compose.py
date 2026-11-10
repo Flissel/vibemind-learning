@@ -433,3 +433,11 @@ def test_learnhouse_mail_settings_are_optional_and_never_carry_a_value() -> None
     for name in ("EMAIL_PROVIDER", "SYSTEM_EMAIL_ADDRESS", "SYSTEM_EMAIL_SENDER_NAME", "SMTP_HOST",
                  "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_USE_TLS"):
         assert env[f"LEARNHOUSE_{name}"] == f"${{LEARNHOUSE_{name}:-}}"
+
+
+def test_learnhouse_api_receives_huelle_and_web_bases_for_teil_b() -> None:
+    # Teil B: the course overview hands over to the Huelle and invitation links point to
+    # the web. Both bases come from the env file only; unset = no handover/link URL.
+    env = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]["learnhouse-api"]["environment"]
+    for name in ("LEARNING_HUELLE_BASIS", "LEARNING_WEB_BASIS"):
+        assert env[f"LEARNHOUSE_{name}"] == f"${{LEARNHOUSE_{name}:-}}"
