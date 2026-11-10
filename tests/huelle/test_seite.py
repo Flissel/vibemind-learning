@@ -165,6 +165,8 @@ def test_build_apps_zwei_herkuenfte_eine_sperre() -> None:
     bruecke, durchreicher = seiten._api, flaeche._durchreicher
     assert isinstance(bruecke, Bruecke) and isinstance(durchreicher, Durchreicher)
     assert bruecke._sperre is durchreicher._sperre
+    # Ein Katalog (ein Puffer) fuer Seite und Flaeche: die Flaeche prueft Personen gegen dieselben Kurse.
+    assert flaeche._katalog is bruecke._katalog
     assert durchreicher._eigene == frozenset({f"https://{HOST}:8443", "http://127.0.0.1:8151"})
     assert durchreicher._rahmen == f"frame-ancestors https://{HOST} http://127.0.0.1:8150"
 

@@ -6,7 +6,8 @@ import asyncio
 import json
 from typing import Any
 
-from spaces.learning.huelle.einstellung import einstellung_lesen
+from spaces.learning.huelle.einstellung import Kurs, einstellung_lesen
+from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, KeinZugang, UebersichtWeg
 from spaces.learning.huelle.person import PERSON_COOKIE, person_aus_cookie, person_cookie
 from spaces.learning.huelle.weiche import ABGELAUFEN, FlaechenWeiche, Weiche
 from spaces.learning.huelle.zugang import COOKIE, token_erzeugen
@@ -265,10 +266,29 @@ E_LH = einstellung_lesen({
 KURS_B = "55555555-5555-4555-8555-555555555555"
 
 
-def _weichen_lh(einstellung: Any = E_LH) -> tuple[Weiche, FlaechenWeiche, Aufzeichner, Aufzeichner, Aufzeichner]:
+class FakeKatalog:
+    """Katalog.kurse je Kennung: `entfernt` -> KeinZugang, `weg` -> UebersichtWeg, sonst ein Kurs."""
+
+    def __init__(self) -> None:
+        self.entfernt: set[str] = set()
+        self.weg = False
+        self.fragen: list[str] = []
+
+    def kurse(self, actor_id: str) -> tuple[Kurs, ...]:
+        self.fragen.append(actor_id)
+        if actor_id in self.entfernt:
+            raise KeinZugang()
+        if self.weg:
+            raise UebersichtWeg()
+        return (Kurs(KURS_B, "Kurs B"),)
+
+
+def _weichen_lh(einstellung: Any = E_LH, katalog: Any = None,
+                ) -> tuple[Weiche, FlaechenWeiche, Aufzeichner, Aufzeichner, Aufzeichner]:
     aufrufe: list[str] = []
     seite, api, durch = Aufzeichner("seite", aufrufe), Aufzeichner("api", aufrufe), Aufzeichner("durch", aufrufe)
-    return Weiche(einstellung, seite, api), FlaechenWeiche(einstellung, durch), seite, api, durch
+    katalog = katalog or FakeKatalog()
+    return Weiche(einstellung, seite, api), FlaechenWeiche(einstellung, durch, katalog), seite, api, durch
 
 
 def _uebergabe_token(actor: str, kurs: str | None, *, ablauf: int | None = None) -> str:
@@ -420,3 +440,71 @@ def test_ohne_learnhouse_url_nur_der_notweg() -> None:
     kopf = f"{_person('lh-1-person-a')}; {COOKIE}={_gut()}"
     assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie_kopf=kopf))["status"] == 200
     assert api.personen == ["lh-1-test"]
+
+
+# ---- Flaechen-Port: Personen nur mit Katalog (Abschluss-Korrektur) ---------------------------------------
+
+WS_ZU = [{"type": "websocket.close", "code": 1008}]
+
+
+def test_flaeche_entfernte_person_403_http_und_websocket() -> None:
+    katalog = FakeKatalog()
+    katalog.entfernt.add("lh-1-person-a")
+    _, flaeche, _, _, durch = _weichen_lh(katalog=katalog)
+    gesendet = _anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=_person("lh-1-person-a"))
+    assert _start(gesendet)["status"] == 403
+    assert gesendet[1]["body"].decode() == KEIN_ZUGANG_MEHR
+    for pfad in ("/api/ai/command", "/api/canvases"):
+        assert _start(_anfrage(flaeche, pfad, host=FLAECHE_HOST, methode="POST",
+                               cookie_kopf=_person("lh-1-person-a")))["status"] == 403, pfad
+    assert _anfrage(flaeche, "/api/mcp/canvas", art="websocket", host=FLAECHE_HOST,
+                    cookie_kopf=_person("lh-1-person-a")) == WS_ZU
+    assert durch.aufrufe == []
+    assert set(katalog.fragen) == {"lh-1-person-a"}
+
+
+def test_flaeche_gueltige_person_geht_durch() -> None:
+    katalog = FakeKatalog()
+    katalog.entfernt.add("lh-1-person-b")  # eine andere Person ist entfernt, A nicht
+    _, flaeche, _, _, durch = _weichen_lh(katalog=katalog)
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=_person("lh-1-person-a")))["status"] == 200
+    assert _anfrage(flaeche, "/api/mcp/canvas", art="websocket", host=FLAECHE_HOST,
+                    cookie_kopf=_person("lh-1-person-a"))[0]["status"] == 200
+    assert durch.personen == ["lh-1-person-a", "lh-1-person-a"]
+    assert katalog.fragen == ["lh-1-person-a", "lh-1-person-a"]
+
+
+def test_flaeche_learnhouse_weg_laufende_arbeit_geht_weiter() -> None:
+    # Wie die Controller-Regel der Seite: ein LearnHouse-Ausfall bricht laufende Arbeit nicht ab.
+    katalog = FakeKatalog()
+    katalog.weg = True
+    _, flaeche, _, _, durch = _weichen_lh(katalog=katalog)
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=_person("lh-1-person-a")))["status"] == 200
+    assert _anfrage(flaeche, "/ws", art="websocket", host=FLAECHE_HOST,
+                    cookie_kopf=_person("lh-1-person-a"))[0]["status"] == 200
+    assert durch.personen == ["lh-1-person-a", "lh-1-person-a"]
+
+
+def test_flaeche_notweg_ohne_katalog_frage() -> None:
+    katalog = FakeKatalog()
+    katalog.entfernt.add("lh-1-test")
+    katalog.weg = True
+    _, flaeche, _, _, durch = _weichen_lh(katalog=katalog)
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie=_gut()))["status"] == 200
+    # Ungueltiges Personen-Cookie neben dem Zugangscookie: Notweg wie bisher, ohne Katalog.
+    kopf = f"{PERSON_COOKIE}=muell; {COOKIE}={_gut()}"
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=kopf))["status"] == 200
+    assert durch.personen == ["lh-1-test", "lh-1-test"]
+    assert katalog.fragen == []
+    # Die oeffentlichen PenEcho-Dateien brauchen weder Cookie noch Katalog.
+    assert _start(_anfrage(flaeche, "/widget-renderer.js", host=FLAECHE_HOST))["status"] == 200
+    assert katalog.fragen == []
+
+
+def test_flaeche_ohne_katalog_keine_personen() -> None:
+    # Fail-closed: eine Flaechen-Weiche ohne Katalog laesst nur den Notweg herein.
+    durch = Aufzeichner("durch", [])
+    flaeche = FlaechenWeiche(E_LH, durch)
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=_person("lh-1-person-a")))["status"] == 403
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie=_gut()))["status"] == 200
+    assert durch.personen == ["lh-1-test"]

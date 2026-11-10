@@ -38,6 +38,8 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         einstellung.penecho_url, sperre, frozenset(einstellung.flaechen_herkuenfte),
         rahmen_herkuenfte=einstellung.seiten_herkuenfte,
     )
+    # Ein Katalog (ein Puffer) fuer Bruecke und Flaechen-Port: beide pruefen Personen gegen dieselben Kurse.
+    katalog = Katalog(einstellung, httpx.Client(timeout=TIMEOUT_S, follow_redirects=False))
     bruecke = Bruecke(
         einstellung,
         # Ohne Vorgabe-Kennung: jeder Aufruf nennt die Kennung der Anfrage (request.state.actor_id).
@@ -47,9 +49,10 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         httpx.Client(timeout=30.0, follow_redirects=False),
         # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).
         Path(einstellung.penecho_state).parent / "learning-huelle" / "kursende.json",
-        katalog=Katalog(einstellung, httpx.Client(timeout=TIMEOUT_S, follow_redirects=False)),
+        katalog=katalog,
     )
-    return Weiche(einstellung, seite_app(einstellung), bruecke), FlaechenWeiche(einstellung, durchreicher), bruecke
+    flaeche = FlaechenWeiche(einstellung, durchreicher, katalog)
+    return Weiche(einstellung, seite_app(einstellung), bruecke), flaeche, bruecke
 
 
 def uvicorn_settings(host: str, port: int) -> dict[str, object]:

@@ -8,17 +8,21 @@ Wer fragt (Teil B): die Weiche legt je Anfrage `scope["state"]["actor_id"]` fest
 auf dem die Kennung zur Bruecke kommt (`request.state.actor_id`). Ein gueltiges Personen-Cookie
 (`huelle_person`, gesetzt von `/lernen/uebergabe/<token>`) gewinnt; sonst gilt das Zugangscookie des
 Notwegs (`huelle_zugang`) mit der Inhaber-Kennung aus der Umgebung. Ohne `LEARNING_HUELLE_LEARNHOUSE_URL`
-gibt es weder die Uebergabe noch Personen-Cookies.
+gibt es weder die Uebergabe noch Personen-Cookies. Wer ueber den einen Link kommt, verliert das andere
+Cookie (geteilte Geraete). Am Flaechen-Port gilt ein Personen-Cookie nur, solange der Katalog die Person
+kennt (siehe `FlaechenWeiche`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 from collections.abc import Awaitable, Callable
 from http.cookies import CookieError, SimpleCookie
 from typing import Any
 
 from .einstellung import Einstellung
+from .katalog import KEIN_ZUGANG_MEHR, Katalog, KeinZugang, UebersichtWeg
 from .person import PERSON_COOKIE, PERSON_GUELTIG, person_aus_cookie, person_cookie
 from .uebergabe import uebergabe_lesen
 from .zugang import COOKIE, GUELTIG_SEKUNDEN, token_erzeugen, token_gueltig
@@ -101,8 +105,8 @@ class _Tor:
         self._e = einstellung
         self._hosts = hosts
 
-    def _person(self, headers: dict[bytes, bytes]) -> str | None:
-        """Kennung aus den Cookies: Personen-Cookie vor Zugangscookie (Notweg); sonst None."""
+    def _person(self, headers: dict[bytes, bytes]) -> tuple[str, bool] | None:
+        """(Kennung, ueber das Personen-Cookie?) aus den Cookies: Personen-Cookie vor Zugangscookie (Notweg)."""
         roh = headers.get(b"cookie", b"").decode("latin-1")
         try:
             jar: SimpleCookie = SimpleCookie()
@@ -113,22 +117,30 @@ class _Tor:
         if person is not None and self._e.learnhouse_url:
             actor = person_aus_cookie(self._e.dienst_schluessel, person.value)
             if actor is not None:
-                return actor
+                return actor, True
         eintrag = jar.get(COOKIE)
         if eintrag is not None and token_gueltig(self._e.dienst_schluessel, eintrag.value):
-            return self._e.actor_id
+            return self._e.actor_id, False
         return None
 
-    def _erlaubt(self, scope: Scope) -> bool:
+    def _kennung(self, scope: Scope) -> tuple[str, bool] | None:
+        """Erlaubter Host und gueltiges Cookie: (Kennung, ueber das Personen-Cookie?); sonst None."""
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         host = headers.get(b"host", b"").decode("latin-1").lower()
         if host not in self._hosts:
-            return False
-        actor = self._person(headers)
-        if actor is None:
-            return False
+            return None
+        return self._person(headers)
+
+    @staticmethod
+    def _festlegen(scope: Scope, actor: str) -> None:
         # Der eine Weg der Kennung zur Bruecke (request.state.actor_id); ueberschreibt jeden Vorwert.
         scope["state"] = {**(scope.get("state") or {}), "actor_id": actor}
+
+    def _erlaubt(self, scope: Scope) -> bool:
+        kennung = self._kennung(scope)
+        if kennung is None:
+            return False
+        self._festlegen(scope, kennung[0])
         return True
 
     @staticmethod
@@ -228,11 +240,31 @@ class Weiche(_Tor):
 
 
 class FlaechenWeiche(_Tor):
-    """Flaechen-Port: alles an den Durchreicher (PenEcho), ausser `/lernen/*` (404)."""
+    """Flaechen-Port: alles an den Durchreicher (PenEcho), ausser `/lernen/*` (404).
 
-    def __init__(self, einstellung: Einstellung, durchreicher_app: App) -> None:
+    Ein Personen-Cookie gilt hier nur, solange der Katalog die Person kennt (derselbe Katalog mit 60-s-Puffer
+    wie die Bruecke): eine aus LearnHouse entfernte Person (KeinZugang) bekommt 403, auch fuer den
+    Websocket-Aufbau. Ist LearnHouse nicht erreichbar (UebersichtWeg), geht sie durch: ein Ausfall bricht
+    laufende Arbeit nicht ab (wie gemerkte Sitzungen der Seite). Der Notweg (Zugangscookie, Inhaber) fragt
+    den Katalog nicht. Ohne Katalog gilt hier nur der Notweg.
+    """
+
+    def __init__(self, einstellung: Einstellung, durchreicher_app: App, katalog: Katalog | None = None) -> None:
         super().__init__(einstellung, einstellung.flaechen_hosts)
         self._durchreicher = durchreicher_app
+        self._katalog = katalog
+
+    async def _person_bekannt(self, actor: str) -> bool:
+        if self._katalog is None:
+            return False
+        try:
+            # Katalog ist synchron (httpx, bis 5 s); nie den Ereignisstrang beider Ports blockieren.
+            await asyncio.to_thread(self._katalog.kurse, actor)
+        except KeinZugang:
+            return False
+        except UebersichtWeg:
+            return True
+        return True
 
     def _host_erlaubt(self, scope: Scope) -> bool:
         for name, wert in scope.get("headers", []):
@@ -252,9 +284,19 @@ class FlaechenWeiche(_Tor):
         if art == "lifespan":
             await _lifespan(receive, send)
             return
-        if not self._oeffentlich(scope) and not self._erlaubt(scope):
-            await self._abweisen(scope, send)
-            return
+        if not self._oeffentlich(scope):
+            kennung = self._kennung(scope)
+            if kennung is None:
+                await self._abweisen(scope, send)
+                return
+            actor, ueber_person = kennung
+            if ueber_person and not await self._person_bekannt(actor):
+                if art == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await _text(send, 403, KEIN_ZUGANG_MEHR)
+                return
+            self._festlegen(scope, actor)
         if _ist_lernen(scope.get("path", "")):
             if art == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
