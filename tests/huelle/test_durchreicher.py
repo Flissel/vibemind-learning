@@ -38,6 +38,12 @@ SEITEN = {
 }
 
 
+# Server-Ablage: ein Board von A, eins von B, eins ohne documentId (alt).
+BOARD_A, BOARD_B, BOARD_ALT = "1700000000000-aaaaaaaa", "1700000000001-bbbbbbbb", "1700000000002-cccccccc"
+BOARDS = [{"id": BOARD_A, "documentId": "doc-a", "name": "A"}, {"id": BOARD_B, "documentId": "doc-b", "name": "B"},
+          {"id": BOARD_ALT, "documentId": None, "name": "alt"}]
+
+
 class FakePenEcho:
     def __init__(self) -> None:
         self.aufrufe: list[str] = []
@@ -47,6 +53,7 @@ class FakePenEcho:
         # PenEcho 1.4.x: nach jedem Neustart "undecided", bis jemand Code oder "offen" waehlt.
         self.zugang = "open"
         self.geoeffnet: list[tuple[str | None, str | None, bytes]] = []
+        self.ablage: list[tuple[str, str, bytes, bytes]] = []  # (Methode, Pfad, Query, Body) an die Ablage
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "lifespan":
@@ -94,6 +101,21 @@ class FakePenEcho:
             await send({"type": "http.response.start", "status": 200, "headers": kopf})
             await send({"type": "http.response.body", "body": body if scope["method"] != "HEAD" else b""})
             return
+        if pfad.startswith("/api/canvas"):
+            # PenEchos Server-Ablage (main.js ca. 3993-4045), stark vereinfacht.
+            body_in = (await receive()).get("body", b"")
+            self.ablage.append((scope["method"], pfad, scope.get("query_string", b""), body_in))
+            if scope["method"] == "GET" and pfad == "/api/canvases":
+                daten: dict[str, Any] = {"canvases": BOARDS}
+            elif pfad.startswith("/api/canvases/"):
+                daten = {"canvas": {"id": pfad.split("/")[3]}}
+            else:
+                daten = {"ok": True}
+            body = json.dumps(daten).encode()
+            await send({"type": "http.response.start", "status": 201 if scope["method"] == "POST" else 200,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": body})
+            return
         if pfad == "/sse":
             await send({"type": "http.response.start", "status": 200,
                         "headers": [(b"content-type", b"text/event-stream")]})
@@ -138,9 +160,12 @@ def _frei() -> Sperre:
 
 
 async def _lauf(app: Any, pfad: str, *, methode: str = "GET", headers: list[tuple[bytes, bytes]] | None = None,
-                body: bytes = b"", query: bytes = b"") -> tuple[int, list[tuple[bytes, bytes]], list[tuple[float, bytes]]]:
+                body: bytes = b"", query: bytes = b"", state: dict[str, Any] | None = None,
+                ) -> tuple[int, list[tuple[bytes, bytes]], list[tuple[float, bytes]]]:
     scope = {"type": "http", "method": methode, "path": pfad, "raw_path": pfad.encode("utf-8"),
              "query_string": query, "headers": headers or []}
+    if state is not None:
+        scope["state"] = state
     gesendet: list[dict[str, Any]] = []
     zeiten: list[tuple[float, bytes]] = []
     gegeben = False
@@ -783,3 +808,111 @@ def test_andere_pfade_fragen_den_zugang_nicht(fake: tuple[FakePenEcho, str]) -> 
     asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), "/app.js"))
     assert upstream.aufrufe == ["/app.js"] and upstream.geoeffnet == []
     upstream.zugang = "open"
+
+
+# ---- Server-Ablage je Person (Abschluss-Korrektur Teil B) -------------------------------------------------
+
+def _ablage(karte: dict[str, frozenset[str] | None]) -> Any:
+    """Kennung -> documentIds wie Bruecke.eigene_dokumente; der Inhaber (None) ist nicht eingeschraenkt."""
+    gefragt: list[str] = []
+
+    def ablage(actor: str) -> frozenset[str] | None:
+        gefragt.append(actor)
+        return karte.get(actor, frozenset())
+
+    ablage.gefragt = gefragt  # type: ignore[attr-defined]
+    return ablage
+
+
+ABLAGE = {"lh-1-inhaber": None, "lh-1-person-a": frozenset({"doc-a"}), "lh-1-person-b": frozenset({"doc-b"})}
+ALS_A = {"actor_id": "lh-1-person-a"}
+KOPF_A = [(b"cookie", b"huelle_person=geheim; penecho_ai_session_x=abc")]
+
+
+def _body(teile: list[tuple[float, bytes]]) -> Any:
+    return json.loads(b"".join(t for _, t in teile))
+
+
+def _ablage_lauf(url: str, pfad: str, *, state: dict[str, Any] | None = ALS_A, **kw: Any) -> tuple[int, Any]:
+    status, _, teile = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN, ablage=_ablage(ABLAGE)), pfad,
+                                         state=state, headers=KOPF_A, **kw))
+    return status, _body(teile)
+
+
+def test_ablage_liste_nur_eigene_boards(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    status, daten = _ablage_lauf(url, "/api/canvases", query=b"metadataOnly=1")
+    assert status == 200 and [b["id"] for b in daten["canvases"]] == [BOARD_A]
+    status, daten = _ablage_lauf(url, "/api/canvases")  # auch ohne metadataOnly
+    assert status == 200 and [b["id"] for b in daten["canvases"]] == [BOARD_A]
+    # Die Cookies der Huelle gehen auch bei dieser eigenen Anfrage nie an PenEcho.
+    assert upstream.kopf.get("cookie") == "penecho_ai_session_x=abc"
+    # Der Inhaber (Notweg) sieht wie bisher alles.
+    status, daten = _ablage_lauf(url, "/api/canvases", query=b"metadataOnly=1", state={"actor_id": "lh-1-inhaber"})
+    assert status == 200 and [b["id"] for b in daten["canvases"]] == [BOARD_A, BOARD_B, BOARD_ALT]
+    # Ohne Kennung im Scope: nichts (fail-closed).
+    status, daten = _ablage_lauf(url, "/api/canvases", query=b"metadataOnly=1", state=None)
+    assert status == 200 and daten["canvases"] == []
+
+
+def test_ablage_eigenes_board_lesen_speichern_umbenennen(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    for methode, pfad in (("GET", f"/api/canvases/{BOARD_A}"), ("PUT", f"/api/canvases/{BOARD_A}"),
+                          ("PATCH", f"/api/canvases/{BOARD_A}"), ("GET", f"/api/canvases/{BOARD_A}/preview")):
+        upstream.ablage.clear()
+        status, _ = _ablage_lauf(url, pfad, methode=methode, body=b'{"name":"x"}')
+        assert status == 200, (methode, pfad)
+        # Erst die Besitzpruefung (Liste lesen), dann die Anfrage selbst, mit ihrem Body.
+        assert upstream.ablage[0][:3] == ("GET", "/api/canvases", b"metadataOnly=1")
+        assert upstream.ablage[1] == (methode, pfad, b"", b'{"name":"x"}' if methode != "GET" else b"")
+
+
+def test_ablage_neues_board_anlegen(fake: tuple[FakePenEcho, str]) -> None:
+    # Erstes Speichern im Lernmodus: POST /api/canvases (PenEcho vergibt die id; eine vorhandene gibt 409).
+    upstream, url = fake
+    upstream.ablage.clear()
+    status, _ = _ablage_lauf(url, "/api/canvases", methode="POST", body=b'{"manifest":{}}')
+    assert status == 201
+    assert upstream.ablage == [("POST", "/api/canvases", b"", b'{"manifest":{}}')]
+
+
+def test_ablage_fremdes_board_403(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    for board in (BOARD_B, BOARD_ALT, "1700000000009-ffffffff"):  # fremd, ohne documentId, unbekannt
+        for methode, pfad in (("GET", f"/api/canvases/{board}"), ("PUT", f"/api/canvases/{board}"),
+                              ("PATCH", f"/api/canvases/{board}"), ("GET", f"/api/canvases/{board}/preview")):
+            upstream.ablage.clear()
+            status, daten = _ablage_lauf(url, pfad, methode=methode, body=b"{}")
+            assert status == 403 and daten == {"error": "Nicht erlaubt."}, (methode, pfad)
+            assert [a[:2] for a in upstream.ablage] == [("GET", "/api/canvases")]  # nur die Besitzpruefung
+
+
+def test_ablage_was_der_lernmodus_nicht_braucht_403(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    faelle = [
+        ("DELETE", f"/api/canvases/{BOARD_A}", b""),
+        ("PUT", f"/api/canvases/{BOARD_A}/project", b""),
+        ("GET", "/api/canvas-projects", b""), ("POST", "/api/canvas-projects", b""),
+        ("DELETE", "/api/canvas-projects/project-aaaaaaaa", b""),
+        ("GET", "/api/canvases", b"limit=24&offset=0"),  # Bibliotheksseite (nicht im Lernmodus)
+        ("PUT", "/api/canvases", b""), ("HEAD", f"/api/canvases/{BOARD_A}", b""),
+        # Umgehungen: PenEcho (WHATWG-URL) loest .. und %2e auf; geprueft wird der rohe Pfad exakt.
+        ("GET", f"/api/canvases/x/../{BOARD_B}", b""), ("GET", f"/x/../api/canvases/{BOARD_B}", b""),
+        ("GET", f"/api/canvases/%2e%2e/canvases/{BOARD_B}", b""), ("GET", f"/API/canvases/{BOARD_B}", b""),
+        ("GET", "/api/canvases/", b""), ("GET", f"/api/canvases/{BOARD_A}/", b""),
+    ]
+    for methode, pfad, query in faelle:
+        upstream.ablage.clear()
+        status, _ = _ablage_lauf(url, pfad, methode=methode, query=query)
+        assert status == 403, (methode, pfad, query)
+        assert upstream.ablage == [], (methode, pfad, query)
+
+
+def test_ablage_inhaber_und_ohne_ablage_wie_bisher(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.ablage.clear()
+    status, _ = _ablage_lauf(url, f"/api/canvases/{BOARD_B}", methode="DELETE", state={"actor_id": "lh-1-inhaber"})
+    assert status == 200 and upstream.ablage == [("DELETE", f"/api/canvases/{BOARD_B}", b"", b"")]
+    upstream.ablage.clear()
+    status, _, _ = asyncio.run(_lauf(Durchreicher(url, _frei(), EIGEN), f"/api/canvases/{BOARD_B}", state=ALS_A))
+    assert status == 200 and upstream.ablage == [("GET", f"/api/canvases/{BOARD_B}", b"", b"")]

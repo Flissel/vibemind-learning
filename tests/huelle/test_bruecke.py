@@ -3687,3 +3687,17 @@ def test_kursende_einer_person_legt_nichts_ab(tmp_path) -> None:
         assert not ordner.exists() or _md_dateien(ordner) == []
     finally:
         client.app.beenden()
+
+
+def test_eigene_dokumente_je_person(tmp_path) -> None:
+    # Die Ablage-Pruefung des Durchreichers: jede Person nur die Boards ihrer Lernsitzungen, der Inhaber alle.
+    mcp = TabMcp()
+    weiche = _ganz(E_LH, LearnHouse(), [], [], penecho=_tab_penecho(tmp_path, mcp))
+    a, b = _tab(weiche, PA, KA), _tab(weiche, PB, KB)
+    assert a.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    assert b.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+    bruecke = weiche._api
+    assert bruecke.eigene_dokumente(PA) == frozenset({"doc-" + KA})
+    assert bruecke.eigene_dokumente(PB) == frozenset({"doc-" + KB})
+    assert bruecke.eigene_dokumente("lh-1-niemand") == frozenset()
+    assert bruecke.eigene_dokumente(ACTOR) is None  # Inhaber: nicht eingeschraenkt

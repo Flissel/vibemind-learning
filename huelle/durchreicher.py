@@ -13,7 +13,7 @@ import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import httpx
 import websockets
@@ -65,6 +65,10 @@ _MAX_SEITE = 16 * 1024 * 1024
 # Die Huelle waehlt offen: PenEcho lauscht nur auf 127.0.0.1, den Zugang regelt die Huelle selbst.
 _ZUGANG_STATUS = "/api/local-access/status"
 _ZUGANG_OFFEN = "/api/local-access/open"
+# PenEchos Server-Ablage (lernflaeche src/server/main.js ca. 3993-4045): Liste, Board je id, Vorschau, Projekte.
+# Fuer Personen (nicht den Inhaber) nur die eigenen Boards, siehe `Durchreicher._ablage_person`.
+ABLAGE_PFADE = ("/api/canvases", "/api/canvas-projects")
+_ABLAGE_ID = re.compile(r"/api/canvases/(\d{10,16}-[a-zA-Z0-9-]{8,64})(/preview)?")
 _KOPF_ENDE = re.compile(rb"</head\s*>", re.IGNORECASE)
 _BODY_ENDE = re.compile(rb"</body\s*>", re.IGNORECASE)
 _SKRIPT_SRC = re.compile(r"(?<![\w-])(script-src(?:-elem)?)(\s[^;]*)?(?=;|$)", re.IGNORECASE)
@@ -162,6 +166,20 @@ async def _klartext(send: Send, status: int, text: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+async def _json_antwort(send: Send, status: int, daten: dict[str, Any]) -> None:
+    body = json.dumps(daten, ensure_ascii=False).encode("utf-8")
+    await send({"type": "http.response.start", "status": status, "headers": [
+        (b"content-type", b"application/json; charset=utf-8"),
+        (b"content-length", str(len(body)).encode("ascii")),
+        (b"cache-control", b"no-store"),
+    ]})
+    await send({"type": "http.response.body", "body": body})
+
+
+class _AblageWeg(Exception):
+    """PenEchos Ablage antwortet nicht brauchbar (Netz, Status, kein JSON)."""
+
+
 def _pfad_und_query(scope: Scope) -> str:
     pfad = (scope.get("raw_path") or scope["path"].encode("utf-8")).decode("latin-1")
     if scope.get("query_string"):
@@ -174,12 +192,18 @@ class Durchreicher:
 
     `rahmen_herkuenfte`: die Seiten-Herkuenfte, die PenEcho einbetten duerfen (CSP `frame-ancestors`);
     leer heisst: PenEchos `frame-ancestors 'none'` bleibt stehen.
+
+    `ablage`: Kennung -> documentIds, die diese Person in PenEchos Server-Ablage erreicht (None = alle, der
+    Inhaber); die Kennung setzt die Flaechen-Weiche (`scope["state"]["actor_id"]`). Ohne `ablage` bleibt die
+    Ablage ungefiltert.
     """
 
     def __init__(
         self, penecho_url: str, sperre: Sperre, eigene_herkuenfte: frozenset[str],
         *, rahmen_herkuenfte: tuple[str, ...] = (),
+        ablage: Callable[[str], frozenset[str] | None] | None = None,
     ) -> None:
+        self._ablage = ablage
         teile = urlsplit(penecho_url)
         self._basis = f"{teile.scheme}://{teile.netloc}"
         self._netloc = teile.netloc
@@ -358,7 +382,16 @@ class Durchreicher:
         if _trifft(scope["path"], ("/__huelle",)):
             await self._eigene_datei(scope, send)
             return
-        einfuegen = (self._tag is not None and scope["method"] in ("GET", "HEAD")
+        if self._ablage is not None and _trifft(scope["path"], ABLAGE_PFADE):
+            eigene = await self._eigene_boards(scope)
+            if eigene is not None:
+                await self._ablage_person(scope, receive, send, eigene)
+                return
+        await self._weiterreichen(scope, receive, send)
+
+    async def _weiterreichen(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Die (gepruefte) Anfrage an PenEcho und die Antwort zurueck, gestreamt."""
+        einfuegen =(self._tag is not None and scope["method"] in ("GET", "HEAD")
                      and scope["path"] in _SEITEN_PFADE)
         if scope["method"] in ("GET", "HEAD") and scope["path"] in _SEITEN_PFADE:
             await self._zugang_oeffnen()
@@ -413,6 +446,94 @@ class Durchreicher:
             if gestartet:
                 return  # Antwort lief schon; der Abbruch zeigt sich dem Browser als Abbruch
             await _klartext(send, 502, NICHT_ERREICHBAR)
+
+    # --- Server-Ablage (Boards) je Person ----------------------------------------------
+
+    async def _eigene_boards(self, scope: Scope) -> frozenset[str] | None:
+        """documentIds der Person dieser Anfrage; None = nicht eingeschraenkt (Inhaber). Ohne Kennung: nichts."""
+        state = scope.get("state")
+        actor = state.get("actor_id") if isinstance(state, dict) else None
+        if not isinstance(actor, str) or not actor or self._ablage is None:
+            return frozenset()
+        return await asyncio.to_thread(self._ablage, actor)
+
+    async def _ablage_person(self, scope: Scope, receive: Receive, send: Send, eigene: frozenset[str]) -> None:
+        """PenEchos Server-Ablage fuer eine Person: nur ihre Boards; was der Lernmodus nicht braucht, ist 403.
+
+        Lernmodus (lernflaeche persistence.js / canvas-documents.js): Speichern legt mit POST an und ueberschreibt
+        mit PUT /<id>; ein verlorenes Board findet der Browser ueber die Liste (`metadataOnly=1`, documentId) und
+        laedt es mit GET /<id>; Umbenennen ist PATCH /<id>. Gepruefte Pfade sind exakt (roh), sonst 403.
+        """
+        roh = (scope.get("raw_path") or scope["path"].encode("utf-8")).decode("latin-1")
+        methode = scope["method"]
+        if roh == "/api/canvases":
+            if methode == "POST":  # neues Board; PenEcho lehnt eine vorhandene id ab (409), ueberschreibt nie
+                await self._weiterreichen(scope, receive, send)
+                return
+            if methode == "GET" and "limit" not in parse_qs(scope.get("query_string", b"").decode("latin-1")):
+                await self._liste_gefiltert(scope, send, eigene)
+                return
+        else:
+            treffer = _ABLAGE_ID.fullmatch(roh)
+            if treffer is not None and methode in (("GET",) if treffer.group(2) else ("GET", "PUT", "PATCH")):
+                try:
+                    dokument = await self._dokument_von(scope, treffer.group(1))
+                except _AblageWeg:
+                    await _json_antwort(send, 502, {"error": NICHT_ERREICHBAR})
+                    return
+                if dokument is not None and dokument in eigene:
+                    await self._weiterreichen(scope, receive, send)
+                    return
+        await _json_antwort(send, 403, {"error": NICHT_ERLAUBT})
+
+    def _ablage_kopf(self, scope: Scope) -> dict[str, str]:
+        """Kopf fuer eigene Lese-Anfragen an die Ablage: Host wie beim Durchreichen, Cookies ohne die der Huelle."""
+        kopf = {"host": self._netloc, "accept": "application/json", "accept-encoding": "identity"}
+        for name, wert in scope["headers"]:
+            if name.lower() == b"cookie":
+                rest = _ohne_zugang(wert.decode("latin-1"))
+                if rest is not None:
+                    kopf["cookie"] = rest
+        return kopf
+
+    async def _ablage_lesen(self, scope: Scope, pfad_und_query: str) -> tuple[int, Any]:
+        """(Status, JSON) einer Lese-Anfrage an PenEchos Ablage; _AblageWeg bei Netzfehler oder kaputter Antwort."""
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False) as client:
+                antwort = await client.get(self._basis + pfad_und_query, headers=self._ablage_kopf(scope))
+            return antwort.status_code, antwort.json()
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, OSError, ValueError) as fehler:
+            log.warning("PenEcho-Ablage nicht lesbar: %s", type(fehler).__name__)
+            raise _AblageWeg() from None
+
+    async def _dokument_von(self, scope: Scope, canvas_id: str) -> str | None:
+        """documentId des gespeicherten Boards `canvas_id` laut PenEchos Liste; None, wenn es keins (mehr) gibt."""
+        status, daten = await self._ablage_lesen(scope, "/api/canvases?metadataOnly=1")
+        boards = daten.get("canvases") if isinstance(daten, dict) else None
+        if status != 200 or not isinstance(boards, list):
+            log.warning("PenEcho-Ablage ohne Liste: HTTP %s", status)
+            raise _AblageWeg()
+        for board in boards:
+            if isinstance(board, dict) and board.get("id") == canvas_id:
+                dokument = board.get("documentId")
+                return dokument if isinstance(dokument, str) and dokument else None
+        return None
+
+    async def _liste_gefiltert(self, scope: Scope, send: Send, eigene: frozenset[str]) -> None:
+        """PenEchos Liste, aber nur mit den Boards der Person (documentId); sonst unveraendert."""
+        try:
+            status, daten = await self._ablage_lesen(scope, _pfad_und_query(scope))
+        except _AblageWeg:
+            await _json_antwort(send, 502, {"error": NICHT_ERREICHBAR})
+            return
+        boards = daten.get("canvases") if isinstance(daten, dict) else None
+        if status != 200 or not isinstance(boards, list):
+            await _json_antwort(send, 502 if status == 200 else status,
+                                daten if isinstance(daten, dict) and status != 200 else {"error": NICHT_ERREICHBAR})
+            return
+        daten["canvases"] = [b for b in boards if isinstance(b, dict) and isinstance(b.get("documentId"), str)
+                             and b["documentId"] in eigene]
+        await _json_antwort(send, 200, daten)
 
     # --- Websocket ----------------------------------------------------------------------
 

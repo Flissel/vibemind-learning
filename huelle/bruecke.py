@@ -586,6 +586,22 @@ class Bruecke:
             Route(f"{p}/medien/{{name}}", self._r_medien, methods=["GET"]),
         ])
 
+    def eigene_dokumente(self, actor: str) -> frozenset[str] | None:
+        """Boards (documentIds), die eine Person in PenEchos Server-Ablage erreichen darf; None = alle.
+
+        Der Inhaber (Notweg-Kennung) ist nicht eingeschraenkt. Jede andere Person nur auf die Boards ihrer
+        gemerkten Lernsitzungen (Sitzung -> documentId aus `dokumente.json`); der Durchreicher filtert damit
+        `/api/canvases`. Ein Lesefehler heisst: nichts (fail-closed). Geloggt wird nur der Fehlertyp.
+        """
+        if actor == self._e.actor_id:
+            return None
+        try:
+            sids = [sid for sid, s in list(self._sitzungen.items()) if s.actor == actor]
+            return self._penecho.dokumente(sids) if sids else frozenset()
+        except Exception as fehler:  # noqa: BLE001 - die Ablage bleibt dann zu, die Flaeche laeuft weiter
+            log.warning("Eigene Boards nicht lesbar: %s", _typ(fehler))
+            return frozenset()
+
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "http":
             # Nur die Weiche setzt die Kennung (Cookie); ohne sie gibt es nichts, auch nicht den Inhaber.

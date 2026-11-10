@@ -167,6 +167,8 @@ def test_build_apps_zwei_herkuenfte_eine_sperre() -> None:
     assert bruecke._sperre is durchreicher._sperre
     # Ein Katalog (ein Puffer) fuer Seite und Flaeche: die Flaeche prueft Personen gegen dieselben Kurse.
     assert flaeche._katalog is bruecke._katalog
+    # Die Server-Ablage der Flaeche filtert je Person nach den Boards, die die Bruecke ihr zugeordnet hat.
+    assert durchreicher._ablage == bruecke.eigene_dokumente
     assert durchreicher._eigene == frozenset({f"https://{HOST}:8443", "http://127.0.0.1:8151"})
     assert durchreicher._rahmen == f"frame-ancestors https://{HOST} http://127.0.0.1:8150"
 

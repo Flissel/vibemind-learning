@@ -34,10 +34,6 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
     sperre = Sperre()
     # Eine ungepruefte PenEcho-Version kann neue Modellrouten haben: dann wird die Sperre nie frei.
     penecho_version_pruefen(Path(einstellung.penecho_paket), sperre)
-    durchreicher = Durchreicher(
-        einstellung.penecho_url, sperre, frozenset(einstellung.flaechen_herkuenfte),
-        rahmen_herkuenfte=einstellung.seiten_herkuenfte,
-    )
     # Ein Katalog (ein Puffer) fuer Bruecke und Flaechen-Port: beide pruefen Personen gegen dieselben Kurse.
     katalog = Katalog(einstellung, httpx.Client(timeout=TIMEOUT_S, follow_redirects=False))
     bruecke = Bruecke(
@@ -50,6 +46,12 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).
         Path(einstellung.penecho_state).parent / "learning-huelle" / "kursende.json",
         katalog=katalog,
+    )
+    durchreicher = Durchreicher(
+        einstellung.penecho_url, sperre, frozenset(einstellung.flaechen_herkuenfte),
+        rahmen_herkuenfte=einstellung.seiten_herkuenfte,
+        # PenEchos Server-Ablage: jede Person nur die Boards, die die Bruecke ihren Sitzungen zugeordnet hat.
+        ablage=bruecke.eigene_dokumente,
     )
     flaeche = FlaechenWeiche(einstellung, durchreicher, katalog)
     return Weiche(einstellung, seite_app(einstellung), bruecke), flaeche, bruecke

@@ -634,6 +634,15 @@ class PenEchoMcp:
             del karte[schluessel]
             self._merken(karte)
 
+    def dokumente(self, schluessel: Iterable[str]) -> frozenset[str]:
+        """Die gemerkten documentIds der Boards dieser Lernsitzungen (`dokumente.json`); nur lesend.
+
+        Fuer die Ablage-Pruefung des Durchreichers: eine Person erreicht in PenEchos Server-Ablage nur Boards
+        mit diesen documentIds.
+        """
+        karte = self._gemerkt(self._dokumentdatei)
+        return frozenset(karte[k] for k in schluessel if karte.get(k))
+
     # ---- Oeffentliche Methoden -------------------------------------------
     def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None) -> str:
         """PenEcho-Sitzung (eine Flaeche) zu `schluessel`, der Learning-Sitzungs-ID (Ruling L).
