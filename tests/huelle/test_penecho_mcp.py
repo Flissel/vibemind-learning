@@ -1179,9 +1179,20 @@ def test_lange_rueckmeldung_wird_fuer_die_flaeche_gekuerzt(zustand: Path) -> Non
     _client(zustand, fake).rueckmeldung_zeigen("sess-1", "t1", 4, gelesen=None, urteil="Teilweise richtig.",
                                                 text=_LANG)
     text = fake.aufrufe("penecho_edit_canvas")[0]["arguments"]["text"]
-    assert len(text) <= 2000 and _zeilen_bedarf(text) <= 28
+    assert len(text) <= 2000 and _zeilen_bedarf(text, 64) <= 28
     assert text.startswith("Rückmeldung zu Aufgabe 4\n\nTeilweise richtig.\n\nSatz 0:")
     assert text.endswith(" …") and not text.endswith(": …")
+
+
+def test_normaler_bereich_fasst_eine_lange_rueckmeldung(zustand: Path) -> None:
+    # A3 (offen aus A2, Befund 6): in normal hohen Bereichen brach die Karte nach rund 1000 Zeichen mit „…“
+    # ab. Das Feld ist jetzt 760 breit, die Lernflaeche bricht an dieser Breite um (textUmbruchBreite).
+    fake = Fake()
+    lang = _LANG[:_LANG.rindex("begründet.", 0, 1500) + len("begründet.")]
+    _client(zustand, fake).rueckmeldung_setzen("sess-1", "t1", 4, "Rückmeldung zu Aufgabe 4", lang)
+    arg = fake.aufrufe("penecho_edit_canvas")[0]["arguments"]
+    assert arg["region"]["w"] == 760 and arg["region"]["h"] == 760
+    assert arg["text"] == f"Rückmeldung zu Aufgabe 4\n\n{lang}"
 
 
 def test_rueckmeldung_nutzt_die_hoehe_eines_hohen_bereichs(zustand: Path) -> None:
@@ -1367,11 +1378,11 @@ def test_berichtsbilder_stehen_mit_fester_region_neben_ihrer_aufgabe(zustand: Pa
     _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "# Bericht: K", (1, 20))
     bilder = [b["arguments"] for b in fake.aufrufe("penecho_place_image")]
     assert [b["region"] for b in bilder] == [berichtsplatz(1), berichtsplatz(20)]
-    assert all(b["width"] == 900 for b in bilder)
+    assert all(b["width"] == 700 for b in bilder)
     for n in (1, 20):
         p, r, b = berichtsplatz(n), rueckmeldungsfeld(n), bereich(n)
         assert p["x"] > r["x"] + r["w"] and p["y"] == b["y"]
-        assert p["w"] == 900 and p["h"] <= b["h"] and p["x"] + p["w"] <= FLAECHE_GROESSE
+        assert p["w"] == 700 and p["h"] <= b["h"] and p["x"] + p["w"] <= FLAECHE_GROESSE
 
 
 def test_vorhandenes_berichtsbild_wird_nicht_erneut_gesetzt(zustand: Path) -> None:

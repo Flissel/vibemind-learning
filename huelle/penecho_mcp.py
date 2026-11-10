@@ -45,14 +45,19 @@ _ZEILEN_SCHRITT = 850
 _TEXT_RAND = 20
 _TEXT_BREITE = 460
 _RUECKMELDUNG_ABSTAND = 40
-_RUECKMELDUNG_BREITE = 420
+# A3: die Karte war mit 420 in normal hohen Bereichen nach rund 1000 Zeichen zu Ende. Die Lernflaeche bricht
+# Text mit Bereich an dessen Breite um (lernflaeche-kern.js textUmbruchBreite), also fasst 760 fast doppelt so viel.
+# Rechts davon bleibt das Berichtsbild links der zweiten Spalte (anordnung.SPALTEN_X).
+_RUECKMELDUNG_BREITE = 760
 # Abnahme 06.11. (F14): PenEcho rendert hoechstens 2000 Zeichen (core.js TEXT_INPUT_MAX_LENGTH, sonst
 # INVALID_TEXT), Schrift 20 px mit Zeilenhoehe 1,35 (27 px), Umbruch bei 400 px. Ein laengerer Text ragte ueber
 # das Rueckmeldungsfeld in den naechsten Bereich. 36 Zeichen je Zeile ist vorsichtig geschaetzt.
 _TEXT_HOECHSTENS = 2000
 _ZEILEN_HOEHE = 27
 _RUECKMELDUNG_ZEILEN = (BEREICH_HOEHE - 2 * _TEXT_RAND) // _ZEILEN_HOEHE
-_ZEICHEN_JE_ZEILE = 36
+_ZEICHEN_JE_ZEILE = 36  # je 400 px
+# Im 760 breiten Kartenfeld: 36 * 760 / 400 = 68, vorsichtig 64.
+_RUECKMELDUNG_ZEICHEN_JE_ZEILE = 64
 
 # Ergebnisfeld (Task 6): oben rechts im Bereich, darunter bleibt Platz fuer Rechenweg oder Skizze.
 # Der Rahmen liegt AUSSERHALB des Feldes, damit der Schnappschuss des Feldes nur die
@@ -78,7 +83,7 @@ _HINWEIS_LOESUNG = "Ihre Lösung schreiben Sie in das blau umrandete Feld."
 # einmal sauber, hier auf False stellen; kein Laufzeit-Test.
 BERICHT_MIT_SCHNAPPSCHUESSEN = True
 MAX_BILD_DATENURL = 800_000  # schema.js penecho_place_image/upload_image: Data-URL inkl. Praefix, UTF-8-Bytes
-BERICHT_BILD_BREITE = 900
+BERICHT_BILD_BREITE = 700  # A3: 900 ragte nach der breiteren Karte in die zweite Spalte
 BERICHT_BILD_ZEIT = 20.0  # Sekunden fuer alle Berichtsbilder zusammen; danach entfallen die uebrigen
 MAX_TITEL = 120  # schema.js MAX_TITLE_CHARS
 _uhr = time.monotonic  # nur fuer Tests ersetzbar
@@ -945,7 +950,8 @@ class PenEchoMcp:
         # Zu lang fuer das Feld: gekuerzt; die volle Rueckmeldung bleibt in Learning (Bericht). Die Zeilen
         # richten sich nach der Hoehe des Feldes: hohe Bereiche (Listenkurs, Aufgabe mit Bild) fassen mehr (A2).
         zeilen = max(_RUECKMELDUNG_ZEILEN, feld["h"] // _ZEILEN_HOEHE)
-        inhalt = kuerzen(f"{titel}\n\n{text}", zeichen=_TEXT_HOECHSTENS, zeilen=zeilen, je_zeile=_ZEICHEN_JE_ZEILE)
+        inhalt = kuerzen(f"{titel}\n\n{text}", zeichen=_TEXT_HOECHSTENS, zeilen=zeilen,
+                         je_zeile=_RUECKMELDUNG_ZEICHEN_JE_ZEILE)
         pruefsumme = hashlib.sha256(inhalt.encode("utf-8")).hexdigest()[:12]
         rest = MAX_SCHLUESSEL - len(f"rueckmeldung--{nummer}-{pruefsumme}")
         argumente = {

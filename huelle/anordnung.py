@@ -12,7 +12,8 @@ LUECKE = 150
 SPALTEN_X = (100, 3000)
 OBEN = 100
 UNTEN = 19_900
-ZEILEN_BREITE = 1760
+# Bereich + Abstand + Kartenfeld (penecho_mcp.felder): 1300 + 40 + 760. Die Aufgabenwahl rahmt die ganze Zeile.
+ZEILEN_BREITE = 2100
 
 
 class ZuVieleAufgaben(ValueError):
