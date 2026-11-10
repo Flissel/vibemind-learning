@@ -1012,7 +1012,7 @@ class Bruecke:
         summary = turn.get("summary")
         if sitzung.bericht_gezeigt or not isinstance(summary, dict):
             return
-        if sitzung.liste and self._e.zusammenfassung_ordner:
+        if sitzung.liste and self._zusammenfassung_ablegen_erlaubt(sitzung):
             self._zusammenfassung_ablegen(sitzung)
         try:
             text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung) or [])
@@ -1125,11 +1125,19 @@ class Bruecke:
             zeilen.append((titel, f"{round(min(max(float(stand), 0.0), 1.0) * 100)} %" if ok else "noch offen"))
         return tuple(zeilen)
 
+    def _zusammenfassung_ablegen_erlaubt(self, sitzung: _Sitzung) -> bool:
+        """Der Wissensordner gehoert dem Inhaber: nur seine Sitzungen (Notweg-Kennung) landen dort.
+
+        Alle anderen Personen bekommen ihr PDF, schreiben aber nie in den Ordner (sonst ueberschriebe eine
+        fremde Person die Datei des Inhabers vom selben Tag und Kurs).
+        """
+        return bool(self._e.zusammenfassung_ordner) and sitzung.actor == self._e.actor_id
+
     def _zusammenfassung_ablegen(self, sitzung: _Sitzung, z: Zusammenfassung | None = None) -> None:
-        """Textfassung in den Wissensordner (falls eingestellt); Fehler werden nur geloggt, nie gemeldet."""
-        ordner = self._e.zusammenfassung_ordner
-        if not ordner:
+        """Textfassung in den Wissensordner (nur Inhaber, falls eingestellt); Fehler nur geloggt, nie gemeldet."""
+        if not self._zusammenfassung_ablegen_erlaubt(sitzung):
             return
+        ordner = self._e.zusammenfassung_ordner
         try:
             z = z or self._zusammenfassung_bauen(sitzung, bilder=False)
             ziel = Path(ordner) / f"{z.datum:%Y-%m-%d}-{kurs_kurz(z.kurs)}.md"

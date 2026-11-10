@@ -3634,3 +3634,56 @@ def test_personen_cookie_ohne_kopf_wie_bisher(tmp_path) -> None:
     assert mcp.starts() == [{"title": mcp.starts()[0]["title"], "sessionKey": "learning-huelle:" + SID_PA,
                              "restore": True}]
     assert mcp.flaechen() == {"pe-ohne"}
+
+
+# ---- Teil B, Abschluss-Korrektur: Zusammenfassung nur fuer den Inhaber ---------------------------------
+
+def _zf_person(ordner: Any, actor: str, ll: ListenLern, **kw: Any) -> TestClient:
+    """Listenkurs KURS als `actor`; die Person sieht ihn ueber LearnHouse unter demselben Titel wie der Inhaber."""
+    lh = LearnHouse()
+    lh.kurse[PB] = [{"course_id": KURS, "titel": "Testkurs"}]
+    einstellung = dataclasses.replace(E_LH, zusammenfassung_ordner=str(ordner))
+    client, _, _ = _listen_offen(ll, einstellung=einstellung, katalog=_katalog(lh), actor=actor, **kw)
+    return client
+
+
+def test_zusammenfassung_nur_fuer_den_inhaber_im_wissensordner(tmp_path) -> None:
+    ordner = tmp_path / "wissen"
+    inhaber = _zf_person(ordner, ACTOR, ListenLern(2))
+    try:
+        assert inhaber.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+    finally:
+        inhaber.app.beenden()
+    (datei,) = _md_dateien(ordner)
+    vorher = datei.read_bytes()
+    # Person B: gleicher Kurs, gleicher Tag, anderer Stand. Das PDF bekommt sie, der Ordner bleibt unberuehrt.
+    ll_b = ListenLern(3)
+    ll_b.eintraege[0]["status"] = "bestaetigt"
+    person_b = _zf_person(ordner, PB, ll_b)
+    try:
+        r = person_b.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
+        assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    finally:
+        person_b.app.beenden()
+    assert _md_dateien(ordner) == [datei]
+    assert datei.read_bytes() == vorher
+    assert not list(ordner.glob("*.tmp"))
+
+
+def test_kursende_einer_person_legt_nichts_ab(tmp_path) -> None:
+    ordner = tmp_path / "wissen"
+    datei = tmp_path / "kursende.json"
+    datei.write_text(json.dumps({f"{PB}|{KURS}": SID}), encoding="utf-8")
+    ll = ListenLern(2)
+    for e in ll.eintraege:
+        e["status"] = "bestaetigt"
+    ll.lern.antworten["learning_course_overview"] = _ueberblick(None)
+    lh = LearnHouse()
+    lh.kurse[PB] = [{"course_id": KURS, "titel": "Testkurs"}]
+    client, _, _ = bauen(ll.lern, kursende=datei, katalog=_katalog(lh), actor=PB,
+                         einstellung=dataclasses.replace(E_LH, zusammenfassung_ordner=str(ordner)))
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").json()["abgeschlossen"] is True
+        assert not ordner.exists() or _md_dateien(ordner) == []
+    finally:
+        client.app.beenden()
