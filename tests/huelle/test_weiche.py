@@ -314,6 +314,50 @@ def test_uebergabe_setzt_personen_cookie_und_leitet_weiter() -> None:
     assert 'content="0;url=/lernen/"' in html
 
 
+def _set_cookies(antwort: dict[str, Any]) -> dict[str, str]:
+    """Alle Set-Cookie-Kopfzeilen der Antwort, nach Cookie-Name."""
+    aus: dict[str, str] = {}
+    for name, wert in antwort["headers"]:
+        if name == b"set-cookie":
+            text = wert.decode()
+            aus[text.split("=", 1)[0]] = text
+    return aus
+
+
+def _geloescht(cookie: str) -> None:
+    teile = [t.strip() for t in cookie.split(";")]
+    assert teile[0].endswith("=") and teile[0].count("=") == 1, cookie  # leerer Wert
+    for teil in ("HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=0"):
+        assert teil in teile, (teil, cookie)
+
+
+def test_uebergabe_loescht_das_zugangscookie() -> None:
+    # Geteiltes Geraet: wer per Uebergabe kommt, arbeitet nie still mit dem Notweg-Cookie weiter.
+    seiten, _, _, _, _ = _weichen_lh()
+    antwort = _start(_anfrage(seiten, f"/lernen/uebergabe/{_uebergabe_token('lh-1-person-a', KURS_B)}"))
+    cookies = _set_cookies(antwort)
+    assert set(cookies) == {PERSON_COOKIE, COOKIE}
+    _geloescht(cookies[COOKIE])
+    assert "Max-Age=43200" in cookies[PERSON_COOKIE]
+
+
+def test_zugang_loescht_das_personen_cookie() -> None:
+    # Und umgekehrt: der Notweg-Link beendet eine gemerkte Person auf diesem Geraet.
+    for einstellung in (E, E_LH):
+        seiten, _, _, _, _ = _weichen_lh(einstellung)
+        antwort = _start(_anfrage(seiten, f"/lernen/zugang/{_gut()}"))
+        cookies = _set_cookies(antwort)
+        assert set(cookies) == {COOKIE, PERSON_COOKIE}
+        _geloescht(cookies[PERSON_COOKIE])
+        assert "Max-Age=2592000" in cookies[COOKIE]
+
+
+def test_ungueltige_links_loeschen_nichts() -> None:
+    seiten, _, _, _, _ = _weichen_lh()
+    for pfad in ("/lernen/zugang/muell", "/lernen/uebergabe/muell"):
+        assert _set_cookies(_start(_anfrage(seiten, pfad))) == {}
+
+
 def test_uebergabe_ungueltig_oder_abgelaufen_403() -> None:
     import time
 

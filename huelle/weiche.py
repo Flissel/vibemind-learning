@@ -75,6 +75,11 @@ async def _text(send: Send, status: int, text: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+def _cookie(name: str, wert: str, max_age: int) -> str:
+    """Set-Cookie der Huelle; immer dieselben Attribute, damit `Max-Age=0` das gleiche Cookie trifft."""
+    return f"{name}={wert}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={max_age}"
+
+
 async def _lifespan(receive: Receive, send: Send) -> None:
     while True:
         nachricht = await receive()
@@ -152,8 +157,9 @@ class Weiche(_Tor):
             await _text(send, 403, ABGELAUFEN)
             return
         wert = token_erzeugen(self._e.dienst_schluessel)
-        cookie = f"{COOKIE}={wert}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={GUELTIG_SEKUNDEN}"
-        await self._cookie_setzen(send, cookie, _ZUGANG_HTML)
+        # Geteiltes Geraet: eine gemerkte Person endet hier, sonst gewaenne ihr Cookie still weiter.
+        await self._cookie_setzen(send, [_cookie(PERSON_COOKIE, "", 0),
+                                         _cookie(COOKIE, wert, GUELTIG_SEKUNDEN)], _ZUGANG_HTML)
 
     async def _uebergabe(self, send: Send, token: str) -> None:
         """Uebergabe aus LearnHouse: Personen-Cookie (12 h) setzen, dann auf den Kurs weiterleiten."""
@@ -163,20 +169,21 @@ class Weiche(_Tor):
             await _text(send, 403, ABGELAUFEN)
             return
         wert = person_cookie(self._e.dienst_schluessel, actor_id)
-        cookie = f"{PERSON_COOKIE}={wert}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={PERSON_GUELTIG}"
         # course_id ist eine kanonische UUID (vom Leser geprueft) und damit URL-sicher.
         ziel = f"/lernen/?kurs={course_id}" if course_id else "/lernen/"
-        await self._cookie_setzen(send, cookie, _weiter_html(ziel))
+        # Geteiltes Geraet: das Notweg-Cookie des Inhabers endet, wenn eine Person uebernimmt.
+        await self._cookie_setzen(send, [_cookie(COOKIE, "", 0),
+                                         _cookie(PERSON_COOKIE, wert, PERSON_GUELTIG)], _weiter_html(ziel))
 
     @staticmethod
-    async def _cookie_setzen(send: Send, cookie: str, seite: str) -> None:
+    async def _cookie_setzen(send: Send, cookies: list[str], seite: str) -> None:
         body = seite.encode("utf-8")
         await send({
             "type": "http.response.start", "status": 200,
             "headers": [
                 (b"content-type", b"text/html; charset=utf-8"),
                 (b"content-length", str(len(body)).encode("ascii")),
-                (b"set-cookie", cookie.encode("ascii")),
+                *((b"set-cookie", c.encode("ascii")) for c in cookies),
                 (b"content-security-policy", _ZUGANG_CSP),
                 (b"referrer-policy", b"no-referrer"),
                 (b"x-content-type-options", b"nosniff"),
