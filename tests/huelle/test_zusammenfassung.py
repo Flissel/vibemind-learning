@@ -153,6 +153,10 @@ def test_ergebnis_getippte_antwort_als_klartext() -> None:
     zahl = {"type": "numeric", "options": [], "presentation": {"unit": "cm"}}
     assert ergebnis_von("bestaetigt", getippt({"value": -1.5}), zahl) == "-1,5 cm"
     assert ergebnis_von("bestaetigt", getippt({"value": 2.0}), {**zahl, "presentation": {}}) == "2"
+    # Die Kursfabrik legt in `unit` auch Beschriftungen wie „x =“ ab (Live-Abnahme A3: „1 x =“): die stehen vorn.
+    assert ergebnis_von("bestaetigt", getippt({"value": 1.0}), {**zahl, "presentation": {"unit": "x ="}}) == "x = 1"
+    assert ergebnis_von("offen", getippt({"value": 2.5}),
+                        {**zahl, "presentation": {"unit": "Steigung:"}}) == "Steigung: 2,5"
     offen = {"type": "open", "options": [], "presentation": {}}
     assert ergebnis_von("offen", getippt({"text": "  f'(x) = 3x²\n  + 1 "}), offen) == "f'(x) = 3x² + 1"
     paare = {"type": "matching", "options": [], "presentation": {

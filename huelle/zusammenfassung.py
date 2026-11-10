@@ -86,7 +86,11 @@ def antwort_klartext(task: dict[str, Any] | None, antwort: object) -> str | None
     if isinstance(wert, int | float) and not isinstance(wert, bool):
         einheit = darstellung.get("unit")
         zahl = _zahl_deutsch(wert)
-        return f"{zahl} {einheit}" if isinstance(einheit, str) and einheit.strip() else zahl
+        if not isinstance(einheit, str) or not einheit.strip():
+            return zahl
+        einheit = einheit.strip()
+        # Die Kursfabrik legt hier auch Beschriftungen ab („x =“, „Steigung:“); die stehen vor der Zahl.
+        return f"{einheit} {zahl}" if einheit.endswith(("=", ":")) else f"{zahl} {einheit}"
     if isinstance(antwort.get("choice_id"), str):
         return optionen.get(antwort["choice_id"], antwort["choice_id"]) or None
     for schluessel, trenner in (("choice_ids", ", "), ("order", " → ")):
