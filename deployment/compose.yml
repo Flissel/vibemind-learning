@@ -347,7 +347,7 @@ services:
   # learning and the rest of the stack run without it. Image is built from
   # the Lernflaeche repo (abgleich/), hence pull_policy never and no build.
   lernflaeche-abgleich:
-    image: ${LERNFLAECHE_ABGLEICH_IMAGE:-vibemind-lernflaeche-abgleich:c-SHA8}
+    image: ${LERNFLAECHE_ABGLEICH_IMAGE:-vibemind-lernflaeche-abgleich:c-dbdfe0f8}
     pull_policy: never
     restart: *restart
     environment:
