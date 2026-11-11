@@ -1565,6 +1565,81 @@ def test_abgleich_ablehnung_auf_der_leitung(fake: tuple[FakePenEcho, str], aufne
     assert upstream.ws_ziele == []
 
 
+# ---- Final B, H1: der Close-Code der Gegenseite kommt beim Browser an ------------------------------------------
+
+UEBERNAHME = "Diese Fläche ist in einem anderen Fenster geöffnet."
+
+
+@pytest.mark.parametrize(("pfad", "oben", "code", "grund"), [
+    # Zweiter Tab: der Dienst trennt den alten mit 4409; nur 4409/1008 beenden das Wiederverbinden (gruppe.js).
+    ("/api/abgleich", (4409, UEBERNAHME), 4409, UEBERNAHME),
+    # Technische 1008 des Dienstes (falscher Schluessel, Uhrdrift): deutscher Text statt "Ungueltige Kennung".
+    ("/api/abgleich", (1008, "Ungueltige Kennung"), 1008, GRUPPE_UNGUELTIG),
+    ("/api/abgleich", (1013, "Abgleichdienst antwortet nicht"), 1013, "Abgleichdienst antwortet nicht"),
+    # Abrupt (kein Schliessrahmen, oben 1006): 1006 darf nie in einem Schliessrahmen stehen, also 1011.
+    ("/api/abgleich", None, 1011, ""),
+    # MCP-Flaeche: PenEchos 4001 (neuere Verbindung) laeuft durch denselben Code; Gruende bleiben unveraendert.
+    ("/api/mcp/canvas", (4001, "Canvas connection replaced"), 4001, "Canvas connection replaced"),
+    ("/api/mcp/canvas", (1008, "Invalid message"), 1008, "Invalid message"),
+    ("/api/mcp/canvas", None, 1011, ""),
+])
+def test_close_code_der_gegenseite_kommt_beim_browser_an(
+        pfad: str, oben: tuple[int, str] | None, code: int, grund: str) -> None:
+    # Echter Weg: websockets-Client -> uvicorn -> Durchreicher -> Fake-Dienst (websockets), der gleich schliesst.
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen("lh-1-person-a", 7)
+    schliessen: list[dict[str, Any]] = []
+
+    async def dienst(ws: Any) -> None:
+        if oben is None:
+            ws.transport.abort()  # Verbindung weg ohne Schliessrahmen
+        else:
+            await ws.close(*oben)
+
+    async def lauf() -> tuple[int, str]:
+        async with websockets.serve(dienst, "127.0.0.1", 0) as oben_server:
+            port_oben = oben_server.sockets[0].getsockname()[1]
+            app = _mit_gruppen(f"http://127.0.0.1:{port_oben}", gruppen)
+
+            async def mit_kennung(scope: dict[str, Any], receive: Any, send: Any) -> None:
+                async def mitschreiben(m: dict[str, Any]) -> None:
+                    if m["type"] == "websocket.close":
+                        schliessen.append(m)
+                    await send(m)
+
+                if scope["type"] == "websocket":
+                    scope["state"] = dict(ALS_A)
+                await app(scope, receive, mitschreiben)
+
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            server = uvicorn.Server(uvicorn.Config(mit_kennung, log_level="error", ws="websockets", lifespan="off"))
+            thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
+            thread.start()
+            try:
+                for _ in range(100):
+                    if server.started:
+                        break
+                    await asyncio.sleep(0.05)
+                assert server.started
+                query = f"?flaeche=g-7&fenster={FENSTER}" if pfad == "/api/abgleich" else ""
+                async with websockets.connect(f"ws://127.0.0.1:{port}{pfad}{query}",
+                                              origin="https://lernen.example.test", open_timeout=5) as ws:
+                    with pytest.raises(websockets.ConnectionClosed) as zu:
+                        await asyncio.wait_for(ws.recv(), timeout=5)
+                    assert zu.value.rcvd is not None
+                    return zu.value.rcvd.code, zu.value.rcvd.reason
+            finally:
+                server.should_exit = True
+                await asyncio.to_thread(thread.join, 5)
+                sock.close()
+
+    assert asyncio.run(lauf()) == (code, grund)
+    # Genau ein Schliessen an den Browser: kein abschliessendes 1000 hinterher.
+    assert [(m["code"], m.get("reason", "")) for m in schliessen] == [(code, grund)]
+
+
 # ---- Gerechte KI (Task 9): je Person eine, gesamt begrenzt, Inhaber frei -----------------------------------
 
 KI = "/api/ai/command"

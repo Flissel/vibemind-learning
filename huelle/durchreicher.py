@@ -276,6 +276,22 @@ async def _json_antwort(send: Send, status: int, daten: dict[str, Any]) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+def _schliessgrund(code: int, grund: str, *, abgleich: bool) -> tuple[int, str]:
+    """Close-Code und Grund der Gegenseite fuer den Browser (Final B, H1).
+
+    Der Browser entscheidet am Code: 4409 (andere Verbindung) und 1008 beenden das Wiederverbinden der Gruppe
+    (gruppe.js), 4001 meldet der MCP-Flaeche die neuere Verbindung. Codes, die nie in einem Schliessrahmen stehen
+    duerfen (1005 ohne Code, 1006 abrupt, 1015 TLS, 1004 und alles ausserhalb von RFC 6455 7.4), werden 1011. Die
+    technische 1008-Begruendung des Abgleichdienstes ("Ungueltige Kennung") ersetzt der deutsche Hinweis; alle
+    anderen Gruende bleiben, wie sie sind.
+    """
+    if not (1000 <= code <= 1003 or 1007 <= code <= 1014 or 3000 <= code <= 4999):
+        return 1011, ""
+    if abgleich and code == 1008:
+        return 1008, GRUPPE_UNGUELTIG
+    return code, grund
+
+
 async def _ablehnen(send: Send, code: int, grund: str) -> None:
     """Annehmen, dann sofort mit Code und Grund schliessen (ohne Upstream): so kommt der Code beim Browser an."""
     await send({"type": "websocket.accept"})
@@ -906,9 +922,14 @@ class Durchreicher:
             for a in aufgaben:
                 a.cancel()
             await asyncio.gather(*aufgaben, return_exceptions=True)
+            # Vor dem eigenen close(): ist die Gegenseite schon zu, steht hier ihr Code (abrupt 1006); sonst None.
+            oben = upstream.close_code
+            grund_oben = upstream.close_reason or ""
             await upstream.close()
-            try:
-                if not closed.is_set():
-                    await send({"type": "websocket.close", "code": 1000})
-            except Exception:  # Gegenseite schon zu
-                pass
+            if not closed.is_set():
+                closed.set()
+                code, grund = (1000, "") if oben is None else _schliessgrund(oben, grund_oben, abgleich=gruppe is not None)
+                try:
+                    await send({"type": "websocket.close", "code": code, "reason": grund})
+                except Exception:  # Browser schon weg
+                    pass
