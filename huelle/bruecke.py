@@ -1130,9 +1130,13 @@ class Bruecke:
         h = hoehen([_gross(e["task"]) for e in eintraege])
         try:
             eigen = gruppen_raster(h)
-            # Festes Raster der Gruppe (erste gesetzte Mappe); passt diese Mappe nicht in seine Zelle, ist sie voll.
+            # Festes Raster der Gruppe (erste gesetzte Mappe). Passt eine noch nicht gesetzte Mappe nicht in seine
+            # Zelle, ist sie voll. Eine schon gesetzte Mappe dieser Person (gruppen-gesetzt.json) nie: sie rechnet
+            # immer im festen Raster, damit Abgeben, Rueckmeldung und Bericht weiter gehen.
             fest = self._festes_raster(sitzung.kurs, sitzung.gruppe) if sitzung.gruppe is not None else None
-            if fest is not None and (eigen.breite > fest.breite or eigen.hoehe > fest.hoehe):
+            schon_gesetzt = self._gesetzt_sid(
+                self._ende_schluessel(sitzung.actor, sitzung.kurs, sitzung.gruppe)) is not None
+            if fest is not None and not schon_gesetzt and (eigen.breite > fest.breite or eigen.hoehe > fest.hoehe):
                 raise MappeVoll("Mappe passt nicht in das feste Raster der Gruppe")
             raster = fest or eigen
             ursprung = mappen_ursprung(sitzung.platz, raster)

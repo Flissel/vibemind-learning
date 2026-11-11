@@ -4155,16 +4155,34 @@ def test_gruppe_raster_fest_je_gruppe(tmp_path) -> None:
         assert abgleich.schutz[-1] == (f"g-{GID}", person_kennung(PB), _schutzfelder(bereiche_b))
     finally:
         a.app.beenden()
-    # Nach einem Neustart gilt das feste Raster weiter: die hoehere Mappe passt auch jetzt nicht.
+    # Nach einem Neustart gilt das feste Raster weiter (aus gruppen-gesetzt.json). Bs Mappe ist schon gesetzt: auch
+    # mit jetzt hoeheren Aufgaben nie 409, die Abgabe rechnet im festen Raster (Platz 1 laut Dienst).
     laeufe.eintraege[gb] = [_eintrag(i, typ="penecho_canvas") for i in range(1, 4)]
-    c, penecho2, _, _ = _gruppen_bruecke(laeufe, kursende=kursende, actor=PB, kennung=KB)
+    dienst = FakeAbgleich([])
+    dienst.plaetze = {person_kennung(PA): 0, person_kennung(PB): 1}
+    c, penecho2, _, _ = _gruppen_bruecke(laeufe, kursende=kursende, actor=PB, kennung=KB, abgleich=dienst)
     try:
-        # Bs Mappe ist gesetzt (alte sid); eine Abgabe rechnet mit dem festen Raster und den neuen Hoehen: voll.
         r = c.post(f"/lernen/api/sitzungen/{SID_GB}/abgeben", json={"nummer": 1})
-        assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
-        assert penecho2.aufnahme_rechtecke == []
+        assert r.status_code == 202, r.text
+        assert penecho2.aufnahme_rechtecke == [(1, mappen_bereiche([1100] * 3, mappen_ursprung(1, fest))[0])]
+        assert c.get(f"/lernen/api/sitzungen/{SID_GB}/stand").status_code == 200
     finally:
         c.app.beenden()
+    # Wer noch keine Mappe hat und hoeher ist, bekommt beim Oeffnen weiter 409 (auch nach dem Neustart).
+    laeufe2 = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA, gb: SID_GB})
+    laeufe2.eintraege[gb] = [_eintrag(i, typ="penecho_canvas") for i in range(1, 4)]
+    leer = tmp_path / "neu" / "kursende.json"
+    leer.parent.mkdir()
+    (leer.parent / "gruppen-gesetzt.json").write_text(json.dumps(
+        {k: v for k, v in json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8")).items()
+         if not k.startswith(PB + "|")}), encoding="utf-8")
+    d, penecho3, _, _ = _gruppen_bruecke(laeufe2, kursende=leer, actor=PB, kennung=KB)
+    try:
+        r = d.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
+        assert [x for x in penecho3.aufrufe if x[0] in ("schild_setzen", "aufgabe_setzen")] == []
+    finally:
+        d.app.beenden()
 
 
 def test_gruppen_bericht_ohne_bilder_solo_unveraendert() -> None:
