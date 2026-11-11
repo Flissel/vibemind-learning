@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
+import re
 from collections.abc import Awaitable, Callable
 from http.cookies import CookieError, SimpleCookie
 from typing import Any
+from urllib.parse import parse_qs
 
 from .einstellung import Einstellung
+from .gruppe import GRUPPE_WEG
 from .katalog import KEIN_ZUGANG_MEHR, Katalog, KeinZugang, UebersichtWeg
 from .person import PERSON_COOKIE, PERSON_GUELTIG, person_aus_cookie, person_cookie
 from .uebergabe import uebergabe_lesen
@@ -29,6 +33,9 @@ from .zugang import COOKIE, GUELTIG_SEKUNDEN, token_erzeugen, token_gueltig
 
 ZUGANG_PREFIX = "/lernen/zugang/"
 UEBERGABE_PREFIX = "/lernen/uebergabe/"
+# Gruppenrouten der Bruecke (Teil C); ohne Gruppen-Einstellung antwortet hier die Weiche selbst mit 404.
+GRUPPEN_PREFIX = "/lernen/api/gruppen/"
+_GRUPPE = re.compile(r"[0-9]{1,9}")
 ABGELAUFEN = "Dieser Link ist abgelaufen oder ungültig."
 NICHT_ERLAUBT = "Nicht erlaubt."
 WEITER = "Weiter zum Lernen"
@@ -96,6 +103,35 @@ async def _lifespan(receive: Receive, send: Send) -> None:
 
 def _ist_lernen(path: str) -> bool:
     return path == "/lernen" or path.startswith("/lernen/")
+
+
+def _ist_gruppenroute(path: str) -> bool:
+    return path == GRUPPEN_PREFIX.rstrip("/") or path.startswith(GRUPPEN_PREFIX)
+
+
+def _gruppe_aus_query(scope: Scope) -> int | None:
+    """`?gruppe=<1-9 Ziffern>` genau einmal, sonst None (andere Werte werden ignoriert)."""
+    try:
+        werte = parse_qs((scope.get("query_string") or b"").decode("ascii"), keep_blank_values=True,
+                         errors="strict").get("gruppe", [])
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if len(werte) != 1 or not _GRUPPE.fullmatch(werte[0]):
+        return None
+    return int(werte[0])
+
+
+async def _json(send: Send, status: int, daten: dict[str, Any]) -> None:
+    body = json.dumps(daten, ensure_ascii=False).encode("utf-8")
+    await send({
+        "type": "http.response.start", "status": status,
+        "headers": [
+            (b"content-type", b"application/json; charset=utf-8"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"cache-control", b"no-store"),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body})
 
 
 class _Tor:
@@ -173,16 +209,22 @@ class Weiche(_Tor):
         await self._cookie_setzen(send, [_cookie(PERSON_COOKIE, "", 0),
                                          _cookie(COOKIE, wert, GUELTIG_SEKUNDEN)], _ZUGANG_HTML)
 
-    async def _uebergabe(self, send: Send, token: str) -> None:
-        """Uebergabe aus LearnHouse: Personen-Cookie (12 h) setzen, dann auf den Kurs weiterleiten."""
+    async def _uebergabe(self, send: Send, token: str, gruppe: int | None = None) -> None:
+        """Uebergabe aus LearnHouse: Personen-Cookie (12 h) setzen, dann auf den Kurs weiterleiten.
+
+        `gruppe` (Teil C, aus `?gruppe=`, ungeprueft): geht nur als Hinweis an die Seite; die Mitgliedschaft prueft
+        die Gruppenroute.
+        """
         try:
             actor_id, course_id = uebergabe_lesen(self._e.dienst_schluessel, token)
         except ValueError:
             await _text(send, 403, ABGELAUFEN)
             return
         wert = person_cookie(self._e.dienst_schluessel, actor_id)
-        # course_id ist eine kanonische UUID (vom Leser geprueft) und damit URL-sicher.
+        # course_id ist eine kanonische UUID (vom Leser geprueft) und damit URL-sicher, die Gruppe nur Ziffern.
         ziel = f"/lernen/?kurs={course_id}" if course_id else "/lernen/"
+        if course_id and gruppe is not None:
+            ziel += f"&gruppe={gruppe}"
         # Geteiltes Geraet: das Notweg-Cookie des Inhabers endet, wenn eine Person uebernimmt.
         await self._cookie_setzen(send, [_cookie(COOKIE, "", 0),
                                          _cookie(PERSON_COOKIE, wert, PERSON_GUELTIG)], _weiter_html(ziel))
@@ -215,7 +257,7 @@ class Weiche(_Tor):
             return
         if (art == "http" and scope.get("method") == "GET" and path.startswith(UEBERGABE_PREFIX)
                 and self._e.learnhouse_url):
-            await self._uebergabe(send, path[len(UEBERGABE_PREFIX):])
+            await self._uebergabe(send, path[len(UEBERGABE_PREFIX):], _gruppe_aus_query(scope))
             return
         if not self._erlaubt(scope):
             await self._abweisen(scope, send)
@@ -232,6 +274,9 @@ class Weiche(_Tor):
         # (same-site, das Cookie geht mit) und vor PenEcho-Widgets.
         if scope.get("method") not in _LESEND and not self._origin_eigen(scope):
             await _text(send, 403, NICHT_ERLAUBT)
+            return
+        if _ist_gruppenroute(path) and not self._e.gruppen_aktiv:
+            await _json(send, 404, {"meldung": GRUPPE_WEG})
             return
         if path == "/lernen/api" or path.startswith("/lernen/api/"):
             await self._api(scope, receive, send)

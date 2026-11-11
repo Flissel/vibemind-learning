@@ -3,3 +3,5 @@
 huelle/seite/katex/** -text
 # Pruefvektor der Uebergabe liegt byte-genau wie im LearnHouse-Fork (gleicher git-Blob)
 tests/huelle/uebergabe_vektor.json -text
+# Pruefvektor des Ausweises liegt byte-genau wie im Abgleichdienst (gleicher git-Blob)
+tests/huelle/ausweis_vektor.json -text

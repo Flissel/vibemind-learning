@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import logging
 import socket
 import threading
 import time
@@ -17,6 +18,16 @@ import uvicorn
 import websockets
 
 from spaces.learning.huelle.durchreicher import SPERR_TEXT, Durchreicher
+from spaces.learning.huelle.gruppe import (
+    GRUPPE_WEG,
+    KEIN_MITGLIED,
+    ZUGANG_WEG,
+    KeinMitglied,
+    Mitgliedschaft,
+    ausweis,
+    person_kennung,
+)
+from spaces.learning.huelle.katalog import UebersichtWeg
 from spaces.learning.huelle.sperre import Sperre
 
 EIGEN = frozenset({"https://lernen.example.test", "http://127.0.0.1:8099"})
@@ -54,6 +65,7 @@ class FakePenEcho:
         self.zugang = "open"
         self.geoeffnet: list[tuple[str | None, str | None, bytes]] = []
         self.ablage: list[tuple[str, str, bytes, bytes]] = []  # (Methode, Pfad, Query, Body) an die Ablage
+        self.ws_ziele: list[tuple[str, bytes]] = []  # (Pfad, Query) je Websocket
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "lifespan":
@@ -67,6 +79,7 @@ class FakePenEcho:
         if scope["type"] == "websocket":
             await receive()
             self.kopf = {k.decode(): v.decode() for k, v in scope["headers"]}
+            self.ws_ziele.append((scope["path"], scope.get("query_string", b"")))
             await send({"type": "websocket.accept"})
             while True:
                 m = await receive()
@@ -1053,10 +1066,11 @@ def test_person_ki_sperre_bleibt_davor(fake: tuple[FakePenEcho, str]) -> None:
 
 def test_person_websockets_nur_mcp_und_abgleich(fake: tuple[FakePenEcho, str]) -> None:
     _, url = fake
-    for pfad, query in (("/api/mcp/canvas", b""), ("/api/abgleich", b"raum=r1")):
-        gesendet = _ws(url, pfad, query=query)
-        assert gesendet[0]["type"] == "websocket.accept", pfad
-        assert {"type": "websocket.send", "text": "echo:hi"} in gesendet, pfad
+    gesendet = _ws(url, "/api/mcp/canvas")
+    assert gesendet[0]["type"] == "websocket.accept"
+    assert {"type": "websocket.send", "text": "echo:hi"} in gesendet
+    # /api/abgleich geht nur noch als Gruppenflaeche mit Ausweis durch (Teil C, siehe unten); ohne Gruppen 1008.
+    assert _ws(url, "/api/abgleich", query=b"raum=r1") == [{"type": "websocket.close", "code": 1008}]
     for pfad in ("/api/canvas-agent/socket", "/api/canvas-agent/socket/", "/api/mcp/cloud-canvas", "/api/x",
                  "/api/mcp/canvas/", "/API/mcp/canvas", "/api/mcp/%63anvas", "/x/../api/canvas-agent/socket", "/"):
         assert _ws(url, pfad) == [{"type": "websocket.close", "code": 1008}], pfad
@@ -1077,3 +1091,304 @@ def test_ablage_liste_query_wird_metadataonly(fake: tuple[FakePenEcho, str], que
     status, daten = _ablage_lauf(url, "/api/canvases", query=query)
     assert status == 200 and daten == {"canvases": [BOARDS[0]]}
     assert upstream.ablage == [("GET", "/api/canvases", b"metadataOnly=1", b"")]
+
+
+# ---- Teil C: Gruppenflaeche, Mitgliedschaft und Ausweis beim Abgleich ----------------------------------------
+
+ABGLEICH_SCHLUESSEL = "a" * 40
+JETZT = 1_800_000_000.0
+FENSTER = "f-1a2b"
+
+
+class FakeGruppen:
+    """Wie `Gruppen`: Mitgliedschaften je (actor, gid); `weg` -> UebersichtWeg; `gemerkt` wie nach einem Ausfall."""
+
+    def __init__(self) -> None:
+        self.mitglieder: dict[tuple[str, int], Mitgliedschaft] = {}
+        self.gemerkte: dict[tuple[str, int], Mitgliedschaft] = {}
+        self.weg = False
+        self.fragen: list[tuple[str, int, bool]] = []
+
+    def aufnehmen(self, actor: str, gid: int, name: str = "Anna Ä.") -> None:
+        self.mitglieder[(actor, gid)] = Mitgliedschaft("55555555-5555-4555-8555-555555555555", "Montag", name, True)
+
+    def mitglied(self, actor: str, gruppe_id: int, *, frisch: bool = False) -> Mitgliedschaft:
+        self.fragen.append((actor, gruppe_id, frisch))
+        if self.weg:
+            raise UebersichtWeg()
+        m = self.mitglieder.get((actor, gruppe_id))
+        if m is None:
+            raise KeinMitglied()
+        return m
+
+    def gemerkt(self, actor: str, gruppe_id: int) -> Mitgliedschaft | None:
+        return self.gemerkte.get((actor, gruppe_id))
+
+
+class Wecker:
+    """Statt asyncio.sleep: schlaeft, bis der Test die Uhr vorspult."""
+
+    def __init__(self) -> None:
+        self.dauern: list[float] = []
+        self._klingel: asyncio.Event | None = None
+
+    def _event(self) -> asyncio.Event:
+        if self._klingel is None:
+            self._klingel = asyncio.Event()
+        return self._klingel
+
+    async def schlafen(self, sekunden: float) -> None:
+        self.dauern.append(sekunden)
+        klingel = self._event()
+        await klingel.wait()
+        klingel.clear()
+
+    def vorspulen(self) -> None:
+        self._event().set()
+
+
+def _mit_gruppen(url: str, gruppen: Any, wecker: Wecker | None = None) -> Durchreicher:
+    return Durchreicher(url, _frei(), EIGEN, ablage=_ablage(ABLAGE), inhaber=INHABER, gruppen=gruppen,
+                        abgleich_schluessel=ABGLEICH_SCHLUESSEL, uhr=lambda: JETZT,
+                        schlafen=(wecker or Wecker()).schlafen)
+
+
+async def _bis(bedingung: Any, sekunden: float = 5.0) -> None:
+    for _ in range(int(sekunden / 0.01)):
+        if bedingung():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("Bedingung nicht erreicht")
+
+
+def _abfrage(roh: bytes) -> dict[str, list[str]]:
+    from urllib.parse import parse_qs
+    return parse_qs(roh.decode(), keep_blank_values=True, strict_parsing=True)
+
+
+def _abgleich_ws(app: Durchreicher, query: bytes, *, state: dict[str, Any] | None = ALS_A,
+                 pfad: str = "/api/abgleich") -> list[dict[str, Any]]:
+    return _ws_app(app, pfad, query=query, state=state)
+
+
+def _ws_app(app: Durchreicher, pfad: str, *, query: bytes = b"", state: dict[str, Any] | None = ALS_A,
+            ) -> list[dict[str, Any]]:
+    gesendet: list[dict[str, Any]] = []
+
+    async def lauf() -> None:
+        scope: dict[str, Any] = {"type": "websocket", "path": pfad, "raw_path": pfad.encode(), "query_string": query,
+                                 "headers": [(b"origin", b"https://lernen.example.test"), *KOPF_A]}
+        if state is not None:
+            scope["state"] = state
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        eingang.put_nowait({"type": "websocket.connect"})
+
+        async def send(m: dict[str, Any]) -> None:
+            gesendet.append(m)
+            if m["type"] == "websocket.accept":
+                eingang.put_nowait({"type": "websocket.receive", "text": "hi"})
+            if m["type"] == "websocket.send":
+                eingang.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+        await asyncio.wait_for(app(scope, eingang.get, send), timeout=10)
+
+    asyncio.run(lauf())
+    return gesendet
+
+
+def test_abgleich_query_wird_ersetzt(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen("lh-1-person-a", 7)
+    upstream.ws_ziele.clear()
+    query = f"flaeche=g-7&fenster={FENSTER}&person=fremd&ausweis=x&name=Mallory".encode()
+    gesendet = _abgleich_ws(_mit_gruppen(url, gruppen), query)
+    assert gesendet[0]["type"] == "websocket.accept"
+    assert {"type": "websocket.send", "text": "echo:hi"} in gesendet
+    [(pfad, roh)] = upstream.ws_ziele
+    assert pfad == "/api/abgleich"
+    q = _abfrage(roh)
+    assert list(q) == ["flaeche", "person", "fenster", "ausweis"]  # alles andere verworfen
+    person = person_kennung("lh-1-person-a")
+    assert q["flaeche"] == ["g-7"] and q["person"] == [person] and q["fenster"] == [FENSTER]
+    # Gueltig: Flaeche, Person, Name aus der Mitgliedschaft, Ablauf jetzt + 120 s
+    assert q["ausweis"] == [ausweis(ABGLEICH_SCHLUESSEL, "g-7", person, "Anna Ä.", int(JETZT) + 120)]
+    assert gruppen.fragen == [("lh-1-person-a", 7, False)]
+
+
+def test_abgleich_inhaber_braucht_auch_mitgliedschaft(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    query = f"flaeche=g-7&fenster={FENSTER}".encode()
+    assert _abgleich_ws(_mit_gruppen(url, gruppen), query, state=ALS_INHABER)[-1] == {
+        "type": "websocket.close", "code": 1008, "reason": KEIN_MITGLIED}
+    gruppen.aufnehmen(INHABER, 7, name="")
+    upstream.ws_ziele.clear()
+    gesendet = _abgleich_ws(_mit_gruppen(url, gruppen), query, state=ALS_INHABER)
+    assert gesendet[0]["type"] == "websocket.accept"
+    q = _abfrage(upstream.ws_ziele[0][1])
+    assert q["person"] == [person_kennung(INHABER)]
+    assert q["ausweis"] == [ausweis(ABGLEICH_SCHLUESSEL, "g-7", person_kennung(INHABER), "", int(JETZT) + 120)]
+
+
+def test_abgleich_ohne_mitgliedschaft_1008(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen("lh-1-person-a", 8)  # andere Gruppe
+    upstream.ws_ziele.clear()
+    gesendet = _abgleich_ws(_mit_gruppen(url, gruppen), f"flaeche=g-7&fenster={FENSTER}".encode())
+    assert gesendet == [{"type": "websocket.close", "code": 1008, "reason": KEIN_MITGLIED}]
+    assert upstream.ws_ziele == []
+
+
+def test_abgleich_learnhouse_weg_nur_mit_gemerkter_mitgliedschaft(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    gruppen.weg = True
+    upstream.ws_ziele.clear()
+    query = f"flaeche=g-7&fenster={FENSTER}".encode()
+    assert _abgleich_ws(_mit_gruppen(url, gruppen), query) == [
+        {"type": "websocket.close", "code": 1008, "reason": GRUPPE_WEG}]
+    assert upstream.ws_ziele == []
+    gruppen.gemerkte[("lh-1-person-a", 7)] = Mitgliedschaft("55555555-5555-4555-8555-555555555555", "M", "Anna", True)
+    gesendet = _abgleich_ws(_mit_gruppen(url, gruppen), query)
+    assert gesendet[0]["type"] == "websocket.accept"
+    assert _abfrage(upstream.ws_ziele[0][1])["ausweis"] == [
+        ausweis(ABGLEICH_SCHLUESSEL, "g-7", person_kennung("lh-1-person-a"), "Anna", int(JETZT) + 120)]
+
+
+async def _offene_abgleich_sitzung(app: Durchreicher, schritt: Any) -> list[dict[str, Any]]:
+    """Verbindet, wartet auf das Echo von "hi" und ruft dann `schritt(eingang, gesendet)` (async)."""
+    gesendet: list[dict[str, Any]] = []
+    scope: dict[str, Any] = {"type": "websocket", "path": "/api/abgleich", "raw_path": b"/api/abgleich",
+                             "query_string": f"flaeche=g-7&fenster={FENSTER}".encode(), "state": dict(ALS_A),
+                             "headers": [(b"origin", b"https://lernen.example.test")]}
+    eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    eingang.put_nowait({"type": "websocket.connect"})
+
+    async def send(m: dict[str, Any]) -> None:
+        gesendet.append(m)
+
+    aufgabe = asyncio.ensure_future(app(scope, eingang.get, send))
+    await _bis(lambda: any(m["type"] == "websocket.accept" for m in gesendet))
+    eingang.put_nowait({"type": "websocket.receive", "text": "hi"})
+    await _bis(lambda: {"type": "websocket.send", "text": "echo:hi"} in gesendet)
+    await schritt(eingang, gesendet)
+    await asyncio.wait_for(aufgabe, timeout=10)
+    return gesendet
+
+
+def test_abgleich_schliesst_nach_entfernen(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    gruppen, wecker = FakeGruppen(), Wecker()
+    gruppen.aufnehmen("lh-1-person-a", 7)
+
+    async def entfernen(eingang: asyncio.Queue[dict[str, Any]], gesendet: list[dict[str, Any]]) -> None:
+        await _bis(lambda: wecker.dauern == [60])
+        del gruppen.mitglieder[("lh-1-person-a", 7)]
+        wecker.vorspulen()  # 60 s spaeter
+        await _bis(lambda: gesendet[-1]["type"] == "websocket.close")
+        eingang.put_nowait({"type": "websocket.receive", "text": "nach-dem-entfernen"})
+
+    gesendet = asyncio.run(_offene_abgleich_sitzung(_mit_gruppen(url, gruppen, wecker), entfernen))
+    schliessen = [m for m in gesendet if m["type"] == "websocket.close"]
+    assert schliessen == [{"type": "websocket.close", "code": 1008, "reason": ZUGANG_WEG}]
+    assert not any(m.get("text") == "echo:nach-dem-entfernen" for m in gesendet)
+    # Die Nachpruefung fragt frisch (am 60-s-Puffer vorbei)
+    assert gruppen.fragen == [("lh-1-person-a", 7, False), ("lh-1-person-a", 7, True)]
+
+
+def test_abgleich_nachpruefung_learnhouse_weg_bleibt_offen(fake: tuple[FakePenEcho, str]) -> None:
+    _, url = fake
+    gruppen, wecker = FakeGruppen(), Wecker()
+    gruppen.aufnehmen("lh-1-person-a", 7)
+
+    async def ausfall(eingang: asyncio.Queue[dict[str, Any]], gesendet: list[dict[str, Any]]) -> None:
+        await _bis(lambda: wecker.dauern == [60])
+        gruppen.weg = True
+        wecker.vorspulen()
+        await _bis(lambda: wecker.dauern == [60, 60])  # nachgeprueft, schlaeft wieder
+        eingang.put_nowait({"type": "websocket.receive", "text": "weiter"})
+        await _bis(lambda: {"type": "websocket.send", "text": "echo:weiter"} in gesendet)
+        gruppen.weg = False
+        wecker.vorspulen()  # wieder erreichbar, weiter Mitglied
+        await _bis(lambda: wecker.dauern == [60, 60, 60])
+        eingang.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+    gesendet = asyncio.run(_offene_abgleich_sitzung(_mit_gruppen(url, gruppen, wecker), ausfall))
+    assert not any(m["type"] == "websocket.close" and m.get("code") == 1008 for m in gesendet)
+    assert [f[2] for f in gruppen.fragen] == [False, True, True]
+
+
+@pytest.mark.parametrize("query", [
+    b"", b"raum=r1", b"flaeche=lf-x&fenster=f-1", b"flaeche=g-7", b"fenster=f-1",
+    b"flaeche=g-07&fenster=f-1", b"flaeche=g-7&fenster=F%21", b"flaeche=g-7&fenster=",
+    b"flaeche=g-7&flaeche=g-8&fenster=f-1", b"flaeche=g-7&fenster=f-1&fenster=f-2", b"flaeche=g-1234567890&fenster=f-1",
+    b"flaeche=g-7%0A&fenster=f-1", b"flaeche=g-7&fenster=f-1%FF",
+])
+def test_abgleich_ohne_gueltige_gruppenflaeche_1008(fake: tuple[FakePenEcho, str], query: bytes) -> None:
+    # Solo verbindet sich nie mit /api/abgleich; alles ausser flaeche=g-<id> und fenster ist fail-closed.
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen("lh-1-person-a", 7)
+    gruppen.aufnehmen("lh-1-person-a", 8)
+    upstream.ws_ziele.clear()
+    for state in (ALS_A, ALS_INHABER):
+        assert _abgleich_ws(_mit_gruppen(url, gruppen), query, state=state) == [
+            {"type": "websocket.close", "code": 1008}], (query, state)
+    assert upstream.ws_ziele == [] and gruppen.fragen == []
+
+
+@pytest.mark.parametrize("pfad", ["/api/abgleich/", "/API/abgleich", "/api/./abgleich", "/x/../api/abgleich",
+                                  "/api//abgleich", "/api/%61bgleich", "/api/abgleich/x"])
+def test_abgleich_pfadvarianten_1008_auch_fuer_den_inhaber(fake: tuple[FakePenEcho, str], pfad: str) -> None:
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen(INHABER, 7)
+    upstream.ws_ziele.clear()
+    gesendet = _abgleich_ws(_mit_gruppen(url, gruppen), f"flaeche=g-7&fenster={FENSTER}".encode(),
+                            state=ALS_INHABER, pfad=pfad)
+    assert gesendet == [{"type": "websocket.close", "code": 1008}], pfad
+    assert upstream.ws_ziele == []
+
+
+def test_abgleich_ohne_kennung_1008(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.ws_ziele.clear()
+    app = Durchreicher(url, _frei(), EIGEN, gruppen=FakeGruppen(), abgleich_schluessel=ABGLEICH_SCHLUESSEL)
+    assert _abgleich_ws(app, f"flaeche=g-7&fenster={FENSTER}".encode(), state=None) == [
+        {"type": "websocket.close", "code": 1008}]
+    assert upstream.ws_ziele == []
+
+
+def test_gruppen_aus_abgleich_1008(fake: tuple[FakePenEcho, str]) -> None:
+    # Ohne Gruppen-Einstellung (kein Gruppen-Objekt oder kein Schluessel) gibt es keinen Abgleich, auch fuer den Inhaber.
+    upstream, url = fake
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen(INHABER, 7)
+    upstream.ws_ziele.clear()
+    query = f"flaeche=g-7&fenster={FENSTER}".encode()
+    for app in (Durchreicher(url, _frei(), EIGEN, inhaber=INHABER),
+                Durchreicher(url, _frei(), EIGEN, inhaber=INHABER, gruppen=gruppen, abgleich_schluessel="")):
+        assert _abgleich_ws(app, query, state=ALS_INHABER) == [{"type": "websocket.close", "code": 1008}]
+    assert upstream.ws_ziele == [] and gruppen.fragen == []
+
+
+def test_andere_websockets_unberuehrt_von_gruppen(fake: tuple[FakePenEcho, str]) -> None:
+    upstream, url = fake
+    upstream.ws_ziele.clear()
+    gesendet = _ws_app(_mit_gruppen(url, FakeGruppen()), "/api/mcp/canvas", query=b"x=1&person=p")
+    assert gesendet[0]["type"] == "websocket.accept"
+    assert upstream.ws_ziele == [("/api/mcp/canvas", b"x=1&person=p")]
+
+
+def test_abgleich_log_ohne_geheimnisse(fake: tuple[FakePenEcho, str], caplog: pytest.LogCaptureFixture) -> None:
+    _, url = fake
+    gruppen = FakeGruppen()
+    gruppen.aufnehmen("lh-1-person-a", 7)
+    with caplog.at_level(logging.DEBUG, logger="spaces.learning.huelle"):
+        _abgleich_ws(_mit_gruppen(url, gruppen), f"flaeche=g-7&fenster={FENSTER}".encode())
+        gruppen.weg = True
+        _abgleich_ws(_mit_gruppen(url, gruppen), f"flaeche=g-7&fenster={FENSTER}".encode())
+    for geheim in (ABGLEICH_SCHLUESSEL, "lh-1-person-a", person_kennung("lh-1-person-a"), "Anna"):
+        assert geheim not in caplog.text

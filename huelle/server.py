@@ -14,6 +14,7 @@ import httpx
 from .bruecke import Bruecke
 from .durchreicher import Durchreicher
 from .einstellung import Einstellung, einstellung_lesen
+from .gruppe import Gruppen
 from .katalog import TIMEOUT_S, Katalog
 from .lern_mcp import LernMcp
 from .penecho_mcp import PenEchoMcp
@@ -36,6 +37,10 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
     penecho_version_pruefen(Path(einstellung.penecho_paket), sperre)
     # Ein Katalog (ein Puffer) fuer Bruecke und Flaechen-Port: beide pruefen Personen gegen dieselben Kurse.
     katalog = Katalog(einstellung, httpx.Client(timeout=TIMEOUT_S, follow_redirects=False))
+    # Gruppenflaechen (Teil C) nur mit vollstaendiger Einstellung; sonst bleibt /api/abgleich zu (1008).
+    gruppen = (Gruppen(einstellung.learnhouse_url, einstellung.dienst_schluessel,
+                       httpx.Client(timeout=TIMEOUT_S, follow_redirects=False))
+               if einstellung.gruppen_aktiv else None)
     bruecke = Bruecke(
         einstellung,
         # Ohne Vorgabe-Kennung: jeder Aufruf nennt die Kennung der Anfrage (request.state.actor_id).
@@ -54,6 +59,9 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         ablage=bruecke.eigene_dokumente,
         # Jede andere Kennung (Personen-Cookie) erreicht nur die Lernmodus-Routen (Allowlist).
         inhaber=einstellung.actor_id,
+        # Abgleich der Gruppenflaeche: Mitgliedschaft pruefen, Person und Ausweis selbst setzen.
+        gruppen=gruppen,
+        abgleich_schluessel=einstellung.abgleich_schluessel if gruppen is not None else "",
     )
     flaeche = FlaechenWeiche(einstellung, durchreicher, katalog)
     return Weiche(einstellung, seite_app(einstellung), bruecke), flaeche, bruecke

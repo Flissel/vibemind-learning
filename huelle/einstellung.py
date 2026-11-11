@@ -10,7 +10,7 @@ import os
 import re
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 _ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -37,6 +37,10 @@ ZUSAMMENFASSUNG_ORDNER = "LEARNING_HUELLE_ZUSAMMENFASSUNG_ORDNER"
 # Optional (Teil B): LearnHouse-API fuer Uebergabe und Kurse je Person. Leer = nur der Notweg
 # (Zugangscookie mit LEARNING_HUELLE_ACTOR und LEARNING_HUELLE_KURSE), genau wie bisher.
 LEARNHOUSE_URL = "LEARNING_HUELLE_LEARNHOUSE_URL"
+# Optional (Teil C): Abgleichdienst der Gruppenflaechen (http-Basis fuer /platz und /schutz) und sein Schluessel
+# (signiert Ausweise und Dienstkopf). Gruppen gibt es nur mit beiden und mit LEARNING_HUELLE_LEARNHOUSE_URL.
+ABGLEICH_URL = "LEARNING_HUELLE_ABGLEICH_URL"
+ABGLEICH_SCHLUESSEL = "LEARNING_HUELLE_ABGLEICH_SCHLUESSEL"
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,13 @@ class Einstellung:
     penecho_mcp_url: str
     zusammenfassung_ordner: str = ""
     learnhouse_url: str = ""
+    abgleich_url: str = ""
+    abgleich_schluessel: str = field(default="", repr=False)
+
+    @property
+    def gruppen_aktiv(self) -> bool:
+        """Gruppenflaechen (Teil C) nur mit LearnHouse, Abgleichdienst und dessen Schluessel; sonst 404/1008."""
+        return bool(self.learnhouse_url and self.abgleich_url and self.abgleich_schluessel)
 
     @property
     def basis_host(self) -> str:
@@ -136,20 +147,32 @@ def _port(env: Mapping[str, str], name: str, vorgabe: int) -> int:
     return port
 
 
-def _learnhouse_url(env: Mapping[str, str]) -> str:
+def _http_basis(env: Mapping[str, str], name: str) -> str:
     """Leer oder eine http(s)-Basisadresse ohne Query, Fragment und Zugangsdaten (ohne `/` am Ende)."""
-    roh = (env.get(LEARNHOUSE_URL) or "").strip().rstrip("/")
+    roh = (env.get(name) or "").strip().rstrip("/")
     if not roh:
         return ""
     try:
         teile = urlsplit(roh)
         teile.port  # noqa: B018 - prueft die Portangabe
     except ValueError:
-        raise RuntimeError(f"{LEARNHOUSE_URL} ist keine http(s)-Adresse") from None
+        raise RuntimeError(f"{name} ist keine http(s)-Adresse") from None
     if (teile.scheme.lower() not in ("http", "https") or not teile.hostname or teile.query or teile.fragment
             or "@" in teile.netloc):
-        raise RuntimeError(f"{LEARNHOUSE_URL} ist keine http(s)-Adresse")
+        raise RuntimeError(f"{name} ist keine http(s)-Adresse")
     return roh
+
+
+def _learnhouse_url(env: Mapping[str, str]) -> str:
+    return _http_basis(env, LEARNHOUSE_URL)
+
+
+def _abgleich_schluessel(env: Mapping[str, str]) -> str:
+    """Leer oder mindestens MIN_SCHLUESSEL Zeichen; Leerraum am Rand (auch CRLF der Env-Dateien) zaehlt nicht."""
+    wert = (env.get(ABGLEICH_SCHLUESSEL) or "").strip()
+    if wert and len(wert) < MIN_SCHLUESSEL:
+        raise RuntimeError(f"{ABGLEICH_SCHLUESSEL} ist zu kurz")
+    return wert
 
 
 def _penecho_paket_vorgabe(env: Mapping[str, str]) -> str:
@@ -192,4 +215,6 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         penecho_mcp_url=(env.get(PENECHO_MCP_URL) or "").strip() or "https://127.0.0.1:3922/mcp",
         zusammenfassung_ordner=(env.get(ZUSAMMENFASSUNG_ORDNER) or "").strip(),
         learnhouse_url=_learnhouse_url(env),
+        abgleich_url=_http_basis(env, ABGLEICH_URL),
+        abgleich_schluessel=_abgleich_schluessel(env),
     )

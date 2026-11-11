@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from spaces.learning.huelle.einstellung import Kurs, einstellung_lesen
+from spaces.learning.huelle.gruppe import GRUPPE_WEG
 from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, KeinZugang, UebersichtWeg
 from spaces.learning.huelle.person import PERSON_COOKIE, person_aus_cookie, person_cookie
 from spaces.learning.huelle.weiche import ABGELAUFEN, FlaechenWeiche, Weiche
@@ -46,7 +47,8 @@ def _weichen() -> tuple[Weiche, FlaechenWeiche, list[str]]:
 
 def _anfrage(app: Any, path: str, *, art: str = "http", host: str = HOST, cookie: str | None = None,
              methode: str = "GET", origin: str | None = None,
-             raw_path: bytes | None = None, cookie_kopf: str | None = None) -> list[dict[str, Any]]:
+             raw_path: bytes | None = None, cookie_kopf: str | None = None,
+             query: bytes = b"") -> list[dict[str, Any]]:
     headers = [(b"host", host.encode())]
     if cookie is not None:
         headers.append((b"cookie", f"{COOKIE}={cookie}".encode()))
@@ -54,7 +56,7 @@ def _anfrage(app: Any, path: str, *, art: str = "http", host: str = HOST, cookie
         headers.append((b"cookie", cookie_kopf.encode("utf-8")))
     if origin is not None:
         headers.append((b"origin", origin.encode()))
-    scope = {"type": art, "method": methode, "path": path, "headers": headers}
+    scope = {"type": art, "method": methode, "path": path, "headers": headers, "query_string": query}
     if raw_path is not None:
         scope["raw_path"] = raw_path
     gesendet: list[dict[str, Any]] = []
@@ -508,3 +510,74 @@ def test_flaeche_ohne_katalog_keine_personen() -> None:
     assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie_kopf=_person("lh-1-person-a")))["status"] == 403
     assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie=_gut()))["status"] == 200
     assert durch.personen == ["lh-1-test"]
+
+
+# ---- Teil C: Gruppen-Link und Gruppenrouten --------------------------------------------------------------
+
+E_GRUPPEN = einstellung_lesen({
+    "LEARNING_HUELLE_BASIS": f"https://{HOST}",
+    "LEARNING_HUELLE_FLAECHE_BASIS": f"https://{FLAECHE_HOST}",
+    "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+    "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
+    "LEARNING_HUELLE_ACTOR": "lh-1-test",
+    "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "11111111-1111-4111-8111-111111111111", "titel": "T"}]),
+    "LEARNING_HUELLE_LEARNHOUSE_URL": "http://learnhouse.test",
+    "LEARNING_HUELLE_ABGLEICH_URL": "http://abgleich.test:8160",
+    "LEARNING_HUELLE_ABGLEICH_SCHLUESSEL": "a" * 40,
+})
+
+
+def _ziel(gesendet: list[dict[str, Any]]) -> str:
+    html = gesendet[1]["body"].decode("utf-8")
+    anfang = html.index('content="0;url=') + len('content="0;url=')
+    return html[anfang:html.index('"', anfang)].replace("&amp;", "&")
+
+
+def test_uebergabe_mit_gruppe_leitet_weiter() -> None:
+    seiten, *_ = _weichen_lh(E_GRUPPEN)
+    token = _uebergabe_token("lh-1-person-a", KURS_B)
+    gesendet = _anfrage(seiten, f"/lernen/uebergabe/{token}", query=b"gruppe=7")
+    assert _start(gesendet)["status"] == 200
+    assert _ziel(gesendet) == f"/lernen/?kurs={KURS_B}&gruppe=7"
+    html = gesendet[1]["body"].decode("utf-8")
+    assert f'<a href="/lernen/?kurs={KURS_B}&amp;gruppe=7">Weiter zum Lernen</a>' in html
+    assert _ziel(_anfrage(seiten, f"/lernen/uebergabe/{token}", query=b"gruppe=123456789")) == (
+        f"/lernen/?kurs={KURS_B}&gruppe=123456789")
+
+
+def test_uebergabe_andere_gruppenwerte_werden_ignoriert() -> None:
+    seiten, *_ = _weichen_lh(E_GRUPPEN)
+    token = _uebergabe_token("lh-1-person-a", KURS_B)
+    for query in (b"gruppe=", b"gruppe=1234567890", b"gruppe=7a", b"gruppe=-7", b"gruppe=%37%0A",
+                  b"gruppe=7&gruppe=8", b"gruppe=%D9%A3", b"gruppe=7%22%3E", b"x=1", b""):
+        gesendet = _anfrage(seiten, f"/lernen/uebergabe/{token}", query=query)
+        assert _start(gesendet)["status"] == 200, query
+        assert _ziel(gesendet) == f"/lernen/?kurs={KURS_B}", query
+    # Ohne Kurs keine Gruppe: die Seite ohne Vorwahl.
+    assert _ziel(_anfrage(seiten, f"/lernen/uebergabe/{_uebergabe_token('lh-1-person-a', None)}",
+                          query=b"gruppe=7")) == "/lernen/"
+
+
+def test_gruppen_aus_ohne_einstellung_404() -> None:
+    kopf = f"{_person('lh-1-person-a')}"
+    for einstellung in (E_LH, E):  # ohne Abgleich-Einstellung bzw. ganz ohne LearnHouse
+        seiten, _, _, api, _ = _weichen_lh(einstellung)
+        for pfad in ("/lernen/api/gruppen/7/oeffnen", "/lernen/api/gruppen", "/lernen/api/gruppen/"):
+            gesendet = _anfrage(seiten, pfad, methode="POST", origin=f"https://{HOST}",
+                                cookie_kopf=kopf if einstellung is E_LH else f"{COOKIE}={_gut()}")
+            assert _start(gesendet)["status"] == 404, pfad
+            assert json.loads(gesendet[1]["body"]) == {"meldung": GRUPPE_WEG}
+        assert api.aufrufe == []
+        # Andere API-Routen wie bisher
+        assert _start(_anfrage(seiten, "/lernen/api/kurse", cookie=_gut()))["status"] == 200
+
+
+def test_gruppenroute_mit_einstellung_geht_an_die_api() -> None:
+    seiten, _, _, api, _ = _weichen_lh(E_GRUPPEN)
+    gesendet = _anfrage(seiten, "/lernen/api/gruppen/7/oeffnen", methode="POST", origin=f"https://{HOST}",
+                        cookie_kopf=_person("lh-1-person-a"))
+    assert _start(gesendet)["status"] == 200
+    assert api.personen == ["lh-1-person-a"]
+    # Ohne Cookie bleibt es 403, auch bei abgeschalteten Gruppen.
+    seiten_aus, *_ = _weichen_lh(E_LH)
+    assert _start(_anfrage(seiten_aus, "/lernen/api/gruppen/7/oeffnen", methode="POST"))["status"] == 403

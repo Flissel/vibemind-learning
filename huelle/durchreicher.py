@@ -9,15 +9,30 @@ import json
 import logging
 import posixpath
 import re
+import time
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 import httpx
 import websockets
 
+from .gruppe import (
+    AUSWEIS_GUELTIG_S,
+    GRUPPE_WEG,
+    KEIN_MITGLIED,
+    ZUGANG_WEG,
+    Gruppen,
+    KeinMitglied,
+    Mitgliedschaft,
+    ausweis,
+    flaeche_der_gruppe,
+    gruppe_aus_flaeche,
+    person_kennung,
+)
+from .katalog import UebersichtWeg
 from .person import PERSON_COOKIE
 from .sperre import CLOUD_PFADE, KI_PFADE, Sperre
 from .zugang import COOKIE
@@ -151,6 +166,11 @@ _LERN_API: dict[str, frozenset[str]] = {
 }
 _LERN_ABLAGE = ("/api/canvases", "/api/canvas-projects")
 _LERN_WS = frozenset({"/api/mcp/canvas", "/api/abgleich"})  # MCP-Flaeche (mcp-runtime.js), Abgleich (gruppe.js)
+# Abgleich der Gruppenflaeche (Teil C): fuer jede Kennung, auch den Inhaber, nur exakt dieser Rohpfad mit
+# `flaeche=g-<id>` und `fenster`; die Huelle setzt Person und Ausweis selbst.
+ABGLEICH_PFAD = "/api/abgleich"
+NACHPRUEFEN_S = 60
+_FENSTER = re.compile(r"[a-z0-9-]{1,40}")  # KENNUNG des Abgleichdienstes (protokoll.mjs)
 # Statisch erlaubt ist jedes GET/HEAD ausserhalb von /api/, ausser den privaten Plugins des Inhabers.
 _STATISCH_GESPERRT = ("/plugins/private/",)
 
@@ -191,6 +211,27 @@ def person_ws_erlaubt(scope: Scope) -> bool:
     """Websockets einer Person: nur MCP-Flaeche und Abgleich (exakter Rohpfad; Query erlaubt)."""
     roh = _rohpfad(scope)
     return _schlicht(roh) and roh in _LERN_WS
+
+
+def ist_abgleich_pfad(scope: Scope) -> bool:
+    """Zielt der Websocket (roh oder normalisiert, ohne Gross-/Kleinschreibung) auf den Abgleich?"""
+    return _trifft(scope["path"], (ABGLEICH_PFAD,)) or _trifft(_rohpfad(scope), (ABGLEICH_PFAD,))
+
+
+def abgleich_anfrage(query_string: bytes) -> tuple[int, str] | None:
+    """(gruppe_id, fenster) aus der Query des Browsers: genau ein `flaeche=g-<id>` und ein `fenster`, sonst None.
+
+    Weitere Parameter (person, ausweis, ...) werden ignoriert; die Huelle baut die Query neu.
+    """
+    try:
+        werte = parse_qs(query_string.decode("ascii"), keep_blank_values=True, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    flaeche, fenster = werte.get("flaeche", []), werte.get("fenster", [])
+    if len(flaeche) != 1 or len(fenster) != 1 or not _FENSTER.fullmatch(fenster[0]):
+        return None
+    gruppe_id = gruppe_aus_flaeche(flaeche[0])
+    return None if gruppe_id is None else (gruppe_id, fenster[0])
 
 
 def _ohne_zugang(wert: str) -> str | None:
@@ -254,6 +295,11 @@ class Durchreicher:
 
     `inhaber`: die Inhaber-Kennung (Notweg). Ist sie gesetzt, gilt fuer jede andere Kennung (und ohne Kennung)
     die Lernmodus-Allowlist (`person_http_erlaubt`, `person_ws_erlaubt`); ohne `inhaber` keine Allowlist.
+
+    `gruppen` und `abgleich_schluessel` (Teil C): der Websocket `/api/abgleich` geht nur mit beiden durch und nur
+    fuer Mitglieder der Gruppe (`_abgleich_ziel`); ohne sie ist er fuer jede Kennung zu (1008). Offene Verbindungen
+    werden alle `nachpruefen_s` Sekunden frisch nachgeprueft. `uhr` (Unix-Sekunden, Ablauf des Ausweises) und
+    `schlafen` sind fuer Tests austauschbar.
     """
 
     def __init__(
@@ -261,9 +307,19 @@ class Durchreicher:
         *, rahmen_herkuenfte: tuple[str, ...] = (),
         ablage: Callable[[str], frozenset[str] | None] | None = None,
         inhaber: str | None = None,
+        gruppen: Gruppen | None = None,
+        abgleich_schluessel: str = "",
+        uhr: Callable[[], float] = time.time,
+        schlafen: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        nachpruefen_s: float = NACHPRUEFEN_S,
     ) -> None:
         self._ablage = ablage
         self._inhaber = inhaber
+        self._gruppen = gruppen
+        self._abgleich_schluessel = abgleich_schluessel.strip()
+        self._uhr = uhr
+        self._schlafen = schlafen
+        self._nachpruefen_s = nachpruefen_s
         teile = urlsplit(penecho_url)
         self._basis = f"{teile.scheme}://{teile.netloc}"
         self._netloc = teile.netloc
@@ -611,6 +667,39 @@ class Durchreicher:
 
     # --- Websocket ----------------------------------------------------------------------
 
+    async def _abgleich_ziel(self, scope: Scope, send: Send) -> tuple[str, tuple[str, int]] | None:
+        """Ziel (Pfad und neue Query) fuer `/api/abgleich` und (actor, gruppe_id); None, wenn geschlossen wurde.
+
+        Fail-closed: ohne Gruppen-Einstellung, ausser dem exakten Rohpfad, ohne Kennung oder ohne gueltige
+        `flaeche=g-<id>` und `fenster` ist 1008 (Solo verbindet sich nie mit dem Abgleich). Die Mitgliedschaft gilt fuer
+        jede Kennung, auch den Inhaber. Ist LearnHouse weg, reicht eine gemerkte Mitgliedschaft.
+        """
+        state = scope.get("state")
+        actor = state.get("actor_id") if isinstance(state, dict) else None
+        anfrage = abgleich_anfrage(scope.get("query_string") or b"")
+        if (self._gruppen is None or not self._abgleich_schluessel or _rohpfad(scope) != ABGLEICH_PFAD
+                or not isinstance(actor, str) or not actor or anfrage is None):
+            await send({"type": "websocket.close", "code": 1008})
+            return None
+        gruppe_id, fenster = anfrage
+        mitgliedschaft: Mitgliedschaft | None
+        try:
+            # Gruppen ist synchron (httpx, bis 5 s); nie den Ereignisstrang blockieren.
+            mitgliedschaft = await asyncio.to_thread(self._gruppen.mitglied, actor, gruppe_id)
+        except KeinMitglied:
+            await send({"type": "websocket.close", "code": 1008, "reason": KEIN_MITGLIED})
+            return None
+        except UebersichtWeg:
+            mitgliedschaft = self._gruppen.gemerkt(actor, gruppe_id)
+            if mitgliedschaft is None:
+                await send({"type": "websocket.close", "code": 1008, "reason": GRUPPE_WEG})
+                return None
+        flaeche, person = flaeche_der_gruppe(gruppe_id), person_kennung(actor)
+        schein = ausweis(self._abgleich_schluessel, flaeche, person, mitgliedschaft.anzeigename,
+                         int(self._uhr()) + AUSWEIS_GUELTIG_S)
+        query = urlencode([("flaeche", flaeche), ("person", person), ("fenster", fenster), ("ausweis", schein)])
+        return f"{ABGLEICH_PFAD}?{query}", (actor, gruppe_id)
+
     async def _ws(self, scope: Scope, receive: Receive, send: Send) -> None:
         nachricht = await receive()
         if nachricht["type"] != "websocket.connect":
@@ -629,6 +718,13 @@ class Durchreicher:
         if self._eingeschraenkt(scope) and not person_ws_erlaubt(scope):
             await send({"type": "websocket.close", "code": 1008})
             return
+        ziel = _pfad_und_query(scope)
+        gruppe: tuple[str, int] | None = None  # (actor, gruppe_id) einer Gruppenflaeche: wird nachgeprueft
+        if ist_abgleich_pfad(scope):
+            abgleich = await self._abgleich_ziel(scope, send)
+            if abgleich is None:
+                return  # schon geschlossen
+            ziel, gruppe = abgleich
         kopf: list[tuple[str, str]] = []
         for n, w in scope["headers"]:
             name, wert = n.decode("latin-1").lower(), w.decode("latin-1")
@@ -642,7 +738,7 @@ class Durchreicher:
             kopf.append((name, wert))
         try:
             upstream = await websockets.connect(
-                self._ws_basis + _pfad_und_query(scope), origin=self._basis, **{_WS_KOPF_ARGUMENT: kopf},
+                self._ws_basis + ziel, origin=self._basis, **{_WS_KOPF_ARGUMENT: kopf},
                 subprotocols=list(scope.get("subprotocols") or []) or None,
                 open_timeout=10, max_size=None,
             )
@@ -659,6 +755,8 @@ class Durchreicher:
                 if n["type"] == "websocket.disconnect":
                     return
                 if n["type"] == "websocket.receive":
+                    if closed.is_set():  # nach dem Schliessen (z. B. entfernte Person) geht nichts mehr hoch
+                        return
                     if ki_pfad and self._sperre.gesperrt():  # Sperre kann nach dem Verbindungsaufbau greifen
                         await send({"type": "websocket.close", "code": 1008, "reason": SPERR_TEXT})
                         closed.set()
@@ -670,12 +768,29 @@ class Durchreicher:
 
         async def runter() -> None:
             async for m in upstream:
+                if closed.is_set():
+                    return
                 if isinstance(m, str):
                     await send({"type": "websocket.send", "text": m})
                 else:
                     await send({"type": "websocket.send", "bytes": bytes(m)})
 
+        async def nachpruefen(gruppen: Gruppen, actor: str, gruppe_id: int) -> None:
+            """Alle `nachpruefen_s` frisch fragen; ist die Person kein Mitglied mehr, schliessen (Review-Fokus 3)."""
+            while True:
+                await self._schlafen(self._nachpruefen_s)
+                try:
+                    await asyncio.to_thread(gruppen.mitglied, actor, gruppe_id, frisch=True)
+                except KeinMitglied:
+                    closed.set()
+                    await send({"type": "websocket.close", "code": 1008, "reason": ZUGANG_WEG})
+                    return
+                except UebersichtWeg:
+                    continue  # LearnHouse weg: die offene Verbindung bleibt (Gruppen protokolliert den Fehlertyp)
+
         aufgaben = [asyncio.ensure_future(hoch()), asyncio.ensure_future(runter())]
+        if gruppe is not None and self._gruppen is not None:
+            aufgaben.append(asyncio.ensure_future(nachpruefen(self._gruppen, *gruppe)))
         try:
             await asyncio.wait(aufgaben, return_when=asyncio.FIRST_COMPLETED)
         finally:
