@@ -508,13 +508,7 @@ class Durchreicher:
             await _klartext(send, 403, NICHT_ERLAUBT)
             return
         if self._sperre.gesperrt() and ist_ki_pfad(scope["path"]):
-            body = json.dumps({"error": SPERR_TEXT}, ensure_ascii=False).encode("utf-8")
-            await send({"type": "http.response.start", "status": 423, "headers": [
-                (b"content-type", b"application/json; charset=utf-8"),
-                (b"content-length", str(len(body)).encode("ascii")),
-                (b"cache-control", b"no-store"),
-            ]})
-            await send({"type": "http.response.body", "body": body})
+            await self._ki_gesperrt(send)
             return
         if self._eingeschraenkt(scope) and not person_http_erlaubt(scope):
             await _klartext(send, 403, NICHT_ERLAUBT)
@@ -531,6 +525,15 @@ class Durchreicher:
             await self._ki_begrenzt(scope, receive, send)
             return
         await self._weiterreichen(scope, receive, send)
+
+    async def _ki_gesperrt(self, send: Send) -> None:
+        body = json.dumps({"error": SPERR_TEXT}, ensure_ascii=False).encode("utf-8")
+        await send({"type": "http.response.start", "status": 423, "headers": [
+            (b"content-type", b"application/json; charset=utf-8"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"cache-control", b"no-store"),
+        ]})
+        await send({"type": "http.response.body", "body": body})
 
     async def _ki_begrenzt(self, scope: Scope, receive: Receive, send: Send) -> None:
         """`/api/ai/command` einer Person: unter der Sperre der Kennung und dem gemeinsamen Platz.
@@ -567,7 +570,11 @@ class Durchreicher:
             try:
                 async with eintrag[0]:
                     async with platz:
-                        await self._weiterreichen(scope, lesen, send)
+                        # Das Warten kann lange dauern: die KI-Sperre gilt auch jetzt, nicht nur bei der Ankunft.
+                        if self._sperre.gesperrt():
+                            await self._ki_gesperrt(send)
+                        else:
+                            await self._weiterreichen(scope, lesen, send)
             finally:
                 eintrag[1] -= 1
                 if eintrag[1] == 0 and self._ki_je_kennung.get(kennung) is eintrag:

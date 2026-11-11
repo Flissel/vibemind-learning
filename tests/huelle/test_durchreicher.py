@@ -1776,3 +1776,32 @@ def test_einstellung_ki_gleichzeitig(roh: str | None, erwartet: int) -> None:
     if roh is not None:
         env["LEARNING_HUELLE_KI_GLEICHZEITIG"] = roh
     assert einstellung_lesen(env).ki_gleichzeitig == erwartet
+
+
+def test_ki_sperre_wird_nach_dem_warten_erneut_geprueft() -> None:
+    """Wer auf einen Platz wartet und waehrenddessen die KI-Sperre bekommt, erreicht PenEcho nicht mehr (423)."""
+    async def ablauf() -> None:
+        probe = _KiProbe()
+        sperre = _frei()
+        app = Durchreicher("http://127.0.0.1:1", sperre, EIGEN, inhaber=INHABER, ki_gleichzeitig=1)
+        app._weiterreichen = probe  # type: ignore[method-assign]
+        a = _ki_anfrage(app, "lh-1-person-a", "1")
+        b = _ki_anfrage(app, "lh-1-person-b", "1")
+        await _tick()
+        assert probe.gestartet == ["lh-1-person-a:1"]  # b wartet auf den Platz
+        sperre.offen("aufgabe-1")  # eine Pruefungsaufgabe wird geoeffnet
+        probe.tor("lh-1-person-a:1").set()
+        antwort_b = await b
+        await a
+        assert probe.gestartet == ["lh-1-person-a:1"]  # b erreicht PenEcho nie
+        assert antwort_b[0]["status"] == 423
+        assert json.loads(antwort_b[1]["body"]) == {"error": SPERR_TEXT}
+        # Die Sperre haelt keinen Platz fest: nach dem Freischalten laeuft die naechste Anfrage.
+        sperre.frei()
+        c = _ki_anfrage(app, "lh-1-person-b", "2")
+        await _tick()
+        assert "lh-1-person-b:2" in probe.gestartet
+        probe.tor("lh-1-person-b:2").set()
+        await c
+
+    asyncio.run(ablauf())

@@ -4209,3 +4209,36 @@ def test_gruppen_bericht_ohne_bilder_solo_unveraendert() -> None:
         assert b_gruppe[2] == SID_GA and b_gruppe[4] == () and penecho.bericht_rechtecke[1] is None
     finally:
         bruecke.beenden()
+
+
+# ---- Gerechte KI (Task 9, Fix): Gruppensitzungen reihen mit der echten Person ein -------------------------------
+
+def test_gruppe_reiht_mit_der_echten_person_ein() -> None:
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({gk: SID_GA})
+    client, _, _, _ = _gruppen_bruecke(laeufe)
+    bruecke = client.app
+    protokoll: list[tuple[str, str, str | None]] = []
+
+    def beobachten(name: str, spur: Any) -> None:
+        echt = spur.einreihen
+
+        def einreihen(schluessel: str, arbeit: Any, **kw: Any) -> bool:
+            protokoll.append((name, schluessel, kw.get("wer")))
+            return echt(schluessel, arbeit, **kw)
+
+        spur.einreihen = einreihen
+
+    beobachten("modell", bruecke._modellspur)
+    beobachten("flaeche", bruecke._flaechenspur)
+    try:
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert client.post(f"/lernen/api/sitzungen/{SID_GA}/abgeben", json={"nummer": 1}).status_code == 202
+        _bis(lambda: bruecke._modellspur.wartend("") == 0 and bruecke._flaechenspur.wartend("") == 0)
+        assert bruecke._sitzungen[SID_GA].lern_actor == gk != PA
+        modell = [p for p in protokoll if p[0] == "modell"]
+        flaeche = [p for p in protokoll if p[0] == "flaeche"]
+        assert modell and flaeche  # Bewertung und Rueckmeldung
+        assert {w for _, _, w in modell + flaeche} == {PA}  # nie `actor:g<gid>`
+    finally:
+        bruecke.beenden()
