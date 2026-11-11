@@ -1744,6 +1744,65 @@ def test_schild_setzen_im_mappenkopf(zustand: Path) -> None:
     assert arg == {"sessionId": "sess-1", "requestId": "mappe-7-p" + "a" * 24, "action": "create_text",
                    "text": "Anna A.", "region": kopf}
 
+def test_wiederholung_nach_teilweiser_mappe_setzt_nur_das_fehlende(zustand: Path) -> None:
+    """Final B, H4: der erste Versuch setzte Schild und Aufgabe 1, dann brach er ab (Mappe nicht "gesetzt"). Die
+    Wiederholung laeuft in einer frischen PenEcho-Sitzung (feste requestIds dort unbekannt): Schild und Aufgabe 1
+    stehen laut Belegung schon an ihrer Ecke und werden nicht noch einmal gesetzt, nur Aufgabe 2 kommt dazu."""
+    from spaces.learning.huelle.anordnung import mappen_bereiche, mappen_kopf
+
+    ursprung = (2400, 100)
+    kopf = mappen_kopf(ursprung)
+    b1, b2 = mappen_bereiche([800, 800], ursprung)
+    objekte = [("text", "text-box-1", {**kopf, "w": 120, "h": 40}),
+               ("text", "text-box-2", {**felder(b1).textfeld, "h": 300})]
+    fake = FeldFake()
+    c = PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte))
+    c.schild_setzen("sess-2", "mappe-7-p" + "a" * 24, "Anna A.", kopf)
+    c.aufgabe_setzen("sess-2", "t1", "Frage 1", 1, mit_ergebnisfeld=True, rechteck=b1, zeigen=False)
+    c.aufgabe_setzen("sess-2", "t2", "Frage 2", 2, mit_ergebnisfeld=True, rechteck=b2, zeigen=False)
+    texte = [e for e in (a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")) if e["action"] == "create_text"]
+    assert [t["requestId"] for t in texte] == ["aufgabe-t2-2"]
+
+
+@pytest.mark.parametrize("schritt", ["schild", "aufgabe", "aufnahme"])
+def test_gruppe_noch_nicht_bereit_gilt_als_nicht_verbunden(zustand: Path, schritt: str) -> None:
+    """Final B, Ergaenzung: die Lernflaeche lehnt veraendernde Werkzeuge und Aufnahmen mit GROUP_NOT_READY ab, bis der
+    Gruppenstand geladen ist. Die Huelle behandelt das wie "nicht verbunden": der Aufruf scheitert mit
+    PenEchoNichtErreichbar (die Bruecke meldet flaeche false bzw. 503, setzt die Mappe nicht als gesetzt und speichert
+    keine Vorbewertung); nichts wird still uebergangen oder an anderer Stelle gesetzt."""
+    from spaces.learning.huelle.penecho_mcp import PenEchoGruppenbindung, PenEchoSitzungUnbekannt
+
+    fake = FeldFake()
+    gesperrt = {"penecho_edit_canvas", "penecho_place_image", "penecho_capture_canvas"}
+    c = PenEchoMcp(zustand, transport=_antwort_mit_fehler(
+        fake, lambda name, args: "GROUP_NOT_READY" if name in gesperrt else None))
+    b = {"x": 2400, "y": 250, "w": 1300, "h": 800}
+    with pytest.raises(PenEchoNichtErreichbar) as fehler:
+        if schritt == "schild":
+            c.schild_setzen("sess-1", "mappe-7-p", "Anna A.", {"x": 2420, "y": 120, "w": 1300, "h": 110})
+        elif schritt == "aufgabe":
+            c.aufgabe_setzen("sess-1", "t1", "Frage 1", 1, mit_ergebnisfeld=True, rechteck=b, zeigen=False)
+        else:
+            c.ergebnis_schnappschuss("sess-1", 1, rechteck=b)
+    # Kein Sitzungsverlust und keine Gruppenbindung: kein Neuanlegen, kein Abbruch der Gruppensitzung.
+    assert not isinstance(fehler.value, (PenEchoSitzungUnbekannt, PenEchoGruppenbindung, PenEchoPlatzBelegt))
+    assert len([a for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"].get("action") == "create_text"]) <= 1
+    assert fake.aufrufe("penecho_close_session") == []
+
+
+def test_schild_steht_schon_da_ohne_lesbare_belegung(zustand: Path) -> None:
+    # Belegung nicht lesbar und der Platz belegt (LAYOUT_CONFLICT): das Schild steht schon da, kein Fehler, kein
+    # Ausweichen an einen anderen Platz.
+    fake = Fake()
+    kopf = {"x": 2420, "y": 120, "w": 1300, "h": 110}
+    transport = _antwort_mit_fehler(fake, lambda name, args: (
+        "invalid_arguments" if name == "penecho_list_files" else "LAYOUT_CONFLICT"
+        if args.get("action") == "create_text" else None))
+    PenEchoMcp(zustand, transport=transport).schild_setzen("sess-1", "mappe-7-p", "Anna A.", kopf)
+    texte = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert [(t["requestId"], t["region"]) for t in texte] == [("mappe-7-p", kopf)]
+
+
 # ---- Teil C, Task 8: Gruppensitzung auf der Gruppenflaeche (target "current") -----------------------------------
 
 def test_sitzung_in_gruppe_target_current_ohne_document_id(zustand: Path) -> None:
