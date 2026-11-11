@@ -4211,6 +4211,38 @@ def test_gruppen_bericht_ohne_bilder_solo_unveraendert() -> None:
         bruecke.beenden()
 
 
+# ---- Final B, H2: das Schutzfeld ist das blau umrandete Loesungsfeld ------------------------------------------
+
+def _als_liste(r: dict[str, int]) -> list[int]:
+    return [r["x"], r["y"], r["w"], r["h"]]
+
+
+def test_gruppe_schutz_gilt_dem_blauen_feld_je_typ() -> None:
+    """Deterministische Typen: Ergebnisfeld; flaechenbewertete Typen (open, case, penecho_canvas): das Arbeitsfeld,
+    in das sie laut Hinweis schreiben; code: kein Schutzfeld (kein Rahmen, kein unsichtbares Stueck)."""
+    from spaces.learning.huelle.penecho_mcp import loesungsfeld
+
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({gk: SID_GA})
+    typen = ["numeric", "open", "case", "penecho_canvas", "code", "single_choice"]
+    laeufe.eintraege[gk] = [_eintrag(n, typ=t) for n, t in enumerate(typen, start=1)]
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe)
+    try:
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        rechteck = dict(penecho.rechtecke)
+        f = {n: felder(rechteck[n]) for n in rechteck}
+        ((_, _, schutz),) = abgleich.schutz
+        assert schutz == [_als_liste(f[1].ergebnisfeld), _als_liste(f[2].arbeitsfeld), _als_liste(f[3].arbeitsfeld),
+                          _als_liste(f[4].arbeitsfeld), _als_liste(f[6].ergebnisfeld)]
+        # Dieselbe Quelle wie der sichtbare Rahmen: je gesetzter Aufgabe das Loesungsfeld zu ihren Rahmen-Schaltern.
+        rahmen = [loesungsfeld(r, mit_ergebnisfeld=e, mit_arbeitsfeld=a) for (_, r), (_, _, e), (_, _, a)
+                  in zip(penecho.rechtecke, penecho.ergebnisfelder, penecho.arbeitsfelder)]
+        assert rahmen[4] is None  # code
+        assert [_als_liste(x) for x in rahmen if x is not None] == schutz
+    finally:
+        client.app.beenden()
+
+
 # ---- Gerechte KI (Task 9, Fix): Gruppensitzungen reihen mit der echten Person ein -------------------------------
 
 def test_gruppe_reiht_mit_der_echten_person_ein() -> None:

@@ -77,7 +77,7 @@ from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, Uebe
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoGruppenbindung, PenEchoMcp, PenEchoNichtErreichbar,
-    PenEchoSitzungUnbekannt, felder,
+    PenEchoSitzungUnbekannt, loesungsfeld,
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
@@ -146,6 +146,13 @@ KARTE_NICHT_LESBAR = (
 DETERMINISTISCHE_TYPEN = frozenset({"single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"})
 BEREICHS_TYPEN = frozenset({"open", "case", "penecho_canvas"})
 _FLAECHEN_TYPEN = DETERMINISTISCHE_TYPEN | BEREICHS_TYPEN
+
+
+def _feldart(task: dict[str, Any]) -> dict[str, bool]:
+    """Rahmen-Schalter einer Aufgabe fuer `aufgabe_setzen` und `loesungsfeld`: Ergebnisfeld fuer deterministische
+    Typen, Arbeitsfeld fuer flaechenbewertete, keins fuer `code`. Rahmen und Schutzfeld lesen beide nur hier."""
+    typ = task.get("type")
+    return {"mit_ergebnisfeld": typ in DETERMINISTISCHE_TYPEN, "mit_arbeitsfeld": typ in BEREICHS_TYPEN}
 _BEWERTUNG_WEG_CODE = "session_grading_unavailable"
 
 TRAINING_BLUEPRINT = {"max_attempts": 20}
@@ -1098,7 +1105,10 @@ class Bruecke:
                         break
                     ok = self._listenaufgabe_setzen(sitzung, e, bereiche[e["nummer"] - 1], auftraege[e["nummer"]])
                 if ok:
-                    schutz = [[f["x"], f["y"], f["w"], f["h"]] for f in (felder(b).ergebnisfeld for b in bereiche)]
+                    # Final B, H2: geschuetzt wird das blau umrandete Feld, dieselbe Quelle wie der Rahmen
+                    # (`_feldart` -> `loesungsfeld`); `code` hat keins.
+                    loesungen = (loesungsfeld(bereiche[e["nummer"] - 1], **_feldart(e["task"])) for e in eintraege)
+                    schutz = [[f["x"], f["y"], f["w"], f["h"]] for f in loesungen if f is not None]
                     try:
                         self._abgleich.schutz_setzen(flaeche_id, person, schutz)
                     except GruppeWeg:
@@ -1260,13 +1270,12 @@ class Bruecke:
         """
         typ = task.get("type")
         text = str(task.get("prompt") or "") if typ == "code" else _tafeltext(task, nummer)
-        feld, arbeit = typ in DETERMINISTISCHE_TYPEN, typ in BEREICHS_TYPEN
         bilder = self._aufgabenbilder(task)
         lage: dict[str, Any] = {} if rechteck is None else {"rechteck": rechteck}
         if not zeigen:
             lage["zeigen"] = False
-        return lambda s: self._penecho.aufgabe_setzen(
-            s, task["id"], text, nummer, mit_ergebnisfeld=feld, mit_arbeitsfeld=arbeit, bilder=bilder, **lage)
+        art = _feldart(task)
+        return lambda s: self._penecho.aufgabe_setzen(s, task["id"], text, nummer, bilder=bilder, **art, **lage)
 
     def _board_merken(self, sitzung: _Sitzung) -> None:
         """documentId des Boards merken (`dokument_merken`), still: Fehler nur als Typ geloggt, nie gemeldet.

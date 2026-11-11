@@ -1044,6 +1044,29 @@ def test_aufgabe_mit_arbeitsfeld_zeichnet_rahmen_hinweis_im_aufgabentext(zustand
     assert fake.aufrufe("penecho_capture_canvas") == []
 
 
+@pytest.mark.parametrize(("ergebnis", "arbeit", "praefix"), [(True, False, "ergebnis"), (False, True, "arbeit"),
+                                                             (False, False, None)])
+def test_rahmen_umgibt_genau_das_loesungsfeld(zustand: Path, ergebnis: bool, arbeit: bool, praefix: str | None) -> None:
+    # Final B, H2: der blaue Rahmen und das Schutzfeld der Gruppe kommen aus `loesungsfeld`.
+    from spaces.learning.huelle.penecho_mcp import loesungsfeld
+
+    b = {"x": 2400, "y": 250, "w": 1300, "h": 1100}
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=ergebnis, mit_arbeitsfeld=arbeit,
+                                          rechteck=b)
+    feld = loesungsfeld(b, mit_ergebnisfeld=ergebnis, mit_arbeitsfeld=arbeit)
+    if praefix is None:
+        assert feld is None and _ink(fake) == []
+        return
+    assert feld == (felder(b).ergebnisfeld if ergebnis else felder(b).arbeitsfeld)
+    (rahmen,) = _ink(fake)
+    assert rahmen["requestId"] == f"{praefix}-t1-1"
+    punkte = [q for s in rahmen["strokes"] for q in s["points"]]
+    assert (min(q["x"] for q in punkte), min(q["y"] for q in punkte)) == (feld["x"] - 8, feld["y"] - 8)
+    assert (max(q["x"] for q in punkte), max(q["y"] for q in punkte)) == (feld["x"] + feld["w"] + 8,
+                                                                            feld["y"] + feld["h"] + 8)
+
+
 def test_aufgabe_schon_auf_dem_board_wird_nicht_doppelt_gesetzt(zustand: Path) -> None:
     # Abnahme 06.11.: nach Neustart (neue PenEcho-Sitzung, feste requestId unbekannt) stand der eigene
     # Aufgabentext an der Textfeld-Ecke; die Huelle wich aus und setzte ihn ein zweites Mal.

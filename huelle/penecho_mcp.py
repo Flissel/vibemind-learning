@@ -132,6 +132,21 @@ def felder(b: dict[str, int]) -> Felder:
     return Felder(text, ergebnis, arbeit, rueckmeldung, bericht)
 
 
+def loesungsfeld(b: dict[str, int], *, mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
+                 ) -> dict[str, int] | None:
+    """Das blau umrandete Feld einer Aufgabe im Bereich `b`, in das die Lernenden laut Hinweis schreiben.
+
+    Ergebnisfeld (deterministische Typen), sonst Arbeitsfeld (flaechenbewertete Typen), sonst keins (`code`).
+    Einzige Quelle fuer den sichtbaren Rahmen (`aufgabe_setzen`) und das Schutzfeld der Gruppe (Final B, H2).
+    """
+    f = felder(b)
+    if mit_ergebnisfeld:
+        return f.ergebnisfeld
+    if mit_arbeitsfeld:
+        return f.arbeitsfeld
+    return None
+
+
 def textfeld(nummer: int) -> dict[str, int]:
     """Platz des Aufgabentexts oben links in `bereich(nummer)`, links neben dem Ergebnisfeld."""
     return felder(bereich(nummer)).textfeld
@@ -931,10 +946,10 @@ class PenEchoMcp:
             self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
                                 bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld, rechteck=b),
                                 beschriften=not voll, belegung=belegung)
-        if mit_ergebnisfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.ergebnisfeld, "ergebnis", zeigen=zeigen)
-        elif mit_arbeitsfeld:
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, f.arbeitsfeld, "arbeit", zeigen=zeigen)
+        feld = loesungsfeld(b, mit_ergebnisfeld=mit_ergebnisfeld, mit_arbeitsfeld=mit_arbeitsfeld)
+        if feld is not None:
+            praefix = "ergebnis" if mit_ergebnisfeld else "arbeit"
+            self._feld_zeichnen(session_id, aufgabe_id, nummer, feld, praefix, zeigen=zeigen)
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
