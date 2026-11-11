@@ -1716,7 +1716,7 @@ class Bruecke:
                     f"{sitzung.sid}:setzen:{e['nummer']}",
                     functools.partial(self._im_hintergrund_setzen, sitzung, e, bereiche[e["nummer"] - 1],
                                       self._kartenstand_von(sitzung.sid, e["nummer"])),
-                    vorrang=1,
+                    vorrang=1, wer=sitzung.actor,
                 )
         liste = {
             "stand": self._stand_aus(sitzung.sid, eintraege, abgaben),
@@ -2150,7 +2150,7 @@ class Bruecke:
             payload = {"handschrift_png_base64": base64.b64encode(png).decode("ascii"),
                        "attempt_id": eintrag["attempt_id"]}
             bewerten = functools.partial(self._im_hintergrund_bewerten, sitzung, eintrag, rechteck, payload, revision)
-            if not self._modellspur.einreihen(arbeit, bewerten, vorrang=1):
+            if not self._modellspur.einreihen(arbeit, bewerten, vorrang=1, wer=sitzung.actor):
                 raise _Antwort(409, {"code": "laeuft_schon", "meldung": LAEUFT_SCHON,
                                      "stand": self._stand_aus(sid, eintraege, abgaben)})
         except BaseException:
@@ -2209,7 +2209,7 @@ class Bruecke:
         self._flaechenspur.einreihen(
             f"{sitzung.sid}:rueckmeldung:{nummer}",
             functools.partial(self._im_hintergrund_rueckmelden, sitzung, nummer, rechteck),
-            vorrang=0,
+            vorrang=0, wer=sitzung.actor,
         )
 
     def _abgabe_gescheitert(self, schluessel: tuple[str, int], meldung: str, fehler: BaseException) -> None:

@@ -170,6 +170,7 @@ _LERN_WS = frozenset({"/api/mcp/canvas", "/api/abgleich"})  # MCP-Flaeche (mcp-r
 # Abgleich der Gruppenflaeche (Teil C): fuer jede Kennung, auch den Inhaber, nur exakt dieser Rohpfad mit
 # `flaeche=g-<id>` und `fenster`; die Huelle setzt Person und Ausweis selbst.
 ABGLEICH_PFAD = "/api/abgleich"
+KI_BEFEHL = "/api/ai/command"
 # Nachpruefung offener Abgleich-Verbindungen: Takt plus Frist je Pruefung <= 60 s (Review-Fokus 3).
 NACHPRUEFEN_S = 45
 PRUEF_FRIST_S = 15
@@ -323,7 +324,14 @@ class Durchreicher:
         nachpruefen_s: float = NACHPRUEFEN_S,
         monoton: Callable[[], float] = time.monotonic,
         pruef_frist_s: float = PRUEF_FRIST_S,
+        ki_gleichzeitig: int = 3,
     ) -> None:
+        # Freie KI (`/api/ai/command`) der eingeschraenkten Kennungen: je Kennung hoechstens eine Anfrage, gesamt
+        # hoechstens `ki_gleichzeitig`; wer darueber liegt, wartet. Reihenfolge: erst die Sperre der Kennung,
+        # dann der gemeinsame Platz; Freigabe umgekehrt.
+        self._ki_gleichzeitig = max(1, ki_gleichzeitig)
+        self._ki_platz: asyncio.Semaphore | None = None
+        self._ki_je_kennung: dict[str, list[Any]] = {}
         self._monoton = monoton
         self._pruef_frist_s = pruef_frist_s
         self._ablage = ablage
@@ -519,7 +527,64 @@ class Durchreicher:
             if eigene is not None:
                 await self._ablage_person(scope, receive, send, eigene)
                 return
+        if self._eingeschraenkt(scope) and _trifft(scope["path"], (KI_BEFEHL,)):
+            await self._ki_begrenzt(scope, receive, send)
+            return
         await self._weiterreichen(scope, receive, send)
+
+    async def _ki_begrenzt(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """`/api/ai/command` einer Person: unter der Sperre der Kennung und dem gemeinsamen Platz.
+
+        Wartende werden nie abgewiesen. Trennt der Browser, waehrend er wartet oder die Antwort noch laeuft,
+        wird die Anfrage abgebrochen; die Sperren werden immer in umgekehrter Reihenfolge freigegeben.
+        """
+        state = scope.get("state")
+        actor = state.get("actor_id") if isinstance(state, dict) else None
+        kennung = actor if isinstance(actor, str) else ""
+        eingang: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        getrennt = asyncio.Event()
+
+        async def pumpe() -> None:
+            while True:
+                nachricht = await receive()
+                eingang.put_nowait(nachricht)
+                if nachricht["type"] == "http.disconnect":
+                    getrennt.set()
+                    return
+
+        async def lesen() -> dict[str, Any]:
+            return await eingang.get()
+
+        if self._ki_platz is None:
+            self._ki_platz = asyncio.Semaphore(self._ki_gleichzeitig)
+        platz = self._ki_platz
+
+        async def arbeit() -> None:
+            eintrag = self._ki_je_kennung.get(kennung)
+            if eintrag is None:
+                eintrag = self._ki_je_kennung[kennung] = [asyncio.Lock(), 0]
+            eintrag[1] += 1
+            try:
+                async with eintrag[0]:
+                    async with platz:
+                        await self._weiterreichen(scope, lesen, send)
+            finally:
+                eintrag[1] -= 1
+                if eintrag[1] == 0 and self._ki_je_kennung.get(kennung) is eintrag:
+                    del self._ki_je_kennung[kennung]
+
+        lauscher = asyncio.ensure_future(pumpe())
+        haupt = asyncio.ensure_future(arbeit())
+        abbruch = asyncio.ensure_future(getrennt.wait())
+        try:
+            await asyncio.wait({haupt, abbruch}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for aufgabe in (haupt, abbruch, lauscher):
+                if not aufgabe.done():
+                    aufgabe.cancel()
+            await asyncio.gather(haupt, abbruch, lauscher, return_exceptions=True)
+        if haupt.done() and not haupt.cancelled() and haupt.exception() is not None:
+            raise haupt.exception()  # type: ignore[misc]
 
     async def _weiterreichen(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Die (gepruefte) Anfrage an PenEcho und die Antwort zurueck, gestreamt."""

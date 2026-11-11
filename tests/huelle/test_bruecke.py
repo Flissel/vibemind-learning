@@ -2037,10 +2037,12 @@ class MerkSpur:
     def __init__(self) -> None:
         self.arbeiten: list[tuple[str, Any]] = []
         self.vorrang: dict[str, int] = {}
+        self.wer: dict[str, str | None] = {}
 
-    def einreihen(self, schluessel: str, arbeit: Any, *, vorrang: int = 1) -> bool:
+    def einreihen(self, schluessel: str, arbeit: Any, *, vorrang: int = 1, wer: str | None = None) -> bool:
         self.arbeiten.append((schluessel, arbeit))
         self.vorrang[schluessel] = vorrang
+        self.wer[schluessel] = wer
         return True
 
     def wartend(self, praefix: str) -> int:
@@ -2095,6 +2097,8 @@ def test_hintergrundarbeiten_zeigen_nichts() -> None:
     client, _, penecho = bauen(_listen_lern(eintraege))
     merk = _mit_merkspur(client)
     assert client.post(f"/lernen/api/kurse/{KURS}/oeffnen").status_code == 200
+    # Gerechte KI (Task 9): jede Arbeit wird mit der echten Person eingereiht.
+    assert merk.wer and set(merk.wer.values()) == {ACTOR}
     vorher = len(penecho.aufrufe)
     merk.abarbeiten(client.app._flaeche_sperre)
     neu = [a[0] for a in penecho.aufrufe[vorher:]]

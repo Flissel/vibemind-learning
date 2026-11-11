@@ -6,12 +6,15 @@ Fehler nennen nur den Namen der Variable, nie ihren Wert.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+
+log = logging.getLogger(__name__)
 
 _ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 MIN_SCHLUESSEL = 32
@@ -41,6 +44,9 @@ LEARNHOUSE_URL = "LEARNING_HUELLE_LEARNHOUSE_URL"
 # (signiert Ausweise und Dienstkopf). Gruppen gibt es nur mit beiden und mit LEARNING_HUELLE_LEARNHOUSE_URL.
 ABGLEICH_URL = "LEARNING_HUELLE_ABGLEICH_URL"
 ABGLEICH_SCHLUESSEL = "LEARNING_HUELLE_ABGLEICH_SCHLUESSEL"
+# Optional (Teil C): wie viele freie KI-Anfragen (/api/ai/command) der Personen gleichzeitig laufen (Vorgabe 3).
+KI_GLEICHZEITIG = "LEARNING_HUELLE_KI_GLEICHZEITIG"
+KI_GLEICHZEITIG_VORGABE = 3
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,7 @@ class Einstellung:
     learnhouse_url: str = ""
     abgleich_url: str = ""
     abgleich_schluessel: str = field(default="", repr=False)
+    ki_gleichzeitig: int = KI_GLEICHZEITIG_VORGABE
 
     @property
     def gruppen_aktiv(self) -> bool:
@@ -175,6 +182,22 @@ def _abgleich_schluessel(env: Mapping[str, str]) -> str:
     return wert
 
 
+def _ki_gleichzeitig(env: Mapping[str, str]) -> int:
+    """Ganze Zahl >= 1; leer, ungueltig oder <= 0 ergibt die Vorgabe (geloggt wird nur die Art des Fehlers)."""
+    roh = (env.get(KI_GLEICHZEITIG) or "").strip()
+    if not roh:
+        return KI_GLEICHZEITIG_VORGABE
+    try:
+        wert = int(roh)
+    except ValueError:
+        log.warning("%s ist keine ganze Zahl; Vorgabe %d gilt", KI_GLEICHZEITIG, KI_GLEICHZEITIG_VORGABE)
+        return KI_GLEICHZEITIG_VORGABE
+    if wert <= 0:
+        log.warning("%s ist nicht positiv; Vorgabe %d gilt", KI_GLEICHZEITIG, KI_GLEICHZEITIG_VORGABE)
+        return KI_GLEICHZEITIG_VORGABE
+    return wert
+
+
 def _penecho_paket_vorgabe(env: Mapping[str, str]) -> str:
     """Die PenEcho-Installation der PC-Einrichtung (Plan, Task 10)."""
     return os.path.join(env.get("LOCALAPPDATA") or "", "VibeMind", "penecho", "node_modules", "penecho")
@@ -217,4 +240,5 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         learnhouse_url=_learnhouse_url(env),
         abgleich_url=_http_basis(env, ABGLEICH_URL),
         abgleich_schluessel=_abgleich_schluessel(env),
+        ki_gleichzeitig=_ki_gleichzeitig(env),
     )

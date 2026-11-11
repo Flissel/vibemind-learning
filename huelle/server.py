@@ -80,6 +80,8 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         # Abgleich der Gruppenflaeche: Mitgliedschaft pruefen, Person und Ausweis selbst setzen.
         gruppen=gruppen,
         abgleich_schluessel=einstellung.abgleich_schluessel if gruppen is not None else "",
+        # Freie KI der Personen: je Person eine, gesamt begrenzt (der Inhaber nicht).
+        ki_gleichzeitig=einstellung.ki_gleichzeitig,
     )
     flaeche = FlaechenWeiche(einstellung, durchreicher, katalog)
     return Weiche(einstellung, seite_app(einstellung), bruecke), flaeche, bruecke

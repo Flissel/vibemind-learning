@@ -115,3 +115,64 @@ def test_nach_beenden_wird_nichts_angenommen() -> None:
     spur = Spur("t")
     spur.beenden(WARTE)
     assert spur.einreihen("x", lambda: None) is False
+
+
+def _blockiert(spur: Spur) -> threading.Event:
+    freigabe, laeuft = threading.Event(), threading.Event()
+
+    def blocker() -> None:
+        laeuft.set()
+        freigabe.wait(WARTE)
+
+    assert spur.einreihen("blocker", blocker, vorrang=0)
+    assert laeuft.wait(WARTE)
+    return freigabe
+
+
+def test_spur_reihum_je_person() -> None:
+    spur = Spur("t")
+    freigabe = _blockiert(spur)
+    reihenfolge: list[str] = []
+    for name, wer in (("A1", "anna"), ("A2", "anna"), ("A3", "anna"), ("B1", "ben")):
+        assert spur.einreihen(name, lambda n=name: reihenfolge.append(n), vorrang=1, wer=wer)
+    freigabe.set()
+    assert _warte_bis(lambda: len(reihenfolge) == 4)
+    assert reihenfolge == ["A1", "B1", "A2", "A3"]
+    spur.beenden(WARTE)
+
+
+def test_spur_reihum_keine_person_ist_eine_eigene() -> None:
+    spur = Spur("t")
+    freigabe = _blockiert(spur)
+    reihenfolge: list[str] = []
+    for name, wer in (("N1", None), ("N2", None), ("N3", None), ("B1", "ben")):
+        assert spur.einreihen(name, lambda n=name: reihenfolge.append(n), vorrang=1, wer=wer)
+    freigabe.set()
+    assert _warte_bis(lambda: len(reihenfolge) == 4)
+    assert reihenfolge == ["N1", "B1", "N2", "N3"]
+    spur.beenden(WARTE)
+
+
+def test_spur_vorrang_vor_reihum() -> None:
+    spur = Spur("t")
+    freigabe = _blockiert(spur)
+    reihenfolge: list[str] = []
+    for name, wer, vorrang in (("A1", "anna", 1), ("B1", "ben", 1), ("A0", "anna", 0), ("A0b", "anna", 0),
+                               ("B0", "ben", 0)):
+        assert spur.einreihen(name, lambda n=name: reihenfolge.append(n), vorrang=vorrang, wer=wer)
+    freigabe.set()
+    assert _warte_bis(lambda: len(reihenfolge) == 5)
+    assert reihenfolge == ["A0", "B0", "A0b", "A1", "B1"]
+    spur.beenden(WARTE)
+
+
+def test_spur_abgebrochene_wartende_werden_uebersprungen() -> None:
+    spur = Spur("t")
+    freigabe = _blockiert(spur)
+    reihenfolge: list[str] = []
+    assert spur.einreihen("A1", lambda: reihenfolge.append("A1"), wer="anna")
+    assert spur.einreihen("B1", lambda: reihenfolge.append("B1"), wer="ben")
+    spur.beenden(0.0)  # verwirft die Wartenden, der Blocker laeuft noch
+    freigabe.set()
+    time.sleep(0.1)
+    assert reihenfolge == []

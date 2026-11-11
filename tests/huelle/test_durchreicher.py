@@ -1563,3 +1563,216 @@ def test_abgleich_ablehnung_auf_der_leitung(fake: tuple[FakePenEcho, str], aufne
         thread.join(timeout=5)
         sock.close()
     assert upstream.ws_ziele == []
+
+
+# ---- Gerechte KI (Task 9): je Person eine, gesamt begrenzt, Inhaber frei -----------------------------------
+
+KI = "/api/ai/command"
+
+
+class _KiProbe:
+    """Ersetzt `_weiterreichen`: zaehlt Laufende, haelt jeden Aufruf, bis er freigegeben wird."""
+
+    def __init__(self) -> None:
+        self.gestartet: list[str] = []
+        self.laufend = 0
+        self.hoechstens = 0
+        self.beendet: list[str] = []
+        self.tore: dict[str, asyncio.Event] = {}
+
+    def tor(self, name: str) -> asyncio.Event:
+        return self.tore.setdefault(name, asyncio.Event())
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        name = scope["state"]["actor_id"] + ":" + scope["query_string"].decode()
+        self.gestartet.append(name)
+        self.laufend += 1
+        self.hoechstens = max(self.hoechstens, self.laufend)
+        try:
+            await self.tor(name).wait()
+            self.beendet.append(name)
+        finally:
+            self.laufend -= 1
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+
+def _ki_app(probe: _KiProbe, **kw: Any) -> Durchreicher:
+    app = Durchreicher("http://127.0.0.1:1", _frei(), EIGEN, inhaber=INHABER, **kw)
+    app._weiterreichen = probe  # type: ignore[method-assign]
+    return app
+
+
+def _ki_anfrage(app: Durchreicher, actor: str, nr: str, getrennt: asyncio.Event | None = None) -> Any:
+    scope = {"type": "http", "method": "POST", "path": KI, "raw_path": KI.encode(), "query_string": nr.encode(),
+             "headers": [], "state": {"actor_id": actor}}
+    gesendet: list[dict[str, Any]] = []
+    sprung = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal sprung
+        if not sprung:
+            sprung = True
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+        if getrennt is not None:
+            await getrennt.wait()
+            return {"type": "http.disconnect"}
+        await asyncio.sleep(3600)
+        return {"type": "http.disconnect"}
+
+    async def send(m: dict[str, Any]) -> None:
+        gesendet.append(m)
+
+    async def lauf() -> list[dict[str, Any]]:
+        await app(scope, receive, send)
+        return gesendet
+
+    return asyncio.ensure_future(lauf())
+
+
+async def _tick(n: int = 5) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0.01)
+
+
+def test_ki_je_person_eine() -> None:
+    async def ablauf() -> None:
+        probe = _KiProbe()
+        app = _ki_app(probe)
+        a1 = _ki_anfrage(app, "lh-1-person-a", "1")
+        a2 = _ki_anfrage(app, "lh-1-person-a", "2")
+        b1 = _ki_anfrage(app, "lh-1-person-b", "1")
+        await _tick()
+        assert sorted(probe.gestartet) == ["lh-1-person-a:1", "lh-1-person-b:1"]  # a2 wartet, wird nicht abgewiesen
+        probe.tor("lh-1-person-a:1").set()
+        await _tick()
+        assert "lh-1-person-a:2" in probe.gestartet
+        for n in ("lh-1-person-a:2", "lh-1-person-b:1"):
+            probe.tor(n).set()
+        antworten = await asyncio.gather(a1, a2, b1)
+        assert all(r[0]["status"] == 200 for r in antworten)
+
+    asyncio.run(ablauf())
+
+
+def test_ki_gesamt_drei() -> None:
+    async def ablauf() -> None:
+        probe = _KiProbe()
+        app = _ki_app(probe, ki_gleichzeitig=3)
+        personen = [f"lh-1-p{i}" for i in range(5)]
+        aufgaben = [_ki_anfrage(app, p, "1") for p in personen]
+        await _tick()
+        assert probe.laufend == 3 and len(probe.gestartet) == 3
+        probe.tor(probe.gestartet[0]).set()
+        await _tick()
+        assert probe.laufend == 3 and len(probe.gestartet) == 4
+        for p in personen:
+            probe.tor(p + ":1").set()
+        antworten = await asyncio.gather(*aufgaben)
+        assert probe.hoechstens == 3
+        assert all(r[0]["status"] == 200 for r in antworten)  # nichts abgewiesen
+
+    asyncio.run(ablauf())
+
+
+def test_ki_inhaber_unbegrenzt() -> None:
+    async def ablauf() -> None:
+        probe = _KiProbe()
+        app = _ki_app(probe, ki_gleichzeitig=1)
+        # Eine Person belegt den einzigen Platz; der Inhaber laeuft trotzdem, auch mehrfach gleichzeitig.
+        person = _ki_anfrage(app, "lh-1-person-a", "1")
+        inhaber = [_ki_anfrage(app, INHABER, str(i)) for i in range(4)]
+        await _tick()
+        assert sorted(probe.gestartet) == sorted(["lh-1-person-a:1"] + [f"{INHABER}:{i}" for i in range(4)])
+        for n in list(probe.gestartet):
+            probe.tor(n).set()
+        await asyncio.gather(person, *inhaber)
+
+    asyncio.run(ablauf())
+
+
+def test_ki_wartender_der_abbricht_verbraucht_keinen_platz() -> None:
+    async def ablauf() -> None:
+        probe = _KiProbe()
+        app = _ki_app(probe, ki_gleichzeitig=1)
+        a = _ki_anfrage(app, "lh-1-person-a", "1")
+        weg = asyncio.Event()
+        b = _ki_anfrage(app, "lh-1-person-b", "1", getrennt=weg)
+        c = _ki_anfrage(app, "lh-1-person-c", "1")
+        await _tick()
+        assert probe.gestartet == ["lh-1-person-a:1"]
+        weg.set()  # b trennt, waehrend es wartet
+        await _tick()
+        probe.tor("lh-1-person-a:1").set()
+        await _tick()
+        assert probe.gestartet == ["lh-1-person-a:1", "lh-1-person-c:1"]  # b startet nie, c bekommt den Platz
+        probe.tor("lh-1-person-c:1").set()
+        await asyncio.gather(a, c)
+        await b
+        # Alles frei: der Platz wurde nicht verbraucht, die Sperren nicht behalten.
+        d = _ki_anfrage(app, "lh-1-person-b", "2")
+        await _tick()
+        assert "lh-1-person-b:2" in probe.gestartet
+        probe.tor("lh-1-person-b:2").set()
+        await d
+
+    asyncio.run(ablauf())
+
+
+def test_ki_getrennter_laeufer_gibt_den_platz_frei() -> None:
+    async def ablauf() -> None:
+        probe = _KiProbe()
+        app = _ki_app(probe, ki_gleichzeitig=1)
+        weg = asyncio.Event()
+        a = _ki_anfrage(app, "lh-1-person-a", "1", getrennt=weg)
+        b = _ki_anfrage(app, "lh-1-person-b", "1")
+        await _tick()
+        assert probe.gestartet == ["lh-1-person-a:1"]
+        weg.set()  # Antwort laeuft noch (Strom), Browser geht weg
+        await _tick()
+        assert "lh-1-person-b:1" in probe.gestartet and probe.laufend == 1
+        probe.tor("lh-1-person-b:1").set()
+        await asyncio.gather(a, b)
+
+    asyncio.run(ablauf())
+
+
+def test_ki_freigabe_auch_bei_fehler() -> None:
+    async def ablauf() -> None:
+        app = Durchreicher("http://127.0.0.1:1", _frei(), EIGEN, inhaber=INHABER, ki_gleichzeitig=1)
+
+        async def kaputt(scope: Any, receive: Any, send: Any) -> None:
+            raise RuntimeError("boom")
+
+        app._weiterreichen = kaputt  # type: ignore[method-assign]
+        a = _ki_anfrage(app, "lh-1-person-a", "1")
+        with pytest.raises(RuntimeError):
+            await a
+        probe = _KiProbe()
+        app._weiterreichen = probe  # type: ignore[method-assign]
+        b = _ki_anfrage(app, "lh-1-person-a", "2")
+        await _tick()
+        assert probe.gestartet == ["lh-1-person-a:2"]
+        probe.tor("lh-1-person-a:2").set()
+        await b
+
+    asyncio.run(ablauf())
+
+
+@pytest.mark.parametrize("roh,erwartet", [
+    (None, 3), ("", 3), ("  5\r", 5), ("1", 1), ("0", 3), ("-2", 3), ("abc", 3), ("2.5", 3),
+])
+def test_einstellung_ki_gleichzeitig(roh: str | None, erwartet: int) -> None:
+    from spaces.learning.huelle.einstellung import einstellung_lesen
+
+    env = {
+        "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
+        "LEARNING_HUELLE_FLAECHE_BASIS": "https://lernen.example.test:8443",
+        "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+        "LEARNHOUSE_LEARNING_SERVICE_KEY": "k" * 40,
+        "LEARNING_HUELLE_ACTOR": "lh-1-test",
+        "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "5b0a1c64-1111-4222-8333-444455556666", "titel": "T"}]),
+    }
+    if roh is not None:
+        env["LEARNING_HUELLE_KI_GLEICHZEITIG"] = roh
+    assert einstellung_lesen(env).ki_gleichzeitig == erwartet

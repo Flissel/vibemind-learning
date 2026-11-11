@@ -2,34 +2,48 @@
 
 from __future__ import annotations
 
-import itertools
 import logging
-import queue
 import threading
+from collections import deque
 from collections.abc import Callable
 from typing import Literal
 
 log = logging.getLogger(__name__)
 
 
+class _Keine:
+    """Der gemeinsame Eimer aller Arbeiten ohne Person (`wer=None`): zaehlt als eine eigene Person."""
+
+
+_KEINE = _Keine()
+
+
 class Spur:
+    """Ein Arbeitsfaden. Vorrang zuerst (kleinere Zahl zuerst); innerhalb eines Vorrangs reihum je Person
+    (Reihenfolge der ersten Ankunft), innerhalb einer Person der Reihe nach."""
+
     def __init__(self, name: str, *, sperre: threading.Lock | None = None) -> None:
         self._name = name
         self._sperre = sperre
-        self._schlange: queue.PriorityQueue[tuple[int, int, str, Callable[[], None]]] = queue.PriorityQueue()
+        # vorrang -> wer -> Wartende; die Reihenfolge der Personen (dict) ist die Reihum-Reihenfolge.
+        self._wartende: dict[int, dict[object, deque[tuple[str, Callable[[], None]]]]] = {}
         self._zustaende: dict[str, Literal["wartet", "laeuft"]] = {}
-        self._zaehler = itertools.count()
         self._mutex = threading.Lock()
+        self._wach = threading.Condition(self._mutex)
         self._offen = True
         self._faden = threading.Thread(target=self._lauf, name=f"spur-{name}", daemon=True)
         self._faden.start()
 
-    def einreihen(self, schluessel: str, arbeit: Callable[[], None], *, vorrang: int = 1) -> bool:
+    def einreihen(
+        self, schluessel: str, arbeit: Callable[[], None], *, vorrang: int = 1, wer: str | None = None,
+    ) -> bool:
         with self._mutex:
             if not self._offen or schluessel in self._zustaende:
                 return False
             self._zustaende[schluessel] = "wartet"
-            self._schlange.put((vorrang, next(self._zaehler), schluessel, arbeit))
+            personen = self._wartende.setdefault(vorrang, {})
+            personen.setdefault(wer if wer is not None else _KEINE, deque()).append((schluessel, arbeit))
+            self._wach.notify()
         return True
 
     def zustand(self, schluessel: str) -> Literal["wartet", "laeuft"] | None:
@@ -43,22 +57,40 @@ class Spur:
     def beenden(self, timeout: float = 5.0) -> None:
         with self._mutex:
             self._offen = False
-            while True:
-                try:
-                    _, _, schluessel, _ = self._schlange.get_nowait()
-                except queue.Empty:
-                    break
-                self._zustaende.pop(schluessel, None)
-            # Aufwecker, damit der Faden aus dem blockierenden get() kommt.
-            self._schlange.put((-1, next(self._zaehler), "", _nichts))
+            for personen in self._wartende.values():
+                for reihe in personen.values():
+                    for schluessel, _ in reihe:
+                        self._zustaende.pop(schluessel, None)
+            self._wartende.clear()
+            self._wach.notify_all()
         self._faden.join(timeout)
+
+    def _naechste(self) -> tuple[str, Callable[[], None]] | None:
+        """Unter `_mutex`: die naechste Arbeit nach Vorrang, dann reihum je Person."""
+        if not self._wartende:
+            return None
+        vorrang = min(self._wartende)
+        personen = self._wartende[vorrang]
+        wer = next(iter(personen))
+        reihe = personen.pop(wer)
+        eintrag = reihe.popleft()
+        if reihe:
+            personen[wer] = reihe  # ans Ende: die naechste Person ist dran
+        elif not personen:
+            del self._wartende[vorrang]
+        return eintrag
 
     def _lauf(self) -> None:
         while True:
-            _, _, schluessel, arbeit = self._schlange.get()
-            if not schluessel:
-                return
             with self._mutex:
+                while True:
+                    if not self._offen:
+                        return
+                    eintrag = self._naechste()
+                    if eintrag is not None:
+                        break
+                    self._wach.wait()
+                schluessel, arbeit = eintrag
                 if schluessel not in self._zustaende:
                     continue
                 self._zustaende[schluessel] = "laeuft"
@@ -73,7 +105,3 @@ class Spur:
             finally:
                 with self._mutex:
                     self._zustaende.pop(schluessel, None)
-
-
-def _nichts() -> None:
-    return None
