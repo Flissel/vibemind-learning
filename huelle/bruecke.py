@@ -63,7 +63,8 @@ from starlette.routing import Route
 
 from ..contracts.beschriftung import beschriften
 from .anordnung import (
-    MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_bereiche, mappen_kopf, mappen_ursprung,
+    GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_bereiche, mappen_kopf,
+    mappen_ursprung,
 )
 from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
@@ -194,6 +195,7 @@ _GRUPPE_ID = re.compile(r"[1-9][0-9]{0,8}")
 # Namensschild ohne Anzeigenamen: nie die Kennung oder eine Adresse.
 TEILNEHMENDE_PERSON = "Teilnehmende Person"
 _LERN_KENNUNG_MAX = 128  # Learning SafeToken / ACTOR_MUSTER
+_RASTER_PRAEFIX = "raster|"  # gruppen-gesetzt.json: festes Raster je (Kurs, Gruppe); kein Actor beginnt so
 
 
 def _typ(fehler: BaseException) -> str:
@@ -582,7 +584,8 @@ class Bruecke:
         # auch nicht nach einem Neustart; zugleich der Weg zur Gruppensitzung nach einem Neustart.
         self._gesetzt_datei = None if kursende is None else kursende.parent / "gruppen-gesetzt.json"
         self._gesetzt_sperre = threading.Lock()
-        self._gesetzt = self._gesetzt_lesen()
+        # Festes Raster je (Kurs, Gruppe): die erste gesetzte Mappe legt die Zellgroesse fest (im selben File).
+        self._gesetzt, self._raster = self._gesetzt_lesen()
         self._ablauf = asyncio.Lock()
         # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
         # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
@@ -766,35 +769,61 @@ class Bruecke:
         self._kursende_schreiben()
 
     # ---- Teil C: gesetzte Mappen -------------------------------------------
-    def _gesetzt_lesen(self) -> dict[str, dict[str, Any]]:
+    def _gesetzt_lesen(self) -> tuple[dict[str, dict[str, Any]], dict[str, GruppenRaster]]:
+        """(gesetzte Mappen, feste Raster): Mappen `Kennung|Kurs|g<id>` -> {sid, gesetzt}; Raster
+        `raster|Kurs|g<id>` -> {breite, hoehe, spalten, zeilen}. Kaputtes faellt einzeln weg."""
         if self._gesetzt_datei is None:
-            return {}
+            return {}, {}
         try:
             wert = json.loads(self._gesetzt_datei.read_text(encoding="utf-8"))
-            return {k: {"sid": v["sid"], "gesetzt": True} for k, v in wert.items()
-                    if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("sid"), str)
-                    and v.get("gesetzt") is True}
+            items = list(wert.items())
         except (OSError, ValueError, AttributeError):
-            return {}
+            return {}, {}
+        mappen: dict[str, dict[str, Any]] = {}
+        raster: dict[str, GruppenRaster] = {}
+        for k, v in items:
+            if not isinstance(k, str) or not isinstance(v, dict):
+                continue
+            if k.startswith(_RASTER_PRAEFIX):
+                zahlen = [v.get(f) for f in ("breite", "hoehe", "spalten", "zeilen")]
+                if all(type(z) is int and z > 0 for z in zahlen):
+                    raster[k] = GruppenRaster(*zahlen)
+            elif isinstance(v.get("sid"), str) and v.get("gesetzt") is True:
+                mappen[k] = {"sid": v["sid"], "gesetzt": True}
+        return mappen, raster
 
     def _gesetzt_sid(self, schluessel: str) -> str | None:
         with self._gesetzt_sperre:
             eintrag = self._gesetzt.get(schluessel)
         return eintrag["sid"] if eintrag is not None else None
 
-    def _gesetzt_merken(self, schluessel: str, sid: str) -> None:
-        """Mappe als gesetzt merken; atomar (Temp-Datei + replace) unter der Sperre. Fehler nur als Typ geloggt."""
+    @staticmethod
+    def _raster_schluessel(kurs: Kurs, gruppe_id: int) -> str:
+        return f"{_RASTER_PRAEFIX}{kurs.course_id}|g{gruppe_id}"
+
+    def _festes_raster(self, kurs: Kurs, gruppe_id: int) -> GruppenRaster | None:
+        with self._gesetzt_sperre:
+            return self._raster.get(self._raster_schluessel(kurs, gruppe_id))
+
+    def _gesetzt_merken(self, schluessel: str, sid: str, raster: tuple[str, GruppenRaster] | None = None) -> None:
+        """Mappe als gesetzt merken und, falls die Gruppe noch keines hat, ihr Raster festlegen (erste gesetzte
+        Mappe); atomar (Temp-Datei + replace) unter der Sperre. Fehler nur als Typ geloggt."""
         with self._gesetzt_sperre:
             self._gesetzt[schluessel] = {"sid": sid, "gesetzt": True}
+            if raster is not None:
+                self._raster.setdefault(*raster)
             if self._gesetzt_datei is None:
                 return
             ziel = self._gesetzt_datei
             tmp: str | None = None
             try:
                 ziel.parent.mkdir(parents=True, exist_ok=True)
+                inhalt: dict[str, Any] = {**self._gesetzt, **{
+                    k: {"breite": r.breite, "hoehe": r.hoehe, "spalten": r.spalten, "zeilen": r.zeilen}
+                    for k, r in self._raster.items()}}
                 fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
                 with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-                    json.dump(self._gesetzt, f)
+                    json.dump(inhalt, f)
                 os.replace(tmp, ziel)
             except OSError as fehler:
                 log.warning("Gesetzte Mappe nicht gespeichert: %s", _typ(fehler))
@@ -1040,7 +1069,8 @@ class Bruecke:
         assert sitzung.gruppe is not None and self._abgleich is not None
         abgaben = self._abgabestaende(sitzung.sid)
         _, eintraege = self._liste_lesen(sitzung)
-        ursprung, bereiche = self._mappe(sitzung, eintraege)
+        # Vor allem anderen: passt die Mappe nicht in das feste Raster der Gruppe, 409 GRUPPE_VOLL.
+        ursprung, bereiche, raster = self._mappe_mit_raster(sitzung, eintraege)
         erste = next((e for e in eintraege if e["status"] == "offen"), None)
         if erste is None:
             raise LearningWeg("aufgaben")
@@ -1053,6 +1083,10 @@ class Bruecke:
         gesetzt = self._gesetzt_sid(schluessel) == sitzung.sid
         name = m.anzeigename.strip() or TEILNEHMENDE_PERSON
         rechteck = bereiche[nummer - 1]
+        # Wie Solo `_liste_oeffnen`: Text und Bilder jeder Aufgabe (HTTP an learning-api) vor der Flaechensperre.
+        auftraege = {} if gesetzt else {
+            e["nummer"]: self._setzauftrag(e["task"], e["nummer"], bereiche[e["nummer"] - 1], zeigen=False)
+            for e in eintraege}
         with self._flaeche_sperre:
             ok = True
             if not gesetzt:
@@ -1062,14 +1096,15 @@ class Bruecke:
                     # Nach dem ersten Fehlschlag (Flaeche nicht verbunden) nicht jede Aufgabe einzeln versuchen.
                     if not ok:
                         break
-                    ok = self._listenaufgabe_setzen(sitzung, e, bereiche[e["nummer"] - 1], zeigen=False)
+                    ok = self._listenaufgabe_setzen(sitzung, e, bereiche[e["nummer"] - 1], auftraege[e["nummer"]])
                 if ok:
                     schutz = [[f["x"], f["y"], f["w"], f["h"]] for f in (felder(b).ergebnisfeld for b in bereiche)]
                     try:
                         self._abgleich.schutz_setzen(flaeche_id, person, schutz)
                     except GruppeWeg:
                         raise _Antwort(503, {"meldung": GRUPPE_WEG}) from None
-                    self._gesetzt_merken(schluessel, sitzung.sid)
+                    self._gesetzt_merken(schluessel, sitzung.sid,
+                                         (self._raster_schluessel(sitzung.kurs, sitzung.gruppe), raster))
             if ok:
                 ok = self._flaeche_still(sitzung, lambda s: self._penecho.bereiche_melden(s, bereiche))
             if ok:
@@ -1082,14 +1117,26 @@ class Bruecke:
         return nummer, ok, liste
 
     def _mappe(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]]) -> tuple[tuple[int, int], list[dict[str, int]]]:
+        ursprung, bereiche, _ = self._mappe_mit_raster(sitzung, eintraege)
+        return ursprung, bereiche
+
+    def _mappe_mit_raster(
+        self, sitzung: _Sitzung, eintraege: list[dict[str, Any]],
+    ) -> tuple[tuple[int, int], list[dict[str, int]], GruppenRaster]:
         """Ursprung und Bereiche der Mappe dieser Gruppensitzung; 409 `GRUPPE_VOLL`, wenn der Platz nicht passt."""
         if sitzung.platz is None:
             assert sitzung.gruppe is not None
             sitzung.platz = self._platz(sitzung.actor, sitzung.gruppe)
         h = hoehen([_gross(e["task"]) for e in eintraege])
         try:
-            ursprung = mappen_ursprung(sitzung.platz, gruppen_raster(h))
-            return ursprung, mappen_bereiche(h, ursprung)
+            eigen = gruppen_raster(h)
+            # Festes Raster der Gruppe (erste gesetzte Mappe); passt diese Mappe nicht in seine Zelle, ist sie voll.
+            fest = self._festes_raster(sitzung.kurs, sitzung.gruppe) if sitzung.gruppe is not None else None
+            if fest is not None and (eigen.breite > fest.breite or eigen.hoehe > fest.hoehe):
+                raise MappeVoll("Mappe passt nicht in das feste Raster der Gruppe")
+            raster = fest or eigen
+            ursprung = mappen_ursprung(sitzung.platz, raster)
+            return ursprung, mappen_bereiche(h, ursprung), raster
         except ZuVieleAufgaben:
             raise _Antwort(409, {"meldung": ZU_VIELE_AUFGABEN, "code": "zu_viele_aufgaben"}) from None
         except MappeVoll:
@@ -1346,9 +1393,13 @@ class Bruecke:
             self._zusammenfassung_ablegen(sitzung)
         try:
             text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung) or [])
-            if rechtecke is None:
+            lage: dict[str, Any] = {}
+            if sitzung.gruppe is not None:
+                # Teil C: nur die Textkarte. Die Bilder staenden rechts neben der Zeile (bis x + 2880) und ragten in
+                # die Nachbar-Mappe (naechste bei x + 2300, auch bei zwei Spalten).
+                nummern: tuple[int, ...] = ()
+            elif rechtecke is None:
                 nummern = tuple(n for n, _ in bericht_aufgaben(summary) if 1 <= n <= BEREICHE)
-                lage: dict[str, Any] = {}
             else:
                 nummern = tuple(n for n, _ in bericht_aufgaben(summary) if n in rechtecke)
                 lage = {"rechteck": rechtecke}
@@ -1363,8 +1414,9 @@ class Bruecke:
 
         Ohne lesbare Liste kein Bericht am alten Raster: dann ein leeres Mapping (nur die Karte).
         """
-        if not (sitzung.liste or turn.get("ablauf") == "liste") or sitzung.bericht_gezeigt:
-            return None
+        if (not (sitzung.liste or turn.get("ablauf") == "liste") or sitzung.bericht_gezeigt
+                or sitzung.gruppe is not None):
+            return None  # Gruppe: keine Berichtsbilder (`_bericht`), also auch keine Rechtecke
         try:
             _, eintraege = self._liste_lesen(sitzung)
             bereiche = self._bereiche(sitzung, eintraege)

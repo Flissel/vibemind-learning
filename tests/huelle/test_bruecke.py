@@ -3894,7 +3894,10 @@ def test_gruppe_zweimal_oeffnen_setzt_einmal(tmp_path) -> None:
         assert len(abgleich.schutz) == 1
         assert namen.count("bereich_zeigen") == 2  # zeigen wie im Solo bei jedem Oeffnen
         gemerkt = json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8"))
-        assert gemerkt == {f"{PA}|{KURS_P}|g{GID}": {"sid": SID_GA, "gesetzt": True}}
+        r3 = gruppen_raster([800] * 3)
+        assert gemerkt == {f"{PA}|{KURS_P}|g{GID}": {"sid": SID_GA, "gesetzt": True},
+                           f"raster|{KURS_P}|g{GID}": {"breite": r3.breite, "hoehe": r3.hoehe,
+                                                       "spalten": r3.spalten, "zeilen": r3.zeilen}}
         assert not kursende.exists() or f"{PA}|{KURS_P}" not in json.loads(kursende.read_text(encoding="utf-8"))
     finally:
         client.app.beenden()
@@ -4095,3 +4098,92 @@ def test_gruppe_ohne_flaechen_kennung_nie_im_hintergrund() -> None:
         assert len(abgleich.schutz) == 1
     finally:
         client.app.beenden()
+
+
+# ---- Teil C, Task 8, Fix-Runde 2: Bilder vor der Sperre, festes Raster je Gruppe, Bericht ohne Bilder ---------------
+
+def test_gruppe_laedt_aufgabenbilder_vor_der_flaechensperre() -> None:
+    """Alle Bilder der Mappe kommen vor der Flaechensperre (wie Solo `_liste_oeffnen`); gesetzt wird danach."""
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    client, penecho, _, _ = _gruppen_bruecke(laeufe)
+    bruecke = client.app
+    echt = bruecke._aufgabenbilder
+
+    def bilder(task: dict[str, Any]) -> list[Any]:
+        assert not bruecke._flaeche_sperre._is_owned(), "Bild unter der Flaechensperre geladen"
+        penecho.aufrufe.append(("bilder", task["id"]))
+        return echt(task)
+
+    bruecke._aufgabenbilder = bilder
+    try:
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        namen = penecho.namen()
+        assert namen.count("bilder") == 3 and namen.count("aufgabe_setzen") == 3
+        assert max(i for i, n in enumerate(namen) if n == "bilder") < namen.index("schild_setzen")
+        # Ist die Mappe gesetzt, laedt ein erneutes Oeffnen keine Bilder.
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert penecho.namen().count("bilder") == 3
+    finally:
+        bruecke.beenden()
+
+
+def test_gruppe_raster_fest_je_gruppe(tmp_path) -> None:
+    """Die erste gesetzte Mappe legt das Raster der Gruppe fest (gruppen-gesetzt.json); spaeter Kommende nutzen es.
+    Passt eine Mappe nicht in die feste Zelle: 409 GRUPPE_VOLL, bevor irgendetwas gesetzt wird."""
+    ga, gb = gruppen_lern_kennung(PA, GID), gruppen_lern_kennung(PB, GID)
+    laeufe = Laeufe({ga: SID_GA, gb: SID_GB})
+    laeufe.eintraege[gb] = [_eintrag(i, typ="penecho_canvas") for i in range(1, 4)]  # hoeher (Revision)
+    kursende = tmp_path / "kursende.json"
+    a, penecho, abgleich, _ = _gruppen_bruecke(laeufe, kursende=kursende)
+    b = als(TestClient(a.app), PB)
+    b.headers[KOPF] = KB
+    try:
+        assert a.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        fest = gruppen_raster([800] * 3)
+        gemerkt = json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8"))
+        assert gemerkt[f"raster|{KURS_P}|g{GID}"] == {
+            "breite": fest.breite, "hoehe": fest.hoehe, "spalten": fest.spalten, "zeilen": fest.zeilen}
+        vorher = len(penecho.aufrufe)
+        r = b.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
+        assert [x for x in penecho.aufrufe[vorher:] if x[0] in ("schild_setzen", "aufgabe_setzen")] == []
+        assert len(abgleich.schutz) == 1
+        # Gleiche Hoehen: das feste Raster (Platz 1 im festen Raster).
+        laeufe.eintraege[gb] = [_eintrag(i) for i in range(1, 4)]
+        assert b.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        bereiche_b = mappen_bereiche([800] * 3, mappen_ursprung(1, fest))
+        assert abgleich.schutz[-1] == (f"g-{GID}", person_kennung(PB), _schutzfelder(bereiche_b))
+    finally:
+        a.app.beenden()
+    # Nach einem Neustart gilt das feste Raster weiter: die hoehere Mappe passt auch jetzt nicht.
+    laeufe.eintraege[gb] = [_eintrag(i, typ="penecho_canvas") for i in range(1, 4)]
+    c, penecho2, _, _ = _gruppen_bruecke(laeufe, kursende=kursende, actor=PB, kennung=KB)
+    try:
+        # Bs Mappe ist gesetzt (alte sid); eine Abgabe rechnet mit dem festen Raster und den neuen Hoehen: voll.
+        r = c.post(f"/lernen/api/sitzungen/{SID_GB}/abgeben", json={"nummer": 1})
+        assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
+        assert penecho2.aufnahme_rechtecke == []
+    finally:
+        c.app.beenden()
+
+
+def test_gruppen_bericht_ohne_bilder_solo_unveraendert() -> None:
+    """Bericht am Kursende: in der Gruppe nur die Textkarte (Bilder ragten in die Nachbar-Mappe), Solo wie bisher."""
+    from spaces.learning.huelle.bruecke import _Sitzung
+    from spaces.learning.huelle.einstellung import Kurs
+
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    client, penecho, _, _ = _gruppen_bruecke(laeufe)
+    bruecke = client.app
+    kurs = Kurs(course_id=KURS_P, titel="Kurs B")
+    fertig = {"state": "completed", "summary": BERICHT, "ablauf": "liste"}
+    try:
+        solo = _Sitzung(kurs, SID_SA, PA, liste=True)
+        bruecke._bericht(solo, fertig, {n: anordnung([False] * 3)[n - 1] for n in (1, 2, 3)})
+        gruppe = _Sitzung(kurs, SID_GA, PA, liste=True, gruppe=GID, platz=0, flaeche=KA)
+        bruecke._bericht(gruppe, fertig, bruecke._bericht_rechtecke(gruppe, fertig))
+        (b_solo, b_gruppe) = [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
+        assert b_solo[4] == (1, 2, 3) and penecho.bericht_rechtecke[0] is not None
+        assert b_gruppe[2] == SID_GA and b_gruppe[4] == () and penecho.bericht_rechtecke[1] is None
+    finally:
+        bruecke.beenden()
