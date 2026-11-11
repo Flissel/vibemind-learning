@@ -122,6 +122,14 @@ def mappen_kopf(ursprung: tuple[int, int]) -> dict[str, int]:
     return {"x": ux + _SCHILD_RAND, "y": uy + _SCHILD_RAND, "w": BREITE, "h": KOPF - 2 * _SCHILD_RAND}
 
 
+def mappen_abschluss(ursprung: tuple[int, int]) -> dict[str, int]:
+    """Fester Platz der Abschlusskarte (Final B, H3): im Kopf der Mappe rechts neben dem Namensschild, bis zum
+    rechten Rand der Aufgabenzeile (740 x 110). Liegt so immer in der eigenen Mappe, nie auf Schild oder Aufgabe."""
+    kopf = mappen_kopf(ursprung)
+    x = kopf["x"] + kopf["w"] + _SCHILD_RAND
+    return {"x": x, "y": kopf["y"], "w": ursprung[0] + ZEILEN_BREITE - _SCHILD_RAND - x, "h": kopf["h"]}
+
+
 def zeile(bereich: dict[str, int]) -> dict[str, int]:
     return {"x": bereich["x"], "y": bereich["y"], "w": ZEILEN_BREITE, "h": bereich["h"]}
 

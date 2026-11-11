@@ -50,6 +50,27 @@ def aufgaben(summary: dict[str, Any]) -> list[tuple[int, float]]:
     return ergebnis
 
 
+_ABSCHLUSS = "Kurs abgeschlossen: "
+_ABSCHLUSS_ZEILE = 64  # Zeichen je Zeile im 740 breiten Platz (36 je 400 px, vorsichtig)
+
+
+def abschluss_text(kurs_titel: str, summary: dict[str, Any]) -> str:
+    """Kurze Abschlusskarte der Gruppe (Final B, H3): Kurs und Zahl der richtigen Aufgaben, Klartext ohne Markdown.
+
+    Sie steht als Text im Kopf der Mappe (110 hoch); hoechstens zwei Zeilen, der Titel wird bei Bedarf gekuerzt.
+    """
+    titel = " ".join(str(kurs_titel).split())
+    platz = _ABSCHLUSS_ZEILE - len(_ABSCHLUSS)
+    if len(titel) > platz:
+        titel = titel[: platz - 1].rstrip() + "…"
+    zeilen = [_ABSCHLUSS + titel]
+    einzeln = aufgaben(summary)
+    if einzeln:
+        richtig = sum(1 for _, score in einzeln if urteil(score) == "richtig")
+        zeilen.append(f"{richtig} von {len(einzeln)} Aufgaben richtig.")
+    return "\n".join(zeilen)
+
+
 def bericht_text(kurs_titel: str, summary: dict[str, Any], begriffe: list[dict[str, Any]]) -> str:
     zeilen = [f"# Bericht: {rein(kurs_titel)}", ""]
     einzeln = aufgaben(summary)

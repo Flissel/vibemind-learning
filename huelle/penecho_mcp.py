@@ -1233,9 +1233,9 @@ class PenEchoMcp:
                 break
 
     def schild_setzen(self, session_id: str, request_id: str, text: str, rechteck: dict[str, int]) -> None:
-        """Namensschild einer Mappe (Teil C) als Text in `rechteck` (Kopf der Mappe).
+        """Fester Text im Kopf einer Mappe (Teil C): Namensschild oder Abschlusskarte (Final B, H3), in `rechteck`.
 
-        Feste `request_id` (`mappe-<gruppe>-<person>`): ein erneutes Setzen derselben Mappe wiederholt PenEcho nicht.
+        Feste `request_id` (`mappe-<gruppe>-<person>`, `abschluss-<sid>`): ein erneutes Setzen wiederholt PenEcho nicht.
         Steht dort schon ein Text (Board wiederhergestellt), wird nichts gesendet; belegt PenEcho den Platz
         (LAYOUT_CONFLICT), steht das Schild schon da. Andere Fehler gehen an den Aufrufer.
         """

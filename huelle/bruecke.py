@@ -63,10 +63,10 @@ from starlette.routing import Route
 
 from ..contracts.beschriftung import beschriften
 from .anordnung import (
-    GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_bereiche, mappen_kopf,
-    mappen_ursprung,
+    GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_abschluss, mappen_bereiche,
+    mappen_kopf, mappen_ursprung,
 )
-from .bericht import aufgaben as bericht_aufgaben, bericht_text
+from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
 from .gruppe import (
     GRUPPE_UNGUELTIG, GRUPPE_VOLL, GRUPPE_WEG, KEIN_MITGLIED, AbgleichDienst, Gruppen, GruppeWeg, KeinMitglied,
@@ -1405,13 +1405,19 @@ class Bruecke:
         if sitzung.liste and self._zusammenfassung_ablegen_erlaubt(sitzung):
             self._zusammenfassung_ablegen(sitzung)
         try:
+            if sitzung.gruppe is not None:
+                # Teil C (Final B, H3): kein Widget, denn PenEcho platzierte es nach der Ansicht der Person und saehe
+                # keine fremden Objekte (Nachbar-Mappe, `fremdes_ergebnisfeld`). Eine kurze Textkarte an festem Platz
+                # im Kopf der eigenen Mappe; feste Kennung, steht sie schon da, wird nichts doppelt gesetzt.
+                _, eintraege = self._liste_lesen(sitzung)
+                ursprung, _ = self._mappe(sitzung, eintraege)
+                platz, kurz = mappen_abschluss(ursprung), abschluss_text(sitzung.kurs.titel, summary)
+                sitzung.bericht_gezeigt = self._flaeche_still(sitzung, lambda s: self._penecho.schild_setzen(
+                    s, f"abschluss-{sitzung.sid}", kurz, platz))
+                return
             text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung) or [])
             lage: dict[str, Any] = {}
-            if sitzung.gruppe is not None:
-                # Teil C: nur die Textkarte. Die Bilder staenden rechts neben der Zeile (bis x + 2880) und ragten in
-                # die Nachbar-Mappe (naechste bei x + 2300, auch bei zwei Spalten).
-                nummern: tuple[int, ...] = ()
-            elif rechtecke is None:
+            if rechtecke is None:
                 nummern = tuple(n for n, _ in bericht_aufgaben(summary) if 1 <= n <= BEREICHE)
             else:
                 nummern = tuple(n for n, _ in bericht_aufgaben(summary) if n in rechtecke)

@@ -4189,12 +4189,20 @@ def test_gruppe_raster_fest_je_gruppe(tmp_path) -> None:
         d.app.beenden()
 
 
-def test_gruppen_bericht_ohne_bilder_solo_unveraendert() -> None:
-    """Bericht am Kursende: in der Gruppe nur die Textkarte (Bilder ragten in die Nachbar-Mappe), Solo wie bisher."""
+def _getrennt_r(a: dict[str, int], b: dict[str, int]) -> bool:
+    return (a["x"] + a["w"] <= b["x"] or b["x"] + b["w"] <= a["x"]
+            or a["y"] + a["h"] <= b["y"] or b["y"] + b["h"] <= a["y"])
+
+
+def test_gruppen_abschluss_fest_in_der_eigenen_mappe_solo_unveraendert() -> None:
+    """Final B, H3: in der Gruppe steht die Abschlusskarte an einem festen Platz im Kopf der eigenen Mappe, rechts
+    neben dem Namensschild (kein Widget, das die Ansicht der Person platziert); Solo wie bisher (Karte + Bilder)."""
+    from spaces.learning.huelle.anordnung import KOPF, mappen_abschluss, zeile
     from spaces.learning.huelle.bruecke import _Sitzung
     from spaces.learning.huelle.einstellung import Kurs
 
-    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({gk: SID_GA}, gestartet=(gk,))
     client, penecho, _, _ = _gruppen_bruecke(laeufe)
     bruecke = client.app
     kurs = Kurs(course_id=KURS_P, titel="Kurs B")
@@ -4202,13 +4210,38 @@ def test_gruppen_bericht_ohne_bilder_solo_unveraendert() -> None:
     try:
         solo = _Sitzung(kurs, SID_SA, PA, liste=True)
         bruecke._bericht(solo, fertig, {n: anordnung([False] * 3)[n - 1] for n in (1, 2, 3)})
-        gruppe = _Sitzung(kurs, SID_GA, PA, liste=True, gruppe=GID, platz=0, flaeche=KA)
-        bruecke._bericht(gruppe, fertig, bruecke._bericht_rechtecke(gruppe, fertig))
-        (b_solo, b_gruppe) = [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
+        gruppe = _Sitzung(kurs, SID_GA, PA, liste=True, gruppe=GID, platz=1, flaeche=KA)
+        for _ in range(2):  # hoechstens einmal je Sitzung
+            bruecke._bericht(gruppe, fertig, bruecke._bericht_rechtecke(gruppe, fertig))
+        (b_solo,) = [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
         assert b_solo[4] == (1, 2, 3) and penecho.bericht_rechtecke[0] is not None
-        assert b_gruppe[2] == SID_GA and b_gruppe[4] == () and penecho.bericht_rechtecke[1] is None
+        (karte,) = [a for a in penecho.aufrufe if a[0] == "schild_setzen"]
+        _, board, kennung, text, platz = karte
+        assert board == "pe-1" and kennung == f"abschluss-{SID_GA}" and gruppe.bericht_gezeigt
+        assert text == "Kurs abgeschlossen: Kurs B\n1 von 3 Aufgaben richtig."
+        raster = gruppen_raster([800] * 3)
+        ursprung = mappen_ursprung(1, raster)
+        assert platz == mappen_abschluss(ursprung)
+        # Innerhalb der Mappe (im Kopf), weder auf dem Namensschild noch in einer Aufgabenzeile.
+        ux, uy = ursprung
+        assert ux <= platz["x"] and platz["x"] + platz["w"] <= ux + raster.breite
+        assert uy <= platz["y"] and platz["y"] + platz["h"] <= uy + KOPF
+        assert _getrennt_r(platz, mappen_kopf(ursprung))
+        assert all(_getrennt_r(platz, zeile(b)) for b in mappen_bereiche([800] * 3, ursprung))
+        # Drei Zeilen zu je 27 px passen in die 110 hohe Flaeche, auch bei langem Kurstitel.
+        assert platz["h"] >= 3 * 27
     finally:
         bruecke.beenden()
+
+
+def test_abschluss_text_kurz_und_ohne_markdown() -> None:
+    from spaces.learning.huelle.bericht import abschluss_text
+
+    assert abschluss_text("Kurs B", BERICHT) == "Kurs abgeschlossen: Kurs B\n1 von 3 Aufgaben richtig."
+    assert abschluss_text("Kurs  *B*\n", {"results": []}) == "Kurs abgeschlossen: Kurs *B*"
+    lang = abschluss_text("Analysis " * 20, BERICHT)
+    erste = lang.splitlines()[0]
+    assert len(erste) <= 64 and erste.endswith("…") and lang.count("\n") == 1
 
 
 # ---- Final B, H2: das Schutzfeld ist das blau umrandete Loesungsfeld ------------------------------------------
