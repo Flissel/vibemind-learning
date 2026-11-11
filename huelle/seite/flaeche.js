@@ -36,13 +36,42 @@ export function neueFlaechenKennung({ speicher, zufall = (feld) => globalThis.cr
   return neu;
 }
 
+// Teil C, Gruppenflaeche: die Seite liest `?gruppe=<id>` (1 bis 9 Ziffern, ohne fuehrende Null, genau einmal).
+const GRUPPE_ID_MUSTER = /^[1-9][0-9]{0,8}$/;
+const GRUPPE_MUSTER = /^g-[1-9][0-9]{0,8}$/;
+const PERSON_MUSTER = /^p[0-9a-f]{24}$/;
+
+export function gruppeAusAdresse(suche) {
+  try {
+    const werte = new URLSearchParams(String(suche ?? "")).getAll("gruppe");
+    return werte.length === 1 && GRUPPE_ID_MUSTER.test(werte[0]) ? Number(werte[0]) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Gruppe und Person fuer die Adresse der Flaeche; die Person kommt aus der Antwort der Bruecke.
+function gruppenTeile(gruppe) {
+  if (!gruppe || typeof gruppe !== "object") return null;
+  const { gruppe: flaeche, person } = gruppe;
+  if (typeof flaeche !== "string" || !GRUPPE_MUSTER.test(flaeche)) return null;
+  if (typeof person !== "string" || !PERSON_MUSTER.test(person)) return null;
+  return { flaeche, person };
+}
+
 // `basis` darf relativ sein (data-src="/?lernen=1" ohne eigene Flaechenadresse): sie wird gegen die Adresse der
-// Seite aufgeloest, damit die Kennung immer in der URL steht.
-export function flaechenAdresse(basis, kennung, herkunft = globalThis.location?.href) {
+// Seite aufgeloest, damit die Kennung immer in der URL steht. Mit gueltiger `gruppe` ({gruppe: "g-<id>", person})
+// kommen `&gruppe=` und `&person=` dazu: die Flaeche verbindet sich dann mit dem Abgleich der Gruppe.
+export function flaechenAdresse(basis, kennung, herkunft = globalThis.location?.href, gruppe = null) {
   if (typeof kennung !== "string" || !KENNUNG_MUSTER.test(kennung)) return basis;
   try {
     const url = new URL(basis, herkunft);
     url.searchParams.set("flaeche", kennung);
+    const teile = gruppenTeile(gruppe);
+    if (teile) {
+      url.searchParams.set("gruppe", teile.flaeche);
+      url.searchParams.set("person", teile.person);
+    }
     return url.toString();
   } catch {
     return basis;
@@ -67,7 +96,7 @@ export function kennungBelegt(antwort) {
   }
 }
 
-export function flaecheErneuern({ rahmen, speicher, zufall, wartenMs = WARTEN_MS } = {}) {
+export function flaecheErneuern({ rahmen, speicher, zufall, wartenMs = WARTEN_MS, gruppe = null } = {}) {
   const kennung = neueFlaechenKennung({ speicher, zufall });
   if (!rahmen?.dataset?.src) return Promise.resolve(kennung);
   return new Promise((fertig) => {
@@ -79,7 +108,7 @@ export function flaecheErneuern({ rahmen, speicher, zufall, wartenMs = WARTEN_MS
     };
     uhr = setTimeout(geladen, wartenMs);
     rahmen.addEventListener("load", geladen);
-    rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
+    rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung, undefined, gruppe);
   });
 }
 

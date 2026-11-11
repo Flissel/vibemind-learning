@@ -6,8 +6,8 @@ import {
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import {
-  flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, kennungBelegt, mitFlaechenKennung,
-  wiederholbar,
+  flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, gruppeAusAdresse, kennungBelegt,
+  mitFlaechenKennung, neueFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 import {
   eintragSetzen, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, standAnnehmen, statusText,
@@ -18,6 +18,10 @@ const API = "/lernen/api";
 // Teil B: Flächen-Kennung dieses Tabs (sessionStorage); geht in die Adresse der Fläche und an jede API-Anfrage.
 let kennung = flaechenKennung();
 let erneuerung = null; // laufende Erneuerung der Kennung; gleichzeitige „belegt“-Antworten teilen sie
+// Teil C, Gruppenfläche: `?gruppe=<id>` öffnet die eigene Mappe der Gruppe statt eines Kurses (sonst alles wie Solo).
+const gruppeId = gruppeAusAdresse(location.search);
+const GRUPPE_SCHLUESSEL = "lernflaeche-gruppe-"; // sessionStorage je Gruppe: {gruppe, person} für das Neuladen
+const VERBINDEN_MS = 1500; // nach dem Laden der Gruppenfläche: so lange warten, bis sie sich beim MCP meldet
 
 // Feste Texte (Plan, global.md).
 const TEXT = {
@@ -76,6 +80,9 @@ const z = {
   folge: 0, // laufende Nummer der Anfragen, die einen Stand bringen
   gueltigAb: 0, // Stände aus Anfragen davor gelten nicht (letzte Abgabe begonnen oder beantwortet)
   sendend: new Set(), // Nummern, deren Abgabe gerade unterwegs ist
+  // Gruppenfläche (Teil C): Gruppe aus der Adresse; Gruppe und Person der Fläche kommen aus der Antwort der Brücke.
+  gruppeId,
+  rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
 
 // ---- Hilfen -------------------------------------------------------------------------------
@@ -137,7 +144,9 @@ async function anfrage(methode, pfad, body) {
 function kennungErneuern() {
   erneuerung ??= (async () => {
     try {
-      kennung = await flaecheErneuern({ rahmen: $("rahmen") });
+      // Gruppe ohne bekannte Person: die Fläche lädt erst mit Gruppe und Person (sonst arbeitete sie allein).
+      if (z.gruppeId !== null && !z.rahmenGruppe) { kennung = neueFlaechenKennung(); return; }
+      kennung = await flaecheErneuern({ rahmen: $("rahmen"), gruppe: z.rahmenGruppe });
     } finally {
       erneuerung = null;
     }
@@ -560,7 +569,7 @@ async function karteBewertung() {
   for (const w of woerter) w.addEventListener("input", () => { beruehrt = true; gespeichert = false; aktualisieren(); });
 
   const nochmal = el("button", {
-    type: "button", text: "Noch einmal üben",
+    type: "button", text: "Noch einmal üben", hidden: z.gruppeId !== null, // die Gruppe hat keinen neuen Durchlauf
     onclick: () => { if (!z.busy) void kursOeffnen(kurs, "neu"); },
   });
   $("karte").replaceChildren(el("section", { class: "abschluss" },
@@ -612,9 +621,10 @@ async function flaecheVerbinden() {
   const kurs = z.kurs;
   if (!kurs) return;
   const nr = neueAnfrage();
-  const r = await api("POST", `/kurse/${kurs.course_id}/oeffnen`);
+  const r = await api("POST", oeffnenPfad(kurs));
   if (z.kurs !== kurs) return;
   if (!r.ok) { fehlerBehandeln(r); return; }
+  if (z.gruppeId !== null && await gruppeUebernehmen(r.daten.gruppe)) { await kursOeffnen(kurs, "oeffnen", false); return; }
   flaechenHinweisZeigen(r.daten);
   if (z.liste && standAnwenden(r.daten.stand, nr)) listeZeigen();
 }
@@ -685,8 +695,55 @@ function neueAufgabe(hinweisBehalten = false) {
   if (!hinweisBehalten) z.hinweis = null;
 }
 
-// `aktion` "neu" startet nach dem Kursende bewusst einen frischen Durchlauf.
-async function kursOeffnen(kurs, aktion = "oeffnen") {
+// ---- Gruppenfläche (Teil C) ------------------------------------------------------------------------
+function oeffnenPfad(kurs, aktion = "oeffnen") {
+  if (z.gruppeId !== null) return `/gruppen/${z.gruppeId}/oeffnen`;
+  return `/kurse/${kurs.course_id}/${aktion === "neu" ? "neu" : "oeffnen"}`;
+}
+
+function gemerkteRahmenGruppe(id) {
+  try {
+    const w = JSON.parse(window.sessionStorage.getItem(GRUPPE_SCHLUESSEL + id) ?? "null");
+    if (w && w.gruppe === `g-${id}` && typeof w.person === "string") return { gruppe: w.gruppe, person: w.person };
+  } catch {
+    // gesperrter Speicher oder kaputter Wert: die Fläche lädt nach dem ersten Öffnen
+  }
+  return null;
+}
+
+function gruppenKopfZeigen(name) {
+  const wahl = $("kurs").closest("label");
+  wahl.hidden = true; // der Kurs gehört zur Gruppe, es gibt nichts zu wählen
+  let kopf = $("gruppe-name");
+  if (!kopf) {
+    kopf = el("p", { id: "gruppe-name", class: "gruppe-name" });
+    wahl.after(kopf);
+  }
+  kopf.textContent = `Gruppe: ${typeof name === "string" ? name : ""}`;
+}
+
+// Gruppe und Person aus der Antwort übernehmen. Ist das neu, lädt die Fläche mit `&gruppe=&person=` (die Person
+// kommt nur von der Brücke) und meldet sich danach beim MCP; `true` heißt: einmal neu öffnen.
+async function gruppeUebernehmen(g) {
+  if (!g || typeof g !== "object") return false;
+  gruppenKopfZeigen(g.gruppe_name);
+  const neu = { gruppe: g.flaeche, person: g.person };
+  const alt = z.rahmenGruppe;
+  if (alt && alt.gruppe === neu.gruppe && alt.person === neu.person) return false;
+  z.rahmenGruppe = neu;
+  try {
+    window.sessionStorage.setItem(GRUPPE_SCHLUESSEL + z.gruppeId, JSON.stringify(neu));
+  } catch {
+    // ohne Speicher lädt die Fläche nach jedem Neuladen einmal mehr
+  }
+  kennung = await flaecheErneuern({ rahmen: $("rahmen"), gruppe: z.rahmenGruppe });
+  await pause(VERBINDEN_MS);
+  return true;
+}
+
+// `aktion` "neu" startet nach dem Kursende bewusst einen frischen Durchlauf. `rahmenNeu`: in der Gruppe darf
+// eine neu geladene Fläche einmal ein zweites Öffnen auslösen, nie mehr.
+async function kursOeffnen(kurs, aktion = "oeffnen", rahmenNeu = true) {
   banner("");
   $("flaechen-hinweis").hidden = true;
   z.kurs = kurs;
@@ -708,9 +765,14 @@ async function kursOeffnen(kurs, aktion = "oeffnen") {
   begriffeZeigen([]);
   $("notizen-box").hidden = true;
   const nr = neueAnfrage();
-  const r = await api("POST", `/kurse/${kurs.course_id}/${aktion === "neu" ? "neu" : "oeffnen"}`);
+  const r = await api("POST", oeffnenPfad(kurs, aktion));
   if (z.kurs !== kurs) return;
   if (!r.ok) { fehlerBehandeln(r); return; }
+  if (z.gruppeId !== null) {
+    if (r.daten.kurs) Object.assign(kurs, r.daten.kurs); // Titel und Kennung des Kurses der Gruppe
+    if (await gruppeUebernehmen(r.daten.gruppe) && rahmenNeu) { await kursOeffnen(kurs, aktion, false); return; }
+    if (z.kurs !== kurs) return;
+  }
   begriffeZeigen(r.daten.begriffe);
   turnUebernehmen(r.daten.turn, r.daten.nummer);
   // Listenkurs nur, wenn die Brücke es sagt; anpassende Kurse behalten den bisherigen Kopf.
@@ -977,7 +1039,14 @@ async function passt() {
 async function start() {
   // Die Fläche lädt erst mit der Kennung; so meldet sich dieser Tab gleich mit ihr als canvasId beim MCP.
   const rahmen = $("rahmen");
-  if (rahmen.dataset.src) rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
+  // Gruppe: die Fläche lädt nur mit Gruppe und Person (gemerkt vom letzten Öffnen in diesem Tab), sonst erst nach
+  // der Antwort der Brücke. Ohne `?gruppe=` genau wie bisher.
+  if (z.gruppeId !== null) {
+    z.rahmenGruppe = gemerkteRahmenGruppe(z.gruppeId);
+    if (z.rahmenGruppe && rahmen.dataset.src) {
+      rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung, undefined, z.rahmenGruppe);
+    }
+  } else if (rahmen.dataset.src) rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
   layoutSetzen(speicher("lesen", "huelle-layout"));
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
   $("korrektur").addEventListener("submit", (ereignis) => { ereignis.preventDefault(); void korrekturSenden(); });
@@ -986,6 +1055,11 @@ async function start() {
   $("aufgabe-zurueck").addEventListener("click", () => aufgabeBlaettern(-1));
   $("aufgabe-vor").addEventListener("click", () => aufgabeBlaettern(1));
   $("aufgabe-wahl").addEventListener("change", (ereignis) => { void aufgabeWaehlen(Number(ereignis.target.value)); });
+  if (z.gruppeId !== null) {
+    // Gruppe: keine Kurswahl; Kurs und Titel kommen aus der Antwort der Gruppenroute.
+    await kursOeffnen({ course_id: null, titel: "" });
+    return;
+  }
   const r = await api("GET", "/kurse");
   if (!r.ok || !Array.isArray(r.daten) || r.daten.length === 0) {
     banner(r.ok ? TEXT.keinKurs : meldungFuer(r.daten));

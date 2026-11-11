@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import hashlib
 import io
 import json
 import logging
@@ -61,15 +62,21 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from ..contracts.beschriftung import beschriften
-from .anordnung import ZuVieleAufgaben, anordnung
+from .anordnung import (
+    MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_bereiche, mappen_kopf, mappen_ursprung,
+)
 from .bericht import aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
+from .gruppe import (
+    GRUPPE_UNGUELTIG, GRUPPE_VOLL, GRUPPE_WEG, KEIN_MITGLIED, AbgleichDienst, Gruppen, GruppeWeg, KeinMitglied,
+    Mitgliedschaft, flaeche_der_gruppe, person_kennung,
+)
 from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar,
-    PenEchoSitzungUnbekannt,
+    PenEchoSitzungUnbekannt, felder,
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
@@ -182,10 +189,28 @@ _MEDIEN_PFAD = re.compile(r"^/lernsequenz-medien/([A-Za-z0-9][A-Za-z0-9._-]{0,12
 MEDIEN_ROUTE = "/lernen/api/medien/"
 _MEDIEN_ART = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 MAX_MEDIUM = 8 * 1024 * 1024
+# Teil C: Gruppenroute `gruppen/{gruppe_id}/oeffnen`, 1 bis 9 Ziffern ohne fuehrende Null (wie die Weiche).
+_GRUPPE_ID = re.compile(r"[1-9][0-9]{0,8}")
+# Namensschild ohne Anzeigenamen: nie die Kennung oder eine Adresse.
+TEILNEHMENDE_PERSON = "Teilnehmende Person"
+_LERN_KENNUNG_MAX = 128  # Learning SafeToken / ACTOR_MUSTER
 
 
 def _typ(fehler: BaseException) -> str:
     return type(fehler).__name__
+
+
+def gruppen_lern_kennung(actor: str, gruppe_id: int) -> str:
+    """Learning-Kennung des Gruppen-Durchlaufs (Plan P5): ein eigener Durchlauf je (Person, Kurs, Gruppe).
+
+    Learning fuehrt Durchlaeufe je (Kennung, Kurs): `resume` nennt die neueste aktive Sitzung der Kennung im Kurs,
+    `_assert_owned` prueft den Besitz. Unter der Kennung der Person liefe die Gruppe in den Solo-Durchlauf. `|` erlaubt
+    Learnings Kennungsmuster nicht, darum `<actor>:g<gruppe_id>`; waere das zu lang, ein Hash der Person.
+    """
+    zusatz = f":g{gruppe_id}"
+    if len(actor) + len(zusatz) <= _LERN_KENNUNG_MAX:
+        return actor + zusatz
+    return "h" + hashlib.sha256(actor.encode("utf-8")).hexdigest()[:40] + zusatz
 
 
 class _Antwort(Exception):
@@ -215,6 +240,14 @@ class _Sitzung:
     # Kam eine fremde Kennung, solange die Sitzung keine eigene Flaeche hat: nie der alte Weg (auch nicht im
     # Hintergrund), bis eine eigene Kennung oder eine Anfrage ganz ohne Kopf kommt.
     kennung_pflicht: bool = False
+    # Teil C: Gruppensitzung (eigene Mappe auf der Gruppenflaeche); None = Solo wie bisher.
+    gruppe: int | None = None
+    platz: int | None = None        # Platz der Mappe laut Abgleichdienst
+
+    @property
+    def lern_actor(self) -> str:
+        """Kennung, unter der Learning diese Sitzung fuehrt: Solo die Person, Gruppe ein eigener Durchlauf."""
+        return self.actor if self.gruppe is None else gruppen_lern_kennung(self.actor, self.gruppe)
 
 
 @dataclass(frozen=True)
@@ -527,6 +560,8 @@ class Bruecke:
         kursende: Path | None = None,
         *,
         katalog: Katalog | None = None,
+        gruppen: Gruppen | None = None,
+        abgleich: AbgleichDienst | None = None,
     ) -> None:
         self._e = einstellung
         self._lern = lern
@@ -537,9 +572,17 @@ class Bruecke:
         self._sitzungen: dict[str, _Sitzung] = {}
         # Learnings Ueberblick kennt nur aktive Sitzungen. Damit ein Neuladen nach dem Kursende
         # nicht stumm neu startet, merkt sich die Huelle den abgeschlossenen Durchlauf
-        # ("Kennung|Kurs" -> Sitzung); ohne Datei nur im Speicher (Tests).
+        # ("Kennung|Kurs" -> Sitzung, Gruppe "Kennung|Kurs|g<id>"); ohne Datei nur im Speicher (Tests).
         self._kursende_datei = kursende
         self._kursende = self._kursende_lesen()
+        # Teil C: Gruppenflaeche. Ohne beides gibt es keine Gruppenroute (404), Solo bleibt unberuehrt.
+        self._gruppen = gruppen
+        self._abgleich = abgleich
+        # Gesetzte Mappen ("Kennung|Kurs|g<id>" -> {"sid", "gesetzt"}) neben kursende.json: nichts doppelt setzen,
+        # auch nicht nach einem Neustart; zugleich der Weg zur Gruppensitzung nach einem Neustart.
+        self._gesetzt_datei = None if kursende is None else kursende.parent / "gruppen-gesetzt.json"
+        self._gesetzt_sperre = threading.Lock()
+        self._gesetzt = self._gesetzt_lesen()
         self._ablauf = asyncio.Lock()
         # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
         # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
@@ -571,6 +614,7 @@ class Bruecke:
             Route(f"{p}/kurse/{{course_id}}/oeffnen", self._r_oeffnen, methods=["POST"]),
             Route(f"{p}/kurse/{{course_id}}/neu", self._r_neu, methods=["POST"]),
             Route(f"{p}/kurse/{{course_id}}/bewertung", self._r_bewertung, methods=["GET", "POST"]),
+            Route(f"{p}/gruppen/{{gruppe_id}}/oeffnen", self._r_gruppe_oeffnen, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/antwort", self._r_antwort, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/weiter", self._r_weiter, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/zeichnung", self._r_zeichnung, methods=["POST"]),
@@ -708,11 +752,11 @@ class Bruecke:
             log.warning("Kursende nicht gespeichert: %s", _typ(fehler))
 
     @staticmethod
-    def _ende_schluessel(actor: str, kurs: Kurs) -> str:
-        return f"{actor}|{kurs.course_id}"
+    def _ende_schluessel(actor: str, kurs: Kurs, gruppe: int | None = None) -> str:
+        return f"{actor}|{kurs.course_id}" if gruppe is None else f"{actor}|{kurs.course_id}|g{gruppe}"
 
-    def _ende_setzen(self, actor: str, kurs: Kurs, sid: str | None) -> None:
-        schluessel = self._ende_schluessel(actor, kurs)
+    def _ende_setzen(self, actor: str, kurs: Kurs, sid: str | None, gruppe: int | None = None) -> None:
+        schluessel = self._ende_schluessel(actor, kurs, gruppe)
         if self._kursende.get(schluessel) == sid:
             return
         if sid is None:
@@ -720,6 +764,55 @@ class Bruecke:
         else:
             self._kursende[schluessel] = sid
         self._kursende_schreiben()
+
+    # ---- Teil C: gesetzte Mappen -------------------------------------------
+    def _gesetzt_lesen(self) -> dict[str, dict[str, Any]]:
+        if self._gesetzt_datei is None:
+            return {}
+        try:
+            wert = json.loads(self._gesetzt_datei.read_text(encoding="utf-8"))
+            return {k: {"sid": v["sid"], "gesetzt": True} for k, v in wert.items()
+                    if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("sid"), str)
+                    and v.get("gesetzt") is True}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def _gesetzt_sid(self, schluessel: str) -> str | None:
+        with self._gesetzt_sperre:
+            eintrag = self._gesetzt.get(schluessel)
+        return eintrag["sid"] if eintrag is not None else None
+
+    def _gesetzt_merken(self, schluessel: str, sid: str) -> None:
+        """Mappe als gesetzt merken; atomar (Temp-Datei + replace) unter der Sperre. Fehler nur als Typ geloggt."""
+        with self._gesetzt_sperre:
+            self._gesetzt[schluessel] = {"sid": sid, "gesetzt": True}
+            if self._gesetzt_datei is None:
+                return
+            ziel = self._gesetzt_datei
+            tmp: str | None = None
+            try:
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                    json.dump(self._gesetzt, f)
+                os.replace(tmp, ziel)
+            except OSError as fehler:
+                log.warning("Gesetzte Mappe nicht gespeichert: %s", _typ(fehler))
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
+
+    def _gemerkte_gruppensitzung(self, actor: str, sid: str) -> tuple[str, int] | None:
+        """(course_id, gruppe_id) der gesetzten Mappe dieser Person mit dieser Sitzung; sonst None."""
+        with self._gesetzt_sperre:
+            treffer = [k for k, v in self._gesetzt.items() if v["sid"] == sid]
+        for schluessel in treffer:
+            teile = schluessel.rsplit("|", 2)
+            if len(teile) != 3 or teile[0] != actor or not teile[2].startswith("g"):
+                continue
+            kurs_id, gid = _uuid(teile[1]), teile[2][1:]
+            if kurs_id is not None and _GRUPPE_ID.fullmatch(gid):
+                return kurs_id, int(gid)
+        return None
 
     def _kurse_von(self, actor: str) -> tuple[Kurs, ...]:
         """Kurse dieser Kennung laut Katalog; 403 `kein_zugang` (entfernt), 503 `uebersicht_weg`."""
@@ -760,6 +853,13 @@ class Bruecke:
         bekannt = self._sitzungen.get(norm)
         if bekannt is not None and bekannt.actor != actor:
             raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
+        if bekannt is not None and bekannt.gruppe is not None:
+            # Gruppensitzung: die Mitgliedschaft (60 s gepuffert) ersetzt die Kurspruefung des Katalogs.
+            self._mitglied_der_sitzung(actor, bekannt)
+            self._flaeche_binden(bekannt)
+            return norm, bekannt, None
+        if bekannt is None and (gemerkt := self._gemerkte_gruppensitzung(actor, norm)) is not None:
+            return self._gruppensitzung_wieder(actor, norm, *gemerkt)
         kurse = self._kurse_der_sitzung(actor)
         if bekannt is not None:
             if kurse is not None and all(k.course_id != bekannt.kurs.course_id for k in kurse):
@@ -790,6 +890,210 @@ class Bruecke:
             # sonst kaemen die Karten der Hintergrund-Abgaben erst nach einem erneuten Oeffnen.
             self._zuletzt[actor] = norm
         return norm, sitzung, turn
+
+    # ---- Teil C: Gruppensitzung -------------------------------------------
+    def _mitglied(self, actor: str, gruppe_id: int) -> Mitgliedschaft:
+        """Mitgliedschaft laut LearnHouse; 403 `KEIN_MITGLIED`, 503 `GRUPPE_WEG`."""
+        if self._gruppen is None:
+            raise _Antwort(404, {"meldung": GRUPPE_WEG})
+        try:
+            return self._gruppen.mitglied(actor, gruppe_id)
+        except KeinMitglied:
+            raise _Antwort(403, {"meldung": KEIN_MITGLIED}) from None
+        except UebersichtWeg:
+            raise _Antwort(503, {"meldung": GRUPPE_WEG}) from None
+
+    def _mitglied_der_sitzung(self, actor: str, sitzung: _Sitzung) -> None:
+        """Sitzungsrouten einer Gruppensitzung: entfernt 403; ist LearnHouse weg, laeuft die eigene Sitzung weiter
+        (wie Solo bei `_kurse_der_sitzung`). Gehoert die Gruppe inzwischen zu einem anderen Kurs, ebenfalls 403."""
+        assert sitzung.gruppe is not None
+        try:
+            m = self._mitglied(actor, sitzung.gruppe)
+        except _Antwort as antwort:
+            if antwort.status != 503:
+                raise
+            log.warning("Gruppen-Mitgliedschaft weg, Gruppensitzung ohne Pruefung")
+            return
+        if m.course_id != sitzung.kurs.course_id:
+            raise _Antwort(403, {"meldung": KEIN_MITGLIED})
+
+    def _platz(self, actor: str, gruppe_id: int) -> int:
+        assert self._abgleich is not None
+        try:
+            return self._abgleich.platz(flaeche_der_gruppe(gruppe_id), person_kennung(actor))
+        except GruppeWeg:
+            raise _Antwort(503, {"meldung": GRUPPE_WEG}) from None
+
+    def _gruppen_kurs(self, actor: str, m: Mitgliedschaft) -> Kurs:
+        """Kurs der Gruppe; der Titel aus dem Katalog der Person, sonst der Gruppenname."""
+        try:
+            kurse = self._katalog.kurse(actor)
+        except (KeinZugang, UebersichtWeg) as fehler:
+            log.warning("Kurstitel der Gruppe nicht lesbar: %s", _typ(fehler))
+            kurse = ()
+        titel = next((k.titel for k in kurse if k.course_id == m.course_id), m.gruppe_name)
+        return Kurs(course_id=m.course_id, titel=titel)
+
+    def _gruppensitzung_wieder(
+        self, actor: str, sid: str, course_id: str, gruppe_id: int,
+    ) -> tuple[str, _Sitzung, dict[str, Any] | None]:
+        """Nach einem Neustart: Gruppensitzung aus `gruppen-gesetzt.json` wieder aufbauen (Mitgliedschaft, Platz,
+        Learning unter der Gruppen-Kennung). Ohne Abgleich oder bei einem anderen Kurs der Gruppe 404."""
+        if self._gruppen is None or self._abgleich is None:
+            raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
+        m = self._mitglied(actor, gruppe_id)
+        if m.course_id != course_id:
+            raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
+        platz = self._platz(actor, gruppe_id)
+        sitzung = _Sitzung(self._gruppen_kurs(actor, m), sid, actor, gruppe=gruppe_id, platz=platz)
+        try:
+            turn = _turn(self._rufe(sitzung.lern_actor, "learning_task_next", "learning.task.next", session_id=sid))
+        except LearningAbgelehnt:
+            raise _Antwort(404, {"meldung": UNBEKANNTER_KURS}) from None
+        if _uuid(str(turn.get("course_id"))) not in (None, course_id):
+            raise _Antwort(404, {"meldung": UNBEKANNTER_KURS})
+        task = _task(turn)
+        sitzung.liste = turn.get("ablauf") == "liste"
+        sitzung.aufgabe_id = task["id"] if task else None
+        self._sitzungen[sid] = sitzung
+        self._flaeche_binden(sitzung)
+        self._zuletzt.setdefault(sitzung.lern_actor, sid)
+        return sid, sitzung, turn
+
+    async def _r_gruppe_oeffnen(self, request: Request) -> JSONResponse:
+        roh = request.path_params["gruppe_id"]
+        actor = request.state.actor_id
+        if self._gruppen is None or self._abgleich is None:
+            return self._json(404, {"meldung": GRUPPE_WEG})
+        if not _GRUPPE_ID.fullmatch(roh):
+            return self._json(404, {"meldung": GRUPPE_UNGUELTIG})
+        return await self._ausfuehren(lambda: self._gruppe_oeffnen(actor, int(roh)), ablauf=True)
+
+    def _gruppe_oeffnen(self, actor: str, gruppe_id: int) -> dict[str, Any]:
+        """Gruppensitzung oeffnen: Mitgliedschaft, Platz, eigener Learning-Durchlauf, dann einmal die Mappe setzen
+        (Namensschild, alle Aufgaben, Schutzfelder) und zeigen. Antwort wie `kurse/oeffnen` plus `gruppe`.
+
+        Gesetzt gilt eine Mappe erst, wenn alles auf der Flaeche steht und der Dienst den Schutz angenommen hat.
+        """
+        m = self._mitglied(actor, gruppe_id)
+        assert self._abgleich is not None
+        platz = self._platz(actor, gruppe_id)
+        flaeche_id, person = flaeche_der_gruppe(gruppe_id), person_kennung(actor)
+        gruppe = {"flaeche": flaeche_id, "person": person, "name": m.anzeigename.strip() or TEILNEHMENDE_PERSON,
+                  "gruppe_name": m.gruppe_name}
+        kurs = self._gruppen_kurs(actor, m)
+        lern = gruppen_lern_kennung(actor, gruppe_id)
+        ueberblick = self._rufe(lern, "learning_course_overview", "learning.course.overview", course_id=kurs.course_id)
+        revision = ueberblick.get("course_revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise _Antwort(409, {"meldung": KEIN_KURS})
+        laufend = ueberblick.get("session")
+        sid = _uuid(str(laufend.get("session_id"))) if isinstance(laufend, dict) else None
+        begriffe = ueberblick.get("begriffe")
+        kopf = {"kurs": {"course_id": kurs.course_id, "titel": kurs.titel},
+                "begriffe": begriffe if isinstance(begriffe, list) else []}
+        ende = self._abgeschlossen(actor, kurs, gruppe_id) if sid is None else None
+        if ende is not None:
+            sid, turn = ende
+        else:
+            if sid is None:
+                gestartet = _turn(self._rufe(
+                    lern, "learning_session_start", "learning.session.start", course_id=kurs.course_id,
+                    schreibend=True,
+                    payload={"course_revision": revision, "mode": "training", "blueprint": dict(TRAINING_BLUEPRINT),
+                             "ablauf": "liste"},
+                ))
+                sid = _uuid(str(gestartet.get("session_id")))
+                if sid is None:
+                    raise LearningWeg("session_id")
+            turn = _turn(self._rufe(lern, "learning_task_next", "learning.task.next", session_id=sid))
+        # Nur Gruppensitzungen dieser Person in dieser Gruppe und diesem Kurs ersetzen; der Solo-Durchlauf bleibt.
+        for alt in [k for k, s in self._sitzungen.items()
+                    if s.actor == actor and s.gruppe == gruppe_id and s.kurs.course_id == kurs.course_id and k != sid]:
+            del self._sitzungen[alt]
+        sitzung = self._sitzungen.get(sid)
+        if sitzung is None or sitzung.actor != actor or sitzung.gruppe != gruppe_id \
+                or sitzung.kurs.course_id != kurs.course_id:
+            sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid, actor, gruppe=gruppe_id)
+        sitzung.platz = platz
+        self._flaeche_binden(sitzung)
+        self._zuletzt[sitzung.lern_actor] = sid
+        sitzung.liste = turn.get("ablauf") == "liste"
+        if ende is not None or _task(turn) is None:
+            # Kursende: den beendeten Durchlauf zeigen (Bericht), nichts neu starten.
+            self._zeigen(sitzung, turn)
+            beendet = {**kopf, "turn": turn, "nummer": None, "flaeche": True, "abgeschlossen": True, "gruppe": gruppe}
+            if sitzung.liste:
+                beendet["stand"] = {"ablauf": "liste"}
+            return beendet
+        if not sitzung.liste:
+            raise _Antwort(409, {"meldung": KEIN_KURS})  # Gruppen laufen nur als feste Liste
+        nummer, flaeche, liste = self._mappe_oeffnen(sitzung, turn, m)
+        return {**kopf, "turn": turn, "nummer": nummer, "flaeche": flaeche, "abgeschlossen": False, **liste,
+                "gruppe": gruppe}
+
+    def _mappe_oeffnen(
+        self, sitzung: _Sitzung, turn: dict[str, Any], m: Mitgliedschaft,
+    ) -> tuple[int, bool, dict[str, Any]]:
+        """Wie `_liste_oeffnen`, aber in der Mappe: beim ersten Mal Schild, alle Aufgaben (sofort, nicht im
+        Hintergrund) und Schutzfelder; danach nur Bereiche melden und die erste offene Aufgabe zeigen."""
+        assert sitzung.gruppe is not None and self._abgleich is not None
+        abgaben = self._abgabestaende(sitzung.sid)
+        _, eintraege = self._liste_lesen(sitzung)
+        ursprung, bereiche = self._mappe(sitzung, eintraege)
+        erste = next((e for e in eintraege if e["status"] == "offen"), None)
+        if erste is None:
+            raise LearningWeg("aufgaben")
+        aufgabe_id, nummer = erste["task"]["id"], erste["nummer"]
+        if _sperrt(turn):
+            self._sperre.offen(aufgabe_id)
+        # Sonst bleibt die Sperre, wie sie ist: Gruppen ueben nur, ihre Sitzungen halten sie nie.
+        flaeche_id, person = flaeche_der_gruppe(sitzung.gruppe), person_kennung(sitzung.actor)
+        schluessel = self._ende_schluessel(sitzung.actor, sitzung.kurs, sitzung.gruppe)
+        gesetzt = self._gesetzt_sid(schluessel) == sitzung.sid
+        name = m.anzeigename.strip() or TEILNEHMENDE_PERSON
+        rechteck = bereiche[nummer - 1]
+        with self._flaeche_sperre:
+            ok = True
+            if not gesetzt:
+                ok = self._flaeche_still(sitzung, lambda s: self._penecho.schild_setzen(
+                    s, f"mappe-{sitzung.gruppe}-{person}", name, mappen_kopf(ursprung)))
+                for e in eintraege:
+                    # Nach dem ersten Fehlschlag (Flaeche nicht verbunden) nicht jede Aufgabe einzeln versuchen.
+                    if not ok:
+                        break
+                    ok = self._listenaufgabe_setzen(sitzung, e, bereiche[e["nummer"] - 1], zeigen=False)
+                if ok:
+                    schutz = [[f["x"], f["y"], f["w"], f["h"]] for f in (felder(b).ergebnisfeld for b in bereiche)]
+                    try:
+                        self._abgleich.schutz_setzen(flaeche_id, person, schutz)
+                    except GruppeWeg:
+                        raise _Antwort(503, {"meldung": GRUPPE_WEG}) from None
+                    self._gesetzt_merken(schluessel, sitzung.sid)
+            if ok:
+                ok = self._flaeche_still(sitzung, lambda s: self._penecho.bereiche_melden(s, bereiche))
+            if ok:
+                ok = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
+        sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+        liste = {
+            "stand": self._stand_aus(sitzung.sid, eintraege, abgaben),
+            "aufgaben": [{"nummer": e["nummer"], "task": e["task"]} for e in eintraege],
+        }
+        return nummer, ok, liste
+
+    def _mappe(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]]) -> tuple[tuple[int, int], list[dict[str, int]]]:
+        """Ursprung und Bereiche der Mappe dieser Gruppensitzung; 409 `GRUPPE_VOLL`, wenn der Platz nicht passt."""
+        if sitzung.platz is None:
+            assert sitzung.gruppe is not None
+            sitzung.platz = self._platz(sitzung.actor, sitzung.gruppe)
+        h = hoehen([_gross(e["task"]) for e in eintraege])
+        try:
+            ursprung = mappen_ursprung(sitzung.platz, gruppen_raster(h))
+            return ursprung, mappen_bereiche(h, ursprung)
+        except ZuVieleAufgaben:
+            raise _Antwort(409, {"meldung": ZU_VIELE_AUFGABEN, "code": "zu_viele_aufgaben"}) from None
+        except MappeVoll:
+            raise _Antwort(409, {"meldung": GRUPPE_VOLL}) from None
 
     # ---- PenEcho ----------------------------------------------------------
     def _flaeche_binden(self, sitzung: _Sitzung) -> None:
@@ -872,7 +1176,7 @@ class Bruecke:
         if task is None:
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
             if turn.get("state") == "completed":
-                self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
+                self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
                 self._bericht(sitzung, turn, self._bericht_rechtecke(sitzung, turn))
             self._frei(sitzung)
             return None, False
@@ -932,8 +1236,8 @@ class Bruecke:
         scheitert das, bleibt es gesperrt.
         """
         for andere_sid, andere in list(self._sitzungen.items()):
-            if andere is sitzung:
-                continue
+            if andere is sitzung or andere.gruppe is not None:
+                continue  # Gruppensitzungen ueben nur (Training): sie halten die Sperre nie
             try:
                 turn = _turn(self._rufe(andere.actor, "learning_task_next", "learning.task.next",
                                         session_id=andere_sid))
@@ -957,8 +1261,11 @@ class Bruecke:
             if task is not None and _sperrt(turn):
                 self._sperre.offen(task["id"])
                 return
-        bekannt = {s.kurs.course_id for s in list(self._sitzungen.values()) if s.actor == sitzung.actor}
-        bekannt.add(sitzung.kurs.course_id)
+        # Nur Solo-Durchlaeufe: der Ueberblick unten fragt unter der Kennung der Person, nie unter einer Gruppen-Kennung.
+        bekannt = {s.kurs.course_id for s in list(self._sitzungen.values())
+                   if s.actor == sitzung.actor and s.gruppe is None}
+        if sitzung.gruppe is None:
+            bekannt.add(sitzung.kurs.course_id)
         try:
             eigene = self._katalog.kurse(sitzung.actor)
         except KeinZugang:
@@ -1053,7 +1360,7 @@ class Bruecke:
             return None
         try:
             _, eintraege = self._liste_lesen(sitzung)
-            bereiche = self._bereiche(eintraege)
+            bereiche = self._bereiche(sitzung, eintraege)
         except (LearningWeg, LearningAbgelehnt, _Antwort) as fehler:
             log.warning("Bericht ohne Rechtecke: %s", _typ(fehler))
             return {}
@@ -1062,7 +1369,7 @@ class Bruecke:
     def _begriffe(self, sitzung: _Sitzung) -> list[Any] | None:
         """Aktuelle Beherrschung nach einer Abgabe; None, wenn Learning sie gerade nicht liefert."""
         try:
-            ueberblick = self._rufe(sitzung.actor, "learning_course_overview", "learning.course.overview",
+            ueberblick = self._rufe(sitzung.lern_actor, "learning_course_overview", "learning.course.overview",
                                     course_id=sitzung.kurs.course_id)
         except (LearningWeg, LearningAbgelehnt) as fehler:
             log.warning("Begriffe nach Abgabe nicht geladen: %s", _typ(fehler))
@@ -1078,7 +1385,7 @@ class Bruecke:
         nichts zu lesen ist (live 09.11.: 74 x 888 Pixel fuer 16 Aufgaben).
         """
         _, eintraege = self._liste_lesen(sitzung)
-        bereiche = self._bereiche(eintraege)
+        bereiche = self._bereiche(sitzung, eintraege)
         aufnahmen: list[bytes | None] = self._aufnahmen(sitzung, bereiche) if bilder else [None] * len(eintraege)
         zeilen = []
         for e, bild in zip(eintraege, aufnahmen):
@@ -1147,7 +1454,7 @@ class Bruecke:
         Alle anderen Personen bekommen ihr PDF, schreiben aber nie in den Ordner (sonst ueberschriebe eine
         fremde Person die Datei des Inhabers vom selben Tag und Kurs).
         """
-        return bool(self._e.zusammenfassung_ordner) and sitzung.actor == self._e.actor_id
+        return bool(self._e.zusammenfassung_ordner) and sitzung.actor == self._e.actor_id and sitzung.gruppe is None
 
     def _zusammenfassung_ablegen(self, sitzung: _Sitzung, z: Zusammenfassung | None = None) -> None:
         """Textfassung in den Wissensordner (nur Inhaber, falls eingestellt); Fehler nur geloggt, nie gemeldet."""
@@ -1191,7 +1498,7 @@ class Bruecke:
 
     def _stand_neu(self, sid: str, sitzung: _Sitzung, code: str) -> NoReturn:
         """Nach einer Ablehnung den aktuellen Stand laden; 409 mit Turn (Ruling H fuer den Text)."""
-        turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
+        turn = _turn(self._rufe(sitzung.lern_actor, "learning_task_next", "learning.task.next", session_id=sid))
         if sitzung.liste:
             # Alter Weg in einem Listenkurs: nichts aus `completed + 1` vormerken (die Liste setzt die Nummer).
             task = _task(turn)
@@ -1219,19 +1526,22 @@ class Bruecke:
         actor = request.state.actor_id
         return await self._ausfuehren(lambda: self._oeffnen(actor, course_id, neu=True), ablauf=True)
 
-    def _abgeschlossen(self, actor: str, kurs: Kurs) -> tuple[str, dict[str, Any]] | None:
-        """Der gemerkte abgeschlossene Durchlauf, wenn Learning ihn noch als beendet zeigt."""
-        sid = self._kursende.get(self._ende_schluessel(actor, kurs))
+    def _abgeschlossen(
+        self, actor: str, kurs: Kurs, gruppe: int | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Der gemerkte abgeschlossene Durchlauf, wenn Learning ihn noch als beendet zeigt (Gruppe: ihr Durchlauf)."""
+        sid = self._kursende.get(self._ende_schluessel(actor, kurs, gruppe))
         if sid is None:
             return None
+        lern = actor if gruppe is None else gruppen_lern_kennung(actor, gruppe)
         try:
-            turn = _turn(self._rufe(actor, "learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(lern, "learning_task_next", "learning.task.next", session_id=sid))
         except LearningAbgelehnt as fehler:
             log.warning("Gemerktes Kursende abgelehnt, vergessen: %s", _typ(fehler))
-            self._ende_setzen(actor, kurs, None)
+            self._ende_setzen(actor, kurs, None, gruppe)
             return None
         if _task(turn) is not None or turn.get("state") != "completed":
-            self._ende_setzen(actor, kurs, None)
+            self._ende_setzen(actor, kurs, None, gruppe)
             return None
         return sid, turn
 
@@ -1250,8 +1560,9 @@ class Bruecke:
             # Kursende: den beendeten Durchlauf zeigen (Bewertung), nichts neu starten.
             ende_sid, turn = ende
             self._zuletzt[actor] = ende_sid
-            sitzung = self._sitzungen.setdefault(ende_sid, _Sitzung(
-                kurs, ende_sid, actor, liste=turn.get("ablauf") == "liste"))
+            sitzung = self._sitzungen.get(ende_sid)
+            if sitzung is None or sitzung.actor != actor or sitzung.gruppe is not None:
+                sitzung = self._sitzungen[ende_sid] = _Sitzung(kurs, ende_sid, actor, liste=turn.get("ablauf") == "liste")
             self._flaeche_binden(sitzung)
             self._zeigen(sitzung, turn)
             begriffe = ueberblick.get("begriffe")
@@ -1281,11 +1592,12 @@ class Bruecke:
         # Learning nennt fuer diesen Kurs genau diese Sitzung: aeltere gemerkte Sitzungen des Kurses
         # (abgebrochen, ersetzt) wuerden sonst die Sperre mit ihrer alten Aufgabe zuhalten.
         # Nur Sitzungen dieser Kennung: andere Personen im selben Kurs behalten ihre.
+        # Gruppensitzungen (eigener Durchlauf) bleiben.
         for alt in [k for k, s in self._sitzungen.items()
-                    if s.actor == actor and s.kurs.course_id == kurs.course_id and k != sid]:
+                    if s.actor == actor and s.gruppe is None and s.kurs.course_id == kurs.course_id and k != sid]:
             del self._sitzungen[alt]
         sitzung = self._sitzungen.get(sid)
-        if sitzung is None or sitzung.kurs.course_id != kurs.course_id or sitzung.actor != actor:
+        if sitzung is None or sitzung.kurs.course_id != kurs.course_id or sitzung.actor != actor                 or sitzung.gruppe is not None:
             sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid, actor)
         self._flaeche_binden(sitzung)
         self._zuletzt[actor] = sid  # Hintergrundarbeiten frueherer Sitzungen dieser Person entfallen ab hier
@@ -1318,7 +1630,7 @@ class Bruecke:
         """
         abgaben = self._abgabestaende(sitzung.sid)
         _, eintraege = self._liste_lesen(sitzung)
-        bereiche = self._bereiche(eintraege)
+        bereiche = self._bereiche(sitzung, eintraege)
         erste = next((e for e in eintraege if e["status"] == "offen"), None)
         if erste is None:
             raise LearningWeg("aufgaben")  # aktiver Turn, aber keine offene Aufgabe in der Liste
@@ -1405,7 +1717,7 @@ class Bruecke:
         beantwortet_nr = sitzung.nummer
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_answer", "learning.task.answer", session_id=sid,
+                sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
                 expected_revision=revision,
                 payload={"answer": answer}, schreibend=True,
             )
@@ -1440,7 +1752,7 @@ class Bruecke:
         if sitzung.liste:
             return self._listen_weiter(sitzung)
         if turn is None:
-            turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(sitzung.lern_actor, "learning_task_next", "learning.task.next", session_id=sid))
         nummer, flaeche = self._zeigen(sitzung, turn)
         if flaeche:
             self._board_merken(sitzung)
@@ -1492,7 +1804,7 @@ class Bruecke:
         Prueft vor Schnappschuss und Modellaufruf: Revision der Seite, Aufgabe auf der Flaeche.
         """
         if turn is None:
-            turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(sitzung.lern_actor, "learning_task_next", "learning.task.next", session_id=sid))
         task = _task(turn)
         if task is None:
             self._stand_neu(sid, sitzung, "session_state_conflict")
@@ -1539,7 +1851,7 @@ class Bruecke:
         """`learning_task_preview`, dann die Karte zur Aufgabe; die Revision bleibt unveraendert."""
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_preview", "learning.task.preview", session_id=sid,
+                sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
                 expected_revision=revision,
                 payload=payload, schreibend=True,
             )
@@ -1567,7 +1879,7 @@ class Bruecke:
         sid, sitzung, _ = self._sitzung(actor, sid_roh)
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_confirm", "learning.task.confirm", session_id=sid,
+                sitzung.lern_actor, "learning_task_confirm", "learning.task.confirm", session_id=sid,
                 expected_revision=revision,
                 payload={"vorbewertung_id": kennung}, schreibend=True,
             )
@@ -1577,7 +1889,7 @@ class Bruecke:
         # Gebucht wie `antwort`: KI frei, naechste Aufgabe merken; die Karte steht schon auf der Flaeche.
         self._frei(sitzung)
         if turn.get("state") == "completed":
-            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
+            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
             self._bericht(sitzung, turn)
         antwort = {"rueckmeldung": None, **self._gebucht(sitzung, turn)}
         self._board_merken(sitzung)
@@ -1605,14 +1917,16 @@ class Bruecke:
 
     def _noch_offen(self, sitzung: _Sitzung) -> bool:
         """Ob Hintergrundarbeiten dieser Sitzung noch auf die Flaeche duerfen (zuletzt geoeffnet, nicht ersetzt)."""
-        return self._zuletzt.get(sitzung.actor) == sitzung.sid and self._sitzungen.get(sitzung.sid) is sitzung
+        return self._zuletzt.get(sitzung.lern_actor) == sitzung.sid and self._sitzungen.get(sitzung.sid) is sitzung
 
     def _liste_lesen(self, sitzung: _Sitzung) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        result = self._rufe(sitzung.actor, "learning_task_list", "learning.task.list", session_id=sitzung.sid)
+        result = self._rufe(sitzung.lern_actor, "learning_task_list", "learning.task.list", session_id=sitzung.sid)
         return _turn(result), _listeneintraege(result)
 
-    @staticmethod
-    def _bereiche(eintraege: list[dict[str, Any]]) -> list[dict[str, int]]:
+    def _bereiche(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]]) -> list[dict[str, int]]:
+        """Bereiche der Listenaufgaben: Solo das feste Raster, Gruppe die eigene Mappe (Teil C)."""
+        if sitzung.gruppe is not None:
+            return self._mappe(sitzung, eintraege)[1]
         try:
             return anordnung([_gross(e["task"]) for e in eintraege])
         except ZuVieleAufgaben:
@@ -1758,7 +2072,7 @@ class Bruecke:
             task = eintrag["task"]
             if task.get("type") not in _FLAECHEN_TYPEN:
                 raise _Antwort(400, {"meldung": KEINE_FLAECHENAUFGABE})
-            rechteck = self._bereiche(eintraege)[nummer - 1]
+            rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
             revision = self._revision_von(turn)
             # Wie `_abgeben`: deterministische Typen nur das Ergebnisfeld, Rubrik-Typen der ganze Bereich.
             if task.get("type") in DETERMINISTISCHE_TYPEN:
@@ -1808,7 +2122,7 @@ class Bruecke:
         schluessel = (sitzung.sid, nummer)
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_preview", "learning.task.preview", session_id=sitzung.sid,
+                sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sitzung.sid,
                 expected_revision=revision, payload=payload, schreibend=True,
             )
             vorbewertung = result.get("vorbewertung")
@@ -1886,10 +2200,10 @@ class Bruecke:
         task = eintrag["task"]
         if task.get("type") not in DETERMINISTISCHE_TYPEN:
             raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
-        rechteck = self._bereiche(eintraege)[nummer - 1]
+        rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_preview", "learning.task.preview", session_id=sid,
+                sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
                 expected_revision=self._revision_von(turn), schreibend=True,
                 payload={"answer": answer, "korrigiert_aus": kennung, "attempt_id": eintrag["attempt_id"]},
             )
@@ -1929,10 +2243,10 @@ class Bruecke:
         sitzung = self._listensitzung(actor, sid_roh)
         vorher, eintraege = self._liste_lesen(sitzung)
         eintrag = self._eintrag_zu(eintraege, nummer)
-        bereiche = self._bereiche(eintraege)
+        bereiche = self._bereiche(sitzung, eintraege)
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
+                sitzung.lern_actor, "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
                 expected_revision=self._revision_von(vorher), schreibend=True,
                 payload={"vorbewertung_id": kennung, "attempt_id": eintrag["attempt_id"]},
             )
@@ -1966,7 +2280,7 @@ class Bruecke:
         """
         self._listen_sperre(sitzung, turn)
         if turn.get("state") == "completed":
-            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
+            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
             self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
         stand = self._stand_nach_buchung(sitzung, eintraege, nummer)
         self._listen_vormerken(sitzung, turn, stand["aktuell"])
@@ -1994,10 +2308,10 @@ class Bruecke:
         eintrag = self._eintrag_zu(eintraege, nummer)
         if eintrag["status"] == "bestaetigt":
             self._schon_bestaetigt(sitzung, eintraege)
-        bereiche = self._bereiche(eintraege)
+        bereiche = self._bereiche(sitzung, eintraege)
         try:
             result = self._rufe(
-                sitzung.actor, "learning_task_answer", "learning.task.answer", session_id=sid,
+                sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
                 expected_revision=self._revision_von(vorher), schreibend=True,
                 payload={"answer": answer, "attempt_id": eintrag["attempt_id"]},
             )
@@ -2026,9 +2340,9 @@ class Bruecke:
         stand = self._stand_aus(sitzung.sid, eintraege, abgaben)
         self._listen_sperre(sitzung, turn)
         self._listen_vormerken(sitzung, turn, stand["aktuell"])
-        bereiche = self._bereiche(eintraege)
+        bereiche = self._bereiche(sitzung, eintraege)
         if turn.get("state") == "completed":
-            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid)
+            self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
             self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
         ziel = bereiche[stand["aktuell"] - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
@@ -2052,7 +2366,7 @@ class Bruecke:
         sitzung = self._listensitzung(actor, sid_roh)
         _, eintraege = self._liste_lesen(sitzung)
         self._eintrag_zu(eintraege, nummer)
-        rechteck = self._bereiche(eintraege)[nummer - 1]
+        rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
         return {"nummer": nummer, "flaeche": flaeche}
 
@@ -2081,7 +2395,7 @@ class Bruecke:
             log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
             raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
         # 2. Aktueller Stand: Revision der Seite muss stimmen (sonst Doppelabgabe).
-        stand = _turn(self._rufe(sitzung.actor, "learning_progress_show", "learning.progress.show", session_id=sid))
+        stand = _turn(self._rufe(sitzung.lern_actor, "learning_progress_show", "learning.progress.show", session_id=sid))
         task = _task(stand)
         if stand.get("session_revision") != revision or task is None:
             self._stand_neu(sid, sitzung, "session_revision_conflict" if task else "session_state_conflict")
@@ -2093,7 +2407,7 @@ class Bruecke:
         try:
             # 3. open -> save -> submit wie deployment/zeichnen_routes.py.
             offen = self._rufe(
-                sitzung.actor, "learning_canvas_open", "learning.canvas.open", session_id=sid,
+                sitzung.lern_actor, "learning_canvas_open", "learning.canvas.open", session_id=sid,
                 payload={"activity_id": activity_id, "session_ref": ref},
             )
             canvas = offen.get("canvas")
@@ -2111,7 +2425,7 @@ class Bruecke:
                 }],
             }
             self._rufe(
-                sitzung.actor, "learning_canvas_save", "learning.canvas.save", session_id=sid,
+                sitzung.lern_actor, "learning_canvas_save", "learning.canvas.save", session_id=sid,
                 expected_revision=canvas_rev,
                 schreibend=True,
                 payload={"session_ref": ref, "document": dokument,
@@ -2119,7 +2433,7 @@ class Bruecke:
             )
             abgabe = f"{sid}:{revision}"
             eingereicht = self._rufe(
-                sitzung.actor, "learning_canvas_submit", "learning.canvas.submit", session_id=sid,
+                sitzung.lern_actor, "learning_canvas_submit", "learning.canvas.submit", session_id=sid,
                 expected_revision=canvas_rev + 1,
                 schreibend=True,
                 # Die Person hat auf der Seite „Abgeben“ gedrueckt; das ist die Bestaetigung.
@@ -2169,7 +2483,7 @@ class Bruecke:
             sitzung.tutor, sitzung.tutor_aufgabe = [], sitzung.aufgabe_id
         # Stufe 1 ohne Schnappschuss: learning_tutor_ask nimmt kein Bild an.
         result = self._rufe(
-            sitzung.actor, "learning_tutor_ask", "learning.tutor.ask", course_id=sitzung.kurs.course_id, session_id=sid,
+            sitzung.lern_actor, "learning_tutor_ask", "learning.tutor.ask", course_id=sitzung.kurs.course_id, session_id=sid,
             payload={"question": _mit_verlauf(sitzung.tutor, frage)},
         )
         tutor = result.get("tutor")
@@ -2189,13 +2503,13 @@ class Bruecke:
     def _hinweis(self, actor: str, sid_roh: str) -> dict[str, Any]:
         sid, sitzung, turn = self._sitzung(actor, sid_roh)
         if turn is None:
-            turn = _turn(self._rufe(sitzung.actor, "learning_task_next", "learning.task.next", session_id=sid))
+            turn = _turn(self._rufe(sitzung.lern_actor, "learning_task_next", "learning.task.next", session_id=sid))
         task = _task(turn)
         if task is None:
             raise _Antwort(409, {"meldung": KEIN_HINWEIS})
         try:
             result = self._rufe(
-                sitzung.actor, "learning_hint_request", "learning.hint.request", session_id=sid,
+                sitzung.lern_actor, "learning_hint_request", "learning.hint.request", session_id=sid,
                 payload={"task_id": task["id"]},
             )
         except LearningAbgelehnt as fehler:

@@ -15,7 +15,7 @@ import httpx
 from .bruecke import Bruecke
 from .durchreicher import Durchreicher
 from .einstellung import Einstellung, einstellung_lesen
-from .gruppe import Gruppen
+from .gruppe import AbgleichDienst, Gruppen
 from .katalog import TIMEOUT_S, Katalog
 from .lern_mcp import LernMcp
 from .penecho_mcp import PenEchoMcp
@@ -53,6 +53,10 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
     gruppen = (Gruppen(einstellung.learnhouse_url, einstellung.dienst_schluessel,
                        httpx.Client(timeout=TIMEOUT_S, follow_redirects=False))
                if einstellung.gruppen_aktiv else None)
+    # Platz der Mappe und Schutzfelder beim Abgleichdienst (Teil C); nur zusammen mit `gruppen`.
+    abgleich = (AbgleichDienst(einstellung.abgleich_url, einstellung.abgleich_schluessel,
+                               httpx.Client(timeout=TIMEOUT_S, follow_redirects=False))
+                if gruppen is not None else None)
     bruecke = Bruecke(
         einstellung,
         # Ohne Vorgabe-Kennung: jeder Aufruf nennt die Kennung der Anfrage (request.state.actor_id).
@@ -63,6 +67,8 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         # Neben den Merkdateien von PenEchoMcp (sitzungen.json, flaechen.json).
         Path(einstellung.penecho_state).parent / "learning-huelle" / "kursende.json",
         katalog=katalog,
+        gruppen=gruppen,
+        abgleich=abgleich,
     )
     durchreicher = Durchreicher(
         einstellung.penecho_url, sperre, frozenset(einstellung.flaechen_herkuenfte),

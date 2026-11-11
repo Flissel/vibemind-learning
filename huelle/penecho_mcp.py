@@ -1161,6 +1161,26 @@ class PenEchoMcp:
                 log.warning("Berichtsbilder abgebrochen: %s", _typ(fehler))
                 break
 
+    def schild_setzen(self, session_id: str, request_id: str, text: str, rechteck: dict[str, int]) -> None:
+        """Namensschild einer Mappe (Teil C) als Text in `rechteck` (Kopf der Mappe).
+
+        Feste `request_id` (`mappe-<gruppe>-<person>`): ein erneutes Setzen derselben Mappe wiederholt PenEcho nicht.
+        Steht dort schon ein Text (Board wiederhergestellt), wird nichts gesendet; belegt PenEcho den Platz
+        (LAYOUT_CONFLICT), steht das Schild schon da. Andere Fehler gehen an den Aufrufer.
+        """
+        if _an_ecke(self._belegung(session_id, rechteck), rechteck, "text") is not None:
+            return
+        try:
+            self._werkzeug("penecho_edit_canvas", {
+                "sessionId": session_id,
+                "requestId": request_id[:MAX_SCHLUESSEL],
+                "action": "create_text",
+                "text": text[:MAX_TITEL],
+                "region": dict(rechteck),
+            })
+        except PenEchoPlatzBelegt:
+            log.info("Namensschild steht schon da")
+
     def rueckmeldung_zeigen(
         self, session_id: str, aufgabe_id: str, nummer: int, *, gelesen: str | None, urteil: str, text: str,
         rechteck: dict[str, int] | None = None,

@@ -1708,3 +1708,15 @@ def test_frischer_schluessel_wird_gemerkt(zustand: Path) -> None:
     alt = Fake()
     assert _client(zustand, alt).sitzung(LERN_SID, TITEL) == "sess-1"
     assert _starts(alt)[0]["sessionKey"] == "learning-huelle:" + LERN_SID
+
+
+# ---- Teil C, Task 8: Namensschild im Mappenkopf ---------------------------------------------------------------
+
+def test_schild_setzen_im_mappenkopf(zustand: Path) -> None:
+    fake = Fake()
+    kopf = {"x": 2420, "y": 120, "w": 1300, "h": 110}
+    _client(zustand, fake).schild_setzen("sess-1", "mappe-7-p" + "a" * 24, "Anna A.", kopf)
+    (arg,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    # Feste requestId: erneutes Setzen derselben Mappe wiederholt PenEcho nicht (Idempotenz).
+    assert arg == {"sessionId": "sess-1", "requestId": "mappe-7-p" + "a" * 24, "action": "create_text",
+                   "text": "Anna A.", "region": kopf}

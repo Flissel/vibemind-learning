@@ -468,3 +468,15 @@ test("kursVorwahl: ?kurs= vor gemerktem Kurs, nur Kurse der Liste", () => {
   assert.equal(kursVorwahl("?kurs=", kurse, null), "a-1");
   assert.equal(kursVorwahl("?kurs=b-2", [], null), null);
 });
+
+
+test("FESTE_MELDUNGEN kennt die Texte der Gruppenfläche (Teil C)", () => {
+  for (const m of [
+    "Sie gehören nicht zu dieser Gruppe. Öffnen Sie die Kursübersicht.",
+    "Die Gruppenfläche ist gerade nicht erreichbar. Versuchen Sie es in einer Minute noch einmal.",
+    "Diese Gruppenfläche ist voll. Bitte wenden Sie sich an Ihre Kursleitung.",
+  ]) {
+    assert.ok(FESTE_MELDUNGEN.has(m), m);
+    assert.equal(meldungFuer({ meldung: m }), m);
+  }
+});

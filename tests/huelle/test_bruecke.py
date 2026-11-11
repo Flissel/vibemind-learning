@@ -199,6 +199,10 @@ class FakePenEcho:
         self.bericht_rechtecke.append(None if rechteck is None else dict(rechteck))
         self._pruefen("bericht_zeigen")
 
+    def schild_setzen(self, session_id: str, request_id: str, text: str, rechteck: dict[str, int]) -> None:
+        self.aufrufe.append(("schild_setzen", session_id, request_id, text, dict(rechteck)))
+        self._pruefen("schild_setzen")
+
     def namen(self) -> list[str]:
         return [a[0] for a in self.aufrufe]
 
@@ -3701,3 +3705,343 @@ def test_eigene_dokumente_je_person(tmp_path) -> None:
     assert bruecke.eigene_dokumente(PB) == frozenset({"doc-" + KB})
     assert bruecke.eigene_dokumente("lh-1-niemand") == frozenset()
     assert bruecke.eigene_dokumente(ACTOR) is None  # Inhaber: nicht eingeschraenkt
+
+
+# ---- Teil C, Task 8: Gruppensitzung mit eigener Mappe ------------------------------------------------------
+
+from spaces.learning.huelle.anordnung import gruppen_raster, mappen_bereiche, mappen_kopf, mappen_ursprung  # noqa: E402
+from spaces.learning.huelle.bruecke import gruppen_lern_kennung  # noqa: E402
+from spaces.learning.huelle.gruppe import (  # noqa: E402
+    GRUPPE_VOLL, GRUPPE_WEG, KEIN_MITGLIED, GruppeWeg, KeinMitglied, Mitgliedschaft, person_kennung,
+)
+from spaces.learning.huelle.katalog import UebersichtWeg  # noqa: E402
+from spaces.learning.huelle.penecho_mcp import felder  # noqa: E402
+
+GID = 7
+SID_GA = "99999999-9999-4999-8999-999999999991"
+SID_GB = "99999999-9999-4999-8999-999999999992"
+SID_SA = "99999999-9999-4999-8999-999999999993"
+MA = Mitgliedschaft(course_id=KURS_P, gruppe_name="Mathe 9b", anzeigename="Anna A.", offen=True)
+MB = Mitgliedschaft(course_id=KURS_P, gruppe_name="Mathe 9b", anzeigename="", offen=True)
+
+
+class FakeGruppen:
+    """Mitgliedschaft wie `gruppe.Gruppen.mitglied`: KeinMitglied / UebersichtWeg."""
+
+    def __init__(self, mitglieder: dict[str, Mitgliedschaft] | None = None) -> None:
+        self.mitglieder = dict(mitglieder if mitglieder is not None else {PA: MA, PB: MB})
+        self.weg = False
+        self.anfragen: list[tuple[str, int]] = []
+
+    def mitglied(self, actor: str, gruppe_id: int, *, frisch: bool = False) -> Mitgliedschaft:
+        self.anfragen.append((actor, gruppe_id))
+        if self.weg:
+            raise UebersichtWeg()
+        if gruppe_id != GID or actor not in self.mitglieder:
+            raise KeinMitglied()
+        return self.mitglieder[actor]
+
+
+class FakeAbgleich:
+    """`/platz` (je Person fest, fortlaufend ab `ab`) und `/schutz`; protokolliert in `log` (gemeinsam mit PenEcho)."""
+
+    def __init__(self, log: list[tuple[Any, ...]], *, ab: int = 0) -> None:
+        self.log = log
+        self.plaetze: dict[str, int] = {}
+        self.ab = ab
+        self.platz_weg = False
+        self.schutz_weg = False
+        self.schutz: list[tuple[str, str, list[list[int]]]] = []
+
+    def platz(self, flaeche: str, person: str) -> int:
+        self.log.append(("platz", flaeche, person))
+        if self.platz_weg:
+            raise GruppeWeg()
+        return self.plaetze.setdefault(person, self.ab + len(self.plaetze))
+
+    def schutz_setzen(self, flaeche: str, person: str, felder_: list[list[int]]) -> None:
+        self.log.append(("schutz_setzen", flaeche, person))
+        if self.schutz_weg:
+            raise GruppeWeg()
+        self.schutz.append((flaeche, person, felder_))
+
+
+class Laeufe:
+    """Learning mit getrennten Listen-Durchlaeufen je Learning-Kennung (Solo und Gruppe je Person).
+
+    Eine Sitzung gehoert genau einer Kennung; fragt eine andere, lehnt Learning ab (wie `_assert_owned`).
+    Der Ueberblick nennt nur die eigene laufende Sitzung der fragenden Kennung (wie `resume`).
+    """
+
+    def __init__(self, sids: dict[str, str], *, n: int = 3, gestartet: tuple[str, ...] = ()) -> None:
+        self.sids = sids
+        self.eintraege = {k: [_eintrag(i) for i in range(1, n + 1)] for k in sids}
+        self.gestartet = set(gestartet)
+        self.halt = threading.Event()
+        self.halt.set()
+        self.lern = FakeLern({
+            "learning_course_overview": lambda kw: {
+                **_ueberblick(self._turn(self._wer()) if self._wer() in self.gestartet else None),
+                "course_id": KURS_P},
+            "learning_session_start": self._start,
+            "learning_task_next": lambda kw: {"session": self._turn(self._besitzer(kw))},
+            "learning_task_list": lambda kw: {"session": self._turn(self._besitzer(kw)),
+                                              "aufgaben": copy.deepcopy(self.eintraege[self._besitzer(kw)])},
+            "learning_task_preview": self._vorbewerten,
+        })
+
+    def _wer(self) -> str:
+        return self.lern.akteure[-1]
+
+    def _besitzer(self, kw: dict[str, Any]) -> str:
+        wer = self._wer()
+        if self.sids.get(wer) != kw["session_id"] or wer not in self.gestartet:
+            raise LearningAbgelehnt("session belongs to another learner", "session_access_denied")
+        return wer
+
+    def _turn(self, wer: str) -> dict[str, Any]:
+        t = _listen_turn(self.eintraege[wer])
+        return {**t, "session_id": self.sids[wer], "course_id": KURS_P}
+
+    def _start(self, kw: dict[str, Any]) -> dict[str, Any]:
+        wer = self._wer()
+        self.gestartet.add(wer)
+        return {"session": self._turn(wer)}
+
+    def _vorbewerten(self, kw: dict[str, Any]) -> dict[str, Any]:
+        wer = self._besitzer(kw)
+        assert self.halt.wait(5), "Vorbewertung nie freigegeben"
+        (e,) = [e for e in self.eintraege[wer] if e["attempt_id"] == kw["payload"]["attempt_id"]]
+        e["vorbewertung"] = _vor(vid=_vid(e["nummer"]), gelesen=str(e["nummer"]))
+        return {"session": self._turn(wer), "vorbewertung": e["vorbewertung"]}
+
+
+def _gruppen_bruecke(laeufe: Laeufe, *, gruppen: FakeGruppen | None = None, abgleich: FakeAbgleich | None = None,
+                     penecho: FakePenEcho | None = None, kursende: Any = None, actor: str = PA,
+                     ) -> tuple[TestClient, FakePenEcho, FakeAbgleich, FakeGruppen]:
+    penecho = penecho or FakePenEcho()
+    abgleich = abgleich or FakeAbgleich(penecho.aufrufe)
+    gruppen = gruppen or FakeGruppen()
+    bruecke = Bruecke(E_LH, laeufe.lern, penecho, Sperre(), httpx.Client(transport=httpx.MockTransport(_api_leer)),  # type: ignore[arg-type]
+                      kursende, katalog=_katalog(LearnHouse()), gruppen=gruppen, abgleich=abgleich)
+    return als(TestClient(bruecke), actor), penecho, abgleich, gruppen
+
+
+def _schutzfelder(bereiche: list[dict[str, int]]) -> list[list[int]]:
+    return [[f["x"], f["y"], f["w"], f["h"]] for f in (felder(b).ergebnisfeld for b in bereiche)]
+
+
+def test_gruppe_oeffnen_setzt_schild_aufgaben_schutz() -> None:
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe)
+    abgleich.plaetze["p-jemand-anders"] = 0  # A bekommt Platz 1
+    bruecke = client.app
+    try:
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        person = person_kennung(PA)
+        assert body["gruppe"] == {"flaeche": f"g-{GID}", "person": person, "name": "Anna A.", "gruppe_name": "Mathe 9b"}
+        assert body["kurs"] == {"course_id": KURS_P, "titel": "Kurs B"}
+        assert body["turn"]["session_id"] == SID_GA and body["stand"]["ablauf"] == "liste"
+        assert body["flaeche"] is True and body["abgeschlossen"] is False and body["nummer"] == 1
+        # Eigener Learning-Durchlauf unter der Gruppen-Kennung, als feste Liste.
+        (start,) = _aufrufe(laeufe.lern, "learning_session_start")
+        assert start["course_id"] == KURS_P and start["payload"]["ablauf"] == "liste"
+        assert set(laeufe.lern.akteure) == {gruppen_lern_kennung(PA, GID)}
+        # Mappe auf Platz 1: Schild im Kopf, erster Bereich bei Ursprung + (0, 150).
+        raster = gruppen_raster([800] * 3)
+        ursprung = mappen_ursprung(1, raster)
+        assert ursprung == (2400, 100)
+        bereiche = mappen_bereiche([800] * 3, ursprung)
+        assert bereiche[0] == {"x": 2400, "y": 250, "w": 1300, "h": 800}
+        (schild,) = [a for a in penecho.aufrufe if a[0] == "schild_setzen"]
+        assert schild[2:4] == (f"mappe-{GID}-{person}", "Anna A.")
+        kopf = schild[4]
+        assert kopf == mappen_kopf(ursprung)
+        assert ursprung[0] <= kopf["x"] and ursprung[1] <= kopf["y"] and kopf["y"] + kopf["h"] <= ursprung[1] + 150
+        assert sorted(penecho.rechtecke, key=lambda t: t[0]) == [(1, bereiche[0]), (2, bereiche[1]), (3, bereiche[2])]
+        # Schutz mit den Ergebnisfeldern aller Bereiche der Mappe, beim Dienst unter Flaeche und Person.
+        assert abgleich.schutz == [(f"g-{GID}", person, _schutzfelder(bereiche))]
+        assert ("bereiche_melden", "pe-1", bereiche) in penecho.aufrufe
+        assert [a for a in penecho.aufrufe if a[0] == "bereich_zeigen"] == [("bereich_zeigen", "pe-1", bereiche[0])]
+        # Reihenfolge: Platz, Schild, Aufgaben, Schutz, Bereiche melden, zeigen. Alles sofort, nichts im Hintergrund.
+        namen = [a[0] for a in penecho.aufrufe]
+        assert namen.index("platz") < namen.index("schild_setzen") < namen.index("aufgabe_setzen")
+        letzte_aufgabe = len(namen) - 1 - namen[::-1].index("aufgabe_setzen")
+        assert letzte_aufgabe < namen.index("schutz_setzen") < namen.index("bereiche_melden") < namen.index("bereich_zeigen")
+        assert bruecke._flaechenspur.wartend(f"{SID_GA}:setzen:") == 0
+    finally:
+        bruecke.beenden()
+
+
+def test_gruppe_zweimal_oeffnen_setzt_einmal(tmp_path) -> None:
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    kursende = tmp_path / "kursende.json"
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe, kursende=kursende)
+    try:
+        for _ in range(2):
+            assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        namen = penecho.namen()
+        assert namen.count("schild_setzen") == 1 and namen.count("aufgabe_setzen") == 3
+        assert len(abgleich.schutz) == 1
+        assert namen.count("bereich_zeigen") == 2  # zeigen wie im Solo bei jedem Oeffnen
+        gemerkt = json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8"))
+        assert gemerkt == {f"{PA}|{KURS_P}|g{GID}": {"sid": SID_GA, "gesetzt": True}}
+        assert not kursende.exists() or f"{PA}|{KURS_P}" not in json.loads(kursende.read_text(encoding="utf-8"))
+    finally:
+        client.app.beenden()
+    # Nach einem Neustart der Huelle gilt die Datei: wieder nichts doppelt.
+    client2, penecho2, abgleich2, _ = _gruppen_bruecke(laeufe, kursende=kursende)
+    try:
+        # Eine Abgabe in der Gruppensitzung gleich nach dem Neustart (ohne Oeffnen): die Sitzung kommt aus der
+        # Datei, Learning wird unter der Gruppen-Kennung gefragt, das Rechteck ist das der Mappe.
+        r = client2.post(f"/lernen/api/sitzungen/{SID_GA}/abgeben", json={"nummer": 2})
+        assert r.status_code == 202, r.text
+        assert set(laeufe.lern.akteure[-3:]) == {gruppen_lern_kennung(PA, GID)}
+        bereiche = mappen_bereiche([800] * 3, mappen_ursprung(0, gruppen_raster([800] * 3)))
+        assert penecho2.aufnahme_rechtecke == [(2, bereiche[1])]
+        assert client2.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert "schild_setzen" not in penecho2.namen() and "aufgabe_setzen" not in penecho2.namen()
+        assert abgleich2.schutz == []
+    finally:
+        client2.app.beenden()
+
+
+def test_gruppe_eigener_durchlauf(tmp_path) -> None:
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({PA: SID_SA, gk: SID_GA}, gestartet=(PA,))
+    kursende = tmp_path / "kursende.json"
+    client, penecho, _, _ = _gruppen_bruecke(laeufe, kursende=kursende)
+    bruecke = client.app
+    try:
+        solo = client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+        assert solo.status_code == 200 and solo.json()["turn"]["session_id"] == SID_SA
+        assert "gruppe" not in solo.json()
+        vorher = len(laeufe.lern.akteure)
+        gruppe = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert gruppe.status_code == 200 and gruppe.json()["turn"]["session_id"] == SID_GA
+        # Der Gruppen-Durchlauf startet neu (nicht der Solo-Durchlauf) und spricht nur unter der Gruppen-Kennung.
+        assert _aufrufe(laeufe.lern, "learning_session_start") and set(laeufe.lern.akteure[vorher:]) == {gk}
+        # Solo erneut: dieselbe Solo-Sitzung, die Gruppensitzung bleibt gemerkt.
+        vorher = len(laeufe.lern.akteure)
+        solo2 = client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen")
+        assert solo2.json()["turn"]["session_id"] == SID_SA and set(laeufe.lern.akteure[vorher:]) == {PA}
+        assert {SID_SA, SID_GA} <= set(bruecke._sitzungen)
+        assert bruecke._sitzungen[SID_SA].gruppe is None and bruecke._sitzungen[SID_GA].gruppe == GID
+        # Jede Sitzung arbeitet in ihrem eigenen Raster: Solo bei (100, 100), die Gruppe in der Mappe.
+        assert client.post(f"/lernen/api/sitzungen/{SID_SA}/abgeben", json={"nummer": 1}).status_code == 202
+        assert client.post(f"/lernen/api/sitzungen/{SID_GA}/abgeben", json={"nummer": 1}).status_code == 202
+        gruppe_bereiche = mappen_bereiche([800] * 3, mappen_ursprung(0, gruppen_raster([800] * 3)))
+        assert penecho.aufnahme_rechtecke == [(1, anordnung([False] * 3)[0]), (1, gruppe_bereiche[0])]
+        _bis(lambda: bruecke._modellspur.wartend("") == 0)
+        akteure = dict(zip((kw.get("session_id") for _, kw in laeufe.lern.aufrufe), laeufe.lern.akteure))
+        assert akteure[SID_SA] == PA and akteure[SID_GA] == gk
+    finally:
+        bruecke.beenden()
+
+
+def test_zwei_personen_geben_gleichzeitig_ab() -> None:
+    ga, gb = gruppen_lern_kennung(PA, GID), gruppen_lern_kennung(PB, GID)
+    laeufe = Laeufe({ga: SID_GA, gb: SID_GB})
+    a, penecho, abgleich, _ = _gruppen_bruecke(laeufe)
+    b = als(TestClient(a.app), PB)
+    bruecke = a.app
+    try:
+        assert a.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        rb = b.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert rb.status_code == 200 and rb.json()["gruppe"]["name"] == "Teilnehmende Person"
+        assert rb.json()["gruppe"]["person"] == person_kennung(PB) != person_kennung(PA)
+        schilder = [a_[3] for a_ in penecho.aufrufe if a_[0] == "schild_setzen"]
+        assert schilder == ["Anna A.", "Teilnehmende Person"]  # nie die Kennung oder eine Adresse
+        laeufe.halt.clear()
+        ra = a.post(f"/lernen/api/sitzungen/{SID_GA}/abgeben", json={"nummer": 1})
+        rb = b.post(f"/lernen/api/sitzungen/{SID_GB}/abgeben", json={"nummer": 1})
+        assert ra.status_code == 202 and rb.status_code == 202, (ra.text, rb.text)
+        # Beide Vorschauen liegen in der Spur, keine blockiert die andere Person.
+        assert bruecke._modellspur.wartend(f"{SID_GA}:abgabe:") == 1
+        assert bruecke._modellspur.wartend(f"{SID_GB}:abgabe:") == 1
+        raster = gruppen_raster([800] * 3)
+        bereiche_a = mappen_bereiche([800] * 3, mappen_ursprung(0, raster))
+        bereiche_b = mappen_bereiche([800] * 3, mappen_ursprung(1, raster))
+        assert penecho.aufnahme_rechtecke == [(1, bereiche_a[0]), (1, bereiche_b[0])]
+        laeufe.halt.set()
+        _bis(lambda: bruecke._modellspur.wartend("") == 0 and bruecke._flaechenspur.wartend("") == 0)
+        vorschauen = [akt for (tool, _), akt in zip(laeufe.lern.aufrufe, laeufe.lern.akteure)
+                      if tool == "learning_task_preview"]
+        assert sorted(vorschauen) == sorted([ga, gb])
+        # Die Karten landen je in der eigenen Mappe.
+        assert sorted(penecho.karten_rechtecke, key=lambda k: k[1]["x"]) == [(1, bereiche_a[0]), (1, bereiche_b[0])]
+        # Jede Person sieht nur ihre Sitzung: B kommt nicht an die Gruppensitzung von A.
+        assert b.get(f"/lernen/api/sitzungen/{SID_GA}/stand").status_code == 404
+    finally:
+        laeufe.halt.set()
+        bruecke.beenden()
+
+
+def test_gruppe_dienst_weg_meldung_solo_geht() -> None:
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({PA: SID_SA, gk: SID_GA}, gestartet=(PA,))
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe)
+    try:
+        abgleich.platz_weg = True
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 503 and r.json() == {"meldung": GRUPPE_WEG}
+        assert gk not in laeufe.lern.akteure  # ohne Platz kein Durchlauf
+        # Solo haengt nicht vom Abgleichdienst ab.
+        assert client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+        # Schutz scheitert nach dem Setzen: 503, die Mappe gilt nicht als gesetzt; der naechste Versuch schickt alles.
+        abgleich.platz_weg, abgleich.schutz_weg = False, True
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 503 and r.json() == {"meldung": GRUPPE_WEG}
+        assert penecho.namen().count("aufgabe_setzen") >= 3
+        abgleich.schutz_weg = False
+        vorher = penecho.namen().count("schild_setzen")
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert penecho.namen().count("schild_setzen") == vorher + 1 and len(abgleich.schutz) == 1
+        # Voll: der Platz liegt ausserhalb des Rasters.
+        voll = FakeAbgleich([], ab=10_000)
+        client2, _, _, _ = _gruppen_bruecke(Laeufe({gk: SID_GA}), abgleich=voll)
+        r = client2.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
+        client2.app.beenden()
+    finally:
+        client.app.beenden()
+
+
+def test_kein_mitglied_403() -> None:
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({gk: SID_GA})
+    gruppen = FakeGruppen({PB: MB})
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe, gruppen=gruppen)
+    try:
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 403 and r.json() == {"meldung": KEIN_MITGLIED}
+        assert laeufe.lern.aufrufe == [] and penecho.aufrufe == []  # weder Learning noch Platz
+        gruppen.weg = True
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 503 and r.json() == {"meldung": GRUPPE_WEG}
+        for falsch in ("0", "abc", "1234567890", "-1", "07"):
+            assert client.post(f"/lernen/api/gruppen/{falsch}/oeffnen").status_code == 404, falsch
+        # Mitglied, dann entfernt: die Gruppensitzung antwortet danach 403.
+        gruppen.weg = False
+        gruppen.mitglieder[PA] = MA
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        del gruppen.mitglieder[PA]
+        vorher = len(laeufe.lern.aufrufe)
+        r = client.get(f"/lernen/api/sitzungen/{SID_GA}/stand")
+        assert r.status_code == 403 and r.json() == {"meldung": KEIN_MITGLIED}
+        assert len(laeufe.lern.aufrufe) == vorher
+    finally:
+        client.app.beenden()
+
+
+def test_ohne_gruppen_einstellung_404() -> None:
+    laeufe = Laeufe({PA: SID_SA}, gestartet=(PA,))
+    client, _, _ = bauen(laeufe.lern, einstellung=E_LH, katalog=_katalog(LearnHouse()), actor=PA)
+    try:
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 404 and r.json() == {"meldung": GRUPPE_WEG}
+        assert laeufe.lern.aufrufe == []
+    finally:
+        client.app.beenden()

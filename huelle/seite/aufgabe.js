@@ -139,6 +139,11 @@ export const FESTE_MELDUNGEN = new Set([
   "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab.",
   "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vorbewertung zu.",
   "Diese Rückmeldung lässt sich nicht bestätigen. Bitte überarbeiten Sie Ihr Ergebnis oder tippen Sie es selbst ein.",
+  // Gruppenfläche, Teil C (gruppe.py).
+  "Sie gehören nicht zu dieser Gruppe. Öffnen Sie die Kursübersicht.",
+  "Die Gruppenfläche ist gerade nicht erreichbar. Versuchen Sie es in einer Minute noch einmal.",
+  "Diese Gruppenfläche ist voll. Bitte wenden Sie sich an Ihre Kursleitung.",
+  "Dieser Gruppenlink ist ungültig. Öffnen Sie die Kursübersicht.",
 ]);
 
 /** Der Banner-Text zu einer Fehlerantwort: feste Texte der Bruecke, sonst der allgemeine Text. */

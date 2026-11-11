@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  BELEGT_KOPF, flaecheErneuern, flaecheSpeichern, flaechenAdresse, flaechenKennung, flaechenKopf, KENNUNG_SCHLUESSEL,
+  BELEGT_KOPF, flaecheErneuern, flaecheSpeichern, flaechenAdresse, flaechenKennung, flaechenKopf, gruppeAusAdresse, KENNUNG_SCHLUESSEL,
   kennungBelegt, mitFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 
@@ -151,7 +151,7 @@ test("huelle.js setzt die iframe-URL und schickt den Kopf an jede API-Anfrage", 
   assert.match(huelle, /belegt: kennungBelegt\(antwort\)/);
   // api() geht über mitFlaechenKennung: „belegt“ -> neue Kennung, Rahmen neu, höchstens eine Wiederholung.
   assert.match(huelle, /return mitFlaechenKennung\(\(\) => anfrage\(methode, pfad, body\), \{/);
-  assert.match(huelle, /kennung = await flaecheErneuern\(\{ rahmen: \$\("rahmen"\) \}\);/);
+  assert.match(huelle, /kennung = await flaecheErneuern\(\{ rahmen: \$\("rahmen"\), gruppe: z\.rahmenGruppe \}\);/);
   assert.match(huelle, /wiederholbar: wiederholbar\(methode, pfad\),/);
   assert.equal((huelle.match(/fetch\(/g) || []).length, 1); // nur anfrage() fragt die Brücke
   // Der Rahmen lädt erst mit Kennung (sonst meldete sich der Tab zuerst ohne sie beim MCP).
@@ -232,4 +232,54 @@ test("wiederholbar: nur Anfragen, die nichts doppelt buchen", () => {
   for (const p of ["/sitzungen/s/antwort", "/sitzungen/s/abgeben", "/sitzungen/s/passt", "/sitzungen/s/korrektur", "/kurse/k/neu"]) {
     assert.equal(wiederholbar("POST", p), false, p);
   }
+});
+
+
+// ---- Teil C, Task 8: Gruppenfläche --------------------------------------------------------------------------------
+
+test("flaechenAdresse_mit_gruppe: &gruppe=g-<id>&person=<person> zusätzlich zur Kennung", () => {
+  const k = "lf-" + "a".repeat(32);
+  const person = "p" + "0123456789abcdef01234567";
+  const gruppe = { gruppe: "g-7", person };
+  assert.equal(flaechenAdresse(`${FLAECHE}/?lernen=1`, k, undefined, gruppe),
+    `${FLAECHE}/?lernen=1&flaeche=${k}&gruppe=g-7&person=${person}`);
+  // Ohne Gruppe genau wie bisher.
+  assert.equal(flaechenAdresse(`${FLAECHE}/?lernen=1`, k, undefined, null), `${FLAECHE}/?lernen=1&flaeche=${k}`);
+  // Ungültige Gruppe oder Person: keine Gruppenparameter (die Fläche bliebe sonst ohne passende Person).
+  for (const falsch of [{ gruppe: "g-0", person }, { gruppe: "g-07", person }, { gruppe: "7", person },
+    { gruppe: "g-1234567890", person }, { gruppe: "g-7", person: "p123" }, { gruppe: "g-7", person: "anna" },
+    { gruppe: "g-7" }, "g-7"]) {
+    assert.equal(flaechenAdresse(`${FLAECHE}/?lernen=1`, k, undefined, falsch), `${FLAECHE}/?lernen=1&flaeche=${k}`,
+      JSON.stringify(falsch));
+  }
+  // Ohne gültige Kennung bleibt die Basis unverändert, auch mit Gruppe.
+  assert.equal(flaechenAdresse(`${FLAECHE}/?lernen=1`, "x", undefined, gruppe), `${FLAECHE}/?lernen=1`);
+});
+
+test("gruppeAusAdresse: genau eine Gruppe aus 1 bis 9 Ziffern, sonst null", () => {
+  assert.equal(gruppeAusAdresse("?kurs=k&gruppe=7"), 7);
+  assert.equal(gruppeAusAdresse("?gruppe=123456789"), 123456789);
+  for (const falsch of ["", "?kurs=k", "?gruppe=", "?gruppe=0", "?gruppe=07", "?gruppe=1234567890", "?gruppe=a",
+    "?gruppe=1&gruppe=2", "?gruppe=-1"]) assert.equal(gruppeAusAdresse(falsch), null, falsch);
+});
+
+test("Fläche erneuern in der Gruppe: der Rahmen behält Gruppe und Person", async () => {
+  const speicher = speicherAttrappe({});
+  const rahmen = rahmenAttrappe();
+  const gruppe = { gruppe: "g-7", person: "p" + "a".repeat(24) };
+  const warten = flaecheErneuern({ rahmen, speicher, zufall: (f) => f.fill(0xcd), wartenMs: 10, gruppe });
+  const neu = "lf-" + "cd".repeat(16);
+  assert.equal(rahmen.src, `${FLAECHE}/?lernen=1&flaeche=${neu}&gruppe=g-7&person=${gruppe.person}`);
+  assert.equal(await warten, neu);
+});
+
+test("huelle.js: Gruppenroute, Person aus der Antwort, Kopf „Gruppe: …“, Meldung aus der Antwort", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const huelle = await readFile(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(huelle, /const gruppeId = gruppeAusAdresse\(location\.search\);/);
+  assert.match(huelle, /`\/gruppen\/\$\{z\.gruppeId\}\/oeffnen`/);
+  assert.match(huelle, /`Gruppe: \$\{/);
+  // Die Person im Rahmen kommt nur aus der Antwort der Brücke (sonst wären die eigenen Kacheln „fremd“).
+  assert.match(huelle, /person: g\.person/);
+  assert.match(huelle, /kennung = await flaecheErneuern\(\{ rahmen: \$\("rahmen"\), gruppe: z\.rahmenGruppe \}\);/);
 });
