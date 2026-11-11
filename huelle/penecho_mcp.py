@@ -359,6 +359,17 @@ class PenEchoSchluesselBelegt(PenEchoNichtErreichbar):
     """PenEcho meldet session_key_conflict: der sessionKey ist an ein anderes Board oder einen anderen Tab gebunden."""
 
 
+class PenEchoGruppenbindung(PenEchoNichtErreichbar):
+    """Teil C: die Gruppensitzung laesst sich nicht an die sichtbare Gruppenflaeche des Tabs binden.
+
+    PenEcho/Lernflaeche melden GROUP_CANVAS_ONLY (start_session ohne target "current" in der Gruppe) oder
+    BINDING_CONFLICT; die Huelle meldet es selbst ohne Flaechen-Kennung oder bei verlorener Flaeche. Nie wiederholt:
+    jeder andere Weg legte eine unsichtbare Hintergrundflaeche an oder nahme den Tab einer anderen Person.
+    """
+
+
+# Lernflaeche (Teil C, Task 4): Gruppenmodus nur mit target "current" auf dem eigenen Tab.
+_GRUPPEN_CODES = frozenset({"GROUP_CANVAS_ONLY", "BINDING_CONFLICT"})
 _SITZUNG_CODES = frozenset({"session_not_found", "session_expired", "session_closed", "canvas_disconnected"})
 # canvas-documents.js (PenEcho 1.4.2): Wiederherstellen einer nie gesicherten Flaeche.
 _VERLOREN_CODES = frozenset({"STORAGE_UNAVAILABLE", "DOCUMENT_NOT_FOUND"})
@@ -550,6 +561,8 @@ class PenEchoMcp:
                 raise PenEchoQuelleVeraltet(code)
             if code == "session_key_conflict":
                 raise PenEchoSchluesselBelegt(code)
+            if isinstance(code, str) and code in _GRUPPEN_CODES:
+                raise PenEchoGruppenbindung(code)
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
@@ -644,7 +657,7 @@ class PenEchoMcp:
         return frozenset(karte[k] for k in schluessel if karte.get(k))
 
     # ---- Oeffentliche Methoden -------------------------------------------
-    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None) -> str:
+    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None, gruppe: str | None = None) -> str:
         """PenEcho-Sitzung (eine Flaeche) zu `schluessel`, der Learning-Sitzungs-ID (Ruling L).
 
         schema.js:656-658 penecho_start_session: title (Pflicht), sessionKey, restore (bool).
@@ -657,7 +670,14 @@ class PenEchoMcp:
         `canvas_id` (Teil B): die Flaechen-Kennung des Tabs der Person (`lf-<32 hex>`, von der Bruecke geprueft).
         Dann bindet die Sitzung genau an diesen Tab (`_sitzung_im_tab`). Ohne sie bleibt alles wie oben;
         eine schon an einen Tab gebundene Sitzung bleibt dabei, wo sie ist.
+
+        `gruppe` (Teil C, `g-<id>`): Gruppensitzung, nur auf dem Tab (`_sitzung_in_gruppe`); ohne `canvas_id`
+        `PenEchoGruppenbindung`, nie der Weg ohne Tab.
         """
+        if gruppe is not None:
+            if canvas_id is None:
+                raise PenEchoGruppenbindung("ohne_flaeche")
+            return self._sitzung_in_gruppe(schluessel, titel, canvas_id, gruppe)
         if canvas_id is not None:
             return self._sitzung_im_tab(schluessel, titel, canvas_id)
         bekannt = self._gemerkt().get(schluessel)
@@ -742,6 +762,42 @@ class PenEchoMcp:
         if not isinstance(session_id, str) or not session_id:
             raise PenEchoNichtErreichbar("sessionId")
         self._dokument_merken(schluessel, struktur.get("documentId"), dokumente)
+        karte = self._gemerkt()
+        karte[schluessel] = session_id
+        self._merken(karte)
+        tabs[schluessel] = marke
+        self._merken(tabs, self._tabdatei)
+        return session_id
+
+    def _sitzung_in_gruppe(self, schluessel: str, titel: str, canvas_id: str, gruppe: str) -> str:
+        """Gruppensitzung auf dem Tab `canvas_id`: penecho_start_session mit canvasId, target "current" und eigenem
+        sessionKey, NIE documentId (das aktive Dokument des Tabs ist die Gruppenflaeche).
+
+        Ohne target legte PenEcho eine unsichtbare Hintergrundflaeche an; die Lernflaeche lehnt das in der Gruppe ab
+        (GROUP_CANVAS_ONLY). Jede Ablehnung (auch BINDING_CONFLICT, session_key_conflict, verlorene Flaeche) wird
+        `PenEchoGruppenbindung`, ohne zweiten Versuch und ohne neues Board. Das Gruppen-Dokument wird nicht gemerkt
+        (dokumente.json gehoert den eigenen Boards der Person).
+        """
+        marke = "g" + _tab_marke(canvas_id + "|" + gruppe)
+        bekannt = self._gemerkt().get(schluessel)
+        tabs = self._gemerkt(self._tabdatei)
+        if bekannt and tabs.get(schluessel) == marke:
+            return bekannt
+        argumente: dict[str, Any] = {
+            "title": titel, "sessionKey": _sitzungsschluessel(f"{schluessel}@{gruppe}@{marke}"), "restore": True,
+            "canvasId": canvas_id, "target": "current",
+        }
+        try:
+            ergebnis = self._werkzeug("penecho_start_session", argumente)
+        except PenEchoGruppenbindung:
+            raise
+        except (PenEchoSchluesselBelegt, PenEchoFlaecheVerloren) as fehler:
+            raise PenEchoGruppenbindung(_typ(fehler)) from None
+        except PenEchoSitzungUnbekannt:
+            raise PenEchoGruppenbindung("sitzung") from None
+        session_id = self._struktur(ergebnis).get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            raise PenEchoNichtErreichbar("sessionId")
         karte = self._gemerkt()
         karte[schluessel] = session_id
         self._merken(karte)

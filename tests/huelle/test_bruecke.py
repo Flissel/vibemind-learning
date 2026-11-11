@@ -121,9 +121,12 @@ class FakePenEcho:
         if self.fehler is not None:
             raise self.fehler
 
-    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None) -> str:
-        self.aufrufe.append(("sitzung", schluessel, titel) if canvas_id is None
-                            else ("sitzung", schluessel, titel, canvas_id))
+    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None, gruppe: str | None = None) -> str:
+        if gruppe is not None:  # Teil C: nur die Gruppensitzung nennt ihre Gruppe
+            self.aufrufe.append(("sitzung", schluessel, titel, canvas_id, gruppe))
+        else:
+            self.aufrufe.append(("sitzung", schluessel, titel) if canvas_id is None
+                                else ("sitzung", schluessel, titel, canvas_id))
         return "pe-1"
 
     def vergessen(self, schluessel: str) -> None:
@@ -3818,13 +3821,17 @@ class Laeufe:
 
 def _gruppen_bruecke(laeufe: Laeufe, *, gruppen: FakeGruppen | None = None, abgleich: FakeAbgleich | None = None,
                      penecho: FakePenEcho | None = None, kursende: Any = None, actor: str = PA,
-                     ) -> tuple[TestClient, FakePenEcho, FakeAbgleich, FakeGruppen]:
+                     kennung: str | None = KA) -> tuple[TestClient, FakePenEcho, FakeAbgleich, FakeGruppen]:
+    """`kennung`: Flaechen-Kennung des Tabs (Kopf X-Lernflaeche); die Gruppenflaeche gibt es nur mit ihr."""
     penecho = penecho or FakePenEcho()
     abgleich = abgleich or FakeAbgleich(penecho.aufrufe)
     gruppen = gruppen or FakeGruppen()
     bruecke = Bruecke(E_LH, laeufe.lern, penecho, Sperre(), httpx.Client(transport=httpx.MockTransport(_api_leer)),  # type: ignore[arg-type]
                       kursende, katalog=_katalog(LearnHouse()), gruppen=gruppen, abgleich=abgleich)
-    return als(TestClient(bruecke), actor), penecho, abgleich, gruppen
+    client = als(TestClient(bruecke), actor)
+    if kennung is not None:
+        client.headers[KOPF] = kennung
+    return client, penecho, abgleich, gruppen
 
 
 def _schutzfelder(bereiche: list[dict[str, int]]) -> list[list[int]]:
@@ -3946,6 +3953,7 @@ def test_zwei_personen_geben_gleichzeitig_ab() -> None:
     laeufe = Laeufe({ga: SID_GA, gb: SID_GB})
     a, penecho, abgleich, _ = _gruppen_bruecke(laeufe)
     b = als(TestClient(a.app), PB)
+    b.headers[KOPF] = KB
     bruecke = a.app
     try:
         assert a.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
@@ -4043,5 +4051,47 @@ def test_ohne_gruppen_einstellung_404() -> None:
         r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
         assert r.status_code == 404 and r.json() == {"meldung": GRUPPE_WEG}
         assert laeufe.lern.aufrufe == []
+    finally:
+        client.app.beenden()
+
+
+def test_gruppe_bindet_den_tab_mit_gruppe_solo_unveraendert() -> None:
+    """Die Gruppensitzung startet PenEcho im Tab der Person mit ihrer Gruppe (target "current" in PenEchoMcp);
+    die Solo-Sitzung derselben Person ruft `sitzung` genau wie bisher, ohne Gruppe."""
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({PA: SID_SA, gk: SID_GA}, gestartet=(PA,))
+    client, penecho, _, _ = _gruppen_bruecke(laeufe)
+    try:
+        assert client.post(f"/lernen/api/kurse/{KURS_P}/oeffnen").status_code == 200
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        sitzungen = [a for a in penecho.aufrufe if a[0] == "sitzung"]
+        assert {a[1:] for a in sitzungen if a[1] == SID_SA} == {(SID_SA, sitzungen[0][2], KA)}
+        gruppe = [a for a in sitzungen if a[1] == SID_GA]
+        assert gruppe and all(len(a) == 5 and a[3] == KA and a[4] == f"g-{GID}" for a in gruppe)
+    finally:
+        client.app.beenden()
+
+
+def test_gruppe_ohne_flaechen_kennung_nie_im_hintergrund() -> None:
+    """Ohne Kopf X-Lernflaeche gibt es fuer die Gruppe keine Flaeche (nie der zuletzt verbundene Browser oder eine
+    unsichtbare Hintergrundflaeche): flaeche false, nichts gesetzt, kein Schutz; mit Kennung danach alles."""
+    from spaces.learning.huelle.penecho_mcp import PenEchoGruppenbindung
+
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe, kennung=None)
+    try:
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 200 and r.json()["flaeche"] is False
+        assert [a for a in penecho.aufrufe if a[0] in ("sitzung", "schild_setzen", "aufgabe_setzen")] == []
+        assert abgleich.schutz == []
+        # PenEcho lehnt die Bindung ab (GROUP_CANVAS_ONLY/BINDING_CONFLICT): ebenso nichts gesetzt, kein Neuversuch.
+        client.headers[KOPF] = KA
+        penecho.fehler = PenEchoGruppenbindung("GROUP_CANVAS_ONLY")
+        r = client.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 200 and r.json()["flaeche"] is False and abgleich.schutz == []
+        assert "vergessen" not in penecho.namen()
+        penecho.fehler = None
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").json()["flaeche"] is True
+        assert len(abgleich.schutz) == 1
     finally:
         client.app.beenden()

@@ -1720,3 +1720,47 @@ def test_schild_setzen_im_mappenkopf(zustand: Path) -> None:
     # Feste requestId: erneutes Setzen derselben Mappe wiederholt PenEcho nicht (Idempotenz).
     assert arg == {"sessionId": "sess-1", "requestId": "mappe-7-p" + "a" * 24, "action": "create_text",
                    "text": "Anna A.", "region": kopf}
+
+# ---- Teil C, Task 8: Gruppensitzung auf der Gruppenflaeche (target "current") -----------------------------------
+
+def test_sitzung_in_gruppe_target_current_ohne_document_id(zustand: Path) -> None:
+    """Gruppe: canvasId + target "current" + eigener sessionKey, nie documentId (das aktive Dokument des Tabs ist
+    die Gruppenflaeche). Solo bleibt genau wie bisher (kein target)."""
+    from spaces.learning.huelle.penecho_mcp import PenEchoMcp as _M
+
+    fake = Fake()
+    c = _M(zustand, transport=httpx.MockTransport(_tab_fake(fake)))
+    solo_sid = "44444444-4444-4444-8444-444444444444"
+    c.sitzung(solo_sid, TITEL, canvas_id=KA)
+    (solo,) = _starts(fake)
+    assert "target" not in solo and solo["canvasId"] == KA
+    # Ein gemerktes Board der Gruppensitzung darf nie als documentId mitgehen.
+    c._merken({**_merkdatei(zustand, DOKUMENTE), LERN_SID: "doc-alt"}, c._dokumentdatei)
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA, gruppe="g-7") == "pe-" + KA
+    gruppe = _starts(fake)[1]
+    assert gruppe["canvasId"] == KA and gruppe["target"] == "current" and "documentId" not in gruppe
+    assert gruppe["sessionKey"].startswith("learning-huelle:") and len(gruppe["sessionKey"]) <= 128
+    assert gruppe["sessionKey"] not in (solo["sessionKey"], "learning-huelle:" + LERN_SID)
+    assert set(gruppe) <= _ERLAUBT["penecho_start_session"]
+    # Derselbe Tab: dieselbe Sitzung, kein neuer Start; das Gruppen-Dokument wird nicht gemerkt.
+    assert c.sitzung(LERN_SID, TITEL, canvas_id=KA, gruppe="g-7") == "pe-" + KA
+    assert len(_starts(fake)) == 2
+    assert _merkdatei(zustand, DOKUMENTE).get(LERN_SID) == "doc-alt"
+
+
+@pytest.mark.parametrize("code", ["GROUP_CANVAS_ONLY", "BINDING_CONFLICT", "STORAGE_UNAVAILABLE", "session_key_conflict"])
+def test_sitzung_in_gruppe_fehler_ohne_wiederholung(zustand: Path, code: str) -> None:
+    """Abgelehnt: PenEchoGruppenbindung, genau ein Start, kein zweiter Versuch (weder ohne target noch mit neuem
+    Schluessel oder neuem Board, das waere eine unsichtbare Hintergrundflaeche); nichts gemerkt."""
+    from spaces.learning.huelle.penecho_mcp import PenEchoGruppenbindung
+
+    fake = Fake(tool_fehler=code)
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(fake))
+    with pytest.raises(PenEchoGruppenbindung):
+        c.sitzung(LERN_SID, TITEL, canvas_id=KA, gruppe="g-7")
+    assert len(_starts(fake)) == 1 and fake.aufrufe("penecho_open_canvas") == []
+    assert LERN_SID not in _merkdatei(zustand, "sitzungen.json")
+    # Ohne Flaechen-Kennung gibt es keine Gruppensitzung (sonst der zuletzt verbundene Browser).
+    with pytest.raises(PenEchoGruppenbindung):
+        c.sitzung(LERN_SID, TITEL, gruppe="g-7")
+    assert len(_starts(fake)) == 1

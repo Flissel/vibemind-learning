@@ -75,7 +75,7 @@ from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .penecho_mcp import (
-    BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar,
+    BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoGruppenbindung, PenEchoMcp, PenEchoNichtErreichbar,
     PenEchoSitzungUnbekannt, felder,
 )
 from .sperre import Sperre
@@ -1133,6 +1133,13 @@ class Bruecke:
 
     def _penecho_sitzung(self, sitzung: _Sitzung, titel: str) -> str:
         flaeche = sitzung.flaeche
+        if sitzung.gruppe is not None:
+            # Teil C: nur auf dem eigenen Tab (target "current" in PenEchoMcp); ohne Kennung nie der alte Weg
+            # (zuletzt verbundener Browser oder eine unsichtbare Hintergrundflaeche).
+            if flaeche is None:
+                raise PenEchoGruppenbindung("ohne_flaeche")
+            return self._penecho.sitzung(sitzung.sid, titel, canvas_id=flaeche,
+                                         gruppe=flaeche_der_gruppe(sitzung.gruppe))
         if flaeche is None:
             anfrage = _ANFRAGE.get()
             if sitzung.kennung_pflicht or (anfrage is not None and anfrage.belegt):
@@ -1218,8 +1225,8 @@ class Bruecke:
         kein Wiederholen (etwa nach einem Neustart der Huelle bei `passt`; `weiter` merkt es danach).
         `dokument_merken` selbst fragt PenEcho nur per `penecho_inspect_session`.
         """
-        if sitzung.board is None:
-            return
+        if sitzung.board is None or sitzung.gruppe is not None:
+            return  # Teil C: das Dokument der Gruppenflaeche gehoert nicht zu den eigenen Boards der Person
         try:
             with self._flaeche_sperre:
                 self._penecho.dokument_merken(sitzung.board)
