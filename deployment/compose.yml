@@ -343,6 +343,26 @@ services:
       retries: 12
       start_period: 20s
 
+  # Teil C: sync service for group canvases. Depends on nothing, so solo
+  # learning and the rest of the stack run without it. Image is built from
+  # the Lernflaeche repo (abgleich/), hence pull_policy never and no build.
+  lernflaeche-abgleich:
+    image: ${LERNFLAECHE_ABGLEICH_IMAGE:-vibemind-lernflaeche-abgleich:c-SHA8}
+    pull_policy: never
+    restart: *restart
+    environment:
+      ABGLEICH_SCHLUESSEL: ${LERNFLAECHE_ABGLEICH_SCHLUESSEL:?set LERNFLAECHE_ABGLEICH_SCHLUESSEL}
+    volumes:
+      - abgleich-daten:/daten
+    ports:
+      - ${LEARNING_BIND_HOST:-127.0.0.1}:8160:8160
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8160/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 10s
+
 volumes:
   postgres-data:
   redis-data:
@@ -351,3 +371,4 @@ volumes:
   learning-artifacts:
   learning-imports:
   penecho-state:
+  abgleich-daten:

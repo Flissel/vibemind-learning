@@ -24,6 +24,7 @@ REQUIRED_SERVICES = {
     "learning-worker",
     "learning-mcp",
     "penecho",
+    "lernflaeche-abgleich",
 }
 STATEFUL_VOLUMES = {
     "postgres-data",
@@ -33,6 +34,7 @@ STATEFUL_VOLUMES = {
     "learning-artifacts",
     "learning-imports",
     "penecho-state",
+    "abgleich-daten",
 }
 SECRET_VARIABLES = {
     "LEARNING_POSTGRES_PASSWORD",
@@ -41,6 +43,7 @@ SECRET_VARIABLES = {
     "LEARNHOUSE_INITIAL_ADMIN_PASSWORD",
     "LEARNHOUSE_LOCAL_BOOTSTRAP_KEY",
     "LEARNHOUSE_LEARNING_SERVICE_KEY",
+    "LERNFLAECHE_ABGLEICH_SCHLUESSEL",
 }
 
 
@@ -114,6 +117,33 @@ def test_stateful_mounts_use_named_volumes() -> None:
     }
     assert STATEFUL_VOLUMES <= mounted
     assert mounted <= declared
+
+
+def test_abgleich_dienst_ist_eigenstaendig() -> None:
+    """Teil C: the group sync service stands alone, so solo and the rest of the stack run without it."""
+    services = _load(COMPOSE_PATH)["services"]
+    assert isinstance(services, dict)
+    abgleich = services["lernflaeche-abgleich"]
+    assert isinstance(abgleich, dict)
+
+    assert "depends_on" not in abgleich
+    assert "build" not in abgleich
+    assert abgleich["pull_policy"] == "never"
+    assert str(abgleich["image"]).startswith(
+        "${LERNFLAECHE_ABGLEICH_IMAGE:-vibemind-lernflaeche-abgleich:c-"
+    )
+    assert abgleich["volumes"] == ["abgleich-daten:/daten"]
+    environment = abgleich["environment"]
+    assert isinstance(environment, dict)
+    assert environment["ABGLEICH_SCHLUESSEL"] == (
+        "${LERNFLAECHE_ABGLEICH_SCHLUESSEL:?set LERNFLAECHE_ABGLEICH_SCHLUESSEL}"
+    )
+    assert abgleich["ports"] == ["${LEARNING_BIND_HOST:-127.0.0.1}:8160:8160"]
+    assert "/healthz" in str(abgleich["healthcheck"]["test"])
+    # No other service depends on it.
+    for name, service in services.items():
+        if isinstance(service, dict) and name != "lernflaeche-abgleich":
+            assert "lernflaeche-abgleich" not in service.get("depends_on", {}), name
 
 
 def test_credentials_are_references_not_embedded_values() -> None:
