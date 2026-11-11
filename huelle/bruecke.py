@@ -146,6 +146,7 @@ KARTE_NICHT_LESBAR = (
 DETERMINISTISCHE_TYPEN = frozenset({"single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"})
 BEREICHS_TYPEN = frozenset({"open", "case", "penecho_canvas"})
 _FLAECHEN_TYPEN = DETERMINISTISCHE_TYPEN | BEREICHS_TYPEN
+_BEWERTUNG_WEG_CODE = "session_grading_unavailable"
 
 
 def _feldart(task: dict[str, Any]) -> dict[str, bool]:
@@ -153,7 +154,7 @@ def _feldart(task: dict[str, Any]) -> dict[str, bool]:
     Typen, Arbeitsfeld fuer flaechenbewertete, keins fuer `code`. Rahmen und Schutzfeld lesen beide nur hier."""
     typ = task.get("type")
     return {"mit_ergebnisfeld": typ in DETERMINISTISCHE_TYPEN, "mit_arbeitsfeld": typ in BEREICHS_TYPEN}
-_BEWERTUNG_WEG_CODE = "session_grading_unavailable"
+
 
 TRAINING_BLUEPRINT = {"max_attempts": 20}
 MAX_BODY = 256 * 1024
