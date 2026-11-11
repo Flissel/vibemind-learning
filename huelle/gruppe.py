@@ -47,6 +47,8 @@ KEIN_MITGLIED = "Sie gehören nicht zu dieser Gruppe. Öffnen Sie die Kursübers
 GRUPPE_WEG = "Die Gruppenfläche ist gerade nicht erreichbar. Versuchen Sie es in einer Minute noch einmal."
 GRUPPE_VOLL = "Diese Gruppenfläche ist voll. Bitte wenden Sie sich an Ihre Kursleitung."
 ZUGANG_WEG = "Ihr Zugang zu dieser Gruppe besteht nicht mehr."
+# Abgleich ohne gueltige Gruppenflaeche (Query, Pfad, keine Gruppen-Einstellung); ersetzt den Ersatztext der Flaeche.
+GRUPPE_UNGUELTIG = "Dieser Gruppenlink ist ungültig. Öffnen Sie die Kursübersicht."
 
 # Nur die kanonische Schreibweise (keine fuehrenden Nullen): so gehoert zu jeder Gruppe genau eine Flaeche.
 _FLAECHE = re.compile(r"g-(0|[1-9][0-9]{0,8})")

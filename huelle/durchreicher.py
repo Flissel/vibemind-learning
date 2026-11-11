@@ -21,6 +21,7 @@ import websockets
 
 from .gruppe import (
     AUSWEIS_GUELTIG_S,
+    GRUPPE_UNGUELTIG,
     GRUPPE_WEG,
     KEIN_MITGLIED,
     ZUGANG_WEG,
@@ -169,7 +170,9 @@ _LERN_WS = frozenset({"/api/mcp/canvas", "/api/abgleich"})  # MCP-Flaeche (mcp-r
 # Abgleich der Gruppenflaeche (Teil C): fuer jede Kennung, auch den Inhaber, nur exakt dieser Rohpfad mit
 # `flaeche=g-<id>` und `fenster`; die Huelle setzt Person und Ausweis selbst.
 ABGLEICH_PFAD = "/api/abgleich"
-NACHPRUEFEN_S = 60
+# Nachpruefung offener Abgleich-Verbindungen: Takt plus Frist je Pruefung <= 60 s (Review-Fokus 3).
+NACHPRUEFEN_S = 45
+PRUEF_FRIST_S = 15
 _FENSTER = re.compile(r"[a-z0-9-]{1,40}")  # KENNUNG des Abgleichdienstes (protokoll.mjs)
 # Statisch erlaubt ist jedes GET/HEAD ausserhalb von /api/, ausser den privaten Plugins des Inhabers.
 _STATISCH_GESPERRT = ("/plugins/private/",)
@@ -272,6 +275,12 @@ async def _json_antwort(send: Send, status: int, daten: dict[str, Any]) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+async def _ablehnen(send: Send, code: int, grund: str) -> None:
+    """Annehmen, dann sofort mit Code und Grund schliessen (ohne Upstream): so kommt der Code beim Browser an."""
+    await send({"type": "websocket.accept"})
+    await send({"type": "websocket.close", "code": code, "reason": grund})
+
+
 class _AblageWeg(Exception):
     """PenEchos Ablage antwortet nicht brauchbar (Netz, Status, kein JSON)."""
 
@@ -312,7 +321,11 @@ class Durchreicher:
         uhr: Callable[[], float] = time.time,
         schlafen: Callable[[float], Awaitable[None]] = asyncio.sleep,
         nachpruefen_s: float = NACHPRUEFEN_S,
+        monoton: Callable[[], float] = time.monotonic,
+        pruef_frist_s: float = PRUEF_FRIST_S,
     ) -> None:
+        self._monoton = monoton
+        self._pruef_frist_s = pruef_frist_s
         self._ablage = ablage
         self._inhaber = inhaber
         self._gruppen = gruppen
@@ -667,38 +680,56 @@ class Durchreicher:
 
     # --- Websocket ----------------------------------------------------------------------
 
-    async def _abgleich_ziel(self, scope: Scope, send: Send) -> tuple[str, tuple[str, int]] | None:
-        """Ziel (Pfad und neue Query) fuer `/api/abgleich` und (actor, gruppe_id); None, wenn geschlossen wurde.
+    async def _mitglied_frisch(self, gruppen: Gruppen, actor: str, gruppe_id: int) -> Mitgliedschaft:
+        """Frisch bei LearnHouse (am 60-s-Puffer vorbei), hoechstens `pruef_frist_s` lang.
+
+        Gruppen ist synchron (httpx); im Thread, damit der Ereignisstrang nie blockiert. Laeuft die Frist ab, gilt das
+        wie ein LearnHouse-Ausfall (UebersichtWeg); der Thread endet spaetestens mit den httpx-Timeouts.
+        """
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(gruppen.mitglied, actor, gruppe_id, frisch=True),
+                                          self._pruef_frist_s)
+        except asyncio.TimeoutError:
+            log.warning("Gruppen-Mitgliedschaft: Frist abgelaufen")
+            raise UebersichtWeg() from None
+
+    async def _abgleich_ziel(self, scope: Scope, send: Send) -> tuple[str, tuple[str, int, float]] | None:
+        """Ziel (Pfad und neue Query) fuer `/api/abgleich` und (actor, gruppe_id, Pruefbeginn); None = abgelehnt.
 
         Fail-closed: ohne Gruppen-Einstellung, ausser dem exakten Rohpfad, ohne Kennung oder ohne gueltige
         `flaeche=g-<id>` und `fenster` ist 1008 (Solo verbindet sich nie mit dem Abgleich). Die Mitgliedschaft gilt fuer
-        jede Kennung, auch den Inhaber. Ist LearnHouse weg, reicht eine gemerkte Mitgliedschaft.
+        jede Kennung, auch den Inhaber, und wird beim Verbinden frisch gefragt: wer gerade entfernt wurde, kommt auch
+        im Pufferfenster nicht wieder hinein. Ist LearnHouse weg, reicht eine gemerkte Mitgliedschaft, sonst 1013.
+
+        Abgelehnt wird nach dem Annehmen (`_ablehnen`): vor dem Annehmen machte uvicorn daraus HTTP 403, der Browser
+        saehe 1006 und verbaende sich endlos neu. 1008 (mit Text) beendet die Gruppe in der Flaeche, 1013 nicht.
         """
         state = scope.get("state")
         actor = state.get("actor_id") if isinstance(state, dict) else None
         anfrage = abgleich_anfrage(scope.get("query_string") or b"")
-        if (self._gruppen is None or not self._abgleich_schluessel or _rohpfad(scope) != ABGLEICH_PFAD
+        gruppen = self._gruppen
+        if (gruppen is None or not self._abgleich_schluessel or _rohpfad(scope) != ABGLEICH_PFAD
                 or not isinstance(actor, str) or not actor or anfrage is None):
-            await send({"type": "websocket.close", "code": 1008})
+            await _ablehnen(send, 1008, GRUPPE_UNGUELTIG)
             return None
         gruppe_id, fenster = anfrage
+        beginn = self._monoton()
         mitgliedschaft: Mitgliedschaft | None
         try:
-            # Gruppen ist synchron (httpx, bis 5 s); nie den Ereignisstrang blockieren.
-            mitgliedschaft = await asyncio.to_thread(self._gruppen.mitglied, actor, gruppe_id)
+            mitgliedschaft = await self._mitglied_frisch(gruppen, actor, gruppe_id)
         except KeinMitglied:
-            await send({"type": "websocket.close", "code": 1008, "reason": KEIN_MITGLIED})
+            await _ablehnen(send, 1008, KEIN_MITGLIED)
             return None
         except UebersichtWeg:
-            mitgliedschaft = self._gruppen.gemerkt(actor, gruppe_id)
+            mitgliedschaft = gruppen.gemerkt(actor, gruppe_id)
             if mitgliedschaft is None:
-                await send({"type": "websocket.close", "code": 1008, "reason": GRUPPE_WEG})
+                await _ablehnen(send, 1013, GRUPPE_WEG)
                 return None
         flaeche, person = flaeche_der_gruppe(gruppe_id), person_kennung(actor)
         schein = ausweis(self._abgleich_schluessel, flaeche, person, mitgliedschaft.anzeigename,
                          int(self._uhr()) + AUSWEIS_GUELTIG_S)
         query = urlencode([("flaeche", flaeche), ("person", person), ("fenster", fenster), ("ausweis", schein)])
-        return f"{ABGLEICH_PFAD}?{query}", (actor, gruppe_id)
+        return f"{ABGLEICH_PFAD}?{query}", (actor, gruppe_id, beginn)
 
     async def _ws(self, scope: Scope, receive: Receive, send: Send) -> None:
         nachricht = await receive()
@@ -719,7 +750,7 @@ class Durchreicher:
             await send({"type": "websocket.close", "code": 1008})
             return
         ziel = _pfad_und_query(scope)
-        gruppe: tuple[str, int] | None = None  # (actor, gruppe_id) einer Gruppenflaeche: wird nachgeprueft
+        gruppe: tuple[str, int, float] | None = None  # (actor, gruppe_id, Pruefbeginn): wird nachgeprueft
         if ist_abgleich_pfad(scope):
             abgleich = await self._abgleich_ziel(scope, send)
             if abgleich is None:
@@ -775,12 +806,18 @@ class Durchreicher:
                 else:
                     await send({"type": "websocket.send", "bytes": bytes(m)})
 
-        async def nachpruefen(gruppen: Gruppen, actor: str, gruppe_id: int) -> None:
-            """Alle `nachpruefen_s` frisch fragen; ist die Person kein Mitglied mehr, schliessen (Review-Fokus 3)."""
+        async def nachpruefen(gruppen: Gruppen, actor: str, gruppe_id: int, beginn: float) -> None:
+            """Frisch nachfragen; ist die Person kein Mitglied mehr, schliessen (Review-Fokus 3).
+
+            Fester Takt ab dem Beginn der letzten Pruefung (monoton), jede Pruefung hoechstens `pruef_frist_s`: eine
+            Entfernung nach dem Beginn einer Pruefung schliesst spaetestens `nachpruefen_s + pruef_frist_s` (60 s) danach.
+            """
+            naechste = beginn
             while True:
-                await self._schlafen(self._nachpruefen_s)
+                naechste = max(naechste + self._nachpruefen_s, self._monoton())
+                await self._schlafen(max(0.0, naechste - self._monoton()))
                 try:
-                    await asyncio.to_thread(gruppen.mitglied, actor, gruppe_id, frisch=True)
+                    await self._mitglied_frisch(gruppen, actor, gruppe_id)
                 except KeinMitglied:
                     closed.set()
                     await send({"type": "websocket.close", "code": 1008, "reason": ZUGANG_WEG})

@@ -7,6 +7,7 @@ Beide teilen eine Sperre und eine Bruecke.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,16 @@ from .sperre import Sperre, penecho_version_pruefen
 from .weiche import FlaechenWeiche, Weiche
 
 
+# Client-Bibliotheken loggen Adressen: websockets den Handshake mit Ausweis (DEBUG), httpx/httpcore URLs mit der
+# Kennung (INFO/DEBUG). Sie bleiben auf WARNING, egal wie der Rest eingestellt ist.
+BIBLIOTHEKS_LOGGER = ("httpx", "httpcore", "websockets")
+
+
+def bibliotheken_leise() -> None:
+    for name in BIBLIOTHEKS_LOGGER:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
     """(Seiten-Weiche, Flaechen-Weiche) mit einer gemeinsamen Sperre."""
     seiten, flaeche, _ = _bauen(einstellung)
@@ -31,6 +42,7 @@ def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
 
 def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
     """Wie `build_apps`, dazu die Bruecke, deren Spuren `_beide` beim Herunterfahren beendet."""
+    bibliotheken_leise()
     # Eine Sperre fuer Durchreicher und Bruecke: die Bruecke stellt sie, der Durchreicher prueft sie.
     sperre = Sperre()
     # Eine ungepruefte PenEcho-Version kann neue Modellrouten haben: dann wird die Sperre nie frei.
