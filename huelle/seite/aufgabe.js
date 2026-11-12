@@ -144,10 +144,23 @@ export const FESTE_MELDUNGEN = new Set([
   "Die Gruppenfläche ist gerade nicht erreichbar. Versuchen Sie es in einer Minute noch einmal.",
   "Diese Gruppenfläche ist voll. Bitte wenden Sie sich an Ihre Kursleitung.",
   "Dieser Gruppenlink ist ungültig. Öffnen Sie die Kursübersicht.",
+  // Ein Canvas je Aufgabe: Fehlercodes der Brücke (`fehler`), Texte in FEHLER_TEXTE.
+  "Bitte kurz warten und erneut abgeben.",
+  "Bitte die Lernfläche in diesem Browser öffnen.",
+  "Für diesen Kurs gibt es „Kurs abgeben“ noch nicht.",
 ]);
+
+/** Fehlercodes der Brücke ohne eigenen Text (`{"fehler": CODE}`) und ihr fester Text. */
+export const FEHLER_TEXTE = Object.freeze({
+  FLAECHE_BESCHAEFTIGT: "Bitte kurz warten und erneut abgeben.",
+  KEINE_FLAECHE: "Bitte die Lernfläche in diesem Browser öffnen.",
+  KURS_ABGEBEN_ALT: "Für diesen Kurs gibt es „Kurs abgeben“ noch nicht.",
+});
 
 /** Der Banner-Text zu einer Fehlerantwort: feste Texte der Bruecke, sonst der allgemeine Text. */
 export function meldungFuer(daten) {
+  const code = daten && typeof daten.fehler === "string" ? daten.fehler : "";
+  if (Object.hasOwn(FEHLER_TEXTE, code)) return FEHLER_TEXTE[code];
   const m = daten && typeof daten.meldung === "string" ? daten.meldung : "";
   return FESTE_MELDUNGEN.has(m) ? m : ALLGEMEIN;
 }

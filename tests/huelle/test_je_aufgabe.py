@@ -13,11 +13,11 @@ from starlette.testclient import TestClient
 from spaces.learning.huelle.anordnung import EINZEL_RECHTECK, ZuVieleAufgaben, anordnung
 from spaces.learning.huelle.bruecke import _Sitzung
 from spaces.learning.huelle.einstellung import Kurs
-from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, aufgaben_titel
+from spaces.learning.huelle.penecho_mcp import PenEchoBeschaeftigt, PenEchoNichtErreichbar, aufgaben_titel
 
 from .test_bruecke import (
-    GID, KURS, PA, SID, SID_GA, FakePenEcho, Laeufe, ListenLern, TabMcp, _bis, _gruppen_bruecke, _stand,
-    _tab_penecho, _ueberblick, bauen, gruppen_lern_kennung,
+    GID, KURS, PA, PNG, SID, SID_GA, FakePenEcho, Laeufe, ListenLern, TabMcp, _bis, _gruppen_bruecke, _karten,
+    _ruhig, _stand, _status, _tab_penecho, _ueberblick, _vid, _vor, bauen, gruppen_lern_kennung,
 )
 
 
@@ -49,9 +49,9 @@ class JePenEcho(FakePenEcho):
         return f"board-{schluessel.split('#', 1)[1]}" + (f"-v{stand}" if stand else "")
 
 
-def _neu_lern(n: int = 3) -> ListenLern:
+def _neu_lern(n: int = 3, *, typ: str = "numeric") -> ListenLern:
     """Listenkurs ohne laufende Sitzung: das erste Oeffnen startet einen neuen Durchlauf (Zweig mit Merkmal)."""
-    ll = ListenLern(n)
+    ll = ListenLern(n, typ=typ)
     ll.lern.antworten["learning_course_overview"] = [lambda kw: _ueberblick(None), lambda kw: _ueberblick(ll.turn())]
     ll.lern.antworten["learning_session_start"] = lambda kw: {"session": ll.turn()}
     return ll
@@ -285,5 +285,249 @@ def test_stand_dokumentkarte(tmp_path: Path) -> None:
     try:
         assert _stand(client)["dokumente"] == {"doc-1": 1}
         assert offen["dokumente"] == {"doc-1": 1} and offen["stand"]["dokumente"] == {"doc-1": 1}
+    finally:
+        client.app.beenden()
+
+
+# ---- Task 7: Abgabe, Rueckmeldung, Korrektur, Passt, Antwort und Weiter auf dem Canvas der Aufgabe ----
+
+def _aufnahme(tmp_path: Path, nummer: int) -> Path:
+    return tmp_path / "aufnahmen" / SID / f"{nummer}.png"
+
+
+def test_abgabe_nimmt_board_der_aufgabe(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})
+        assert r.status_code == 202, r.text
+        neu = penecho.aufrufe[vorher:]
+        # Deterministischer Typ (numeric): nur das Ergebnisfeld, auf dem eigenen Canvas, Rechteck EINZEL_RECHTECK.
+        assert ("aufgabe_aufnehmen", "board-2", EINZEL_RECHTECK, True) in neu
+        assert not {"ergebnis_schnappschuss", "schnappschuss", "aufgabe_setzen"} & {a[0] for a in neu}
+        assert _aufnahme(tmp_path, 2).read_bytes() == PNG
+        assert bruecke._aufnahme_lesen(SID, 2) == PNG
+        _bis(lambda: _ruhig(bruecke), 2)
+        (karte,) = [k for k in _karten(penecho) if k[3] == 2]
+        assert karte[1] == "board-2" and karte[4:6] == ("2", "Richtig.")
+        assert penecho.karten_rechtecke[-1] == (2, EINZEL_RECHTECK)
+        assert penecho.aufrufe[-1] == ("dokument_merken", "board-2")
+        assert _status(_stand(client), 2) == "rueckmeldung"
+        sitzung = bruecke._sitzungen[SID]
+        assert sitzung.board is None and SID not in _schluessel(penecho)
+        (kw,) = ll.vorschauen()
+        assert set(kw["payload"]) == {"handschrift_png_base64", "attempt_id"}
+    finally:
+        bruecke.beenden()
+
+
+def test_abgabe_rubrik_nimmt_ganzes_rechteck(tmp_path: Path) -> None:
+    client, penecho, _ = _oeffnen(_neu_lern(2, typ="open"), tmp_path)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        assert ("aufgabe_aufnehmen", "board-1", EINZEL_RECHTECK, False) in penecho.aufrufe
+        _bis(lambda: _ruhig(client.app), 2)
+    finally:
+        client.app.beenden()
+
+
+def test_abgabe_beschaeftigt_409(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    bruecke = client.app
+    try:
+        penecho.aufnahme_fehler = lambda rechteck: PenEchoBeschaeftigt("CANVAS_BUSY")
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 409
+        assert r.json() == {"fehler": "FLAECHE_BESCHAEFTIGT"}
+        assert (SID, 1) not in bruecke._abgaben
+        stand = _stand(client)
+        assert _status(stand, 1) == "offen" and stand["wartend"] == 0
+        assert ll.vorschauen() == [] and not _aufnahme(tmp_path, 1).exists()
+        # Erneut abgeben geht, sobald die Flaeche frei ist.
+        penecho.aufnahme_fehler = None
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        assert _status(_stand(client), 1) == "rueckmeldung"
+    finally:
+        bruecke.beenden()
+
+
+def test_abgabe_ohne_canvas_legt_es_an(tmp_path: Path) -> None:
+    # Aufgabe 3 war nie im Bild (kein Board, kein gemerktes Dokument): erst ihr Canvas setzen, dann aufnehmen.
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        vorher = len(penecho.aufrufe)
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 3}).status_code == 202
+        namen = [a[0] for a in penecho.aufrufe[vorher:]]
+        assert ("aufgabe_setzen", "board-3", ll.eintraege[2]["task"]["id"], "Frage 3", 3) in penecho.aufrufe
+        assert namen.index("aufgabe_setzen") < namen.index("aufgabe_aufnehmen")
+        _bis(lambda: _ruhig(client.app), 2)
+    finally:
+        client.app.beenden()
+
+
+def test_abgabe_nach_neustart_nimmt_gemerktes_dokument(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    client, _, _ = _oeffnen(ll, tmp_path)
+    client.app.beenden()
+    penecho = JePenEcho()
+    penecho.dokumente_je_schluessel[f"{SID}#2"] = "doc-2"
+    client, _, _ = bauen(ll.lern, penecho, kursende=tmp_path / "kursende.json")
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2}).status_code == 202
+        assert "aufgabe_setzen" not in penecho.namen()
+        assert ("sitzung", f"{SID}#2", "Aufgabe 2: Frage 2") in penecho.aufrufe
+        assert ("aufgabe_aufnehmen", "board-2", EINZEL_RECHTECK, True) in penecho.aufrufe
+        _bis(lambda: _ruhig(client.app), 2)
+        assert [k[1] for k in _karten(penecho)] == ["board-2"]
+        assert SID not in _schluessel(penecho)
+    finally:
+        client.app.beenden()
+
+
+def test_aufnahme_merken_ueberschreibt(tmp_path: Path) -> None:
+    client, _, _ = bauen(ListenLern(1).lern, JePenEcho(), kursende=tmp_path / "kursende.json")
+    bruecke = client.app
+    try:
+        assert bruecke._aufnahme_lesen(SID, 4) is None
+        bruecke._aufnahme_merken(SID, 4, b"eins")
+        bruecke._aufnahme_merken(SID, 4, b"zwei")
+        assert bruecke._aufnahme_lesen(SID, 4) == b"zwei" and _aufnahme(tmp_path, 4).read_bytes() == b"zwei"
+        assert [p.name for p in _aufnahme(tmp_path, 4).parent.iterdir()] == ["4.png"]  # keine Temp-Reste
+    finally:
+        bruecke.beenden()
+
+
+def test_alte_sitzung_merkt_keine_aufnahme(tmp_path: Path) -> None:
+    client, penecho, _ = _oeffnen(ListenLern(2), tmp_path, FakePenEcho())
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        assert ("ergebnis_schnappschuss", "pe-1", 1) in penecho.aufrufe
+        assert "aufgabe_aufnehmen" not in penecho.namen()
+        _bis(lambda: _ruhig(client.app), 2)
+        assert not (tmp_path / "aufnahmen").exists()
+    finally:
+        client.app.beenden()
+
+
+def test_korrektur_auf_canvas_der_aufgabe(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="2")
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur",
+                        json={"nummer": 2, "vorbewertung_id": _vid(2), "answer": {"value": 2}})
+        assert r.status_code == 200, r.text
+        assert r.json()["flaeche"] is True
+        neu = penecho.aufrufe[vorher:]
+        assert [a[1] for a in neu if a[0] == "rueckmeldung_zeigen"] == ["board-2"]
+        assert penecho.karten_rechtecke[-1] == (2, EINZEL_RECHTECK)
+        assert ("dokument_merken", "board-2") in neu
+        assert SID not in _schluessel(penecho)
+    finally:
+        client.app.beenden()
+
+
+def test_passt_zeigt_naechste_aufgabe_auf_ihrem_canvas(tmp_path: Path) -> None:
+    ll = _neu_lern(45)  # im alten Modell zu viele Aufgaben fuer eine Flaeche
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1), gelesen="1")
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 1, "vorbewertung_id": _vid(1)})
+        assert r.status_code == 200, r.text
+        assert r.json()["weiter_zu"] == 2
+        neu = penecho.aufrufe[vorher:]
+        # Aufgabe 2 hatte noch kein Canvas: anlegen und zeigen.
+        assert ("aufgabe_setzen", "board-2", ll.eintraege[1]["task"]["id"], "Frage 2", 2) in neu
+        assert penecho.zeigen[-1] == (2, True)
+        # Hat die naechste Aufgabe ihr Canvas schon, nur zeigen.
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3}).status_code == 200
+        ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="2")
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 2, "vorbewertung_id": _vid(2)})
+        assert r.status_code == 200 and r.json()["weiter_zu"] == 3
+        neu = penecho.aufrufe[vorher:]
+        assert "aufgabe_setzen" not in [a[0] for a in neu]
+        assert ("bereich_zeigen", "board-3", EINZEL_RECHTECK) in neu
+        assert SID not in _schluessel(penecho) and client.app._sitzungen[SID].board is None
+    finally:
+        client.app.beenden()
+
+
+def test_antwort_rueckmeldung_auf_canvas_der_aufgabe(tmp_path: Path) -> None:
+    ll = _neu_lern(3, typ="code")
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"nummer": 1, "answer": {"code": "x"}})
+        assert r.status_code == 200, r.text
+        assert r.json()["flaeche"] is True and r.json()["weiter_zu"] == 2
+        neu = penecho.aufrufe[vorher:]
+        (setzen,) = [a for a in neu if a[0] == "rueckmeldung_setzen"]
+        assert setzen[1] == "board-1" and setzen[4] == "Rückmeldung zu Aufgabe 1"
+        assert penecho.rueckmeldung_rechtecke[-1] == (1, EINZEL_RECHTECK)
+        assert not {"aufgabe_setzen", "bereich_zeigen"} & {a[0] for a in neu}  # die Rueckmeldung bleibt im Bild
+        assert SID not in _schluessel(penecho)
+    finally:
+        client.app.beenden()
+
+
+def test_weiter_zeigt_aktuelle_aufgabe_auf_ihrem_canvas(tmp_path: Path) -> None:
+    ll = _neu_lern(45)
+    ll.eintraege[0]["status"] = "bestaetigt"
+    client, penecho, offen = _oeffnen(ll, tmp_path)
+    try:
+        assert offen["nummer"] == 2
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+        assert r.status_code == 200, r.text
+        assert r.json()["nummer"] == 2 and r.json()["flaeche"] is True
+        assert penecho.aufrufe[vorher:] == [("sitzung", f"{SID}#2", "Aufgabe 2: Frage 2"),
+                                            ("bereich_zeigen", "board-2", EINZEL_RECHTECK)]
+    finally:
+        client.app.beenden()
+
+
+def test_karte_kommt_mit_dem_canvas(tmp_path: Path) -> None:
+    # Wie im alten Modell (Setzen samt Karte): bekommt eine offene Aufgabe mit Vorbewertung ein neues Canvas,
+    # kommt ihre Karte mit; beim Oeffnen ebenso fuer die erste offene Aufgabe.
+    ll = _neu_lern(3)
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1), gelesen="1")
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="2")
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-1", 1)]
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-1", 1), ("board-2", 2)]
+        assert penecho.karten_rechtecke == [(1, EINZEL_RECHTECK), (2, EINZEL_RECHTECK)]
+        # Ein vorhandenes Canvas wird nur gezeigt: keine zweite Karte.
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert len(_karten(penecho)) == 2
+        assert SID not in _schluessel(penecho)
+    finally:
+        client.app.beenden()
+
+
+@pytest.mark.parametrize(("route", "body"), [
+    ("abgeben", {"revision": 1}),
+    ("korrektur", {"revision": 1, "vorbewertung_id": "55555555-5555-4555-8555-555555555601", "answer": {}}),
+    ("passt", {"revision": 1, "vorbewertung_id": "55555555-5555-4555-8555-555555555601"}),
+    ("antwort", {"revision": 1, "answer": {}}),
+])
+def test_alter_weg_ohne_nummer_nie_auf_gemeinsames_board(tmp_path: Path, route: str, body: dict[str, Any]) -> None:
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/{route}", json=body)
+        assert r.status_code == 409 and r.json()["code"] == "nicht_im_listenmodus"
+        assert SID not in _schluessel(penecho)
+        assert not {"learning_task_preview", "learning_task_confirm", "learning_task_answer"} & set(ll.lern.tools())
     finally:
         client.app.beenden()

@@ -381,6 +381,21 @@ test("FESTE_MELDUNGEN kennt die neuen Meldungen der Bruecke", () => {
   ]) assert.ok(FESTE_MELDUNGEN.has(m), m);
 });
 
+test("meldungFuer: Fehlercodes je Aufgaben-Canvas haben feste Texte", () => {
+  assert.equal(meldungFuer({ fehler: "FLAECHE_BESCHAEFTIGT" }), "Bitte kurz warten und erneut abgeben.");
+  assert.equal(meldungFuer({ fehler: "KEINE_FLAECHE" }), "Bitte die Lernfläche in diesem Browser öffnen.");
+  assert.equal(meldungFuer({ fehler: "KURS_ABGEBEN_ALT" }), "Für diesen Kurs gibt es „Kurs abgeben“ noch nicht.");
+  for (const m of [
+    "Bitte kurz warten und erneut abgeben.",
+    "Bitte die Lernfläche in diesem Browser öffnen.",
+    "Für diesen Kurs gibt es „Kurs abgeben“ noch nicht.",
+  ]) assert.ok(FESTE_MELDUNGEN.has(m), m);
+  // Unbekannte Codes und Eigenschaften des Objekt-Prototyps bleiben allgemein.
+  assert.equal(meldungFuer({ fehler: "UNBEKANNT" }), ALLGEMEIN);
+  assert.equal(meldungFuer({ fehler: "constructor" }), ALLGEMEIN);
+  assert.equal(meldungFuer({ fehler: "kein_zugang", meldung: "Ungültige Eingabe." }), "Ungültige Eingabe.");
+});
+
 test("speicherAusgang: Fehler vor 'Weiter' setzt den Dauerhinweis, der danach stehen bleibt", () => {
   const fehler = { ok: false, art: "fehler" };
   const nachPasst = speicherAusgang(fehler, { manuell: false, token: 1, aktuell: 1, alt: null });

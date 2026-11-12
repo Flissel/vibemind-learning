@@ -81,8 +81,8 @@ from .medien import bildname as _bildname
 from .medien import gross as _gross
 from .medien import medien as _medien
 from .penecho_mcp import (
-    BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoGruppenbindung, PenEchoMcp, PenEchoNichtErreichbar,
-    PenEchoSitzungUnbekannt, aufgaben_titel, loesungsfeld,
+    BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoBeschaeftigt, PenEchoGruppenbindung, PenEchoMcp,
+    PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, aufgaben_titel, loesungsfeld,
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
@@ -588,6 +588,8 @@ class Bruecke:
         self._je_datei = None if kursende is None else kursende.parent / "je-aufgabe.json"
         self._je_sperre = threading.Lock()
         self._je_aufgabe = self._je_lesen()
+        # Ein Canvas je Aufgabe: die Aufnahme jeder Abgabe (`aufnahmen/<sid>/<nummer>.png`), ohne Datei keine.
+        self._aufnahmen_ordner = None if kursende is None else kursende.parent / "aufnahmen"
         self._ablauf = asyncio.Lock()
         # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
         # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
@@ -852,6 +854,40 @@ class Bruecke:
     def _ist_je_aufgabe(self, sid: str) -> bool:
         with self._je_sperre:
             return sid in self._je_aufgabe
+
+    def _aufnahme_pfad(self, sid: str, nummer: int) -> Path | None:
+        """`<learning-huelle>/aufnahmen/<sid>/<nummer>.png`; nur fuer eine echte Sitzungskennung und Nummer >= 1."""
+        if self._aufnahmen_ordner is None or _uuid(sid) != sid or isinstance(nummer, bool) or nummer < 1:
+            return None
+        return self._aufnahmen_ordner / sid / f"{int(nummer)}.png"
+
+    def _aufnahme_merken(self, sid: str, nummer: int, png: bytes) -> None:
+        """Aufnahme einer Abgabe ablegen, atomar (Temp-Datei + replace) und ueberschreibend. Ein Schreibfehler haelt
+        die Abgabe nie auf (nur der Typ wird geloggt)."""
+        ziel = self._aufnahme_pfad(sid, nummer)
+        if ziel is None:
+            return
+        tmp: str | None = None
+        try:
+            ziel.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+            with os.fdopen(fd, "wb") as f:
+                f.write(png)
+            os.replace(tmp, ziel)
+        except OSError as fehler:
+            log.warning("Aufnahme nicht gespeichert: %s", _typ(fehler))
+            if tmp is not None:
+                Path(tmp).unlink(missing_ok=True)
+
+    def _aufnahme_lesen(self, sid: str, nummer: int) -> bytes | None:
+        """Die gespeicherte Aufnahme der Aufgabe; keine oder nicht lesbar: None."""
+        pfad = self._aufnahme_pfad(sid, nummer)
+        if pfad is None:
+            return None
+        try:
+            return pfad.read_bytes()
+        except OSError:
+            return None
 
     async def _r_ki_schritt(self, request: Request) -> Response:
         """Die Flaeche meldet einen KI-Schritt; Besitz wie bei jeder Sitzungsroute (fremde Sitzung: 404)."""
@@ -1833,6 +1869,8 @@ class Bruecke:
             self._frei(sitzung)
         if sitzung.je_aufgabe:
             ok = self._still(lambda: self._einzel_setzen(sitzung, erste["task"], nummer, zeigen=True))
+            if ok:
+                self._einzel_karte(sitzung, erste)  # wie `_listenaufgabe_setzen`: die Karte kommt mit
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
             return nummer, ok, self._listenantwort(sitzung, eintraege, abgaben)
         rechteck = bereiche[nummer - 1]
@@ -1932,21 +1970,83 @@ class Bruecke:
         """Aufgabe auf ihr eigenes Canvas: Bereich `EINZEL_RECHTECK` melden, setzen (Felder und Bilder wie
         `_setzauftrag`), danach das Dokument merken. PenEcho-Fehler beim Setzen gehen an den Aufrufer."""
         auftrag = self._setzauftrag(task, nummer, EINZEL_RECHTECK, zeigen=zeigen)  # Bilder laden vor der Sperre
-        titel = aufgaben_titel(nummer, str(task.get("prompt") or ""))
+        titel = self._aufgaben_titel(task, nummer)
         with self._flaeche_sperre:
             self._still(lambda: self._auf_aufgabe(
                 sitzung, nummer, titel, lambda s: self._penecho.bereiche_melden(s, [EINZEL_RECHTECK])))
             self._auf_aufgabe(sitzung, nummer, titel, auftrag)
         self._board_merken(sitzung, sitzung.aufgaben_boards[nummer])  # gesetzt, sonst haette `_auf_aufgabe` geworfen
 
-    def _aufgabe_zeigen(self, sitzung: _Sitzung, task: dict[str, Any], nummer: int) -> bool:
-        """Canvas der Aufgabe aktiv machen; gibt es noch keines (kein Board, kein gemerktes Dokument), anlegen."""
-        if nummer not in sitzung.aufgaben_boards and \
-                self._penecho.dokument_von(self._aufgaben_schluessel(sitzung.sid, nummer)) is None:
-            return self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
-        titel = aufgaben_titel(nummer, str(task.get("prompt") or ""))
-        return self._still(lambda: self._auf_aufgabe(
-            sitzung, nummer, titel, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
+    @staticmethod
+    def _aufgaben_titel(task: dict[str, Any], nummer: int) -> str:
+        return aufgaben_titel(nummer, str(task.get("prompt") or ""))
+
+    def _ohne_canvas(self, sitzung: _Sitzung, nummer: int) -> bool:
+        """Die Aufgabe hat noch kein Canvas: kein Board in diesem Prozess und kein gemerktes Dokument."""
+        return nummer not in sitzung.aufgaben_boards and \
+            self._penecho.dokument_von(self._aufgaben_schluessel(sitzung.sid, nummer)) is None
+
+    def _aufgabe_zeigen(
+        self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, *, eintrag: dict[str, Any] | None = None,
+    ) -> bool:
+        """Canvas der Aufgabe aktiv machen; gibt es noch keines (kein Board, kein gemerktes Dokument), anlegen.
+
+        `eintrag` (Listeneintrag): ein neu angelegtes Canvas bekommt auch die Karte einer offenen Vorbewertung.
+        """
+        if self._ohne_canvas(sitzung, nummer):
+            ok = self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
+            if ok and eintrag is not None:
+                self._einzel_karte(sitzung, eintrag)
+            return ok
+        return self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK))
+
+    def _auf_nummer_still(
+        self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, aktion: Callable[[str], Any],
+    ) -> bool:
+        """Flaechenaufruf fuer die Aufgabe `nummer`, still: im neuen Modell auf ihrem Canvas (`_auf_aufgabe`), sonst
+        genau wie bisher auf dem gemeinsamen Board (`_flaeche_still`)."""
+        if sitzung.je_aufgabe:
+            return self._still(lambda: self._auf_aufgabe(sitzung, nummer, self._aufgaben_titel(task, nummer), aktion))
+        return self._flaeche_still(sitzung, aktion)
+
+    def _nummer_merken(self, sitzung: _Sitzung, nummer: int) -> None:
+        """Nach einem gelungenen Aufruf fuer `nummer` das Dokument merken: das Canvas der Aufgabe oder, im alten
+        Modell, wie bisher das gemeinsame Board. Ohne Canvas der Aufgabe nichts (nie das gemeinsame Board)."""
+        if not sitzung.je_aufgabe:
+            self._board_merken(sitzung)
+        elif (board := sitzung.aufgaben_boards.get(nummer)) is not None:
+            self._board_merken(sitzung, board)
+
+    def _einzel_karte(self, sitzung: _Sitzung, eintrag: dict[str, Any]) -> None:
+        """Karte einer offenen Vorbewertung auf das Canvas ihrer Aufgabe (wie `_listenaufgabe_setzen`); landet sie
+        nicht, steht ihr Text fuer die Leiste im Stand."""
+        vorbewertung = eintrag.get("vorbewertung")
+        if eintrag["status"] != "offen" or not isinstance(vorbewertung, dict):
+            return
+        task, nummer = eintrag["task"], eintrag["nummer"]
+        gelesen, urteil, text = _kartenteile(vorbewertung)
+        gelandet = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
+            s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=EINZEL_RECHTECK))
+        self._kartentext_merken((sitzung.sid, nummer), None if gelandet else leistentext(gelesen, urteil, text))
+
+    def _aufgabe_aufnehmen(self, sitzung: _Sitzung, task: dict[str, Any], nummer: int) -> bytes:
+        """PNG der Abgabe vom Canvas der Aufgabe (`aufgabe_aufnehmen`, zeigt es dabei). Hat die Aufgabe noch kein
+        Canvas, wird es zuerst gesetzt. Belegte Flaeche: 409 `FLAECHE_BESCHAEFTIGT`; sonst ein Fehler: 503."""
+        ergebnis = task.get("type") in DETERMINISTISCHE_TYPEN  # wie bisher: nur das Ergebnisfeld
+        try:
+            with self._flaeche_sperre:
+                if self._ohne_canvas(sitzung, nummer):
+                    self._einzel_setzen(sitzung, task, nummer, zeigen=True)
+                roh = self._auf_aufgabe(
+                    sitzung, nummer, self._aufgaben_titel(task, nummer),
+                    lambda s: self._penecho.aufgabe_aufnehmen(s, EINZEL_RECHTECK, ergebnis=ergebnis))
+            return _als_png(roh)
+        except PenEchoBeschaeftigt:
+            log.warning("Aufnahme: Flaeche belegt")
+            raise _Antwort(409, {"fehler": "FLAECHE_BESCHAEFTIGT"}) from None
+        except Exception as fehler:  # noqa: BLE001 - PenEcho weg oder Bild unlesbar
+            log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
+            raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
 
     def _listenaufgabe_setzen(
         self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int],
@@ -2000,6 +2100,7 @@ class Bruecke:
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1 or not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
         sid, sitzung, _ = self._sitzung(actor, sid_roh)
+        self._nur_listenweg(sitzung)
         beantwortet_id = sitzung.aufgabe_id or f"r{revision}"
         beantwortet_nr = sitzung.nummer
         try:
@@ -2104,6 +2205,7 @@ class Bruecke:
     def _abgeben(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         revision = _revision_aus(body)
         sid, sitzung, turn = self._sitzung(actor, sid_roh)
+        self._nur_listenweg(sitzung)
         task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
         # Deterministische Typen: nur das Ergebnisfeld (die Handschrift); Rubrik-Typen: der ganze Bereich.
         if task.get("type") in DETERMINISTISCHE_TYPEN:
@@ -2125,6 +2227,7 @@ class Bruecke:
         if not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
         sid, sitzung, turn = self._sitzung(actor, sid_roh)
+        self._nur_listenweg(sitzung)
         task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
         if task.get("type") not in DETERMINISTISCHE_TYPEN:
             # Rubrik-Typen haben nichts Gelesenes (Spec): nur „Passt“ und „Überarbeiten“.
@@ -2217,6 +2320,7 @@ class Bruecke:
         revision = _revision_aus(body)
         kennung = _vorbewertung_id_aus(body)
         sid, sitzung, _ = self._sitzung(actor, sid_roh)
+        self._nur_listenweg(sitzung)
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_confirm", "learning.task.confirm", session_id=sid,
@@ -2234,6 +2338,13 @@ class Bruecke:
         antwort = {"rueckmeldung": None, **self._gebucht(sitzung, turn)}
         self._board_merken(sitzung)
         return antwort
+
+    def _nur_listenweg(self, sitzung: _Sitzung) -> None:
+        """Ein Canvas je Aufgabe kennt nur die Listenrouten (Body mit `nummer`): der alte Weg ohne Nummer arbeitet auf
+        dem gemeinsamen Board. 409 `nicht_im_listenmodus` mit dem Stand, wie `zeichnung` im Listenkurs."""
+        if sitzung.je_aufgabe:
+            raise _Antwort(409, {"code": "nicht_im_listenmodus", "meldung": NICHT_IM_LISTENMODUS,
+                                 "stand": self._stand(sitzung)})
 
     def _vorbewertung_abgelehnt(
         self, sid: str, sitzung: _Sitzung, fehler: LearningAbgelehnt, *, bestaetigen: bool
@@ -2418,18 +2529,26 @@ class Bruecke:
             task = eintrag["task"]
             if task.get("type") not in _FLAECHEN_TYPEN:
                 raise _Antwort(400, {"meldung": KEINE_FLAECHENAUFGABE})
-            rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
-            revision = self._revision_von(turn)
-            # Wie `_abgeben`: deterministische Typen nur das Ergebnisfeld, Rubrik-Typen der ganze Bereich.
-            if task.get("type") in DETERMINISTISCHE_TYPEN:
-                aufnahme = self._penecho.ergebnis_schnappschuss
+            if sitzung.je_aufgabe:
+                # Ein Canvas je Aufgabe: Aufnahme vom eigenen Canvas, gemerkt vor dem Einreihen der Bewertung.
+                # Belegte Flaeche (409) oder ein Fehler: die Belegung oben faellt im except unten wieder weg.
+                rechteck = EINZEL_RECHTECK
+                revision = self._revision_von(turn)
+                png = self._aufgabe_aufnehmen(sitzung, task, nummer)
+                self._aufnahme_merken(sid, nummer, png)
             else:
-                aufnahme = self._penecho.schnappschuss
-            try:
-                png = _als_png(self._auf_flaeche(sitzung, lambda s: aufnahme(s, nummer, rechteck=rechteck)))
-            except Exception as fehler:  # noqa: BLE001 - PenEcho weg oder Bild unlesbar
-                log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
-                raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
+                rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
+                revision = self._revision_von(turn)
+                # Wie `_abgeben`: deterministische Typen nur das Ergebnisfeld, Rubrik-Typen der ganze Bereich.
+                if task.get("type") in DETERMINISTISCHE_TYPEN:
+                    aufnahme = self._penecho.ergebnis_schnappschuss
+                else:
+                    aufnahme = self._penecho.schnappschuss
+                try:
+                    png = _als_png(self._auf_flaeche(sitzung, lambda s: aufnahme(s, nummer, rechteck=rechteck)))
+                except Exception as fehler:  # noqa: BLE001 - PenEcho weg oder Bild unlesbar
+                    log.warning("Schnappschuss fehlgeschlagen: %s", _typ(fehler))
+                    raise _Antwort(503, {"meldung": FLAECHE_WEG}) from None
             payload = {"handschrift_png_base64": base64.b64encode(png).decode("ascii"),
                        "attempt_id": eintrag["attempt_id"]}
             bewerten = functools.partial(self._im_hintergrund_bewerten, sitzung, eintrag, rechteck, payload, revision)
@@ -2514,10 +2633,11 @@ class Bruecke:
                     return
                 task, vorbewertung = karte
                 gelesen, urteil, text = _kartenteile(vorbewertung)
-                if self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+                # Ein Canvas je Aufgabe: auf das Canvas der Aufgabe (`rechteck` ist dort EINZEL_RECHTECK).
+                if self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
                         s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck)):
                     self._kartentext_merken((sitzung.sid, nummer), None)
-                    self._board_merken(sitzung)
+                    self._nummer_merken(sitzung, nummer)
                 else:
                     log.warning("Rueckmeldung %d nicht auf der Flaeche", nummer)
                     # Die Seite zeigt sonst nirgends, was gelesen wurde: Text fuer die Leiste im Stand.
@@ -2543,7 +2663,7 @@ class Bruecke:
         task = eintrag["task"]
         if task.get("type") not in DETERMINISTISCHE_TYPEN:
             raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
-        rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
+        rechteck = EINZEL_RECHTECK if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)[nummer - 1]
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
@@ -2564,12 +2684,12 @@ class Bruecke:
             self._kartentexte.pop(schluessel, None)
             self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
         gelesen, urteil, text = _kartenteile(vorbewertung)
-        flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
+        flaeche = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
         antwort: dict[str, Any] = {"vorbewertung": vorbewertung, "urteil": urteil, "turn": _turn(result),
                                    "flaeche": flaeche}
         if flaeche:
-            self._board_merken(sitzung)
+            self._nummer_merken(sitzung, nummer)
         else:
             antwort["karte"] = leistentext(gelesen, urteil, text)
         antwort["stand"] = self._stand(sitzung)
@@ -2586,7 +2706,7 @@ class Bruecke:
         sitzung = self._listensitzung(actor, sid_roh)
         vorher, eintraege = self._liste_lesen(sitzung)
         eintrag = self._eintrag_zu(eintraege, nummer)
-        bereiche = self._bereiche(sitzung, eintraege)
+        bereiche = [] if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
@@ -2620,20 +2740,37 @@ class Bruecke:
 
         Sperre, Kursende samt Bericht (mit den Rechtecken der Liste), Stand und `weiter_zu`. Mit `zeigen`
         kommt die Zeile von `weiter_zu` ins Bild (Passt); nach einer Antwort bleibt die Rueckmeldung im Bild.
+        Ein Canvas je Aufgabe (`bereiche` leer): `weiter_zu` kommt auf seinem Canvas ins Bild (`_aufgabe_zeigen`,
+        bei Bedarf neu angelegt), nie auf dem gemeinsamen Board.
         """
         self._listen_sperre(sitzung, turn)
         if turn.get("state") == "completed":
             self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
-            self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
+            self._bericht(sitzung, turn, self._listen_rechtecke(sitzung, eintraege, bereiche))
         stand = self._stand_nach_buchung(sitzung, eintraege, nummer)
         self._listen_vormerken(sitzung, turn, stand["aktuell"])
         gebucht = stand["aufgaben"][nummer - 1]["status"] == "bestaetigt"
         weiter_zu = _naechste_offene(stand["aufgaben"], nummer) if gebucht else None
-        if zeigen and weiter_zu is not None:
-            ziel = bereiche[weiter_zu - 1]
-            self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
-        self._board_merken(sitzung)
+        if sitzung.je_aufgabe:
+            if zeigen and weiter_zu is not None:
+                ziel_eintrag = self._eintrag_zu(eintraege, weiter_zu)
+                self._aufgabe_zeigen(sitzung, ziel_eintrag["task"], weiter_zu, eintrag=ziel_eintrag)
+        else:
+            if zeigen and weiter_zu is not None:
+                ziel = bereiche[weiter_zu - 1]
+                self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
+            self._board_merken(sitzung)
         return {**stand, "weiter_zu": weiter_zu, "turn": turn, "begriffe": self._begriffe(sitzung)}
+
+    @staticmethod
+    def _listen_rechtecke(
+        sitzung: _Sitzung, eintraege: list[dict[str, Any]], bereiche: list[dict[str, int]],
+    ) -> dict[int, dict[str, int]]:
+        """Rechtecke fuer den Bericht am Kursende: je Nummer ihr Bereich. Ein Canvas je Aufgabe hat kein gemeinsames
+        Raster: dann keine (der Bericht zeigt nur die Karte, ohne Bilder vom gemeinsamen Board)."""
+        if sitzung.je_aufgabe:
+            return {}
+        return {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege}
 
     def _listen_antwort(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Antwort aus der Seitenleiste (Typ `code`) im Listenkurs: mit `attempt_id` buchen, Rueckmeldung ans
@@ -2651,7 +2788,7 @@ class Bruecke:
         eintrag = self._eintrag_zu(eintraege, nummer)
         if eintrag["status"] == "bestaetigt":
             self._schon_bestaetigt(sitzung, eintraege)
-        bereiche = self._bereiche(sitzung, eintraege)
+        bereiche = [] if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
@@ -2670,9 +2807,11 @@ class Bruecke:
         text = rueckmeldung_text(turn)
         flaeche = False
         if text:
-            titel, rechteck = f"Rückmeldung zu Aufgabe {nummer}", bereiche[nummer - 1]
-            flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_setzen(
-                s, eintrag["task"]["id"], nummer, titel, text, rechteck=rechteck))
+            titel = f"Rückmeldung zu Aufgabe {nummer}"
+            rechteck = EINZEL_RECHTECK if sitzung.je_aufgabe else bereiche[nummer - 1]
+            task = eintrag["task"]
+            flaeche = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_setzen(
+                s, task["id"], nummer, titel, text, rechteck=rechteck))
         antwort = self._nach_buchung(sitzung, turn, eintraege, bereiche, nummer, zeigen=False)
         return {**antwort, "rueckmeldung": text, "flaeche": flaeche}
 
@@ -2683,10 +2822,15 @@ class Bruecke:
         stand = self._stand_aus(sitzung.sid, eintraege, abgaben)
         self._listen_sperre(sitzung, turn)
         self._listen_vormerken(sitzung, turn, stand["aktuell"])
-        bereiche = self._bereiche(sitzung, eintraege)
+        bereiche = [] if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)
         if turn.get("state") == "completed":
             self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
-            self._bericht(sitzung, turn, {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege})
+            self._bericht(sitzung, turn, self._listen_rechtecke(sitzung, eintraege, bereiche))
+        if sitzung.je_aufgabe:
+            # `aktuell` auf seinem Canvas ins Bild (bei Bedarf angelegt); das Dokument merkt dann `_einzel_setzen`.
+            aktuell = self._eintrag_zu(eintraege, stand["aktuell"])
+            flaeche = self._aufgabe_zeigen(sitzung, aktuell["task"], aktuell["nummer"], eintrag=aktuell)
+            return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": flaeche}
         ziel = bereiche[stand["aktuell"] - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
         if flaeche:
@@ -2710,7 +2854,8 @@ class Bruecke:
         _, eintraege = self._liste_lesen(sitzung)
         eintrag = self._eintrag_zu(eintraege, nummer)
         if sitzung.je_aufgabe:
-            return {"nummer": nummer, "flaeche": self._aufgabe_zeigen(sitzung, eintrag["task"], nummer)}
+            flaeche = self._aufgabe_zeigen(sitzung, eintrag["task"], nummer, eintrag=eintrag)
+            return {"nummer": nummer, "flaeche": flaeche}
         rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
         return {"nummer": nummer, "flaeche": flaeche}
