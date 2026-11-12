@@ -237,3 +237,22 @@ def test_kurs_kurz() -> None:
     assert kurs_kurz("") == "kurs" and kurs_kurz("???") == "kurs"
     assert len(kurs_kurz("a" * 100)) == 40
     assert not kurs_kurz("ab " * 30).endswith("-")
+
+
+def test_zusammenfassung_zeigt_ki_schritte() -> None:
+    z = Zusammenfassung(
+        kurs="Mathe", datum=date(2026, 11, 9),
+        aufgaben=(
+            AufgabeZeile(1, "A", "1", "ok", None, ("solve", "hint", "hint")),
+            AufgabeZeile(2, "B", "2", "ok", None),
+            AufgabeZeile(3, "C", "3", "ok", None, ("next_step", "explain", "check_step", "practice", "plot",
+                                                  "answer", "frei", "abgeben", "next_step")),
+        ),
+        begriffe=(),
+    )
+    zeilen = [x for x in als_markdown(z).splitlines() if x.startswith("KI genutzt:")]
+    assert zeilen == [
+        "KI genutzt: Lösen, Hinweis ×2",
+        "KI genutzt: –",
+        "KI genutzt: Nächster Schritt ×2, Erklären, Prüfen, Übung, Zeichnen, Frage, Freie Anfrage, Abgabe",
+    ]

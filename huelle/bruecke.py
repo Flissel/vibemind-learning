@@ -88,7 +88,7 @@ from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
 from .uebergabe import ACTOR_MUSTER
 from .zusammenfassung import (
-    BILD_BUDGET_S, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von,
+    BILD_BUDGET_S, KI_AKTIONEN, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von,
     kernaussage, kurs_kurz,
 )
 
@@ -163,6 +163,10 @@ def _feldart(task: dict[str, Any]) -> dict[str, bool]:
 
 TRAINING_BLUEPRINT = {"max_attempts": 20}
 MAX_BODY = 256 * 1024
+# KI-Schritte je (Sitzung, Aufgabe): so viele Eintraege, danach wird nichts mehr angehaengt; hoechste Aufgabennummer.
+KI_SCHRITTE_MAX = 200
+KI_NUMMER_MAX = 500
+_KI_AUSLOESER = frozenset({"manuell", "auto"})
 MAX_FRAGE = 500
 SMILEYS = frozenset({"gut", "mittel", "schlecht"})
 _PNG = b"\x89PNG\r\n\x1a\n"
@@ -571,6 +575,10 @@ class Bruecke:
         self._gesetzt_sperre = threading.Lock()
         # Festes Raster je (Kurs, Gruppe): die erste gesetzte Mappe legt die Zellgroesse fest (im selben File).
         self._gesetzt, self._raster = self._gesetzt_lesen()
+        # KI-Schritte je Sitzung und Aufgabennummer (append-only), neben kursende.json; ohne Datei nur im Speicher.
+        self._ki_datei = None if kursende is None else kursende.parent / "ki-schritte.json"
+        self._ki_sperre = threading.Lock()
+        self._ki = self._ki_lesen()
         self._ablauf = asyncio.Lock()
         # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
         # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
@@ -607,6 +615,7 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/weiter", self._r_weiter, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/zeichnung", self._r_zeichnung, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/abgeben", self._r_abgeben, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/ki-schritt", self._r_ki_schritt, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/korrektur", self._r_korrektur, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/passt", self._r_passt, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/stand", self._r_stand, methods=["GET"]),
@@ -752,6 +761,76 @@ class Bruecke:
         else:
             self._kursende[schluessel] = sid
         self._kursende_schreiben()
+
+    # ---- KI-Schritte je Aufgabe -----------------------------------------------
+    def _ki_lesen(self) -> dict[str, dict[str, list[str]]]:
+        """sid -> {Aufgabennummer: [Aktion, ...]}; Kaputtes faellt einzeln weg, unbekannte Aktionen werden `frei`."""
+        if self._ki_datei is None:
+            return {}
+        try:
+            wert = json.loads(self._ki_datei.read_text(encoding="utf-8"))
+            items = list(wert.items())
+        except (OSError, ValueError, AttributeError):
+            return {}
+        ergebnis: dict[str, dict[str, list[str]]] = {}
+        for sid, je_nummer in items:
+            if not isinstance(sid, str) or not isinstance(je_nummer, dict):
+                continue
+            for nummer, aktionen in je_nummer.items():
+                if isinstance(nummer, str) and nummer.isdigit() and isinstance(aktionen, list):
+                    ergebnis.setdefault(sid, {})[nummer] = [
+                        a if isinstance(a, str) and a in KI_AKTIONEN else "frei" for a in aktionen[:KI_SCHRITTE_MAX]]
+        return ergebnis
+
+    def _ki_schritte_lesen(self, sid: str, nummer: int) -> tuple[str, ...]:
+        with self._ki_sperre:
+            return tuple(self._ki.get(sid, {}).get(str(nummer), ()))
+
+    def _ki_schritt_merken(self, sid: str, nummer: int, aktion: str) -> None:
+        """Haengt einen Schritt an (nie ueberschreiben, hoechstens `KI_SCHRITTE_MAX` je Aufgabe); atomar gespeichert."""
+        with self._ki_sperre:
+            liste = self._ki.setdefault(sid, {}).setdefault(str(nummer), [])
+            if len(liste) >= KI_SCHRITTE_MAX:
+                return
+            liste.append(aktion)
+            if self._ki_datei is None:
+                return
+            ziel = self._ki_datei
+            tmp: str | None = None
+            try:
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                    json.dump(self._ki, f)
+                os.replace(tmp, ziel)
+            except OSError as fehler:
+                log.warning("KI-Schritt nicht gespeichert: %s", _typ(fehler))
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
+
+    async def _r_ki_schritt(self, request: Request) -> Response:
+        """Die Flaeche meldet einen KI-Schritt; Besitz wie bei jeder Sitzungsroute (fremde Sitzung: 404)."""
+        sid = request.path_params["sid"]
+        actor = request.state.actor_id
+        try:
+            body = await self._body(request)
+            nummer = body.get("nummer")
+            if (isinstance(nummer, bool) or not isinstance(nummer, int) or not 1 <= nummer <= KI_NUMMER_MAX
+                    or body.get("ausloeser") not in _KI_AUSLOESER):
+                raise _Antwort(400, {"meldung": UNGUELTIG})
+            roh = body.get("aktion")
+            aktion = roh if isinstance(roh, str) and roh in KI_AKTIONEN else "frei"
+
+            def merken() -> None:
+                norm, _, _ = self._sitzung(actor, sid)  # eigene Sitzung (Gruppe: eigene Mappe), sonst 404
+                self._ki_schritt_merken(norm, nummer, aktion)
+
+            await run_in_threadpool(merken)
+        except _Antwort as antwort:
+            return self._json(antwort.status, antwort.body)
+        except (LearningWeg, LearningAbgelehnt):
+            return self._json(503, {"meldung": NICHT_ERREICHBAR})
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
     # ---- Teil C: gesetzte Mappen -------------------------------------------
     def _gesetzt_lesen(self) -> tuple[dict[str, dict[str, Any]], dict[str, GruppenRaster]]:
@@ -1452,6 +1531,7 @@ class Bruecke:
             zeilen.append(AufgabeZeile(
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
                 kernaussage(vor) if isinstance(vor, dict) else "–", bild,
+                self._ki_schritte_lesen(sitzung.sid, e["nummer"]),
             ))
         return Zusammenfassung(sitzung.kurs.titel, date.today(), tuple(zeilen),
                                self._begriffe_zeilen(sitzung))

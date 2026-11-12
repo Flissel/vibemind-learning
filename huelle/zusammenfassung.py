@@ -30,6 +30,25 @@ _SEITE = (8.27, 11.69)  # A4 hoch, Zoll
 _UMLAUTE = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
 
+# Feste Tabelle: Aktion der Flaechen-KI -> Name in der Zusammenfassung. Alles andere gilt als "frei".
+KI_AKTIONEN: dict[str, str] = {
+    "solve": "Lösen", "hint": "Hinweis", "next_step": "Nächster Schritt", "explain": "Erklären",
+    "check_step": "Prüfen", "practice": "Übung", "plot": "Zeichnen", "answer": "Frage",
+    "frei": "Freie Anfrage", "abgeben": "Abgabe",
+}
+
+
+def ki_genutzt(schritte: tuple[str, ...]) -> str:
+    """„KI genutzt: Lösen, Hinweis ×2“ (nach erstem Auftreten geordnet) oder „KI genutzt: –“."""
+    zaehler: dict[str, int] = {}
+    for aktion in schritte:
+        name = KI_AKTIONEN.get(aktion, KI_AKTIONEN["frei"])
+        zaehler[name] = zaehler.get(name, 0) + 1
+    if not zaehler:
+        return "KI genutzt: –"
+    return "KI genutzt: " + ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in zaehler.items())
+
+
 @dataclass(frozen=True)
 class AufgabeZeile:
     nummer: int
@@ -37,6 +56,7 @@ class AufgabeZeile:
     ergebnis: str
     kernaussage: str
     bild: bytes | None
+    ki_schritte: tuple[str, ...] = ()   # Aktionen der KI auf der Flaeche in der Reihenfolge des Auftretens
 
 
 @dataclass(frozen=True)
@@ -295,6 +315,7 @@ def als_markdown(z: Zusammenfassung) -> str:
             f"Aufgabe: {_einzeilig(a.text)}",
             f"Ergebnis: {_einzeilig(a.ergebnis)}",
             f"Rückmeldung: {_einzeilig(a.kernaussage)}",
+            ki_genutzt(a.ki_schritte),
             "",
         ]
     zeilen.append("## Begriffe")
@@ -384,6 +405,7 @@ def _aufgabenseite(a: AufgabeZeile) -> Figure:
     s.text(f"Aufgabe: {a.text}", max_zeilen=9)
     s.text(f"Ergebnis: {a.ergebnis}", max_zeilen=3)
     s.text(f"Rückmeldung: {a.kernaussage}", max_zeilen=12)
+    s.text(ki_genutzt(a.ki_schritte), max_zeilen=3)
     s.luft()
     unten = 0.06
     _bild_zeigen(s.fig, a.bild, (0.09, unten, 0.82, max(0.1, s.y - unten - 0.01)))

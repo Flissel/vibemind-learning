@@ -4579,3 +4579,121 @@ def test_listenabgabe_mit_ki_bewertung_gruppe() -> None:
         assert bewertungsakteure == [gk, gk] and gk != PA
     finally:
         bruecke.beenden()
+
+
+# ---- Task 5: KI-Schritte je Aufgabe -----------------------------------------------------------------
+
+def _ki(client: TestClient, sid: str, **body: Any) -> Any:
+    return client.post(f"/lernen/api/sitzungen/{sid}/ki-schritt", json=body)
+
+
+def _ki_zeilen(ordner) -> list[str]:
+    (md,) = _md_dateien(ordner)
+    return [z for z in md.read_text(encoding="utf-8").splitlines() if z.startswith("KI genutzt:")]
+
+
+def test_ki_schritt_wird_je_aufgabe_gezaehlt(tmp_path) -> None:
+    import dataclasses
+
+    ordner = tmp_path / "wissen"
+    ll = ListenLern(2)
+    client, _ = _zf_offen(ll, einstellung=dataclasses.replace(E, zusammenfassung_ordner=str(ordner)))
+    try:
+        for aktion in ("solve", "hint", "hint"):
+            r = _ki(client, SID, nummer=1, aktion=aktion, ausloeser="manuell")
+            assert r.status_code == 204 and r.content == b"", r.text
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert _ki_zeilen(ordner) == ["KI genutzt: Lösen, Hinweis ×2", "KI genutzt: –"]
+    finally:
+        client.app.beenden()
+
+
+def test_ki_schritt_fremde_sitzung_404() -> None:
+    ll = ListenLern(2)
+    client, _, _ = _listen_offen(ll)
+    try:
+        fremd = als(TestClient(client.app), "person-fremd")
+        assert _ki(fremd, SID, nummer=1, aktion="solve", ausloeser="auto").status_code == 404
+        assert client.app._ki_schritte_lesen(SID, 1) == ()
+    finally:
+        client.app.beenden()
+
+
+def test_ki_schritt_unbekannte_aktion_wird_frei() -> None:
+    ll = ListenLern(2)
+    client, _, _ = _listen_offen(ll)
+    try:
+        for aktion in ("hack", 5, None, "x" * 5000):
+            assert _ki(client, SID, nummer=1, aktion=aktion, ausloeser="auto").status_code == 204
+        assert client.app._ki_schritte_lesen(SID, 1) == ("frei",) * 4
+    finally:
+        client.app.beenden()
+
+
+def test_ki_schritt_ungueltige_koerper() -> None:
+    ll = ListenLern(2)
+    client, _, _ = _listen_offen(ll)
+    try:
+        for body in ({"nummer": 0, "aktion": "solve", "ausloeser": "auto"},
+                     {"nummer": True, "aktion": "solve", "ausloeser": "auto"},
+                     {"nummer": "1", "aktion": "solve", "ausloeser": "auto"},
+                     {"aktion": "solve", "ausloeser": "auto"},
+                     {"nummer": 1, "aktion": "solve", "ausloeser": "sonst"},
+                     {"nummer": 1, "aktion": "solve"}):
+            assert _ki(client, SID, **body).status_code == 400, body
+        assert client.app._ki_schritte_lesen(SID, 1) == ()
+    finally:
+        client.app.beenden()
+
+
+def test_ki_schritte_sind_begrenzt() -> None:
+    ll = ListenLern(2)
+    client, _, _ = _listen_offen(ll)
+    try:
+        for _ in range(205):
+            _ki(client, SID, nummer=1, aktion="hint", ausloeser="auto")
+        assert len(client.app._ki_schritte_lesen(SID, 1)) == 200
+    finally:
+        client.app.beenden()
+
+
+def test_ki_schritte_ueberstehen_neustart(tmp_path) -> None:
+    import dataclasses
+
+    datei = tmp_path / "kursende.json"
+    ordner = tmp_path / "wissen"
+    ein = dataclasses.replace(E, zusammenfassung_ordner=str(ordner))
+    ll = ListenLern(2)
+    client, _, _ = _listen_offen(ll, kursende=datei, einstellung=ein)
+    try:
+        assert _ki(client, SID, nummer=2, aktion="explain", ausloeser="manuell").status_code == 204
+    finally:
+        client.app.beenden()
+    client2, _, _ = _listen_offen(ll, kursende=datei, einstellung=ein)
+    try:
+        assert _ki(client2, SID, nummer=2, aktion="explain", ausloeser="auto").status_code == 204
+        assert client2.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert _ki_zeilen(ordner) == ["KI genutzt: –", "KI genutzt: Erklären ×2"]
+    finally:
+        client2.app.beenden()
+
+
+def test_ki_schritt_gruppe_eigene_person() -> None:
+    ga, gb = gruppen_lern_kennung(PA, GID), gruppen_lern_kennung(PB, GID)
+    laeufe = Laeufe({ga: SID_GA, gb: SID_GB})
+    a, _, _, _ = _gruppen_bruecke(laeufe)
+    b = als(TestClient(a.app), PB)
+    b.headers[KOPF] = KB
+    bruecke = a.app
+    try:
+        assert a.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert b.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert _ki(a, SID_GA, nummer=1, aktion="hint", ausloeser="manuell").status_code == 204
+        # B schreibt nie in As Sitzung ...
+        assert _ki(b, SID_GA, nummer=1, aktion="solve", ausloeser="manuell").status_code == 404
+        # ... sondern nur in die eigene.
+        assert _ki(b, SID_GB, nummer=1, aktion="plot", ausloeser="auto").status_code == 204
+        assert bruecke._ki_schritte_lesen(SID_GA, 1) == ("hint",)
+        assert bruecke._ki_schritte_lesen(SID_GB, 1) == ("plot",)
+    finally:
+        bruecke.beenden()
