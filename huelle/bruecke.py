@@ -64,7 +64,7 @@ from starlette.routing import Route
 from ..contracts.beschriftung import beschriften
 from .anordnung import (
     GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_abschluss, mappen_bereiche,
-    mappen_kopf, mappen_ursprung,
+    mappen_kopf, mappen_ursprung, passt_in,
 )
 from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
@@ -75,6 +75,10 @@ from .gruppe import (
 from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
+from .medien import MEDIEN_NAME, MEDIEN_ROUTE
+from .medien import bildname as _bildname
+from .medien import gross as _gross
+from .medien import medien as _medien
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoGruppenbindung, PenEchoMcp, PenEchoNichtErreichbar,
     PenEchoSitzungUnbekannt, loesungsfeld,
@@ -191,11 +195,7 @@ class _Anfrage:
 
 
 _ANFRAGE: ContextVar[_Anfrage | None] = ContextVar("lernflaeche", default=None)
-# Bilder der Aufgaben (gezeichnete Graphen, Terminalfenster) liegen bei learning-api; die Seite holt sie
-# ueber die eigene Route. Gleiches Namensmuster wie der Fork (practice.py `_MEDIA_PATH`).
-MEDIEN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(png|jpg|webp)$")
-_MEDIEN_PFAD = re.compile(r"^/lernsequenz-medien/([A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:png|jpg|webp))$")
-MEDIEN_ROUTE = "/lernen/api/medien/"
+# Bilder der Aufgaben: Namensmuster, Route und Hoehenregel in `medien` (gemeinsam mit learning-mcp).
 _MEDIEN_ART = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 MAX_MEDIUM = 8 * 1024 * 1024
 # Teil C: Gruppenroute `gruppen/{gruppe_id}/oeffnen`, 1 bis 9 Ziffern ohne fuehrende Null (wie die Weiche).
@@ -208,6 +208,30 @@ _RASTER_PRAEFIX = "raster|"  # gruppen-gesetzt.json: festes Raster je (Kurs, Gru
 
 def _typ(fehler: BaseException) -> str:
     return type(fehler).__name__
+
+
+_RASTER_ZAHLEN = ("breite", "hoehe", "spalten", "zeilen")
+
+
+def _raster_aus(wert: dict[str, Any]) -> GruppenRaster | None:
+    """Festes Raster aus `gruppen-gesetzt.json`; vier Zahlen = altes Raster, sonst mit `teilspalten` und `zugabe`."""
+    zahlen = [wert.get(f) for f in _RASTER_ZAHLEN]
+    if not all(type(z) is int and z > 0 for z in zahlen):
+        return None
+    if "teilspalten" not in wert and "zugabe" not in wert:
+        return GruppenRaster(*zahlen)
+    teilspalten, zugabe = wert.get("teilspalten"), wert.get("zugabe")
+    if type(teilspalten) is not int or teilspalten < 1 or type(zugabe) is not int or zugabe < 0:
+        return None
+    return GruppenRaster(*zahlen, teilspalten=teilspalten, zugabe=zugabe)
+
+
+def _raster_eintrag(r: GruppenRaster) -> dict[str, int]:
+    """Gegenstueck zu `_raster_aus`: ein altes Raster bleibt bei vier Zahlen."""
+    eintrag = {"breite": r.breite, "hoehe": r.hoehe, "spalten": r.spalten, "zeilen": r.zeilen}
+    if r.teilspalten is not None:
+        eintrag.update(teilspalten=r.teilspalten, zugabe=r.zugabe)
+    return eintrag
 
 
 def gruppen_lern_kennung(actor: str, gruppe_id: int) -> str:
@@ -308,49 +332,6 @@ def _nummer(turn: dict[str, Any]) -> int:
     return (completed if isinstance(completed, int) and not isinstance(completed, bool) else 0) + 1
 
 
-def _medien(turn: dict[str, Any]) -> dict[str, Any]:
-    """Bildfelder der Aufgabe auf die eigene Route umschreiben, alles andere darin entfernen (wie der Fork)."""
-    task = turn.get("task")
-    presentation = task.get("presentation") if isinstance(task, dict) else None
-    if not isinstance(presentation, dict):
-        return turn
-
-    def fix(eintrag: dict[str, Any]) -> None:
-        if "image" not in eintrag or eintrag["image"] is None:
-            return
-        bild = eintrag["image"]
-        treffer = _MEDIEN_PFAD.fullmatch(bild) if isinstance(bild, str) else None
-        if treffer:
-            eintrag["image"] = MEDIEN_ROUTE + treffer.group(1)
-        else:
-            eintrag.pop("image")
-
-    fix(presentation)
-    for seite in ("left", "right"):
-        eintraege = presentation.get(seite)
-        for eintrag in eintraege if isinstance(eintraege, list) else []:
-            if isinstance(eintrag, dict):
-                fix(eintrag)
-    return turn
-
-
-def _hat_bilder(task: dict[str, Any]) -> bool:
-    """Ob die Aufgabe Bilder hat, aus denselben Eintraegen wie `Bruecke._aufgabenbilder`, ohne sie zu laden."""
-    presentation = task.get("presentation")
-    if not isinstance(presentation, dict):
-        return False
-    eintraege = [presentation]
-    for seite in ("left", "right"):
-        liste = presentation.get(seite)
-        eintraege += [e for e in (liste if isinstance(liste, list) else []) if isinstance(e, dict)]
-    return any(_bildname(e.get("image")) is not None for e in eintraege)
-
-
-def _gross(task: dict[str, Any]) -> bool:
-    """Hoher Bereich (anordnung.HOEHE_GROSS): Aufgaben mit Bildern und Zeichenaufgaben."""
-    return task.get("type") == "penecho_canvas" or _hat_bilder(task)
-
-
 _LISTEN_STATUS = frozenset({"offen", "bestaetigt"})
 
 
@@ -393,14 +374,6 @@ def _ablehnungstext(code: str) -> str:
     if code == "session_access_denied":
         return NUR_UEBEN
     return SCHON_ABGEGEBEN if code in _SCHON_ABGEGEBEN_CODES else NICHT_ANGENOMMEN
-
-
-def _bildname(wert: object) -> str | None:
-    """Name eines Aufgabenbilds auf der eigenen Route (nach `_medien`); sonst None."""
-    if not isinstance(wert, str) or not wert.startswith(MEDIEN_ROUTE):
-        return None
-    name = wert.removeprefix(MEDIEN_ROUTE)
-    return name if MEDIEN_NAME.fullmatch(name) else None
 
 
 def _seitenverhaeltnis(eintrag: dict[str, Any]) -> float:
@@ -779,7 +752,8 @@ class Bruecke:
     # ---- Teil C: gesetzte Mappen -------------------------------------------
     def _gesetzt_lesen(self) -> tuple[dict[str, dict[str, Any]], dict[str, GruppenRaster]]:
         """(gesetzte Mappen, feste Raster): Mappen `Kennung|Kurs|g<id>` -> {sid, gesetzt}; Raster
-        `raster|Kurs|g<id>` -> {breite, hoehe, spalten, zeilen}. Kaputtes faellt einzeln weg."""
+        `raster|Kurs|g<id>` -> {breite, hoehe, spalten, zeilen[, teilspalten, zugabe]}. Ein Eintrag mit vier Zahlen
+        ist ein altes Raster (eine Spalte, Zugabe 200). Kaputtes faellt einzeln weg."""
         if self._gesetzt_datei is None:
             return {}, {}
         try:
@@ -793,9 +767,9 @@ class Bruecke:
             if not isinstance(k, str) or not isinstance(v, dict):
                 continue
             if k.startswith(_RASTER_PRAEFIX):
-                zahlen = [v.get(f) for f in ("breite", "hoehe", "spalten", "zeilen")]
-                if all(type(z) is int and z > 0 for z in zahlen):
-                    raster[k] = GruppenRaster(*zahlen)
+                gelesen = _raster_aus(v)
+                if gelesen is not None:
+                    raster[k] = gelesen
             elif isinstance(v.get("sid"), str) and v.get("gesetzt") is True:
                 mappen[k] = {"sid": v["sid"], "gesetzt": True}
         return mappen, raster
@@ -826,9 +800,7 @@ class Bruecke:
             tmp: str | None = None
             try:
                 ziel.parent.mkdir(parents=True, exist_ok=True)
-                inhalt: dict[str, Any] = {**self._gesetzt, **{
-                    k: {"breite": r.breite, "hoehe": r.hoehe, "spalten": r.spalten, "zeilen": r.zeilen}
-                    for k, r in self._raster.items()}}
+                inhalt: dict[str, Any] = {**self._gesetzt, **{k: _raster_eintrag(r) for k, r in self._raster.items()}}
                 fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
                 with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                     json.dump(inhalt, f)
@@ -1140,18 +1112,21 @@ class Bruecke:
             sitzung.platz = self._platz(sitzung.actor, sitzung.gruppe)
         h = hoehen([_gross(e["task"]) for e in eintraege])
         try:
-            eigen = gruppen_raster(h)
             # Festes Raster der Gruppe (erste gesetzte Mappe). Passt eine noch nicht gesetzte Mappe nicht in seine
             # Zelle, ist sie voll. Eine schon gesetzte Mappe dieser Person (gruppen-gesetzt.json) nie: sie rechnet
-            # immer im festen Raster, damit Abgeben, Rueckmeldung und Bericht weiter gehen.
+            # immer im festen Raster, damit Abgeben, Rueckmeldung und Bericht weiter gehen. Ein altes festes Raster
+            # (ohne Teilspalten) rechnet wie bisher; nur eine Gruppe ohne festes Raster bekommt das neue.
             fest = self._festes_raster(sitzung.kurs, sitzung.gruppe) if sitzung.gruppe is not None else None
-            schon_gesetzt = self._gesetzt_sid(
-                self._ende_schluessel(sitzung.actor, sitzung.kurs, sitzung.gruppe)) is not None
-            if fest is not None and not schon_gesetzt and (eigen.breite > fest.breite or eigen.hoehe > fest.hoehe):
-                raise MappeVoll("Mappe passt nicht in das feste Raster der Gruppe")
-            raster = fest or eigen
+            if fest is None:
+                raster = gruppen_raster(h)
+            else:
+                schon_gesetzt = self._gesetzt_sid(
+                    self._ende_schluessel(sitzung.actor, sitzung.kurs, sitzung.gruppe)) is not None
+                if not passt_in(h, fest) and not schon_gesetzt:
+                    raise MappeVoll("Mappe passt nicht in das feste Raster der Gruppe")
+                raster = fest
             ursprung = mappen_ursprung(sitzung.platz, raster)
-            return ursprung, mappen_bereiche(h, ursprung), raster
+            return ursprung, mappen_bereiche(h, ursprung, raster), raster
         except ZuVieleAufgaben:
             raise _Antwort(409, {"meldung": ZU_VIELE_AUFGABEN, "code": "zu_viele_aufgaben"}) from None
         except MappeVoll:

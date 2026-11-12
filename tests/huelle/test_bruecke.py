@@ -3862,12 +3862,14 @@ def test_gruppe_oeffnen_setzt_schild_aufgaben_schutz() -> None:
         (start,) = _aufrufe(laeufe.lern, "learning_session_start")
         assert start["course_id"] == KURS_P and start["payload"]["ablauf"] == "liste"
         assert set(laeufe.lern.akteure) == {gruppen_lern_kennung(PA, GID)}
-        # Mappe auf Platz 1: Schild im Kopf, erster Bereich bei Ursprung + (0, 150).
+        # Mappe auf Platz 1: Schild im Kopf, erster Bereich bei Ursprung + (0, 150). Neue Gruppe: neues Raster
+        # (eine Teilspalte, 100 Luft je Richtung, also Platzbreite 2200).
         raster = gruppen_raster([800] * 3)
+        assert (raster.teilspalten, raster.zugabe) == (1, 100)
         ursprung = mappen_ursprung(1, raster)
-        assert ursprung == (2400, 100)
-        bereiche = mappen_bereiche([800] * 3, ursprung)
-        assert bereiche[0] == {"x": 2400, "y": 250, "w": 1300, "h": 800}
+        assert ursprung == (2300, 100)
+        bereiche = mappen_bereiche([800] * 3, ursprung, raster)
+        assert bereiche[0] == {"x": 2300, "y": 250, "w": 1300, "h": 800}
         (schild,) = [a for a in penecho.aufrufe if a[0] == "schild_setzen"]
         assert schild[2:4] == (f"mappe-{GID}-{person}", "Anna A.")
         kopf = schild[4]
@@ -3903,7 +3905,8 @@ def test_gruppe_zweimal_oeffnen_setzt_einmal(tmp_path) -> None:
         r3 = gruppen_raster([800] * 3)
         assert gemerkt == {f"{PA}|{KURS_P}|g{GID}": {"sid": SID_GA, "gesetzt": True},
                            f"raster|{KURS_P}|g{GID}": {"breite": r3.breite, "hoehe": r3.hoehe,
-                                                       "spalten": r3.spalten, "zeilen": r3.zeilen}}
+                                                       "spalten": r3.spalten, "zeilen": r3.zeilen,
+                                                       "teilspalten": 1, "zugabe": 100}}
         assert not kursende.exists() or f"{PA}|{KURS_P}" not in json.loads(kursende.read_text(encoding="utf-8"))
     finally:
         client.app.beenden()
@@ -4148,7 +4151,8 @@ def test_gruppe_raster_fest_je_gruppe(tmp_path) -> None:
         fest = gruppen_raster([800] * 3)
         gemerkt = json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8"))
         assert gemerkt[f"raster|{KURS_P}|g{GID}"] == {
-            "breite": fest.breite, "hoehe": fest.hoehe, "spalten": fest.spalten, "zeilen": fest.zeilen}
+            "breite": fest.breite, "hoehe": fest.hoehe, "spalten": fest.spalten, "zeilen": fest.zeilen,
+            "teilspalten": fest.teilspalten, "zugabe": fest.zugabe}
         vorher = len(penecho.aufrufe)
         r = b.post(f"/lernen/api/gruppen/{GID}/oeffnen")
         assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
@@ -4309,3 +4313,85 @@ def test_gruppe_reiht_mit_der_echten_person_ein() -> None:
         assert {w for _, _, w in modell + flaeche} == {PA}  # nie `actor:g<gid>`
     finally:
         bruecke.beenden()
+
+
+# ---- Kapazitaet (12.11.): neues Raster fuer neue Gruppen, alte feste Raster unveraendert ------------------------
+
+def _raster_vektor(fall: str) -> dict[str, Any]:
+    from pathlib import Path
+
+    vektor = Path(__file__).with_name("raster_alt_vektor.json")
+    return json.loads(vektor.read_text(encoding="utf-8"))[fall]
+
+
+def test_altes_festes_raster_aus_der_datei_bleibt_exakt(tmp_path) -> None:
+    """PFLICHT: eine laufende Gruppe mit altem festen Raster (vier Zahlen in gruppen-gesetzt.json) setzt die Mappe
+    einer neuen Person exakt dort, wo sie vor der Kapazitaetsaenderung lag; der Eintrag bleibt bei vier Zahlen."""
+    alt = _raster_vektor("3x800")
+    kursende = tmp_path / "kursende.json"
+    raster_schluessel = f"raster|{KURS_P}|g{GID}"
+    (tmp_path / "gruppen-gesetzt.json").write_text(json.dumps({
+        f"{PB}|{KURS_P}|g{GID}": {"sid": SID_GB, "gesetzt": True},
+        raster_schluessel: alt["raster"]}), encoding="utf-8")
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA})
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe, kursende=kursende)
+    abgleich.plaetze["p-jemand-anders"] = 0  # A bekommt Platz 1
+    try:
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        erwartet = alt["plaetze"][1]
+        assert erwartet["ursprung"] == [2400, 100]  # altes Raster: Platzbreite 2300
+        bereiche = [[b["x"], b["y"], b["w"], b["h"]] for _, b in sorted(penecho.rechtecke, key=lambda t: t[0])]
+        assert bereiche == erwartet["bereiche"]
+        (schild,) = [a for a in penecho.aufrufe if a[0] == "schild_setzen"]
+        assert [schild[4][k] for k in "xywh"] == erwartet["kopf"]
+        gemerkt = json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8"))
+        assert gemerkt[raster_schluessel] == alt["raster"]  # vier Zahlen, kein neues Raster
+        assert gemerkt[f"{PA}|{KURS_P}|g{GID}"] == {"sid": SID_GA, "gesetzt": True}
+    finally:
+        client.app.beenden()
+
+
+def test_raster_eintraege_lesen_alt_neu_kaputt() -> None:
+    from spaces.learning.huelle.anordnung import GruppenRaster
+    from spaces.learning.huelle.bruecke import _raster_aus, _raster_eintrag
+
+    alt = {"breite": 2100, "hoehe": 2850, "spalten": 8, "zeilen": 6}
+    assert _raster_aus(alt) == GruppenRaster(2100, 2850, 8, 6, teilspalten=None, zugabe=200)
+    neu = {**alt, "breite": 8850, "hoehe": 3800, "spalten": 2, "zeilen": 5, "teilspalten": 4, "zugabe": 100}
+    assert _raster_aus(neu) == GruppenRaster(8850, 3800, 2, 5, teilspalten=4, zugabe=100)
+    assert _raster_eintrag(_raster_aus(alt)) == alt and _raster_eintrag(_raster_aus(neu)) == neu
+    for kaputt in ({**alt, "teilspalten": 0, "zugabe": 100}, {**alt, "teilspalten": 2}, {**alt, "zugabe": 100},
+                   {**alt, "teilspalten": True, "zugabe": 100}, {**alt, "teilspalten": 2, "zugabe": -1},
+                   {**alt, "spalten": 0}, {**alt, "teilspalten": None, "zugabe": 200}):
+        assert _raster_aus(kaputt) is None, kaputt
+
+
+def test_neue_gruppe_16_aufgaben_zehn_mappen_dann_voll(tmp_path) -> None:
+    """Neue Gruppe mit 16 Aufgaben: vier Teilspalten, zehn Plaetze; Platz 9 bekommt seine Mappe (in vier Teilspalten,
+    innerhalb der Flaeche), Platz 10 bekommt 409 GRUPPE_VOLL, bevor etwas gesetzt wird."""
+    fest = gruppen_raster([800] * 16)
+    assert (fest.teilspalten, fest.plaetze) == (4, 10)
+    laeufe = Laeufe({gruppen_lern_kennung(PA, GID): SID_GA}, n=16)
+    client, penecho, abgleich, _ = _gruppen_bruecke(laeufe, abgleich=None, kursende=tmp_path / "kursende.json")
+    abgleich.ab = 9
+    try:
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        bereiche = [b for _, b in sorted(penecho.rechtecke, key=lambda t: t[0])]
+        u = mappen_ursprung(9, fest)
+        assert bereiche == mappen_bereiche([800] * 16, u, fest)
+        assert {b["x"] - u[0] for b in bereiche} == {0, 2250, 4500, 6750}
+        assert all(b["x"] + 2100 <= 20_000 and b["y"] + b["h"] <= 20_000 for b in bereiche)
+        gemerkt = json.loads((tmp_path / "gruppen-gesetzt.json").read_text(encoding="utf-8"))
+        assert gemerkt[f"raster|{KURS_P}|g{GID}"]["teilspalten"] == 4
+    finally:
+        client.app.beenden()
+    laeufe_b = Laeufe({gruppen_lern_kennung(PB, GID): SID_GB}, n=16)
+    dienst = FakeAbgleich([], ab=10)
+    b, penecho_b, _, _ = _gruppen_bruecke(laeufe_b, abgleich=dienst, kursende=tmp_path / "kursende.json", actor=PB,
+                                          kennung=KB)
+    try:
+        r = b.post(f"/lernen/api/gruppen/{GID}/oeffnen")
+        assert r.status_code == 409 and r.json() == {"meldung": GRUPPE_VOLL}
+        assert [x for x in penecho_b.aufrufe if x[0] in ("schild_setzen", "aufgabe_setzen")] == []
+    finally:
+        b.app.beenden()
