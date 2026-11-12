@@ -185,11 +185,16 @@ export function flaecheSpeichern(iframe, {
 }
 
 // ---- Nachrichten der Flaeche an die Huelle ---------------------------------------------------------
-// PenEcho meldet drei Dinge an `window.parent`: huelle-abgeben, huelle-ki-schritt, huelle-mcp-bereit. PenEcho kennt
+// PenEcho meldet vier Dinge an `window.parent`: huelle-abgeben, huelle-ki-schritt, huelle-mcp-bereit, huelle-dokument-aktiv. PenEcho kennt
 // sein Ziel nur ungefaehr (ancestorOrigins, Referrer, sonst "*"); deshalb prueft die Huelle hier selbst: die Quelle
 // muss der eigene Flaechen-iframe sein und die Herkunft die der Flaechen-Adresse (wie beim Speichern).
 const BEREICH_MAX = 499; // Route ki-schritt: nummer = bereich + 1, hoechstens 500
 const AUSLOESER = new Set(["manuell", "auto"]);
+
+/** PenEchos documentId: kurzer Bezeichner aus festen Zeichen. */
+export function dokumentGueltig(d) {
+  return typeof d === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(d);
+}
 
 function bereichGueltig(b) {
   return Number.isInteger(b) && b >= 0 && b <= BEREICH_MAX;
@@ -202,10 +207,18 @@ export function nachrichtAusFlaeche(ereignis, erwarteteQuelle, erwarteteHerkunft
   const d = ereignis.data;
   if (!d || typeof d !== "object") return null;
   if (d.typ === "huelle-mcp-bereit") return { typ: d.typ };
-  if (d.typ === "huelle-abgeben") return bereichGueltig(d.bereich) ? { typ: d.typ, bereich: d.bereich } : null;
+  if (d.typ === "huelle-dokument-aktiv") return dokumentGueltig(d.dokument) ? { typ: d.typ, dokument: d.dokument } : null;
+  if (d.typ === "huelle-abgeben") {
+    if (!bereichGueltig(d.bereich)) return null;
+    return dokumentGueltig(d.dokument)
+      ? { typ: d.typ, bereich: d.bereich, dokument: d.dokument }
+      : { typ: d.typ, bereich: d.bereich };
+  }
   if (d.typ === "huelle-ki-schritt") {
     if (!bereichGueltig(d.bereich) || typeof d.aktion !== "string" || !AUSLOESER.has(d.ausloeser)) return null;
-    return { typ: d.typ, bereich: d.bereich, aktion: d.aktion, ausloeser: d.ausloeser };
+    const m = { typ: d.typ, bereich: d.bereich, aktion: d.aktion, ausloeser: d.ausloeser };
+    if (dokumentGueltig(d.dokument)) m.dokument = d.dokument;
+    return m;
   }
   return null;
 }

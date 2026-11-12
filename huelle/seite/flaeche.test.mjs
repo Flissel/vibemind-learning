@@ -330,3 +330,26 @@ test("huelle.js verdrahtet die Nachrichten der Flaeche (Quelltext)", async () =>
   assert.match(js, /autoVerbindenFaellig\(/);
   assert.match(js, /z\.turn\?\.session_id !== t\.session_id/);
 });
+
+test("nachrichtAusFlaeche: gültiges dokument wird übernommen, ungültiges weggelassen", () => {
+  const quelle = {};
+  const e = (data) => ({ source: quelle, origin: FLAECHE, data });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-abgeben", bereich: 0, dokument: "doc-1" }), quelle, FLAECHE),
+    { typ: "huelle-abgeben", bereich: 0, dokument: "doc-1" });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-abgeben", bereich: 0, dokument: "<x>" }), quelle, FLAECHE),
+    { typ: "huelle-abgeben", bereich: 0 });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-ki-schritt", bereich: 1, aktion: "a", ausloeser: "auto", dokument: "doc-2" }), quelle, FLAECHE),
+    { typ: "huelle-ki-schritt", bereich: 1, aktion: "a", ausloeser: "auto", dokument: "doc-2" });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-ki-schritt", bereich: 1, aktion: "a", ausloeser: "auto", dokument: 5 }), quelle, FLAECHE),
+    { typ: "huelle-ki-schritt", bereich: 1, aktion: "a", ausloeser: "auto" });
+});
+
+test("nachrichtAusFlaeche: huelle-dokument-aktiv nur mit gültigem dokument", () => {
+  const quelle = {};
+  const e = (data) => ({ source: quelle, origin: FLAECHE, data });
+  assert.equal(nachrichtAusFlaeche(e({ typ: "huelle-dokument-aktiv" }), quelle, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche(e({ typ: "huelle-dokument-aktiv", dokument: "a b" }), quelle, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche(e({ typ: "huelle-dokument-aktiv", dokument: "x".repeat(257) }), quelle, FLAECHE), null);
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-dokument-aktiv", dokument: "doc-1", extra: 1 }), quelle, FLAECHE),
+    { typ: "huelle-dokument-aktiv", dokument: "doc-1" });
+});

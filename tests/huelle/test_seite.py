@@ -231,7 +231,9 @@ def test_leiste_ueber_der_flaeche_ist_verdrahtet() -> None:
     assert 'from "./flaeche.js"' in js and "flaecheSpeichern(" in js
     for route in ("/abgeben", "/korrektur", "/passt"):
         assert route in js, route
-    assert "alert(" not in js and "confirm(" not in js
+    # Keine Dialoge, außer der einen Rückfrage vor „Kurs abgeben“ (fester Text, global.md).
+    assert "alert(" not in js
+    assert js.count("confirm(") == 1 and "window.confirm(KURS_ABGEBEN_RUECKFRAGE)" in js
 
 
 def test_leisten_hinweis_ist_in_der_hoehe_begrenzt() -> None:

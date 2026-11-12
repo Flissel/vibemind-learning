@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LISTEN_MELDUNGEN, mussAbfragen, naechsteOffene, statusText, warteText } from "./liste.js";
+import {
+  entwurfSperrt, entwurfText, kursAbgabeText, kursAbgebenSichtbar, LISTEN_MELDUNGEN, mussAbfragen, naechsteOffene,
+  nummerAusDokument, statusText, warteText,
+} from "./liste.js";
 
 const b = { status: "bestaetigt" };
 const o = { status: "offen" };
@@ -120,4 +123,38 @@ test("mussAbfragen auch, solange eine Karte noch auf die Fläche kommt (karte_au
   assert.equal(mussAbfragen([o, { status: "rueckmeldung", karte_ausstehend: true }]), true);
   assert.equal(mussAbfragen([o, { status: "rueckmeldung", karte: "Gelesen: 2" }]), false);
   assert.equal(mussAbfragen([o, { status: "rueckmeldung", karte_ausstehend: false }]), false);
+});
+
+test("nummerAusDokument: bekannte Dokumente, sonst null", () => {
+  assert.equal(nummerAusDokument({ "doc-1": 2 }, "doc-1"), 2);
+  assert.equal(nummerAusDokument({ "doc-1": 2 }, "doc-9"), null);
+  assert.equal(nummerAusDokument({ "doc-1": 2 }, "constructor"), null);
+  assert.equal(nummerAusDokument(undefined, "doc-1"), null);
+  assert.equal(nummerAusDokument({ "doc-1": 2 }, undefined), null);
+});
+
+test("kursAbgabeText: Fortschritt, fertig, Fehlercode, fertiger Text, null", () => {
+  assert.equal(kursAbgabeText({ zustand: "laeuft", aktuell: 3, gesamt: 8 }), "Aufgabe 3 von 8 wird bewertet …");
+  assert.equal(kursAbgabeText({ zustand: "fertig", aktuell: 8, gesamt: 8 }), "Kurs abgegeben.");
+  assert.equal(kursAbgabeText({ zustand: "fehler", meldung: "FLAECHE_BESCHAEFTIGT" }), "Bitte kurz warten und erneut abgeben.");
+  const text = "Aufgabe 2 und 4 konnten nicht gelesen werden. Bitte prüfen Sie die Fläche.";
+  assert.equal(kursAbgabeText({ zustand: "fehler", meldung: text }), text);
+  assert.equal(kursAbgabeText(null), "");
+});
+
+test("kursAbgebenSichtbar: nur im Modell, nicht am Ende, nicht während des Laufs", () => {
+  assert.equal(kursAbgebenSichtbar({ jeAufgabe: true, phase: "aufgabe", kursabgabe: null }), true);
+  assert.equal(kursAbgebenSichtbar({ jeAufgabe: false, phase: "aufgabe", kursabgabe: null }), false);
+  assert.equal(kursAbgebenSichtbar({ jeAufgabe: true, phase: "ende", kursabgabe: null }), false);
+  assert.equal(kursAbgebenSichtbar({ jeAufgabe: true, phase: "aufgabe", kursabgabe: { zustand: "laeuft" } }), false);
+  assert.equal(kursAbgebenSichtbar({ jeAufgabe: true, phase: "aufgabe", kursabgabe: { zustand: "fehler" } }), true);
+});
+
+test("entwurfSperrt: nur ungesendeter Code-Entwurf einer unbestätigten Aufgabe", () => {
+  assert.equal(entwurfSperrt({ typ: "code", status: "offen", entwurf: "x = 1" }), true);
+  assert.equal(entwurfSperrt({ typ: "code", status: "offen", entwurf: "  \n " }), false);
+  assert.equal(entwurfSperrt({ typ: "code", status: "offen", entwurf: null }), false);
+  assert.equal(entwurfSperrt({ typ: "code", status: "bestaetigt", entwurf: "x" }), false);
+  assert.equal(entwurfSperrt({ typ: "flaeche", status: "offen", entwurf: "x" }), false);
+  assert.equal(entwurfText(3), "Bitte senden Sie zuerst Ihre Antwort zu Aufgabe 3 ab, bevor Sie den Kurs abgeben.");
 });

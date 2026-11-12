@@ -1,4 +1,4 @@
-import { NICHT_LESBAR } from "./aufgabe.js";
+import { FEHLER_TEXTE, meldungFuer, NICHT_LESBAR } from "./aufgabe.js";
 
 // Listenkurs: reine Hilfen für die Kopfzeile „‹ Aufgabe k von n ›“ und die Abgaben im Hintergrund.
 // Der Stand kommt von der Brücke (`GET …/stand`): je Aufgabe {nummer, status, urteil, vorbewertung_id, meldung}.
@@ -95,3 +95,45 @@ export function mussAbfragen(aufgaben) {
   // Auch solange die Brücke eine Karte noch auf die Fläche setzt: scheitert sie, kommt ihr Text als `karte`.
   return Array.isArray(aufgaben) && aufgaben.some((a) => a?.status === "in_bewertung" || a?.karte_ausstehend === true);
 }
+
+// ---- Ein Canvas je Aufgabe: Dokumentzuordnung und „Kurs abgeben“ ----------------------------------------------
+
+/** Rückfrage vor „Kurs abgeben“ (global.md). */
+export const KURS_ABGEBEN_RUECKFRAGE =
+  "Alle offenen Aufgaben abgeben und den Kurs abschließen? Nicht bearbeitete Aufgaben zählen 0 Punkte.";
+
+/** Aufgabennummer zu einer PenEcho-Dokument-ID (`dokumente`: {documentId: nummer}); unbekannt: null. */
+export function nummerAusDokument(dokumente, dokument) {
+  if (!dokumente || typeof dokumente !== "object" || typeof dokument !== "string") return null;
+  if (!Object.hasOwn(dokumente, dokument)) return null;
+  const nummer = dokumente[dokument];
+  return Number.isInteger(nummer) ? nummer : null;
+}
+
+/**
+ * Text zum Stand von „Kurs abgeben“. Bei einem Fehler ist `meldung` ein bekannter Fehlercode (fester Text)
+ * oder ein fertiger deutscher Text der Brücke (unverändert).
+ */
+export function kursAbgabeText(kursabgabe) {
+  if (!kursabgabe || typeof kursabgabe !== "object") return "";
+  if (kursabgabe.zustand === "laeuft") return `Aufgabe ${kursabgabe.aktuell} von ${kursabgabe.gesamt} wird bewertet …`;
+  if (kursabgabe.zustand === "fertig") return "Kurs abgegeben.";
+  if (kursabgabe.zustand === "fehler") {
+    const m = typeof kursabgabe.meldung === "string" ? kursabgabe.meldung : "";
+    return Object.hasOwn(FEHLER_TEXTE, m) ? meldungFuer({ fehler: m }) : m || meldungFuer({});
+  }
+  return "";
+}
+
+/** Der Knopf „Kurs abgeben“: nur im Modell „ein Canvas je Aufgabe“, nicht am Kursende, nicht während eines Laufs. */
+export function kursAbgebenSichtbar({ jeAufgabe, phase, kursabgabe }) {
+  return jeAufgabe === true && phase !== "ende" && kursabgabe?.zustand !== "laeuft";
+}
+
+/** Ein nicht gesendeter Antwortentwurf (Typ `code`) sperrt „Kurs abgeben“, solange die Aufgabe nicht bestätigt ist. */
+export function entwurfSperrt({ typ, status, entwurf }) {
+  return typ === "code" && status !== "bestaetigt" && typeof entwurf === "string" && entwurf.trim() !== "";
+}
+
+export const entwurfText = (nummer) =>
+  `Bitte senden Sie zuerst Ihre Antwort zu Aufgabe ${nummer} ab, bevor Sie den Kurs abgeben.`;

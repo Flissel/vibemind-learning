@@ -10,8 +10,9 @@ import {
   mitFlaechenKennung, nachrichtAusFlaeche, neueFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 import {
-  eintragSetzen, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, standAnnehmen, statusText,
-  warteText, zusammenfassungSessionId,
+  entwurfSperrt, entwurfText, eintragSetzen, KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText, kursAbgebenSichtbar, LISTEN_MELDUNGEN,
+  listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument, standAnnehmen, statusText, warteText,
+  zusammenfassungSessionId,
 } from "./liste.js";
 
 const API = "/lernen/api";
@@ -81,6 +82,11 @@ const z = {
   folge: 0, // laufende Nummer der Anfragen, die einen Stand bringen
   gueltigAb: 0, // Stände aus Anfragen davor gelten nicht (letzte Abgabe begonnen oder beantwortet)
   sendend: new Set(), // Nummern, deren Abgabe gerade unterwegs ist
+  // Ein Canvas je Aufgabe (nur mit `je_aufgabe` der Brücke; sonst false/{}/null und alles wie bisher):
+  jeAufgabe: false,
+  dokumente: {}, // PenEcho-documentId -> Aufgabennummer
+  kursabgabe: null, // Stand von „Kurs abgeben“: {zustand: laeuft|fertig|fehler, aktuell, gesamt, meldung}
+  kursAbgebenBusy: false, // der Aufruf „Kurs abgeben“ ist unterwegs
   // Gruppenfläche (Teil C): Gruppe aus der Adresse; Gruppe und Person der Fläche kommen aus der Antwort der Brücke.
   gruppeId,
   flaechenAbgabe: false, // eine Abgabe aus PenEcho läuft gerade an (Doppelklick: die zweite Nachricht wird verworfen)
@@ -209,9 +215,17 @@ function standAnwenden(stand, anfrage) {
   const neu = standAnnehmen(stand, { anfrage, gueltigAb: z.gueltigAb, sendend: z.sendend });
   if (!neu) return false;
   z.liste = neu;
+  modellUebernehmen(stand);
   if (!neu.aufgaben.some((a) => a.nummer === z.gewaehlt)) z.gewaehlt = neu.aktuell;
   abfragePlanen();
   return true;
+}
+
+// `je_aufgabe`, `dokumente` und `kursabgabe` aus `/stand` und `/oeffnen`; fehlt ein Feld, bleibt der bisherige Wert.
+function modellUebernehmen(stand) {
+  if (typeof stand?.je_aufgabe === "boolean") z.jeAufgabe = stand.je_aufgabe;
+  if (stand?.dokumente && typeof stand.dokumente === "object") z.dokumente = stand.dokumente;
+  if (stand && "kursabgabe" in stand) z.kursabgabe = stand.kursabgabe ?? null;
 }
 
 const neueAnfrage = () => { z.folge += 1; return z.folge; };
@@ -223,7 +237,8 @@ function abfrageStoppen() {
 
 // Alle 2 s, solange eine Aufgabe bewertet wird; sonst nicht.
 function abfragePlanen() {
-  if (z.abfrage !== null || !z.liste || !mussAbfragen(z.liste.aufgaben)) return;
+  if (z.abfrage !== null || !z.liste) return;
+  if (!mussAbfragen(z.liste.aufgaben) && z.kursabgabe?.zustand !== "laeuft") return;
   const token = z.token;
   z.abfrage = setTimeout(async () => {
     z.abfrage = null;
@@ -266,6 +281,38 @@ function listenkopfZeigen() {
   status.textContent = a ? statusText(a.status, a.meldung) : "";
   status.dataset.status = a?.status ?? "";
   $("warte-text").textContent = warteText(z.liste.wartend);
+  $("kurs-abgeben").hidden = !kursAbgebenSichtbar({ jeAufgabe: z.jeAufgabe, phase: z.phase, kursabgabe: z.kursabgabe });
+  $("kurs-abgabe-text").textContent = z.jeAufgabe ? kursAbgabeText(z.kursabgabe) : "";
+}
+
+// „Kurs abgeben“: erst die Rückfrage, dann übernimmt die Brücke; die Seite fragt `/stand` ab, solange der Lauf geht.
+async function kursAbgeben() {
+  const t = z.turn;
+  if (!t || !z.liste || !z.jeAufgabe || z.kursAbgebenBusy || z.kursabgabe?.zustand === "laeuft") return;
+  const a = gewaehlteAufgabe();
+  const feld = document.querySelector('#karte textarea[name="antwort"]');
+  const typ = (z.listenAufgaben.get(z.gewaehlt) ?? t.task)?.type;
+  if (entwurfSperrt({ typ, status: a?.status, entwurf: feld?.value })) {
+    banner(entwurfText(z.gewaehlt));
+    return;
+  }
+  if (!window.confirm(KURS_ABGEBEN_RUECKFRAGE)) return;
+  banner("");
+  z.kursAbgebenBusy = true;
+  const token = z.token;
+  try {
+    const r = await api("POST", `/sitzungen/${t.session_id}/kurs-abgeben`, {});
+    if (token !== z.token) return;
+    if (r.status === 202 && r.daten?.kursabgabe) {
+      z.kursabgabe = r.daten.kursabgabe;
+      abfragePlanen();
+    } else {
+      banner(meldungFuer(r.daten));
+    }
+    listeZeigen();
+  } finally {
+    z.kursAbgebenBusy = false;
+  }
 }
 
 function listeZeigen() {
@@ -768,6 +815,9 @@ async function kursOeffnen(kurs, aktion = "oeffnen", rahmenNeu = true) {
   abfrageStoppen();
   z.liste = null;
   z.listeEnde = false;
+  z.jeAufgabe = false;
+  z.dokumente = {};
+  z.kursabgabe = null;
   z.listenAufgaben = new Map();
   z.gewaehlt = null;
   z.verworfen = new Set();
@@ -1021,9 +1071,23 @@ function abgabeZustand() {
   return { liste: false, aktuell: aktiv ? (z.nummer ?? (t.progress?.completed ?? 0) + 1) : null };
 }
 
+// Im Modell „ein Canvas je Aufgabe“ nennt PenEcho das Dokument; sonst (oder unbekannt) gilt der Bereich.
+const nummerAusNachricht = (m) => nummerAusDokument(z.dokumente, m.dokument) ?? m.bereich + 1;
+
+// Die Fläche zeigt ein anderes Dokument: die gewählte Aufgabe folgt, ohne `/zeigen`.
+function dokumentAktiv(dokument) {
+  const nummer = nummerAusDokument(z.dokumente, dokument);
+  if (nummer === null || !z.liste || !z.turn || z.gewaehlt === nummer) return;
+  if (!z.liste.aufgaben.some((a) => a.nummer === nummer)) return;
+  z.gewaehlt = nummer;
+  z.korrektur = null;
+  z.hinweis = null;
+  if (z.phase === "aufgabe" && z.turn.state === "active") { hilfeLeeren(); karteAufgabe(); }
+  listeZeigen();
+}
+
 // „Ich gebe ab“ / Knopf in PenEcho: dieselbe Funktion wie der Knopf „Abgeben“ der Leiste (mit ihrer Sperre).
-async function flaecheAbgeben(bereich) {
-  const nummer = bereich + 1;
+async function flaecheAbgeben(nummer) {
   const t = z.turn;
   if (!t || z.flaechenAbgabe || z.busy) return;
   if (!abgabeNummerZulaessig(nummer, abgabeZustand())) {
@@ -1051,15 +1115,16 @@ function kiSchrittMelden(m) {
   const t = z.turn;
   if (!t) return;
   void api("POST", `/sitzungen/${t.session_id}/ki-schritt`,
-    { nummer: m.bereich + 1, aktion: m.aktion, ausloeser: m.ausloeser }).catch(() => {});
+    { nummer: nummerAusNachricht(m), aktion: m.aktion, ausloeser: m.ausloeser }).catch(() => {});
 }
 
 function flaechenNachricht(ereignis) {
   const rahmen = $("rahmen");
   const m = nachrichtAusFlaeche(ereignis, rahmen.contentWindow, flaechenHerkunft(rahmen));
   if (!m) return;
-  if (m.typ === "huelle-abgeben") void flaecheAbgeben(m.bereich);
+  if (m.typ === "huelle-abgeben") void flaecheAbgeben(nummerAusNachricht(m));
   else if (m.typ === "huelle-ki-schritt") kiSchrittMelden(m);
+  else if (m.typ === "huelle-dokument-aktiv") dokumentAktiv(m.dokument);
   else if (m.typ === "huelle-mcp-bereit") {
     z.mcpBereit = true;
     autoVerbindenPruefen();
@@ -1122,6 +1187,7 @@ async function start() {
   $("layout-c").addEventListener("click", () => layoutSetzen("c"));
   $("aufgabe-zurueck").addEventListener("click", () => aufgabeBlaettern(-1));
   $("aufgabe-vor").addEventListener("click", () => aufgabeBlaettern(1));
+  $("kurs-abgeben").addEventListener("click", () => { void kursAbgeben(); });
   $("aufgabe-wahl").addEventListener("change", (ereignis) => { void aufgabeWaehlen(Number(ereignis.target.value)); });
   if (z.gruppeId !== null) {
     // Gruppe: keine Kurswahl; Kurs und Titel kommen aus der Antwort der Gruppenroute.
