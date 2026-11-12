@@ -300,9 +300,11 @@ async function kursAbgeben() {
   banner("");
   z.kursAbgebenBusy = true;
   const token = z.token;
+  z.gueltigAb = neueAnfrage(); // eine Standabfrage von vor dem Aufruf kennt den Lauf noch nicht (kursabgabe: null)
   try {
     const r = await api("POST", `/sitzungen/${t.session_id}/kurs-abgeben`, {});
     if (token !== z.token) return;
+    z.gueltigAb = neueAnfrage(); // auch eine Abfrage, die während des POST losging
     if (r.status === 202 && r.daten?.kursabgabe) {
       z.kursabgabe = r.daten.kursabgabe;
       abfragePlanen();

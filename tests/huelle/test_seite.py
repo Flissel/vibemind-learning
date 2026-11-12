@@ -257,3 +257,12 @@ def test_zusammenfassung_link_nur_im_listenmodus() -> None:
     js = (SEITE / "huelle.js").read_text(encoding="utf-8")
     assert 'id="zusammenfassung"' in html and "Zusammenfassung (PDF)" in html
     assert "zusammenfassung.pdf" in js and "zusammenfassungSessionId(z.liste, z.listeEnde, z.turn)" in js
+
+
+def test_kurs_abgeben_macht_aeltere_staende_vor_dem_post_ungueltig() -> None:
+    # Eine Standabfrage von vor dem Aufruf traegt kursabgabe: null und darf den Lauf nicht zuruecksetzen.
+    js = (SEITE / "huelle.js").read_text(encoding="utf-8")
+    rumpf = js.split("async function kursAbgeben()")[1].split("\n}\n")[0]
+    gueltig = rumpf.index("z.gueltigAb = neueAnfrage()")
+    assert gueltig < rumpf.index("/kurs-abgeben")
+    assert rumpf.count("z.gueltigAb = neueAnfrage()") == 2
