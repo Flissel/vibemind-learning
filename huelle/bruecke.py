@@ -2174,6 +2174,12 @@ class Bruecke:
                 "dokumente": self._dokumentkarte(sitzung, [e["nummer"] for e in eintraege]) if sitzung.je_aufgabe
                 else {}}
 
+    def _modell_wenn_je_aufgabe(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]]) -> dict[str, Any]:
+        """`_modellangaben` fuer Antworten, die ein Aufgaben-Canvas anlegen oder wechseln koennen (zeigen, weiter,
+        passt, antwort, abgeben, korrektur): die Seite kennt sonst das neue Dokument nicht. Ohne Merkmal `{}`, damit
+        diese Antworten im alten Modell unveraendert bleiben."""
+        return self._modellangaben(sitzung, eintraege) if sitzung.je_aufgabe else {}
+
     def _dokumentkarte(self, sitzung: _Sitzung, nummern: Iterable[int] | None = None) -> dict[str, int]:
         """documentId -> Aufgabennummer aus `dokumente.json` (Schluessel `<sid>#<nummer>`); ohne `nummern` die der
         Liste. Nur im neuen Modell; Aufgaben ohne gemerktes Dokument fehlen."""
@@ -2842,7 +2848,8 @@ class Bruecke:
             raise
         # Der Stand traegt die eigene Abgabe schon als in_bewertung: die Seite uebernimmt ihn direkt.
         stand = self._stand_aus(sid, eintraege, abgaben)
-        return {"nummer": nummer, "status": "in_bewertung", "wartend": stand["wartend"], "stand": stand}
+        return {"nummer": nummer, "status": "in_bewertung", "wartend": stand["wartend"], "stand": stand,
+                **self._modell_wenn_je_aufgabe(sitzung, eintraege)}
 
     def _laeuft_schon(self, sitzung: _Sitzung) -> NoReturn:
         """409 `laeuft_schon` mit dem Stand; ist Learning gerade weg, ohne Stand (die Seite fragt weiter)."""
@@ -2980,7 +2987,7 @@ class Bruecke:
         else:
             antwort["karte"] = leistentext(gelesen, urteil, text)
         antwort["stand"] = self._stand(sitzung)
-        return antwort
+        return {**antwort, **self._modell_wenn_je_aufgabe(sitzung, eintraege)}
 
     def _listen_passt(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Vorbewertung der Nummer buchen, die naechste offene Aufgabe in Listenfolge zeigen.
@@ -3047,7 +3054,8 @@ class Bruecke:
                 ziel = bereiche[weiter_zu - 1]
                 self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
             self._board_merken(sitzung)
-        return {**stand, "weiter_zu": weiter_zu, "turn": turn, "begriffe": self._begriffe(sitzung)}
+        return {**stand, "weiter_zu": weiter_zu, "turn": turn, "begriffe": self._begriffe(sitzung),
+                **self._modell_wenn_je_aufgabe(sitzung, eintraege)}
 
     @staticmethod
     def _listen_rechtecke(
@@ -3117,12 +3125,14 @@ class Bruecke:
             self._bericht(sitzung, turn, self._listen_rechtecke(sitzung, eintraege, bereiche))
             if sitzung.je_aufgabe:
                 # Am Kursende bleibt das Kurs-Canvas vorn: kein Aufgaben-Canvas mehr ins Bild holen.
-                return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": sitzung.bericht_gezeigt}
+                return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": sitzung.bericht_gezeigt,
+                        **self._modellangaben(sitzung, eintraege)}
         if sitzung.je_aufgabe:
             # `aktuell` auf seinem Canvas ins Bild (bei Bedarf angelegt) und sein Dokument merken.
             aktuell = self._eintrag_zu(eintraege, stand["aktuell"])
             flaeche = self._aufgabe_zeigen(sitzung, aktuell["task"], aktuell["nummer"], eintrag=aktuell, merken=True)
-            return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": flaeche}
+            return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": flaeche,
+                    **self._modellangaben(sitzung, eintraege)}
         ziel = bereiche[stand["aktuell"] - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
         if flaeche:
@@ -3147,7 +3157,7 @@ class Bruecke:
         eintrag = self._eintrag_zu(eintraege, nummer)
         if sitzung.je_aufgabe:
             flaeche = self._aufgabe_zeigen(sitzung, eintrag["task"], nummer, eintrag=eintrag)
-            return {"nummer": nummer, "flaeche": flaeche}
+            return {"nummer": nummer, "flaeche": flaeche, **self._modellangaben(sitzung, eintraege)}
         rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
         return {"nummer": nummer, "flaeche": flaeche}

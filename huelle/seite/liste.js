@@ -110,6 +110,22 @@ export function nummerAusDokument(dokumente, dokument) {
   return Number.isInteger(nummer) ? nummer : null;
 }
 
+/** Hinweis, wenn eine Fläche zu keiner Aufgabe dieses Kurses gehört (Modell „ein Canvas je Aufgabe“). */
+export const FLAECHE_OHNE_AUFGABE =
+  "Diese Fläche gehört zu keiner Aufgabe dieses Kurses. Bitte wählen Sie die Aufgabe in der Liste.";
+
+/**
+ * Aufgabennummer zu einer Nachricht der Fläche ({dokument, bereich}).
+ * - Altes Modell (`jeAufgabe` nicht true): wie bisher das bekannte Dokument, sonst Bereich + 1.
+ * - Ein Canvas je Aufgabe: nur ein bekanntes Dokument, sonst null. Der Bereich ist dort immer 0 und hieße
+ *   Aufgabe 1; null heißt: Zuordnung einmal neu laden (`/stand`), bleibt es unbekannt, nichts abgeben oder buchen.
+ */
+export function nummerZurNachricht({ jeAufgabe, dokumente, dokument, bereich }) {
+  const nummer = nummerAusDokument(dokumente, dokument);
+  if (jeAufgabe === true) return nummer;
+  return nummer ?? bereich + 1;
+}
+
 /**
  * Text zum Stand von „Kurs abgeben“. Bei einem Fehler ist `meldung` ein bekannter Fehlercode (fester Text)
  * oder ein fertiger deutscher Text der Brücke (unverändert).

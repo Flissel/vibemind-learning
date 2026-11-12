@@ -325,7 +325,7 @@ test("huelle.js verdrahtet die Nachrichten der Flaeche (Quelltext)", async () =>
   assert.match(js, /abgabeNummerZulaessig\(nummer, abgabeZustand\(\)\)/);
   assert.match(js, /await abgeben\(\)/); // dieselbe Funktion wie der Knopf
   assert.match(js, /\/ki-schritt`/);
-  assert.match(js, /m\.bereich \+ 1/);
+  assert.match(js, /nummerZurNachricht\(/); // Bereich + 1 gilt nur im alten Modell (liste.js)
   assert.match(js, /mcpAutoVerbunden/);
   assert.match(js, /autoVerbindenFaellig\(/);
   assert.match(js, /z\.turn\?\.session_id !== t\.session_id/);

@@ -10,9 +10,9 @@ import {
   mitFlaechenKennung, nachrichtAusFlaeche, neueFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 import {
-  entwurfSperrt, entwurfText, eintragSetzen, KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText, kursAbgebenSichtbar, LISTEN_MELDUNGEN,
-  listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument, standAnnehmen, statusText, warteText,
-  zusammenfassungSessionId,
+  entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_OHNE_AUFGABE, KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText,
+  kursAbgebenSichtbar, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument,
+  nummerZurNachricht, standAnnehmen, statusText, warteText, zusammenfassungSessionId,
 } from "./liste.js";
 
 const API = "/lernen/api";
@@ -85,6 +85,7 @@ const z = {
   // Ein Canvas je Aufgabe (nur mit `je_aufgabe` der Brücke; sonst false/{}/null und alles wie bisher):
   jeAufgabe: false,
   dokumente: {}, // PenEcho-documentId -> Aufgabennummer
+  nachladen: null, // laufendes Nachladen von `dokumente` (Promise); es läuft nie mehr als eines
   kursabgabe: null, // Stand von „Kurs abgeben“: {zustand: laeuft|fertig|fehler, aktuell, gesamt, meldung}
   kursAbgebenBusy: false, // der Aufruf „Kurs abgeben“ ist unterwegs
   // Gruppenfläche (Teil C): Gruppe aus der Adresse; Gruppe und Person der Fläche kommen aus der Antwort der Brücke.
@@ -223,9 +224,16 @@ function standAnwenden(stand, anfrage) {
 
 // `je_aufgabe`, `dokumente` und `kursabgabe` aus `/stand` und `/oeffnen`; fehlt ein Feld, bleibt der bisherige Wert.
 function modellUebernehmen(stand) {
-  if (typeof stand?.je_aufgabe === "boolean") z.jeAufgabe = stand.je_aufgabe;
-  if (stand?.dokumente && typeof stand.dokumente === "object") z.dokumente = stand.dokumente;
+  dokumenteUebernehmen(stand);
   if (stand && "kursabgabe" in stand) z.kursabgabe = stand.kursabgabe ?? null;
+}
+
+// `je_aufgabe` und `dokumente` aus einer Antwort der Brücke (auch zeigen, weiter, passt, antwort, abgeben, korrektur:
+// sie können ein Aufgaben-Canvas anlegen). Die Zuordnung wächst nur: ein Dokument gehört immer zu derselben Aufgabe,
+// eine ältere Antwort nimmt also kein neueres Dokument weg.
+function dokumenteUebernehmen(daten) {
+  if (typeof daten?.je_aufgabe === "boolean") z.jeAufgabe = daten.je_aufgabe;
+  if (daten?.dokumente && typeof daten.dokumente === "object") z.dokumente = { ...z.dokumente, ...daten.dokumente };
 }
 
 const neueAnfrage = () => { z.folge += 1; return z.folge; };
@@ -331,7 +339,9 @@ async function aufgabeWaehlen(nummer) {
   z.hinweis = null;
   if (wechsel && z.phase === "aufgabe" && t.state === "active") { hilfeLeeren(); karteAufgabe(); }
   listeZeigen();
+  const token = z.token;
   const r = await api("POST", `/sitzungen/${t.session_id}/zeigen`, { nummer });
+  if (r.ok && token === z.token) dokumenteUebernehmen(r.daten); // auch ein eben angelegtes Canvas
   if (!r.ok && z.turn === t && z.gewaehlt === nummer) {
     z.hinweis = listenMeldung(r.daten);
     leisteZeigen();
@@ -370,6 +380,7 @@ async function listenAbgeben() {
   const token = z.token;
   const r = await api("POST", `/sitzungen/${t.session_id}/abgeben`, { nummer });
   if (token !== z.token) return;
+  dokumenteUebernehmen(r.daten);
   z.sendend.delete(nummer);
   z.gueltigAb = neueAnfrage(); // was vor dieser Antwort losging, kennt sie nicht
   // Eigene Antwort: ihr Stand gilt (202 und 409 tragen ihn); ohne Stand den vorigen Status der Nummer.
@@ -411,6 +422,7 @@ async function listenPasst() {
 
 // Nach Passt oder Antwort: Turn, Begriffe, Stand; die gewählte Aufgabe wird `weiter_zu`.
 function gebuchtUebernehmen(daten, nr, nummer) {
+  dokumenteUebernehmen(daten); // auch wenn der Stand veraltet ist: das Canvas von `weiter_zu` kann neu sein
   if (daten.turn) z.turn = daten.turn;
   if (Array.isArray(daten.begriffe)) begriffeZeigen(daten.begriffe);
   standAnwenden(daten, nr);
@@ -439,6 +451,7 @@ async function listenKorrektur() {
   if (token !== z.token) return;
   sperren(false);
   if (!r.ok) { listenFehler(r, nr); return; }
+  dokumenteUebernehmen(r.daten);
   standAnwenden(r.daten.stand, nr);
   z.korrektur = null;
   // Karte nicht auf der Fläche (z. B. kein Platz): die Brücke schickt die Rückmeldung als Text.
@@ -485,6 +498,7 @@ async function listenWeiter(bannerBehalten = false) {
   if (token !== z.token) return;
   sperren(false);
   if (!r.ok) { listenFehler(r, nr); return; }
+  dokumenteUebernehmen(r.daten);
   z.rueckmeldung = null;
   z.phase = "aufgabe";
   neueAufgabe(bannerBehalten === true);
@@ -495,7 +509,8 @@ async function listenWeiter(bannerBehalten = false) {
   zeigen();
   // Die Brücke zeigt `aktuell`; ist eine andere Aufgabe gewählt, diese ins Bild holen.
   if (z.gewaehlt !== null && z.gewaehlt !== r.daten.aktuell && z.turn?.state === "active") {
-    void api("POST", `/sitzungen/${z.turn.session_id}/zeigen`, { nummer: z.gewaehlt });
+    void api("POST", `/sitzungen/${z.turn.session_id}/zeigen`, { nummer: z.gewaehlt })
+      .then((gezeigt) => { if (gezeigt.ok && token === z.token) dokumenteUebernehmen(gezeigt.daten); });
   }
   void speichern(false);
 }
@@ -819,6 +834,7 @@ async function kursOeffnen(kurs, aktion = "oeffnen", rahmenNeu = true) {
   z.listeEnde = false;
   z.jeAufgabe = false;
   z.dokumente = {};
+  z.nachladen = null;
   z.kursabgabe = null;
   z.listenAufgaben = new Map();
   z.gewaehlt = null;
@@ -1073,12 +1089,49 @@ function abgabeZustand() {
   return { liste: false, aktuell: aktiv ? (z.nummer ?? (t.progress?.completed ?? 0) + 1) : null };
 }
 
-// Im Modell „ein Canvas je Aufgabe“ nennt PenEcho das Dokument; sonst (oder unbekannt) gilt der Bereich.
-const nummerAusNachricht = (m) => nummerAusDokument(z.dokumente, m.dokument) ?? m.bereich + 1;
+// Aufgabe zu einer Nachricht der Fläche (`nummerZurNachricht`): im alten Modell wie bisher über den Bereich, je Aufgabe
+// nur über das Dokument.
+const nummerSofort = (m) => nummerZurNachricht(
+  { jeAufgabe: z.jeAufgabe, dokumente: z.dokumente, dokument: m.dokument, bereich: m.bereich });
 
-// Die Fläche zeigt ein anderes Dokument: die gewählte Aufgabe folgt, ohne `/zeigen`.
-function dokumentAktiv(dokument) {
-  const nummer = nummerAusDokument(z.dokumente, dokument);
+// Wie `nummerSofort`; ist das Dokument je Aufgabe unbekannt (Canvas nach dem letzten Stand angelegt), wird die
+// Zuordnung einmal neu geladen. null: gehört zu keiner Aufgabe dieses Kurses.
+async function nummerAusNachricht(m) {
+  const nummer = nummerSofort(m);
+  if (nummer !== null || !z.jeAufgabe) return nummer;
+  await dokumenteNachladen();
+  return nummerSofort(m);
+}
+
+// Ein Canvas je Aufgabe: `dokumente` neu von der Brücke (`/stand`); gleichzeitige Nachrichten teilen die Anfrage.
+function dokumenteNachladen() {
+  if (z.nachladen) return z.nachladen;
+  const t = z.turn;
+  if (!t) return Promise.resolve();
+  const token = z.token;
+  const laden = api("GET", `/sitzungen/${t.session_id}/stand`)
+    .then((r) => { if (r.ok && token === z.token) dokumenteUebernehmen(r.daten); })
+    .catch(() => {})
+    .finally(() => { if (z.nachladen === laden) z.nachladen = null; });
+  z.nachladen = laden;
+  return laden;
+}
+
+// Die Fläche zeigt ein anderes Dokument: die gewählte Aufgabe folgt, ohne `/zeigen`. Je Aufgabe lädt ein unbekanntes
+// Dokument die Zuordnung einmal neu; bleibt es unbekannt, kommt ein Hinweis (nicht am Kursende: dort ist das
+// Kurs-Canvas vorn, es gehört zu keiner Aufgabe).
+async function dokumentAktiv(dokument) {
+  let nummer = nummerAusDokument(z.dokumente, dokument);
+  if (nummer === null && z.jeAufgabe && z.liste && z.turn && z.phase !== "ende" && z.kursabgabe?.zustand !== "fertig") {
+    const token = z.token;
+    nummer = await nummerAusNachricht({ dokument });
+    if (token !== z.token) return;
+    if (nummer === null) {
+      z.hinweis = FLAECHE_OHNE_AUFGABE;
+      leisteZeigen();
+      return;
+    }
+  }
   if (nummer === null || !z.liste || !z.turn || z.gewaehlt === nummer) return;
   if (!z.liste.aufgaben.some((a) => a.nummer === nummer)) return;
   z.gewaehlt = nummer;
@@ -1112,21 +1165,41 @@ async function flaecheAbgeben(nummer) {
   }
 }
 
-// Fire-and-forget: das Protokoll der KI-Schritte darf die Fläche nie stören.
-function kiSchrittMelden(m) {
+// „Ich gebe ab“ in PenEcho: die Nummer kommt aus der Nachricht. Je Aufgabe nie über den Bereich: gehört die Fläche
+// auch nach dem Nachladen zu keiner Aufgabe, nur der Hinweis und keine Abgabe.
+async function flaecheAbgebenAus(m) {
+  const sofort = nummerSofort(m);
+  if (sofort !== null) { await flaecheAbgeben(sofort); return; }
+  const token = z.token;
+  const nummer = await nummerAusNachricht(m);
+  if (token !== z.token) return;
+  if (nummer === null) {
+    z.hinweis = FLAECHE_OHNE_AUFGABE;
+    leisteZeigen();
+    return;
+  }
+  await flaecheAbgeben(nummer);
+}
+
+// Fire-and-forget: das Protokoll der KI-Schritte darf die Fläche nie stören. Gehört die Fläche zu keiner Aufgabe
+// dieses Kurses, wird der Schritt still verworfen (nie unter Aufgabe 1 gebucht).
+async function kiSchrittMelden(m) {
   const t = z.turn;
   if (!t) return;
+  const nummer = await nummerAusNachricht(m);
+  if (nummer === null) return;
+  if (z.turn?.session_id !== t.session_id) return;
   void api("POST", `/sitzungen/${t.session_id}/ki-schritt`,
-    { nummer: nummerAusNachricht(m), aktion: m.aktion, ausloeser: m.ausloeser }).catch(() => {});
+    { nummer, aktion: m.aktion, ausloeser: m.ausloeser }).catch(() => {});
 }
 
 function flaechenNachricht(ereignis) {
   const rahmen = $("rahmen");
   const m = nachrichtAusFlaeche(ereignis, rahmen.contentWindow, flaechenHerkunft(rahmen));
   if (!m) return;
-  if (m.typ === "huelle-abgeben") void flaecheAbgeben(nummerAusNachricht(m));
-  else if (m.typ === "huelle-ki-schritt") kiSchrittMelden(m);
-  else if (m.typ === "huelle-dokument-aktiv") dokumentAktiv(m.dokument);
+  if (m.typ === "huelle-abgeben") void flaecheAbgebenAus(m);
+  else if (m.typ === "huelle-ki-schritt") void kiSchrittMelden(m);
+  else if (m.typ === "huelle-dokument-aktiv") void dokumentAktiv(m.dokument);
   else if (m.typ === "huelle-mcp-bereit") {
     z.mcpBereit = true;
     autoVerbindenPruefen();

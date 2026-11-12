@@ -70,6 +70,11 @@ def _oeffnen(ll: ListenLern, tmp_path: Path, penecho: FakePenEcho | None = None
     return client, penecho, r.json()
 
 
+def _flaechenaufrufe(penecho: FakePenEcho, ab: int = 0) -> list[tuple[Any, ...]]:
+    """Aufrufe ab `ab` ohne `dokument_von` (liest nur `dokumente.json`, fuer die Modellangaben der Antworten)."""
+    return [a for a in penecho.aufrufe[ab:] if a[0] != "dokument_von"]
+
+
 def _schluessel(penecho: FakePenEcho) -> list[str]:
     return [a[1] for a in penecho.aufrufe if a[0] in ("sitzung", "vergessen")]
 
@@ -131,7 +136,7 @@ def test_zeigen_legt_canvas_bei_bedarf_an(tmp_path: Path) -> None:
         vorher = len(penecho.aufrufe)
         r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
         assert r.status_code == 200, r.text
-        assert r.json() == {"nummer": 2, "flaeche": True}
+        assert _ohne_modell(r.json()) == {"nummer": 2, "flaeche": True}
         neu = penecho.aufrufe[vorher:]
         assert ("sitzung", f"{SID}#2", "Aufgabe 2: Frage 2") in neu
         assert ("aufgabe_setzen", "board-2", ll.eintraege[1]["task"]["id"], "Frage 2", 2) in neu
@@ -141,7 +146,7 @@ def test_zeigen_legt_canvas_bei_bedarf_an(tmp_path: Path) -> None:
 
         vorher = len(penecho.aufrufe)
         r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
-        assert r.status_code == 200 and r.json() == {"nummer": 2, "flaeche": True}
+        assert r.status_code == 200 and _ohne_modell(r.json()) == {"nummer": 2, "flaeche": True}
         neu = penecho.aufrufe[vorher:]
         assert "aufgabe_setzen" not in [a[0] for a in neu]
         assert ("bereich_zeigen", "board-2", EINZEL_RECHTECK) in neu
@@ -149,7 +154,7 @@ def test_zeigen_legt_canvas_bei_bedarf_an(tmp_path: Path) -> None:
         # Gemerktes Dokument ohne Board in diesem Prozess: nur zeigen (PenEcho holt das Dokument zurueck).
         vorher = len(penecho.aufrufe)
         r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3})
-        assert r.status_code == 200 and r.json() == {"nummer": 3, "flaeche": True}
+        assert r.status_code == 200 and _ohne_modell(r.json()) == {"nummer": 3, "flaeche": True}
         neu = penecho.aufrufe[vorher:]
         assert "aufgabe_setzen" not in [a[0] for a in neu]
         assert ("bereich_zeigen", "board-3", EINZEL_RECHTECK) in neu
@@ -184,15 +189,15 @@ def test_unbekannte_aufgaben_sitzung_verwirft_altes_board(tmp_path: Path) -> Non
         # PenEcho kennt die Sitzung nicht mehr: vergessen, neu anlegen, wiederholen.
         penecho.unbekannt_einmal = True
         r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
-        assert r.json() == {"nummer": 2, "flaeche": True}
+        assert _ohne_modell(r.json()) == {"nummer": 2, "flaeche": True}
         assert ("vergessen", f"{SID}#2") in penecho.aufrufe
-        assert penecho.aufrufe[-1] == ("bereich_zeigen", "board-2-v1", EINZEL_RECHTECK)
+        assert _flaechenaufrufe(penecho)[-1] == ("bereich_zeigen", "board-2-v1", EINZEL_RECHTECK)
         assert sitzung.aufgaben_boards[2] == "board-2-v1" and sitzung.board is None
         # Scheitert auch das Neuanlegen, bleibt kein veraltetes Board stehen.
         penecho.unbekannt_einmal = True
         penecho.fehler_nach_vergessen = PenEchoNichtErreichbar("weg")
         r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
-        assert r.json() == {"nummer": 2, "flaeche": False}
+        assert _ohne_modell(r.json()) == {"nummer": 2, "flaeche": False}
         assert 2 not in sitzung.aufgaben_boards and sitzung.board is None
     finally:
         client.app.beenden()
@@ -457,7 +462,7 @@ def test_passt_zeigt_naechste_aufgabe_auf_ihrem_canvas(tmp_path: Path) -> None:
         vorher = len(penecho.aufrufe)
         r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 2, "vorbewertung_id": _vid(2)})
         assert r.status_code == 200 and r.json()["weiter_zu"] == 3
-        neu = penecho.aufrufe[vorher:]
+        neu = _flaechenaufrufe(penecho, vorher)
         assert "aufgabe_setzen" not in [a[0] for a in neu]
         assert ("bereich_zeigen", "board-3", EINZEL_RECHTECK) in neu
         assert neu[-1] == ("dokument_merken", "board-3")
@@ -495,9 +500,109 @@ def test_weiter_zeigt_aktuelle_aufgabe_auf_ihrem_canvas(tmp_path: Path) -> None:
         r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
         assert r.status_code == 200, r.text
         assert r.json()["nummer"] == 2 and r.json()["flaeche"] is True
-        assert penecho.aufrufe[vorher:] == [("sitzung", f"{SID}#2", "Aufgabe 2: Frage 2"),
+        assert _flaechenaufrufe(penecho, vorher) == [("sitzung", f"{SID}#2", "Aufgabe 2: Frage 2"),
                                             ("bereich_zeigen", "board-2", EINZEL_RECHTECK),
                                             ("dokument_merken", "board-2")]
+    finally:
+        client.app.beenden()
+
+
+class MerkPenEcho(JePenEcho):
+    """Wie JePenEcho, aber `dokument_merken` merkt wie PenEchoMcp das Dokument (`doc-<n>`) zum Schluessel `<sid>#<n>`
+    des Boards: so taucht ein spaeter angelegtes Canvas in `dokument_von` (und damit in `dokumente`) auf."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._schluessel_von: dict[str, str] = {}
+
+    def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None, gruppe: str | None = None) -> str:
+        board = super().sitzung(schluessel, titel, canvas_id, gruppe)
+        self._schluessel_von[board] = schluessel
+        return board
+
+    def dokument_merken(self, session_id: str) -> bool:
+        ergebnis = super().dokument_merken(session_id)
+        schluessel = self._schluessel_von.get(session_id)
+        if schluessel is not None and "#" in schluessel:
+            self.dokumente_je_schluessel[schluessel] = "doc-" + schluessel.split("#", 1)[1]
+        return ergebnis
+
+
+def _ohne_modell(antwort: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in antwort.items() if k not in ("je_aufgabe", "dokumente")}
+
+
+def test_zeigen_neue_aufgabe_bringt_ihr_dokument(tmp_path: Path) -> None:
+    # Die Seite ordnet PenEcho-Nachrichten ueber `dokumente` zu: ein erst jetzt angelegtes Canvas muss darin stehen.
+    client, _, offen = _oeffnen(_neu_lern(3), tmp_path, MerkPenEcho())
+    try:
+        assert offen["dokumente"] == {"doc-1": 1}
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"nummer": 2, "flaeche": True, "je_aufgabe": True, "dokumente": {"doc-1": 1, "doc-2": 2}}
+    finally:
+        client.app.beenden()
+
+
+def test_passt_mit_weiter_zu_bringt_dessen_dokument(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1), gelesen="1")
+    client, _, _ = _oeffnen(ll, tmp_path, MerkPenEcho())
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 1, "vorbewertung_id": _vid(1)})
+        assert r.status_code == 200, r.text
+        assert r.json()["weiter_zu"] == 2
+        assert r.json()["je_aufgabe"] is True and r.json()["dokumente"] == {"doc-1": 1, "doc-2": 2}
+    finally:
+        client.app.beenden()
+
+
+def test_weiter_antwort_abgeben_korrektur_bringen_dokumente(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    ll.eintraege[0]["status"] = "bestaetigt"
+    ll.eintraege[2]["vorbewertung"] = _vor(vid=_vid(3), gelesen="3")
+    client, _, _ = _oeffnen(ll, tmp_path, MerkPenEcho())
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+        assert r.status_code == 200, r.text
+        assert r.json()["je_aufgabe"] is True and r.json()["dokumente"] == {"doc-2": 2}
+        r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur",
+                        json={"nummer": 3, "vorbewertung_id": _vid(3), "answer": {"value": 3}})
+        assert r.status_code == 200, r.text
+        assert r.json()["je_aufgabe"] is True and r.json()["dokumente"] == {"doc-2": 2, "doc-3": 3}
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})
+        assert r.status_code == 202, r.text
+        assert r.json()["je_aufgabe"] is True and r.json()["dokumente"] == {"doc-2": 2, "doc-3": 3}
+        _bis(lambda: _ruhig(client.app), 2)
+    finally:
+        client.app.beenden()
+
+
+def test_antwort_bringt_dokumente(tmp_path: Path) -> None:
+    client, _, _ = _oeffnen(_neu_lern(3, typ="code"), tmp_path, MerkPenEcho())
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/antwort", json={"nummer": 1, "answer": {"code": "x"}})
+        assert r.status_code == 200, r.text
+        assert r.json()["je_aufgabe"] is True and r.json()["dokumente"] == {"doc-1": 1}
+    finally:
+        client.app.beenden()
+
+
+def test_alte_sitzung_antworten_ohne_modellangaben(tmp_path: Path) -> None:
+    # Ohne Merkmal bleiben die Antworten von zeigen, weiter, passt und abgeben wie bisher (kein je_aufgabe/dokumente).
+    (tmp_path / "je-aufgabe.json").write_text(json.dumps(["andere-sitzung"]), encoding="utf-8")
+    ll = ListenLern(3)
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1), gelesen="1")
+    client, _, _ = _oeffnen(ll, tmp_path, FakePenEcho())
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
+        assert r.status_code == 200 and r.json() == {"nummer": 2, "flaeche": True}
+        for r in (client.post(f"/lernen/api/sitzungen/{SID}/weiter"),
+                  client.post(f"/lernen/api/sitzungen/{SID}/passt", json={"nummer": 1, "vorbewertung_id": _vid(1)}),
+                  client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})):
+            assert r.status_code in (200, 202), r.text
+            assert "je_aufgabe" not in r.json() and "dokumente" not in r.json()
+        _bis(lambda: _ruhig(client.app), 2)
     finally:
         client.app.beenden()
 
@@ -517,7 +622,7 @@ def test_karte_kommt_mit_dem_canvas(tmp_path: Path) -> None:
         # Auch ein vorhandenes Canvas bekommt die Karte wieder (sie ersetzt die vorige, steht also nie doppelt).
         vorher = len(penecho.aufrufe)
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
-        neu = [a[0] for a in penecho.aufrufe[vorher:] if a[0] != "sitzung"]
+        neu = [a[0] for a in _flaechenaufrufe(penecho, vorher) if a[0] != "sitzung"]
         assert neu == ["bereich_zeigen", "rueckmeldung_zeigen"]
         assert [(k[1], k[3]) for k in _karten(penecho)][-1] == ("board-2", 2)
         assert SID not in _schluessel(penecho)

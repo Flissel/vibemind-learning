@@ -158,3 +158,51 @@ test("entwurfSperrt: nur ungesendeter Code-Entwurf einer unbestätigten Aufgabe"
   assert.equal(entwurfSperrt({ typ: "flaeche", status: "offen", entwurf: "x" }), false);
   assert.equal(entwurfText(3), "Bitte senden Sie zuerst Ihre Antwort zu Aufgabe 3 ab, bevor Sie den Kurs abgeben.");
 });
+
+import { FLAECHE_OHNE_AUFGABE, nummerZurNachricht } from "./liste.js";
+
+test("nummerZurNachricht: altes Modell wie bisher, unbekannt -> Bereich + 1", () => {
+  assert.equal(nummerZurNachricht({ jeAufgabe: false, dokumente: {}, dokument: "doc-9", bereich: 2 }), 3);
+  assert.equal(nummerZurNachricht({ jeAufgabe: false, dokumente: {}, bereich: 0 }), 1);
+  assert.equal(nummerZurNachricht({ jeAufgabe: false, dokumente: { "doc-1": 4 }, dokument: "doc-1", bereich: 0 }), 4);
+});
+
+test("nummerZurNachricht: ein Canvas je Aufgabe nie über den Bereich (dort immer 0 = Aufgabe 1)", () => {
+  assert.equal(nummerZurNachricht({ jeAufgabe: true, dokumente: { "doc-2": 2 }, dokument: "doc-2", bereich: 0 }), 2);
+  assert.equal(nummerZurNachricht({ jeAufgabe: true, dokumente: { "doc-2": 2 }, dokument: "doc-3", bereich: 0 }), null);
+  assert.equal(nummerZurNachricht({ jeAufgabe: true, dokumente: { "doc-2": 2 }, bereich: 0 }), null);
+  assert.equal(nummerZurNachricht({ jeAufgabe: true, dokumente: {}, dokument: "doc-2", bereich: 0 }), null);
+});
+
+test("FLAECHE_OHNE_AUFGABE: fester Text", () => {
+  assert.equal(FLAECHE_OHNE_AUFGABE,
+    "Diese Fläche gehört zu keiner Aufgabe dieses Kurses. Bitte wählen Sie die Aufgabe in der Liste.");
+});
+
+test("huelle.js: unbekanntes Dokument im Modell je Aufgabe lädt die Zuordnung neu, nie Bereich + 1 (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.doesNotMatch(js, /bereich \+ 1/); // die Entscheidung steht nur in liste.js
+  assert.match(js, /nummerZurNachricht\(/);
+  // Nachladen über `/stand`, höchstens eine Anfrage gleichzeitig.
+  const nachladen = js.split("function dokumenteNachladen(")[1].split("\n}\n")[0];
+  assert.match(nachladen, /\/stand`/);
+  assert.match(nachladen, /if \(z\.nachladen\) return z\.nachladen;/);
+  // Abgabe aus der Fläche: noch unbekannt -> Hinweis statt Abgabe; KI-Schritt: still verworfen.
+  const abgabe = js.split("async function flaecheAbgebenAus(")[1].split("\n}\n")[0];
+  assert.match(abgabe, /FLAECHE_OHNE_AUFGABE/);
+  const ki = js.split("async function kiSchrittMelden(")[1].split("\n}\n")[0];
+  assert.doesNotMatch(ki, /FLAECHE_OHNE_AUFGABE/);
+  assert.match(ki, /if \(nummer === null\) return;/);
+  const aktiv = js.split("async function dokumentAktiv(")[1].split("\n}\n")[0];
+  assert.match(aktiv, /FLAECHE_OHNE_AUFGABE/);
+  // Antworten, die ein Canvas anlegen oder wechseln können, bringen `dokumente` mit: die Seite übernimmt sie.
+  const waehlen = js.split("async function aufgabeWaehlen(")[1].split("\n}\n")[0];
+  assert.match(waehlen, /dokumenteUebernehmen\(r\.daten\)/);
+  for (const name of ["listenAbgeben", "listenKorrektur", "listenWeiter"]) {
+    const rumpf = js.split(`async function ${name}(`)[1].split("\n}\n")[0];
+    assert.match(rumpf, /dokumenteUebernehmen\(r\.daten\)/, name);
+  }
+  const gebucht = js.split("function gebuchtUebernehmen(")[1].split("\n}\n")[0];
+  assert.match(gebucht, /dokumenteUebernehmen\(daten\)/);
+});
