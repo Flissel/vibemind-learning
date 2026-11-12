@@ -10,6 +10,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
@@ -224,10 +225,11 @@ class FakePenEcho:
         self._pruefen("aufgabe_aufnehmen")
         return self.bild
 
-    def dokument_schliessen(self, schluessel: str, canvas_id: str) -> bool:
-        self.aufrufe.append(("dokument_schliessen", schluessel, canvas_id))
-        self._pruefen("dokument_schliessen")
-        return self.schliessen_ergebnis
+    def dokumente_schliessen(self, schluessel: Iterable[str], canvas_id: str) -> dict[str, bool]:
+        schluessel = tuple(schluessel)
+        self.aufrufe.append(("dokumente_schliessen", schluessel, canvas_id))
+        self._pruefen("dokumente_schliessen")
+        return {s: self.schliessen_ergebnis for s in schluessel}
 
     def dokument_von(self, schluessel: str) -> str | None:
         self.aufrufe.append(("dokument_von", schluessel))

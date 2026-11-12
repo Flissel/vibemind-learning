@@ -771,6 +771,7 @@ def test_kursbericht_ki_und_schliessen(tmp_path: Path) -> None:
         _abgeben_passt(client, 1)
         vorher = len(penecho.aufrufe)
         _abgeben_passt(client, 2)  # Kursende: kehrt zurueck, waehrend die Flaechen-KI noch rechnet
+        _bis(lambda: "dokumente_schliessen" in penecho.namen(), 2)  # das Schliessen laeuft in der Flaechenspur
         neu = penecho.aufrufe[vorher:]
         assert ("sitzung", f"{SID}#kurs", "Kursrückmeldung", KA) in neu
         (bericht,) = [a for a in neu if a[0] == "bericht_zeigen"]
@@ -783,7 +784,7 @@ def test_kursbericht_ki_und_schliessen(tmp_path: Path) -> None:
         assert bewerter.daten == [] and not (tmp_path / "kursrueckmeldungen.json").exists()
         assert ("bereich_zeigen", "board-kurs", EINZEL_RECHTECK) in neu
         assert ("dokument_merken", "board-kurs") in neu
-        assert [a[1:] for a in neu if a[0] == "dokument_schliessen"] == [(f"{SID}#1", KA), (f"{SID}#2", KA)]
+        assert [a[1:] for a in neu if a[0] == "dokumente_schliessen"] == [((f"{SID}#1", f"{SID}#2"), KA)]
         # Nach dem Bericht holt nichts mehr ein Aufgaben-Canvas nach vorn.
         i = max(k for k, a in enumerate(neu) if a[0] == "bericht_zeigen")
         assert not [a for a in neu[i:] if a[0] in ("bereich_zeigen", "aufgabe_setzen")]
@@ -813,6 +814,63 @@ def test_kursbericht_ki_und_schliessen(tmp_path: Path) -> None:
         bruecke.beenden()
 
 
+class HalteSchliessen(JePenEcho):
+    """Das Schliessen wartet auf `frei`; es haelt seinen Faden fest und ob `_ablauf` nach der Freigabe belegt war
+    (die Route ist dann laengst fertig: laeuft das Schliessen unter `_ablauf`, ist er belegt)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.frei = threading.Event()
+        self.bruecke: Any = None
+        self.faeden: list[str] = []
+        self.ablauf_belegt: list[bool] = []
+
+    def dokumente_schliessen(self, schluessel: Any, canvas_id: str) -> dict[str, bool]:
+        self.faeden.append(threading.current_thread().name)
+        assert self.frei.wait(5), "Schliessen nie freigegeben"
+        self.ablauf_belegt.append(self.bruecke._ablauf.locked())
+        return super().dokumente_schliessen(schluessel, canvas_id)
+
+
+def test_kursende_schliesst_aufgaben_in_der_flaechenspur(tmp_path: Path) -> None:
+    # 100 Aufgaben unter `_ablauf` hielten jede Person sekundenlang auf: das Schliessen ist eine Arbeit der
+    # Flaechenspur, mit einem Aufruf fuer alle Aufgaben (penecho_mcp listet die Canvas einmal).
+    ll = _neu_lern(3)
+    penecho = HalteSchliessen()
+    client, _ = _kurs_oeffnen(ll, tmp_path, None, penecho)
+    bruecke = client.app
+    penecho.bruecke = bruecke
+    try:
+        for nummer in (1, 2):
+            _abgeben_passt(client, nummer)
+        _abgeben_passt(client, 3)  # Kursende: die Antwort kommt, waehrend das Schliessen noch wartet
+        assert bruecke._sitzungen[SID].bericht_gezeigt is True
+        _bis(lambda: penecho.faeden != [], 2)
+        assert penecho.faeden == ["spur-flaeche"]
+        penecho.frei.set()
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
+        assert penecho.ablauf_belegt == [False]
+        assert [a[1:] for a in penecho.aufrufe if a[0] == "dokumente_schliessen"] == [
+            ((f"{SID}#1", f"{SID}#2", f"{SID}#3"), KA)]
+        assert "dokument_schliessen" not in penecho.namen()
+    finally:
+        penecho.frei.set()
+        bruecke.beenden()
+
+
+def test_kursende_schliessen_entfaellt_nach_kurswechsel(tmp_path: Path) -> None:
+    ll = _neu_lern(2)
+    client, penecho = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    try:
+        sitzung = bruecke._sitzungen[SID]
+        bruecke._zuletzt[sitzung.lern_actor] = "andere-sitzung"
+        bruecke._im_hintergrund_schliessen(sitzung, (1, 2))
+        assert "dokumente_schliessen" not in penecho.namen()
+    finally:
+        bruecke.beenden()
+
+
 class KaputterBewerter(KursBewerter):
     def kursrueckmeldung(self, daten: dict[str, Any]) -> dict[str, Any] | None:
         super().kursrueckmeldung(daten)
@@ -834,7 +892,7 @@ def test_kursbericht_ohne_endpunkt_und_ohne_schliessen(tmp_path: Path, bewerter:
         # Der Zahlen-Rueckfall wird nie gespeichert (ein spaeteres Oeffnen fragt die Flaechen-KI erneut).
         assert not (tmp_path / "kursrueckmeldungen.json").exists()
         assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
-        assert penecho.namen().count("dokument_schliessen") == 2
+        assert [a[1] for a in penecho.aufrufe if a[0] == "dokumente_schliessen"] == [(f"{SID}#1", f"{SID}#2")]
         texte = _berichtstexte(penecho)
         # BERICHT (Learning): Aufgabe 1 mit 1.0 richtig, Aufgabe 2 mit 0.7 nur teilweise.
         assert "**Stärken:** 1 von 2 Aufgaben richtig." in texte[-1] and "**Lücken:** Offen: Aufgabe 2." in texte[-1]

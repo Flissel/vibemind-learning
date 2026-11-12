@@ -1696,7 +1696,7 @@ class Bruecke:
            `KURSRUECKMELDUNG_FOLGT`, und `_im_hintergrund_kursrueckmeldung` kommt in die Modellspur
            (`<sid>:kursrueckmeldung`, hoechstens einmal zugleich).
         4. Beim ersten Mal: Textfassung in den Wissensordner (wie `_bericht`); steht der Bericht, die Dokumente der
-           Aufgaben im Tab schliessen (False nur geloggt).
+           Aufgaben im Tab schliessen (eine Arbeit der Flaechenspur, nicht unter `_ablauf`; False nur geloggt).
         Ist der Bericht schon gezeigt (erneutes Oeffnen, Weiter am Kursende) und die KI-Antwort gespeichert, kommt nur
         das Kurs-Canvas nach vorn. Ohne gespeicherte KI-Antwort wird sie erneut angefragt (im Hintergrund).
         """
@@ -1813,23 +1813,35 @@ class Bruecke:
         return ergebnis
 
     def _aufgaben_schliessen(self, sitzung: _Sitzung, nummern: Iterable[int]) -> None:
-        """Die Dokumente der Aufgaben im Tab der Person schliessen (`dokument_schliessen`), je Aufgabe mit Canvas oder
-        gemerktem Dokument. Ohne Tab-Kennung nichts; False (alte Lernflaeche, schon zu) und Fehler nur geloggt."""
-        flaeche = sitzung.flaeche
-        if flaeche is None:
+        """Das Schliessen der Aufgaben-Dokumente im Tab der Person in die Flaechenspur (`<sid>:kursende:schliessen`):
+        `_kursbericht` laeuft unter `_ablauf`, und je Aufgabe ein PenEcho-Aufruf hielte dort alle Personen auf. Ohne
+        Tab-Kennung nichts."""
+        if sitzung.flaeche is None:
             return
-        for nummer in nummern:
-            schluessel = self._aufgaben_schluessel(sitzung.sid, nummer)
-            if nummer not in sitzung.aufgaben_boards and not self._penecho.dokument_von(schluessel):
-                continue
-            try:
-                with self._flaeche_sperre:
-                    zu = self._penecho.dokument_schliessen(schluessel, flaeche)
-            except Exception as fehler:  # noqa: BLE001 - Aufraeumen haelt das Kursende nie auf
-                log.warning("Aufgaben-Canvas nicht geschlossen: %s", _typ(fehler))
-                continue
-            if not zu:
-                log.info("Aufgaben-Canvas nicht geschlossen (nicht moeglich oder schon zu)")
+        self._flaechenspur.einreihen(
+            f"{sitzung.sid}:kursende:schliessen",
+            functools.partial(self._im_hintergrund_schliessen, sitzung, tuple(nummern)),
+            vorrang=1, wer=sitzung.actor,
+        )
+
+    def _im_hintergrund_schliessen(self, sitzung: _Sitzung, nummern: tuple[int, ...]) -> None:
+        """Arbeit der Flaechenspur: die gemerkten Dokumente der Aufgaben im Tab schliessen (`dokumente_schliessen`, ein
+        Auflisten fuer alle). Ist die Sitzung nicht mehr die offene, entfaellt sie. False (alte Lernflaeche, schon zu)
+        und Fehler nur geloggt: Aufraeumen haelt das Kursende nie auf."""
+        try:
+            with self._flaeche_sperre:
+                flaeche = sitzung.flaeche
+                if flaeche is None or not self._noch_offen(sitzung):
+                    log.info("Aufgaben-Canvas schliessen: Sitzung nicht mehr offen, entfaellt")
+                    return
+                ergebnis = self._penecho.dokumente_schliessen(
+                    [self._aufgaben_schluessel(sitzung.sid, n) for n in nummern], flaeche)
+        except Exception as fehler:  # noqa: BLE001 - eine Arbeit darf die Spur nie anhalten
+            log.warning("Aufgaben-Canvas nicht geschlossen: %s", _typ(fehler))
+            return
+        offen = sum(1 for zu in ergebnis.values() if not zu)
+        if offen:
+            log.info("%d Aufgaben-Canvas nicht geschlossen (nicht moeglich, schon zu oder ohne Dokument)", offen)
 
     def _begriffe(self, sitzung: _Sitzung) -> list[Any] | None:
         """Aktuelle Beherrschung nach einer Abgabe; None, wenn Learning sie gerade nicht liefert."""

@@ -2034,3 +2034,51 @@ def test_dokument_schliessen_anderer_fehler_wirft(zustand: Path) -> None:
     c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen="REQUEST_ID_CONFLICT"))
     with pytest.raises(PenEchoAnfrageSchonBekannt):
         c.dokument_schliessen("s1#1", "cv-a")
+
+
+def _dok3(zustand: Path) -> None:
+    datei = zustand.parent / "learning-huelle" / DOKUMENTE
+    datei.parent.mkdir(parents=True, exist_ok=True)
+    datei.write_text(json.dumps({"s1#1": "d1", "s1#2": "d2", "s1#3": "d3"}), encoding="utf-8")
+
+
+def test_dokumente_schliessen_listet_einmal_fuer_alle(zustand: Path) -> None:
+    # Aufraeumen am Kursende: ein penecho_list_canvases fuer N Aufgaben, nicht je Aufgabe eines.
+    _dok3(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=_schliess_transport(fake))
+    assert c.dokumente_schliessen(["s1#1", "s1#2", "s1#3", "s1#4"], "cv-a") == {
+        "s1#1": True, "s1#2": True, "s1#3": True, "s1#4": False}
+    assert len(fake.aufrufe("penecho_list_canvases")) == 1
+    assert [a["arguments"]["documentId"] for a in fake.aufrufe("penecho_close_canvas")] == ["d1", "d2", "d3"]
+
+
+def test_dokumente_schliessen_ohne_gemerktes_dokument_kein_aufruf(zustand: Path) -> None:
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=_schliess_transport(fake))
+    assert c.dokumente_schliessen(["s1#1", "s1#2"], "cv-a") == {"s1#1": False, "s1#2": False}
+    assert fake.aufrufe("penecho_list_canvases") == [] and fake.aufrufe("penecho_close_canvas") == []
+
+
+@pytest.mark.parametrize("code", ["unsupported_operation", "document_not_found", "tool_not_found"])
+def test_dokumente_schliessen_alte_lernflaeche_false(zustand: Path, code: str) -> None:
+    _dok3(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=_schliess_transport(fake, schliessen=code))
+    assert c.dokumente_schliessen(["s1#1", "s1#2"], "cv-a") == {"s1#1": False, "s1#2": False}
+    assert len(fake.aufrufe("penecho_list_canvases")) == 1
+
+
+def test_dokumente_schliessen_tab_nicht_gelistet(zustand: Path) -> None:
+    _dok3(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=_schliess_transport(fake, canvases=False))
+    assert c.dokumente_schliessen(["s1#1", "s1#2"], "cv-a") == {"s1#1": False, "s1#2": False}
+    assert fake.aufrufe("penecho_close_canvas") == []
+
+
+def test_dokumente_schliessen_anderer_fehler_wirft(zustand: Path) -> None:
+    _dok3(zustand)
+    c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen="REQUEST_ID_CONFLICT"))
+    with pytest.raises(PenEchoAnfrageSchonBekannt):
+        c.dokumente_schliessen(["s1#1", "s1#2"], "cv-a")

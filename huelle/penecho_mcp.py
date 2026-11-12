@@ -738,10 +738,42 @@ class PenEchoMcp:
         Werkzeug (`tool_not_found`, alte Lernflaeche). Andere Fehler werfen. Die instanceId kommt wie beim Oeffnen aus
         penecho_list_canvases.
         """
-        dokument = self.dokument_von(schluessel)
-        if not dokument:
-            return False
+        return self.dokumente_schliessen((schluessel,), canvas_id)[schluessel]
+
+    def dokumente_schliessen(self, schluessel: Iterable[str], canvas_id: str) -> dict[str, bool]:
+        """Wie `dokument_schliessen` fuer mehrere Schluessel im selben Tab, mit einem einzigen penecho_list_canvases
+        (Aufraeumen am Kursende: sonst je Aufgabe ein Auflisten).
+
+        Je Schluessel True bei Quittung, sonst False (kein gemerktes Dokument, Tab nicht gelistet, alte Lernflaeche,
+        `document_not_found`). Ohne gemerktes Dokument gibt es keinen Aufruf. Andere Fehler werfen (die uebrigen
+        Dokumente bleiben dann offen).
+        """
+        reihe = tuple(schluessel)
+        ergebnis = dict.fromkeys(reihe, False)
+        karte = self._gemerkt(self._dokumentdatei)
+        dokumente = {s: karte[s] for s in reihe if karte.get(s)}
+        if not dokumente:
+            return ergebnis
         liste = self._struktur(self._werkzeug("penecho_list_canvases", {}))
+        for s, dokument in dokumente.items():
+            instanz = self._instanz_im_tab(liste, canvas_id, dokument)
+            if instanz is None:
+                continue
+            try:
+                self._werkzeug("penecho_close_canvas", {
+                    "instanceId": instanz,
+                    "canvasId": canvas_id,
+                    "documentId": dokument,
+                    "requestId": "schliessen-" + hashlib.sha256(s.encode("utf-8")).hexdigest()[:16],
+                })
+            except (PenEchoNichtUnterstuetzt, PenEchoDokumentFehlt):
+                continue
+            ergebnis[s] = True
+        return ergebnis
+
+    @staticmethod
+    def _instanz_im_tab(liste: dict[str, Any], canvas_id: str, dokument: str) -> str | None:
+        """instanceId des Browser-Tabs `canvas_id` aus penecho_list_canvases; der Eintrag mit `dokument` geht vor."""
         instanz: str | None = None
         for eintrag in liste.get("canvases") or []:
             if not isinstance(eintrag, dict) or eintrag.get("canvasId") != canvas_id:
@@ -751,18 +783,7 @@ class PenEchoMcp:
                 instanz = kandidat
                 if eintrag.get("documentId") == dokument:
                     break
-        if instanz is None:
-            return False
-        try:
-            self._werkzeug("penecho_close_canvas", {
-                "instanceId": instanz,
-                "canvasId": canvas_id,
-                "documentId": dokument,
-                "requestId": "schliessen-" + hashlib.sha256(schluessel.encode("utf-8")).hexdigest()[:16],
-            })
-        except (PenEchoNichtUnterstuetzt, PenEchoDokumentFehlt):
-            return False
-        return True
+        return instanz
 
     # ---- Oeffentliche Methoden -------------------------------------------
     def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None, gruppe: str | None = None) -> str:
