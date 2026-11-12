@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 from spaces.learning.huelle.anordnung import EINZEL_RECHTECK, ZuVieleAufgaben, anordnung
 from spaces.learning.huelle.bruecke import _Sitzung
 from spaces.learning.huelle.einstellung import Kurs
-from spaces.learning.huelle.penecho_mcp import aufgaben_titel
+from spaces.learning.huelle.penecho_mcp import PenEchoNichtErreichbar, aufgaben_titel
 
 from .test_bruecke import (
     GID, KURS, PA, SID, SID_GA, FakePenEcho, Laeufe, ListenLern, TabMcp, _bis, _gruppen_bruecke, _stand,
@@ -22,11 +22,31 @@ from .test_bruecke import (
 
 
 class JePenEcho(FakePenEcho):
-    """Wie FakePenEcho, aber jede Aufgaben-Sitzung (`<sid>#<n>`) hat ihr eigenes Board `board-<n>`."""
+    """Wie FakePenEcho, aber jede Aufgaben-Sitzung (`<sid>#<n>`) hat ihr eigenes Board `board-<n>`; nach
+    `vergessen` ein neues (`board-<n>-v1`, ...). `fehler_nach_vergessen`: das naechste `sitzung` danach scheitert."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.vergessen_je: dict[str, int] = {}
+        self.fehler_nach_vergessen: Exception | None = None
+        self._gerade_vergessen = False
+
+    def vergessen(self, schluessel: str) -> None:
+        super().vergessen(schluessel)
+        self.vergessen_je[schluessel] = self.vergessen_je.get(schluessel, 0) + 1
+        self._gerade_vergessen = True
 
     def sitzung(self, schluessel: str, titel: str, canvas_id: str | None = None, gruppe: str | None = None) -> str:
         board = super().sitzung(schluessel, titel, canvas_id, gruppe)
-        return f"board-{schluessel.split('#', 1)[1]}" if "#" in schluessel else board
+        if self._gerade_vergessen:
+            self._gerade_vergessen = False
+            if self.fehler_nach_vergessen is not None:
+                fehler, self.fehler_nach_vergessen = self.fehler_nach_vergessen, None
+                raise fehler
+        if "#" not in schluessel:
+            return board
+        stand = self.vergessen_je.get(schluessel, 0)
+        return f"board-{schluessel.split('#', 1)[1]}" + (f"-v{stand}" if stand else "")
 
 
 def _neu_lern(n: int = 3) -> ListenLern:
@@ -130,6 +150,46 @@ def test_zeigen_legt_canvas_bei_bedarf_an(tmp_path: Path) -> None:
         assert "aufgabe_setzen" not in [a[0] for a in neu]
         assert ("bereich_zeigen", "board-3", EINZEL_RECHTECK) in neu
         assert SID not in _schluessel(penecho)
+    finally:
+        client.app.beenden()
+
+
+def test_aufgaben_canvas_beruehrt_gemeinsames_board_nie(tmp_path: Path) -> None:
+    # `sitzung.board` bleibt das gemeinsame Board des alten Modells; Aufgaben-Canvas stehen nur in `aufgaben_boards`.
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        assert sitzung.board is None
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 1}).status_code == 200
+        assert sitzung.board is None
+        assert sitzung.aufgaben_boards == {1: "board-1", 2: "board-2"}
+        assert [a for a in penecho.aufrufe if a[0] == "dokument_merken"] == [
+            ("dokument_merken", "board-1"), ("dokument_merken", "board-2")]
+    finally:
+        client.app.beenden()
+
+
+def test_unbekannte_aufgaben_sitzung_verwirft_altes_board(tmp_path: Path) -> None:
+    penecho = JePenEcho()
+    client, _, _ = _oeffnen(_neu_lern(3), tmp_path, penecho)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert sitzung.aufgaben_boards[2] == "board-2"
+        # PenEcho kennt die Sitzung nicht mehr: vergessen, neu anlegen, wiederholen.
+        penecho.unbekannt_einmal = True
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
+        assert r.json() == {"nummer": 2, "flaeche": True}
+        assert ("vergessen", f"{SID}#2") in penecho.aufrufe
+        assert penecho.aufrufe[-1] == ("bereich_zeigen", "board-2-v1", EINZEL_RECHTECK)
+        assert sitzung.aufgaben_boards[2] == "board-2-v1" and sitzung.board is None
+        # Scheitert auch das Neuanlegen, bleibt kein veraltetes Board stehen.
+        penecho.unbekannt_einmal = True
+        penecho.fehler_nach_vergessen = PenEchoNichtErreichbar("weg")
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
+        assert r.json() == {"nummer": 2, "flaeche": False}
+        assert 2 not in sitzung.aufgaben_boards and sitzung.board is None
     finally:
         client.app.beenden()
 

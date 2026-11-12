@@ -1382,19 +1382,21 @@ class Bruecke:
         art = _feldart(task)
         return lambda s: self._penecho.aufgabe_setzen(s, task["id"], text, nummer, bilder=bilder, **art, **lage)
 
-    def _board_merken(self, sitzung: _Sitzung) -> None:
+    def _board_merken(self, sitzung: _Sitzung, board: str | None = None) -> None:
         """documentId des Boards merken (`dokument_merken`), still: Fehler nur als Typ geloggt, nie gemeldet.
 
         Das eigentliche Speichern in PenEcho loest die Seite aus (BOARD_SPEICHERN.md); der Server kann es nicht.
         Nur fuer ein Board, mit dem diese Bruecke schon gearbeitet hat: kein `sitzung()`, kein Neuanlegen,
         kein Wiederholen (etwa nach einem Neustart der Huelle bei `passt`; `weiter` merkt es danach).
         `dokument_merken` selbst fragt PenEcho nur per `penecho_inspect_session`.
+        `board`: ein anderes Board als `sitzung.board`, etwa das Canvas einer Aufgabe (`aufgaben_boards[nummer]`).
         """
-        if sitzung.board is None or sitzung.gruppe is not None:
+        board = board or sitzung.board
+        if board is None or sitzung.gruppe is not None:
             return  # Teil C: das Dokument der Gruppenflaeche gehoert nicht zu den eigenen Boards der Person
         try:
             with self._flaeche_sperre:
-                self._penecho.dokument_merken(sitzung.board)
+                self._penecho.dokument_merken(board)
         except Exception as fehler:  # noqa: BLE001 - Merken darf nie eine Abgabe aufhalten
             log.warning("Board nicht gemerkt: %s", _typ(fehler))
 
@@ -1899,8 +1901,9 @@ class Bruecke:
     def _auf_aufgabe(self, sitzung: _Sitzung, nummer: int, titel: str, aktion: Callable[[str], T]) -> T:
         """Wie `_auf_flaeche`, nur auf dem Canvas der Aufgabe `nummer` (Schluessel `<sid>#<nummer>`).
 
-        Kennt PenEcho die Sitzung nicht mehr, einmal den Aufgabenschluessel vergessen, neu anlegen und wiederholen.
-        Merkt das Board in `aufgaben_boards` und als `board` (zuletzt gelungener Flaechenaufruf, fuer `_board_merken`).
+        Kennt PenEcho die Sitzung nicht mehr, das veraltete Board verwerfen, einmal den Aufgabenschluessel vergessen,
+        neu anlegen und wiederholen. Das Board steht nur in `aufgaben_boards[nummer]`, nie in `sitzung.board` (das
+        bleibt das gemeinsame Board des alten Modells).
         """
         schluessel = self._aufgaben_schluessel(sitzung.sid, nummer)
         with self._flaeche_sperre:
@@ -1913,7 +1916,6 @@ class Bruecke:
                 session_id = self._aufgaben_sitzung(sitzung, schluessel, titel)
                 ergebnis = aktion(session_id)
             sitzung.aufgaben_boards[nummer] = session_id
-            sitzung.board = session_id
         return ergebnis
 
     @staticmethod
@@ -1935,7 +1937,7 @@ class Bruecke:
             self._still(lambda: self._auf_aufgabe(
                 sitzung, nummer, titel, lambda s: self._penecho.bereiche_melden(s, [EINZEL_RECHTECK])))
             self._auf_aufgabe(sitzung, nummer, titel, auftrag)
-        self._board_merken(sitzung)
+        self._board_merken(sitzung, sitzung.aufgaben_boards[nummer])  # gesetzt, sonst haette `_auf_aufgabe` geworfen
 
     def _aufgabe_zeigen(self, sitzung: _Sitzung, task: dict[str, Any], nummer: int) -> bool:
         """Canvas der Aufgabe aktiv machen; gibt es noch keines (kein Board, kein gemerktes Dokument), anlegen."""
