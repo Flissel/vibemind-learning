@@ -456,6 +456,7 @@ def test_passt_zeigt_naechste_aufgabe_auf_ihrem_canvas(tmp_path: Path) -> None:
         neu = penecho.aufrufe[vorher:]
         assert "aufgabe_setzen" not in [a[0] for a in neu]
         assert ("bereich_zeigen", "board-3", EINZEL_RECHTECK) in neu
+        assert neu[-1] == ("dokument_merken", "board-3")
         assert SID not in _schluessel(penecho) and client.app._sitzungen[SID].board is None
     finally:
         client.app.beenden()
@@ -473,6 +474,7 @@ def test_antwort_rueckmeldung_auf_canvas_der_aufgabe(tmp_path: Path) -> None:
         (setzen,) = [a for a in neu if a[0] == "rueckmeldung_setzen"]
         assert setzen[1] == "board-1" and setzen[4] == "Rückmeldung zu Aufgabe 1"
         assert penecho.rueckmeldung_rechtecke[-1] == (1, EINZEL_RECHTECK)
+        assert neu.index(setzen) < neu.index(("dokument_merken", "board-1"))
         assert not {"aufgabe_setzen", "bereich_zeigen"} & {a[0] for a in neu}  # die Rueckmeldung bleibt im Bild
         assert SID not in _schluessel(penecho)
     finally:
@@ -490,7 +492,8 @@ def test_weiter_zeigt_aktuelle_aufgabe_auf_ihrem_canvas(tmp_path: Path) -> None:
         assert r.status_code == 200, r.text
         assert r.json()["nummer"] == 2 and r.json()["flaeche"] is True
         assert penecho.aufrufe[vorher:] == [("sitzung", f"{SID}#2", "Aufgabe 2: Frage 2"),
-                                            ("bereich_zeigen", "board-2", EINZEL_RECHTECK)]
+                                            ("bereich_zeigen", "board-2", EINZEL_RECHTECK),
+                                            ("dokument_merken", "board-2")]
     finally:
         client.app.beenden()
 
@@ -507,12 +510,62 @@ def test_karte_kommt_mit_dem_canvas(tmp_path: Path) -> None:
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
         assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-1", 1), ("board-2", 2)]
         assert penecho.karten_rechtecke == [(1, EINZEL_RECHTECK), (2, EINZEL_RECHTECK)]
-        # Ein vorhandenes Canvas wird nur gezeigt: keine zweite Karte.
+        # Auch ein vorhandenes Canvas bekommt die Karte wieder (sie ersetzt die vorige, steht also nie doppelt).
+        vorher = len(penecho.aufrufe)
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
-        assert len(_karten(penecho)) == 2
+        neu = [a[0] for a in penecho.aufrufe[vorher:] if a[0] != "sitzung"]
+        assert neu == ["bereich_zeigen", "rueckmeldung_zeigen"]
+        assert [(k[1], k[3]) for k in _karten(penecho)][-1] == ("board-2", 2)
         assert SID not in _schluessel(penecho)
     finally:
         client.app.beenden()
+
+
+def test_verlorene_karte_kommt_auf_vorhandenes_canvas_zurueck(tmp_path: Path) -> None:
+    # Die Karte fiel unterwegs weg (Kurswechsel, Neustart waehrend der Bewertung), Learning kennt die Vorbewertung:
+    # Zeigen und Weiter auf ein vorhandenes Canvas setzen sie wieder; eine bestaetigte Aufgabe bekommt keine.
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert _karten(penecho) == []
+        ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), gelesen="2")
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-2", 2)]
+        assert penecho.karten_rechtecke[-1] == (2, EINZEL_RECHTECK)
+        ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(1), gelesen="1")
+        r = client.post(f"/lernen/api/sitzungen/{SID}/weiter")
+        assert r.status_code == 200 and r.json()["nummer"] == 1
+        assert [(k[1], k[3]) for k in _karten(penecho)][-1] == ("board-1", 1)
+        ll.eintraege[2]["status"] = "bestaetigt"
+        ll.eintraege[2]["vorbewertung"] = _vor(vid=_vid(3), gelesen="3")
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3}).status_code == 200
+        assert all(k[3] != 3 for k in _karten(penecho))
+    finally:
+        client.app.beenden()
+
+
+def test_gescheiterte_abgabe_nimmt_ihre_aufnahme_zurueck(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1}).status_code == 202
+        _bis(lambda: _ruhig(bruecke), 2)
+        assert _aufnahme(tmp_path, 1).read_bytes() == PNG
+        # Die naechste Abgabe scheitert nach dem Merken (Einreihen abgelehnt): die bewertete Aufnahme bleibt.
+        penecho.bild = PNG[:8] + b"neu" * 8
+        bruecke._modellspur.einreihen = lambda *a, **kw: False
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 1})
+        assert r.status_code == 409 and r.json()["code"] == "laeuft_schon"
+        assert _aufnahme(tmp_path, 1).read_bytes() == PNG
+        # Ohne vorige Aufnahme faellt die neue Datei weg.
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"nummer": 2})
+        assert r.status_code == 409
+        assert not _aufnahme(tmp_path, 2).exists()
+        assert sorted(p.name for p in _aufnahme(tmp_path, 1).parent.iterdir()) == ["1.png"]
+    finally:
+        bruecke.beenden()
 
 
 @pytest.mark.parametrize(("route", "body"), [

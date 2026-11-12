@@ -889,6 +889,20 @@ class Bruecke:
         except OSError:
             return None
 
+    def _aufnahme_zuruecksetzen(self, sid: str, nummer: int, alt: bytes | None) -> None:
+        """Eine gescheiterte Abgabe nimmt ihre Aufnahme zurueck: die vorige kommt wieder (atomar), gab es keine, faellt
+        die Datei weg. Still wie `_aufnahme_merken`."""
+        if alt is not None:
+            self._aufnahme_merken(sid, nummer, alt)
+            return
+        pfad = self._aufnahme_pfad(sid, nummer)
+        if pfad is None:
+            return
+        try:
+            pfad.unlink(missing_ok=True)
+        except OSError as fehler:
+            log.warning("Aufnahme nicht zurueckgenommen: %s", _typ(fehler))
+
     async def _r_ki_schritt(self, request: Request) -> Response:
         """Die Flaeche meldet einen KI-Schritt; Besitz wie bei jeder Sitzungsroute (fremde Sitzung: 404)."""
         sid = request.path_params["sid"]
@@ -1988,17 +2002,26 @@ class Bruecke:
 
     def _aufgabe_zeigen(
         self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, *, eintrag: dict[str, Any] | None = None,
+        merken: bool = False,
     ) -> bool:
         """Canvas der Aufgabe aktiv machen; gibt es noch keines (kein Board, kein gemerktes Dokument), anlegen.
 
-        `eintrag` (Listeneintrag): ein neu angelegtes Canvas bekommt auch die Karte einer offenen Vorbewertung.
+        `eintrag` (Listeneintrag): hat die Aufgabe eine offene Vorbewertung, kommt ihre Karte (wieder) auf das Canvas,
+        neu angelegt oder vorhanden. `rueckmeldung_zeigen` ersetzt eine vorige Karte, doppelt steht sie also nie;
+        so kommt auch eine Karte zurueck, die unterwegs wegfiel (Kurswechsel, Neustart waehrend der Bewertung).
+        `merken`: nach dem Zeigen eines vorhandenen Canvas sein Dokument merken (wie `_board_merken` nach Weiter und
+        Passt im alten Modell; ein neu angelegtes merkt `_einzel_setzen` schon).
         """
         if self._ohne_canvas(sitzung, nummer):
             ok = self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
-            if ok and eintrag is not None:
-                self._einzel_karte(sitzung, eintrag)
-            return ok
-        return self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK))
+        else:
+            ok = self._auf_nummer_still(sitzung, task, nummer,
+                                        lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK))
+            if ok and merken:
+                self._nummer_merken(sitzung, nummer)
+        if ok and eintrag is not None:
+            self._einzel_karte(sitzung, eintrag)
+        return ok
 
     def _auf_nummer_still(
         self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, aktion: Callable[[str], Any],
@@ -2519,6 +2542,9 @@ class Bruecke:
                 self._kartentexte.pop(schluessel, None)
         if laeuft:
             self._laeuft_schon(sitzung)
+        # Ein Canvas je Aufgabe: die bisherige Aufnahme der Nummer (die der bewerteten Abgabe); scheitert diese Abgabe
+        # nach dem Merken, kommt sie zurueck (oder die neue Datei faellt weg, wenn es keine gab).
+        alte_aufnahme: tuple[bytes | None] | None = None
         try:
             # Schnappschuss des Speichers mit der eigenen Belegung, vor dem Lesen bei Learning (siehe dort).
             abgaben = self._abgabestaende(sid)
@@ -2535,6 +2561,7 @@ class Bruecke:
                 rechteck = EINZEL_RECHTECK
                 revision = self._revision_von(turn)
                 png = self._aufgabe_aufnehmen(sitzung, task, nummer)
+                alte_aufnahme = (self._aufnahme_lesen(sid, nummer),)
                 self._aufnahme_merken(sid, nummer, png)
             else:
                 rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
@@ -2556,6 +2583,8 @@ class Bruecke:
                 raise _Antwort(409, {"code": "laeuft_schon", "meldung": LAEUFT_SCHON,
                                      "stand": self._stand_aus(sid, eintraege, abgaben)})
         except BaseException:
+            if alte_aufnahme is not None:
+                self._aufnahme_zuruecksetzen(sid, nummer, alte_aufnahme[0])
             with self._abgaben_sperre:
                 if vorher is None:
                     self._abgaben.pop(schluessel, None)
@@ -2754,7 +2783,7 @@ class Bruecke:
         if sitzung.je_aufgabe:
             if zeigen and weiter_zu is not None:
                 ziel_eintrag = self._eintrag_zu(eintraege, weiter_zu)
-                self._aufgabe_zeigen(sitzung, ziel_eintrag["task"], weiter_zu, eintrag=ziel_eintrag)
+                self._aufgabe_zeigen(sitzung, ziel_eintrag["task"], weiter_zu, eintrag=ziel_eintrag, merken=True)
         else:
             if zeigen and weiter_zu is not None:
                 ziel = bereiche[weiter_zu - 1]
@@ -2812,6 +2841,8 @@ class Bruecke:
             task = eintrag["task"]
             flaeche = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_setzen(
                 s, task["id"], nummer, titel, text, rechteck=rechteck))
+            if flaeche and sitzung.je_aufgabe:
+                self._nummer_merken(sitzung, nummer)  # alt: `_board_merken` in `_nach_buchung`
         antwort = self._nach_buchung(sitzung, turn, eintraege, bereiche, nummer, zeigen=False)
         return {**antwort, "rueckmeldung": text, "flaeche": flaeche}
 
@@ -2827,9 +2858,9 @@ class Bruecke:
             self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
             self._bericht(sitzung, turn, self._listen_rechtecke(sitzung, eintraege, bereiche))
         if sitzung.je_aufgabe:
-            # `aktuell` auf seinem Canvas ins Bild (bei Bedarf angelegt); das Dokument merkt dann `_einzel_setzen`.
+            # `aktuell` auf seinem Canvas ins Bild (bei Bedarf angelegt) und sein Dokument merken.
             aktuell = self._eintrag_zu(eintraege, stand["aktuell"])
-            flaeche = self._aufgabe_zeigen(sitzung, aktuell["task"], aktuell["nummer"], eintrag=aktuell)
+            flaeche = self._aufgabe_zeigen(sitzung, aktuell["task"], aktuell["nummer"], eintrag=aktuell, merken=True)
             return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": flaeche}
         ziel = bereiche[stand["aktuell"] - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, ziel))
