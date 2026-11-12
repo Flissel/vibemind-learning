@@ -3217,7 +3217,9 @@ def test_notweg_nutzt_inhaber_kennung() -> None:
         assert inhaber.get(f"/lernen/api/notizen?course_id={KURS}").status_code == 200
         assert umschlaege and {u["actor"]["actor_id"] for u in umschlaege} == {ACTOR}
         assert koepfe[-1]["X-Learning-Actor"] == ACTOR
-        assert lh.anfragen == []  # der Notweg fragt LearnHouse nie
+        # Ohne LearnHouse keine Anfrage; mit LearnHouse hoechstens eine (Fehlschlag 60 s gepuffert),
+        # und die Kurse des Notwegs bleiben, auch wenn LearnHouse die Kennung nicht kennt.
+        assert len(lh.anfragen) == (0 if einstellung is E else 1)
 
 
 def test_bruecke_ohne_kennung_der_weiche_403() -> None:

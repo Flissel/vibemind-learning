@@ -65,10 +65,43 @@ def test_einstellung_learnhouse_url_optional() -> None:
         einstellung_lesen({**BASIS, "LEARNING_HUELLE_LEARNHOUSE_URL": "ftp://x.test"})
 
 
-def test_notweg_kennung_bekommt_die_kurse_der_umgebung() -> None:
-    katalog, gesehen, _ = _katalog(_kurse())
+def test_inhaber_bekommt_die_kurse_aus_learnhouse_plus_notweg() -> None:
+    # Das eigene Konto des Inhabers ist mit der Notweg-Kennung verknuepft: die Kursuebersicht zeigt alle
+    # Kurse aus LearnHouse, also muss die Huelle sie auch oeffnen (sonst greift `?kurs=` nicht).
+    katalog, gesehen, _ = _katalog(_kurse({"course_id": KURS_B, "titel": "Kurs B"}))
+    assert katalog.kurse("lh-1-inhaber") == (Kurs(KURS_B, "Kurs B"), Kurs(KURS, "Notwegkurs"))
+    assert len(gesehen) == 1
+
+
+def test_inhaber_ohne_doppelten_notwegkurs() -> None:
+    katalog, _, _ = _katalog(_kurse({"course_id": KURS, "titel": "Notwegkurs (LH)"}, {"course_id": KURS_B, "titel": "B"}))
+    assert katalog.kurse("lh-1-inhaber") == (Kurs(KURS, "Notwegkurs (LH)"), Kurs(KURS_B, "B"))
+
+
+@pytest.mark.parametrize("antwort", [httpx.Response(404), httpx.Response(503), httpx.Response(200, text="kaputt")])
+def test_inhaber_faellt_auf_den_notweg_zurueck(antwort: httpx.Response) -> None:
+    # Der Notweg (Telegram) haengt nie an LearnHouse: ohne brauchbare Antwort bleibt die Liste der Umgebung.
+    katalog, _, _ = _katalog(antwort)
     assert katalog.kurse("lh-1-inhaber") == (Kurs(KURS, "Notwegkurs"),)
-    assert gesehen == []
+
+
+def test_inhaber_puffert_auch_den_fehlschlag_60_s() -> None:
+    # Ein abgelehnter oder toter LearnHouse bremst den Notweg nicht bei jeder Anfrage um bis zu 5 s.
+    katalog, gesehen, uhr = _katalog(httpx.Response(503))
+    for _ in range(3):
+        assert katalog.kurse("lh-1-inhaber") == (Kurs(KURS, "Notwegkurs"),)
+    assert len(gesehen) == 1
+    uhr.t += PUFFER_S
+    katalog.kurse("lh-1-inhaber")
+    assert len(gesehen) == 2
+
+
+def test_inhaber_faellt_bei_netzfehler_auf_den_notweg_zurueck() -> None:
+    def weg(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("weg")
+
+    katalog, _, _ = _katalog(weg)
+    assert katalog.kurse("lh-1-inhaber") == (Kurs(KURS, "Notwegkurs"),)
 
 
 def test_ohne_learnhouse_nur_der_notweg() -> None:

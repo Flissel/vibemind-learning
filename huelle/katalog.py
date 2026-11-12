@@ -1,7 +1,9 @@
 """Kurse je Person: welche Kurse eine Kennung auf der Lern-Huelle oeffnen darf.
 
-Die Inhaber-Kennung des Notwegs (Telegram-Zugang, `LEARNING_HUELLE_ACTOR`) bekommt die Kursliste aus
-der Umgebung (`LEARNING_HUELLE_KURSE`). Jede andere Kennung fragt LearnHouse ueber die Dienstroute
+Die Inhaber-Kennung des Notwegs (Telegram-Zugang, `LEARNING_HUELLE_ACTOR`) bekommt die Kurse aus LearnHouse
+(ihr eigenes Konto ist mit dieser Kennung verknuepft, die Kursuebersicht zeigt also alle Kurse) plus die
+Kursliste der Umgebung (`LEARNING_HUELLE_KURSE`). Antwortet LearnHouse nicht brauchbar, bleibt fuer sie nur
+die Liste der Umgebung: der Notweg haengt nie an LearnHouse. Jede andere Kennung fragt LearnHouse ueber die Dienstroute
 `GET /api/v1/learning/personen/{actor_id}/kurse` (Dienstschluessel im Kopf), mit 60 s Puffer je Kennung:
 eine entfernte Person verliert den Zugang also spaetestens 60 s nach dem Entfernen. Ohne
 `LEARNING_HUELLE_LEARNHOUSE_URL` gibt es nur den Notweg.
@@ -55,9 +57,26 @@ class Katalog:
 
     def kurse(self, actor_id: str) -> tuple[Kurs, ...]:
         if actor_id == self._e.actor_id:
-            return self._e.kurse
+            return self._kurse_inhaber()
         if not self._e.learnhouse_url:
             raise KeinZugang()
+        return self._gepuffert(actor_id)
+
+    def _kurse_inhaber(self) -> tuple[Kurs, ...]:
+        notweg = self._e.kurse
+        if not self._e.learnhouse_url:
+            return notweg
+        try:
+            aus_learnhouse = self._gepuffert(self._e.actor_id)
+        except (KeinZugang, UebersichtWeg):
+            # Auch den Fehlschlag 60 s puffern: sonst bremst ein toter LearnHouse jede Notweg-Anfrage.
+            with self._sperre:
+                self._puffer[self._e.actor_id] = (self._uhr(), ())
+            return notweg
+        bekannt = {k.course_id for k in aus_learnhouse}
+        return aus_learnhouse + tuple(k for k in notweg if k.course_id not in bekannt)
+
+    def _gepuffert(self, actor_id: str) -> tuple[Kurs, ...]:
         jetzt = self._uhr()
         with self._sperre:
             gepuffert = self._puffer.get(actor_id)
