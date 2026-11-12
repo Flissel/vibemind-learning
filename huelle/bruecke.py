@@ -634,8 +634,12 @@ class Bruecke:
         self._kursabgabe_sperre = threading.Lock()
         self._kursabgaben: dict[str, tuple[int, KursAbgabeStand]] = {}
         self._kursabgabe_laeufe = 0
-        # Je sid: Nummer -> sha256 der letzten Aufnahme, deren Vorbewertung nicht lesbar war (nur im Speicher).
+        # Unlesbare Aufnahmen (nur im Speicher), je sid Nummer -> sha256. `_kursabgabe_unlesbar`: der Person schon
+        # mitgeteilt (ein Lauf endete mit `unlesbar_text`); nur diese buchen eine unveraenderte Aufnahme als nicht
+        # bearbeitet. `_kursabgabe_vorgemerkt`: im laufenden Lauf gefunden (sid -> (Lauf, Nummer -> sha256)); endet er
+        # anders, fallen sie weg.
         self._kursabgabe_unlesbar: dict[str, dict[int, str]] = {}
+        self._kursabgabe_vorgemerkt: dict[str, tuple[int, dict[int, str]]] = {}
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
@@ -3272,7 +3276,7 @@ class Bruecke:
             gebucht = False
             if nummer <= gesamt:
                 self._kursabgabe_setzen(sid, lauf, lambda s: replace(s, aktuell=nummer, gesamt=gesamt))
-                neu = self._kursabgabe_aufgabe(sitzung, turn, eintraege[nummer - 1])
+                neu = self._kursabgabe_aufgabe(sitzung, lauf, turn, eintraege[nummer - 1])
                 if neu is not None:
                     turn, gebucht = neu, True
                     self._im_ablauf(schleife, functools.partial(
@@ -3285,17 +3289,25 @@ class Bruecke:
                 # Ohne eigene Buchung (schon bestaetigt, anderswo gebucht, unlesbar): Learnings Stand jetzt.
                 turn, eintraege = self._liste_lesen(sitzung)
             if turn.get("state") != "completed":
-                unlesbar = self._unlesbar_offen(sid, eintraege)
-                if unlesbar:
-                    raise _Antwort(409, {"meldung": unlesbar_text(unlesbar)})
-                raise LearningWeg("nicht_abgeschlossen")
+                unlesbar = self._unlesbar_offen(sid, lauf, eintraege)
+                if not unlesbar:
+                    raise LearningWeg("nicht_abgeschlossen")
+                text = unlesbar_text(unlesbar)
+                # Nur hier erfaehrt die Person davon: erst ab jetzt zaehlt dieselbe Aufnahme beim naechsten „Kurs
+                # abgeben“ als nicht bearbeitet. Zuerst merken, dann den Stand zeigen.
+                self._unlesbar_abschliessen(sid, lauf, mitgeteilt=True)
+                self._kursabgabe_setzen(sid, lauf, lambda s: replace(s, zustand="fehler", meldung=text))
+                return
             if not gebucht:
                 # Nichts mehr zu buchen (alles schon bestaetigt): Kursende und Bericht wie nach der letzten Buchung.
                 self._im_ablauf(schleife, functools.partial(self._kurs_beenden, sitzung, turn))
+            self._unlesbar_abschliessen(sid, lauf, mitgeteilt=False)
             self._kursabgabe_setzen(sid, lauf, lambda s: replace(s, zustand="fertig", aktuell=gesamt, gesamt=gesamt))
         except Exception as fehler:  # noqa: BLE001 - der Lauf darf nie stumm „laeuft“ bleiben
             log.warning("Kurs abgeben: Aufgabe %d nicht gebucht: %s", nummer, _typ(fehler))
             meldung = self._kursabgabe_meldung(fehler)
+            # Der Unlesbar-Text wurde nicht gezeigt: die in diesem Lauf gefundenen unlesbaren Aufnahmen verfallen.
+            self._unlesbar_abschliessen(sid, lauf, mitgeteilt=False)
             self._kursabgabe_setzen(sid, lauf, lambda s: replace(s, zustand="fehler", meldung=meldung))
 
     def _kurs_beenden(self, sitzung: _Sitzung, turn: dict[str, Any]) -> None:
@@ -3304,7 +3316,7 @@ class Bruecke:
         self._bericht(sitzung, turn, {})
 
     def _kursabgabe_aufgabe(
-        self, sitzung: _Sitzung, turn: dict[str, Any], eintrag: dict[str, Any],
+        self, sitzung: _Sitzung, lauf: int, turn: dict[str, Any], eintrag: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Eine Aufgabe buchen; der neue Turn, oder None, wenn nichts gebucht wurde (schon bestaetigt, anderswo schon
         gebucht oder nicht lesbar).
@@ -3314,9 +3326,9 @@ class Bruecke:
           Aufnahme und ohne neue Bewertung (Learnings Liste traegt `quelle` und `lesbar` der neuesten Vorbewertung).
         - Ohne Dokument (Flaechenaufgabe ohne Canvas, `_ohne_canvas`; Aufgaben der Seitenleiste): leer, 0 Punkte.
         - Sonst wie `abgeben`: Aufnahme vom eigenen Canvas (belegte Flaeche: 409 `FLAECHE_BESCHAEFTIGT`), merken.
-          Gleicht sie der zuletzt unlesbaren dieser Aufgabe (sha256), zaehlt sie als nicht bearbeitet (leer). Sonst
-          vorbewerten (`_mit_ki_bewertung`); lesbar: sofort bestaetigen. Nicht lesbar: nicht bestaetigen, die Karte
-          auf ihr Canvas (wie nach `abgeben`) und die Aufnahme als unlesbar merken.
+          Gleicht sie der unlesbaren, die der Person schon mitgeteilt wurde (sha256), zaehlt sie als nicht bearbeitet
+          (leer). Sonst vorbewerten (`_mit_ki_bewertung`); lesbar: sofort bestaetigen. Nicht lesbar: nicht
+          bestaetigen, die Karte auf ihr Canvas (wie nach `abgeben`) und die Aufnahme fuer diesen Lauf vormerken.
         """
         nummer, task, sid = eintrag["nummer"], eintrag["task"], sitzung.sid
         hat_dokument = task.get("type") in _FLAECHEN_TYPEN and not self._ohne_canvas(sitzung, nummer)
@@ -3349,8 +3361,7 @@ class Bruecke:
             raise LearningWeg("vorbewertung")
         if vorbewertung.get("lesbar") is not True:
             log.info("Kurs abgeben: Aufgabe %d nicht lesbar", nummer)
-            with self._kursabgabe_sperre:
-                self._kursabgabe_unlesbar.setdefault(sid, {})[nummer] = pruefsumme
+            self._unlesbar_vormerken(sid, lauf, nummer, pruefsumme)
             self._karte_einreihen(sitzung, task, nummer, vorbewertung, EINZEL_RECHTECK)
             return None
         return self._kursabgabe_buchen(sitzung, nummer, "learning_task_confirm", "learning.task.confirm", revision,
@@ -3372,14 +3383,39 @@ class Bruecke:
         self._unlesbar_vergessen(sitzung.sid, nummer)
         return None if result is None else _turn(result)
 
+    def _unlesbar_vormerken(self, sid: str, lauf: int, nummer: int, pruefsumme: str) -> None:
+        """Unlesbare Aufnahme dieses Laufs vormerken (noch nicht mitgeteilt); ein frueherer Lauf faellt dabei weg."""
+        with self._kursabgabe_sperre:
+            eintrag = self._kursabgabe_vorgemerkt.get(sid)
+            if eintrag is None or eintrag[0] != lauf:
+                eintrag = (lauf, {})
+                self._kursabgabe_vorgemerkt[sid] = eintrag
+            eintrag[1][nummer] = pruefsumme
+
+    def _unlesbar_abschliessen(self, sid: str, lauf: int, *, mitgeteilt: bool) -> None:
+        """Ende des Laufs: die vorgemerkten unlesbaren Aufnahmen gelten als mitgeteilt (der Lauf endet mit
+        `unlesbar_text`) oder verfallen (jedes andere Ende)."""
+        with self._kursabgabe_sperre:
+            eintrag = self._kursabgabe_vorgemerkt.get(sid)
+            if eintrag is None or eintrag[0] != lauf:
+                return
+            del self._kursabgabe_vorgemerkt[sid]
+            if mitgeteilt:
+                self._kursabgabe_unlesbar.setdefault(sid, {}).update(eintrag[1])
+
     def _unlesbar_vergessen(self, sid: str, nummer: int) -> None:
+        """Die Aufgabe ist erledigt (gebucht, schon bestaetigt): kein Merker mehr, weder mitgeteilt noch vorgemerkt."""
         with self._kursabgabe_sperre:
             self._kursabgabe_unlesbar.get(sid, {}).pop(nummer, None)
+            vorgemerkt = self._kursabgabe_vorgemerkt.get(sid)
+            if vorgemerkt is not None:
+                vorgemerkt[1].pop(nummer, None)
 
-    def _unlesbar_offen(self, sid: str, eintraege: list[dict[str, Any]]) -> list[int]:
-        """Nummern, die zuletzt nicht lesbar waren und laut Liste noch nicht bestaetigt sind."""
+    def _unlesbar_offen(self, sid: str, lauf: int, eintraege: list[dict[str, Any]]) -> list[int]:
+        """Nummern, die in diesem Lauf nicht lesbar waren und laut Liste noch nicht bestaetigt sind."""
         with self._kursabgabe_sperre:
-            nummern = sorted(self._kursabgabe_unlesbar.get(sid, {}))
+            eintrag = self._kursabgabe_vorgemerkt.get(sid)
+            nummern = sorted(eintrag[1]) if eintrag is not None and eintrag[0] == lauf else []
         return [n for n in nummern if n <= len(eintraege) and eintraege[n - 1]["status"] != "bestaetigt"]
 
     @staticmethod

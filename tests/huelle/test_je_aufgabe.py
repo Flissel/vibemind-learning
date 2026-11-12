@@ -1208,3 +1208,39 @@ def test_kurs_abgeben_schon_gebucht_zaehlt_fertig(tmp_path: Path) -> None:
             assert [a[1] for a in penecho.aufrufe if a[0] == "bericht_zeigen"] == ["board-kurs"]
         finally:
             bruecke.beenden()
+
+
+def test_kurs_abgeben_unlesbar_erst_nach_mitteilung_nicht_bearbeitet(tmp_path: Path) -> None:
+    # Aufgabe 2 unlesbar, danach scheitert Aufgabe 3 (Flaeche belegt): der Lauf endet ohne den Unlesbar-Text. Der
+    # naechste Druck bewertet 2 erneut (kein `{}`); erst nach einem Lauf, der den Text zeigte, zaehlt dieselbe
+    # Aufnahme als nicht bearbeitet.
+    ll = _neu_lern(3)
+    _unlesbar_bei(ll, {2})
+    client, penecho = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    with client:
+        try:
+            _zeigen(client, 2)
+            _zeigen(client, 3)
+            penecho.aufnahme_fehler = lambda rechteck: (
+                PenEchoBeschaeftigt("CANVAS_BUSY") if penecho.aufrufe[-1][1] == "board-3" else None)
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client) == {
+                "zustand": "fehler", "aktuell": 3, "gesamt": 3, "meldung": "FLAECHE_BESCHAEFTIGT"}
+            vorschauen_2 = lambda: [p for p in _buchungen(ll, "learning_task_preview")  # noqa: E731
+                                    if p["attempt_id"] == _aid(ll, 2)]
+            assert len(vorschauen_2()) == 1
+            # Zweiter Druck, dieselbe Aufnahme: 2 wird erneut bewertet (der Text wurde nie gezeigt).
+            penecho.aufnahme_fehler = None
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client) == {"zustand": "fehler", "aktuell": 3, "gesamt": 3, "meldung": UNLESBAR_2}
+            assert len(vorschauen_2()) == 2 and _buchungen(ll, "learning_task_answer") == []
+            assert [e["status"] for e in ll.eintraege] == ["bestaetigt", "offen", "bestaetigt"]
+            # Dritter Druck nach dem gezeigten Text: dieselbe Aufnahme zaehlt als nicht bearbeitet.
+            _bis(lambda: _ruhig(bruecke), 2)
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
+            assert len(vorschauen_2()) == 2
+            assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 2)}]
+        finally:
+            bruecke.beenden()
