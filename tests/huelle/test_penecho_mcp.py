@@ -1846,3 +1846,211 @@ def test_sitzung_in_gruppe_fehler_ohne_wiederholung(zustand: Path, code: str) ->
     with pytest.raises(PenEchoGruppenbindung):
         c.sitzung(LERN_SID, TITEL, gruppe="g-7")
     assert len(_starts(fake)) == 1
+
+
+# ---- Task 5: Hilfen fuer den Aufgaben-Canvas ---------------------------------------------------------
+
+def test_aufgaben_titel_kuerzt_auf_48() -> None:
+    from spaces.learning.huelle.penecho_mcp import aufgaben_titel
+    lang = aufgaben_titel(3, "x" * 100)
+    assert len(lang) <= 48 and lang.startswith("Aufgabe 3: ") and lang.endswith("…")
+    assert aufgaben_titel(3, "Kurz") == "Aufgabe 3: Kurz"
+
+
+def test_einzel_rechteck() -> None:
+    from spaces.learning.huelle.anordnung import EINZEL_RECHTECK
+    assert EINZEL_RECHTECK == {"x": 100, "y": 100, "w": 2000, "h": 1400}
+
+
+def _reihenfolge(fake: Fake) -> list[str]:
+    out = []
+    for b, _ in fake.anfragen:
+        if b["method"] != "tools/call":
+            continue
+        n, a = b["params"]["name"], b["params"]["arguments"]
+        if n == "penecho_edit_canvas" and a.get("action") == "show":
+            out.append("show")
+        elif n == "penecho_capture_canvas":
+            out.append("capture")
+    return out
+
+
+def test_aufgabe_aufnehmen_zeigt_vorher_und_wartet_bei_busy(zustand: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from spaces.learning.huelle import penecho_mcp
+    schlaf: list[float] = []
+    monkeypatch.setattr(penecho_mcp, "_schlafen", schlaf.append)
+    fake = Fake()
+    zaehler = {"capture": 0}
+
+    def trifft(name: str, args: dict) -> str | None:
+        if name == "penecho_capture_canvas":
+            zaehler["capture"] += 1
+            return "CANVAS_BUSY" if zaehler["capture"] == 1 else None
+        return None
+
+    c = PenEchoMcp(zustand, transport=_antwort_mit_fehler(fake, trifft))
+    rechteck = {"x": 100, "y": 100, "w": 2000, "h": 1400}
+    png = c.aufgabe_aufnehmen("sess-1", rechteck, ergebnis=False)
+    assert png.startswith(b"\x89PNG")
+    assert _reihenfolge(fake) == ["show", "capture", "show", "capture"]
+    assert schlaf == [0.5]
+    cap = fake.aufrufe("penecho_capture_canvas")[0]["arguments"]
+    assert cap["region"] == rechteck  # nummer=1 + rechteck: ganzes Rechteck
+    # Ergebnisfeld-Variante nimmt nur das Ergebnisfeld auf.
+    fake2 = Fake()
+    PenEchoMcp(zustand, transport=httpx.MockTransport(fake2)).aufgabe_aufnehmen("sess-1", rechteck, ergebnis=True)
+    assert fake2.aufrufe("penecho_capture_canvas")[0]["arguments"]["region"] == felder(rechteck).ergebnisfeld
+
+
+@pytest.mark.parametrize("code", ["CANVAS_BUSY", "CANVAS_NOT_VISIBLE"])
+def test_aufgabe_aufnehmen_gibt_nach_warten_s_auf(zustand: Path, monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    from spaces.learning.huelle import penecho_mcp
+    from spaces.learning.huelle.penecho_mcp import PenEchoBeschaeftigt, PenEchoNichtSichtbar
+    uhr = {"t": 0.0}
+    monkeypatch.setattr(penecho_mcp, "_jetzt", lambda: uhr["t"])
+    monkeypatch.setattr(penecho_mcp, "_schlafen", lambda s: uhr.__setitem__("t", uhr["t"] + s))
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=_antwort_mit_fehler(
+        fake, lambda n, a: code if n == "penecho_capture_canvas" else None))
+    with pytest.raises(PenEchoBeschaeftigt):
+        c.aufgabe_aufnehmen("sess-1", {"x": 100, "y": 100, "w": 2000, "h": 1400}, ergebnis=False, warten_s=1)
+    assert len(fake.aufrufe("penecho_capture_canvas")) == 3  # t=0, 0.5, 1.0
+    assert PenEchoBeschaeftigt is not PenEchoNichtSichtbar and not issubclass(PenEchoBeschaeftigt, PenEchoNichtSichtbar)
+
+
+def test_fehlercodes_busy_und_nicht_sichtbar(zustand: Path) -> None:
+    from spaces.learning.huelle.penecho_mcp import PenEchoBeschaeftigt, PenEchoNichtSichtbar
+    for code, exc in (("CANVAS_BUSY", PenEchoBeschaeftigt), ("CANVAS_NOT_VISIBLE", PenEchoNichtSichtbar)):
+        c = PenEchoMcp(zustand, transport=httpx.MockTransport(Fake(tool_fehler=code)))
+        with pytest.raises(exc):
+            c.schnappschuss("sess-1", 1)
+
+
+def test_dokumente_mit_aufgabenschluesseln(zustand: Path) -> None:
+    datei = zustand.parent / "learning-huelle" / DOKUMENTE
+    datei.parent.mkdir(parents=True, exist_ok=True)
+    datei.write_text(json.dumps({"s1": "d0", "s1#1": "d1", "s1#2": "d2", "s10#1": "x"}), encoding="utf-8")
+    c = _client(zustand, Fake())
+    assert c.dokumente(["s1"]) == {"d0", "d1", "d2"}
+    assert c.dokument_von("s1#2") == "d2" and c.dokument_von("s9") is None
+
+
+def _schliess_transport(fake: Fake, *, schliessen: str | None = None, canvases: bool = True) -> httpx.MockTransport:
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") != "tools/call":
+            return fake(request)
+        name = body["params"]["name"]
+        if name == "penecho_list_canvases":
+            fake.anfragen.append((body, request.headers))
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"structuredContent": {
+                "instanceId": "inst-1", "canvases": ([{"instanceId": "inst-1", "canvasId": "cv-a",
+                                                       "documentId": "d1", "active": True}] if canvases else [])}}})
+        if name == "penecho_close_canvas":
+            fake.anfragen.append((body, request.headers))
+            if schliessen:
+                sc = {"code": schliessen, "message": "m"}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "isError": True, "structuredContent": sc, "content": []}})
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"structuredContent": {
+                "documentId": "d1", "closed": True, "active": None}}})
+        return fake(request)
+
+    return httpx.MockTransport(antwort)
+
+
+def _ohne_close_werkzeug(fake: Fake):
+    inner = _schliess_transport(fake)
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_close_canvas":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32601, "message": "x"}})
+        return inner.handle_request(request)
+
+    return antwort
+
+
+def _dok1(zustand: Path) -> None:
+    datei = zustand.parent / "learning-huelle" / DOKUMENTE
+    datei.parent.mkdir(parents=True, exist_ok=True)
+    datei.write_text(json.dumps({"s1#1": "d1"}), encoding="utf-8")
+
+
+def test_dokument_schliessen_quittung(zustand: Path) -> None:
+    import hashlib
+    _dok1(zustand)
+    fake = Fake()
+    c = PenEchoMcp(zustand, transport=_schliess_transport(fake))
+    assert c.dokument_schliessen("s1#1", "cv-a") is True
+    arg = fake.aufrufe("penecho_close_canvas")[0]["arguments"]
+    assert arg == {"instanceId": "inst-1", "canvasId": "cv-a", "documentId": "d1",
+                   "requestId": "schliessen-" + hashlib.sha256(b"s1#1").hexdigest()[:16]}
+
+
+@pytest.mark.parametrize("code", ["unsupported_operation", "document_not_found"])
+def test_dokument_schliessen_alt(zustand: Path, code: str) -> None:
+    _dok1(zustand)
+    c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen=code))
+    assert c.dokument_schliessen("s1#1", "cv-a") is False
+
+
+def test_dokument_schliessen_ohne_dokument_oder_werkzeug(zustand: Path) -> None:
+    fake = Fake()
+    assert PenEchoMcp(zustand, transport=_schliess_transport(fake)).dokument_schliessen("s1#1", "cv-a") is False
+    assert fake.aufrufe("penecho_close_canvas") == []
+    _dok1(zustand)
+    # Unbekanntes Werkzeug (alter Browser/PenEcho): JSON-RPC-Fehler statt Quittung.
+    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_ohne_close_werkzeug(Fake())))
+    assert c.dokument_schliessen("s1#1", "cv-a") is False
+
+
+def test_dokument_schliessen_anderer_fehler_wirft(zustand: Path) -> None:
+    _dok1(zustand)
+    c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen="REQUEST_ID_CONFLICT"))
+    with pytest.raises(PenEchoAnfrageSchonBekannt):
+        c.dokument_schliessen("s1#1", "cv-a")
+
+
+RECHTECK = {"x": 100, "y": 100, "w": 2000, "h": 1400}
+
+
+def _leer_transport(fake: Fake, objekte: list[tuple[str, str, dict]]) -> httpx.MockTransport:
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_list_files":
+            fake.anfragen.append((body, request.headers))
+            reg = body["params"]["arguments"]["region"]
+            treffer = [(art, oid, p) for art, oid, p in objekte
+                       if p["x"] < reg["x"] + reg["w"] and p["x"] + p["w"] > reg["x"]
+                       and p["y"] < reg["y"] + reg["h"] and p["y"] + p["h"] > reg["y"]]
+            eintraege = [{"objectId": oid, "kind": art, "bounds": p} for art, oid, p in treffer]
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "structuredContent": {"documentId": "d", "entries": eintraege}, "content": []}})
+        return fake(request)
+
+    return httpx.MockTransport(antwort)
+
+
+def test_ist_leer(zustand: Path) -> None:
+    f = felder(RECHTECK)
+    eigene = [
+        ("text", "text-box-1", {**f.textfeld, "h": 300}),
+        ("image", "image-1", {"x": f.arbeitsfeld["x"] + 20, "y": f.arbeitsfeld["y"] + 20, "w": 400, "h": 300}),
+        ("text", "text-box-2", {"x": f.arbeitsfeld["x"] + 20, "y": f.arbeitsfeld["y"], "w": 300, "h": 40}),
+    ]
+    fake = Fake()
+    assert PenEchoMcp(zustand, transport=_leer_transport(fake, eigene)).ist_leer("sess-1", RECHTECK) is True
+    # Gelesen wird nur in Arbeits- und Ergebnisfeld.
+    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_list_files")] == [f.arbeitsfeld, f.ergebnisfeld]
+    for feld in (f.arbeitsfeld, f.ergebnisfeld):
+        strich = ("ink", "stroke-1", {"x": feld["x"] + 50, "y": feld["y"] + 50, "w": 200, "h": 30})
+        assert PenEchoMcp(zustand, transport=_leer_transport(Fake(), eigene + [strich])).ist_leer(
+            "sess-1", RECHTECK) is False
+
+
+def test_ist_leer_nicht_lesbar_wirft(zustand: Path) -> None:
+    c = PenEchoMcp(zustand, transport=_antwort_mit_fehler(Fake(), lambda n, a: "invalid_arguments"
+                                                          if n == "penecho_list_files" else None))
+    with pytest.raises(PenEchoNichtErreichbar):
+        c.ist_leer("sess-1", RECHTECK)

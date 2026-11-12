@@ -36,6 +36,7 @@ _SCHILD_RAND = 20
 # Neues Raster: Teilspalten einer Mappe im Abstand LUECKE, also je Zeilenbreite + 150; weniger Luft zwischen Mappen.
 TEILSPALTEN_SCHRITT = ZEILEN_BREITE + LUECKE  # 2250
 ZUGABE_NEU = 100
+EINZEL_RECHTECK: dict[str, int] = {"x": 100, "y": 100, "w": 2000, "h": 1400}  # Rechteck im eigenen Aufgaben-Canvas
 
 
 class ZuVieleAufgaben(ValueError):

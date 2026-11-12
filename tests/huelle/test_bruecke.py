@@ -113,6 +113,10 @@ class FakePenEcho:
         self.aufnahme_fehler: Any = None  # rechteck -> Exception | None
         self.bericht_rechtecke: list[dict[int, dict[str, int]] | None] = []
         self.rueckmeldung_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je rueckmeldung_setzen
+        # Aufgaben-Canvas: Antworten der neuen Methoden (Standard: Canvas schliesst, ist nicht leer, kein Dokument).
+        self.schliessen_ergebnis = True
+        self.leer = False
+        self.dokumente_je_schluessel: dict[str, str] = {}
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -205,6 +209,32 @@ class FakePenEcho:
     def schild_setzen(self, session_id: str, request_id: str, text: str, rechteck: dict[str, int]) -> None:
         self.aufrufe.append(("schild_setzen", session_id, request_id, text, dict(rechteck)))
         self._pruefen("schild_setzen")
+
+    # ---- Aufgaben-Canvas (je Aufgabe ein eigenes Dokument, Schluessel `<sid>#<nummer>`) ----
+    def aufgabe_aufnehmen(self, session_id: str, rechteck: dict[str, int], *, ergebnis: bool,
+                          warten_s: float = 10.0) -> bytes:
+        self.aufrufe.append(("aufgabe_aufnehmen", session_id, rechteck, ergebnis))
+        self.aufnahme_rechtecke.append((1, rechteck))
+        if self.aufnahme_fehler is not None:
+            fehler = self.aufnahme_fehler(rechteck)
+            if fehler is not None:
+                raise fehler
+        self._pruefen("aufgabe_aufnehmen")
+        return self.bild
+
+    def dokument_schliessen(self, schluessel: str, canvas_id: str) -> bool:
+        self.aufrufe.append(("dokument_schliessen", schluessel, canvas_id))
+        self._pruefen("dokument_schliessen")
+        return self.schliessen_ergebnis
+
+    def dokument_von(self, schluessel: str) -> str | None:
+        self.aufrufe.append(("dokument_von", schluessel))
+        return self.dokumente_je_schluessel.get(schluessel)
+
+    def ist_leer(self, session_id: str, rechteck: dict[str, int]) -> bool:
+        self.aufrufe.append(("ist_leer", session_id))
+        self._pruefen("ist_leer")
+        return self.leer
 
     def namen(self) -> list[str]:
         return [a[0] for a in self.aufrufe]
