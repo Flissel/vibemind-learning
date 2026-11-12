@@ -55,6 +55,7 @@ SESSION_TOOL_NAMES = frozenset(
         LearningToolName.GROUP_CAPACITY,
         LearningToolName.TASK_ANSWER,
         LearningToolName.TASK_PREVIEW,
+        LearningToolName.TASK_GRADING_DATA,
         LearningToolName.TASK_CONFIRM,
         LearningToolName.HINT_REQUEST,
         LearningToolName.PROGRESS_SHOW,
@@ -127,6 +128,8 @@ class AdaptiveSessionGateway:
                 return self._turn_outcome(turn)
             if request.tool is LearningToolName.TASK_PREVIEW:
                 return self._preview(request)
+            if request.tool is LearningToolName.TASK_GRADING_DATA:
+                return self._grading_data(request)
             if request.tool is LearningToolName.TASK_CONFIRM:
                 return self._turn_outcome(self._confirm(request))
             if request.tool is LearningToolName.TASK_NEXT:
@@ -332,6 +335,26 @@ class AdaptiveSessionGateway:
             turn,
             extra={"vorbewertung": vorbewertung.model_dump(mode="json")},
             intent=False,
+        )
+
+    def _grading_data(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        """Model solution and rubric of the open attempt, for the Huelle only. Read-only; no exams."""
+        session_id = request.event.session_id
+        revision = request.event.expected_revision
+        if session_id is None or revision is None:
+            raise ValueError("grading data requires session and revision")
+        payload = request.event.payload
+        if not set(payload) <= {"attempt_id"}:
+            raise ValueError("grading data payload has unknown fields")
+        daten = self._service.bewertungsdaten(
+            str(session_id), request.event.actor.actor_id, revision, _attempt_id(payload)
+        )
+        return ApplicationOutcomeV1(
+            state="completed",
+            aggregate=AggregateRefV1(
+                aggregate_type="session", aggregate_id=str(session_id), revision=revision
+            ),
+            result=daten.model_dump(mode="json"),
         )
 
     def _confirm(self, request: ToolRequestV1) -> SessionTurn:

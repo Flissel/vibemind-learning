@@ -54,6 +54,7 @@ EXPECTED_EVENTS = {
     "learning.group.capacity",
     "learning.task.answer",
     "learning.task.preview",
+    "learning.task.grading_data",
     "learning.task.confirm",
     "learning.hint.request",
     "learning.tutor.ask",
@@ -84,6 +85,7 @@ EXPECTED_TOOLS = {
     "learning_group_capacity",
     "learning_task_answer",
     "learning_task_preview",
+    "learning_task_bewertungsdaten",
     "learning_task_confirm",
     "learning_hint_request",
     "learning_tutor_ask",
@@ -165,6 +167,20 @@ def test_gruppenkapazitaet_ist_lesend() -> None:
     # Lesend: ohne idempotency_key gueltig.
     event = _event(LearningEventType.GROUP_CAPACITY, idempotency_key=None, course_id=uuid4(), payload={})
     assert ToolRequestV1(tool="learning_group_capacity", event=event).event.idempotency_key is None
+
+
+def test_bewertungsdaten_ist_lesend() -> None:
+    from spaces.learning.contracts.events import WRITE_EVENTS
+
+    assert LearningEventType.TASK_GRADING_DATA not in WRITE_EVENTS
+    assert (
+        EVENT_TOOL_MAP[LearningEventType.TASK_GRADING_DATA].value == "learning_task_bewertungsdaten"
+    )
+    event = _event(
+        LearningEventType.TASK_GRADING_DATA, idempotency_key=None,
+        session_id=uuid4(), expected_revision=1, payload={},
+    )
+    assert ToolRequestV1(tool="learning_task_bewertungsdaten", event=event).event.idempotency_key is None
 
 
 def test_publish_requires_confirmation_and_expected_revision() -> None:

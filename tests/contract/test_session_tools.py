@@ -365,6 +365,45 @@ def test_preview_und_confirm_in_pruefung_verweigert(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def _bewertungsdaten(dispatcher, turn, *, revision=None, payload=None):
+    return _call(
+        dispatcher,
+        "learning_task_bewertungsdaten",
+        _event(
+            "learning.task.grading_data",
+            session_id=turn["session_id"],
+            expected_revision=turn["session_revision"] if revision is None else revision,
+            payload=payload or {},
+        ),
+    )
+
+
+def test_bewertungsdaten_werkzeug_lesend_ohne_loesung_und_ohne_aenderung(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    result = _bewertungsdaten(dispatcher, turn)
+    assert result["state"] == "completed"
+    daten = result["result"]
+    assert daten["art"] == "deterministic"
+    assert daten["antwortformat"]["form"] == "choice_id"
+    assert daten["musterloesung"] is None and daten["kriterien"] == []
+    assert "ui_intent" not in result
+    # Lesend: Revision unveraendert, zweiter Aufruf mit derselben Revision gelingt.
+    assert _bewertungsdaten(dispatcher, turn)["state"] == "completed"
+    stale = _bewertungsdaten(dispatcher, turn, revision=turn["session_revision"] + 1)
+    assert stale["error"]["code"] == "session_revision_conflict"
+    bad = _bewertungsdaten(dispatcher, turn, payload={"answer": {}})
+    assert bad["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
+def test_bewertungsdaten_werkzeug_in_pruefung_verweigert(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id, mode="exam")
+    assert _bewertungsdaten(dispatcher, turn)["error"]["code"] == "session_access_denied"
+    engine.dispose()
+
+
 def test_preview_handschrift_ohne_leser_ist_nicht_verfuegbar(tmp_path: Path) -> None:
     engine, dispatcher, course_id, _ = _setup(tmp_path)
     turn = _start(dispatcher, course_id)

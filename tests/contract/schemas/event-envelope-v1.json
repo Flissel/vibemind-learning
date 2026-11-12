@@ -72,6 +72,7 @@
         "learning.group.capacity",
         "learning.task.answer",
         "learning.task.preview",
+        "learning.task.grading_data",
         "learning.task.confirm",
         "learning.hint.request",
         "learning.tutor.ask",

@@ -208,6 +208,30 @@ class Vorbewertung(BaseModel):
     antwort: dict[str, object] | None = None
 
 
+class BewertungsKriterium(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    criterion_id: str
+    description: str
+    points: float
+
+
+class Bewertungsdaten(BaseModel):
+    """What a grader needs for the open attempt. Server-to-server only: never for the browser."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt_id: str
+    item_type: str
+    art: Literal["rubric", "deterministic"]
+    aufgabe: dict[str, object]
+    # Rubric tasks: the model solution and the criteria. Fixed solutions stay in Learning.
+    musterloesung: str | None = None
+    kriterien: list[BewertungsKriterium] = Field(default_factory=list)
+    # Fixed solutions: the answer shape `score_response` takes and the options, without the solution.
+    antwortformat: dict[str, object] = Field(default_factory=dict)
+
+
 class ListenEintrag(BaseModel):
     """One task of a fixed list with its state and the newest preview of its attempt."""
 
@@ -521,6 +545,73 @@ class AdaptiveSessionService:
             bewertung = self._bewerten(item, command.answer)
             turn = self._book(db, row, attempt, item, bewertung, now)
         return self._with_readback(turn)
+
+    def bewertungsdaten(
+        self,
+        session_id: str,
+        actor_id: str,
+        expected_session_revision: int,
+        attempt_id: str | None = None,
+    ) -> Bewertungsdaten:
+        """Model solution and rubric of the open attempt, for a grader outside Learning (read-only).
+
+        Same checks in the same order as `vorbewerten`; exams get nothing.
+        """
+        with self._session_factory() as db:
+            row = self._active_session(db, session_id, actor_id, lock=False)
+            if row.mode == "exam":
+                raise PermissionError("exam sessions have no grading data")
+            attempt, item = self._open_attempt(db, row, expected_session_revision, attempt_id)
+            if item.item_type in _DETERMINISTIC_TYPES:
+                art: Literal["rubric", "deterministic"] = "deterministic"
+            elif item.item_type in _RUBRIC_TYPES or item.item_type == "penecho_canvas":
+                art = "rubric"
+            else:
+                raise ValueError(f"{item.item_type} tasks have no grading data")
+            task = self._public_task(item, row.id)
+            if art == "deterministic":
+                return Bewertungsdaten(
+                    attempt_id=attempt.id,
+                    item_type=item.item_type,
+                    art=art,
+                    aufgabe=task.model_dump(mode="json"),
+                    antwortformat=self._antwortformat(item.item_type, task),
+                )
+            expected = item.expected_answer if isinstance(item.expected_answer, dict) else {}
+            text = expected.get("text")
+            return Bewertungsdaten(
+                attempt_id=attempt.id,
+                item_type=item.item_type,
+                art=art,
+                aufgabe=task.model_dump(mode="json"),
+                musterloesung=text if isinstance(text, str) else None,
+                kriterien=[
+                    BewertungsKriterium(
+                        criterion_id=str(k["criterion_id"]),
+                        description=str(k["description"]),
+                        points=k["points"],
+                    )
+                    for k in item.rubric
+                ],
+            )
+
+    # Field of the answer object per fixed-solution type (see evaluation.deterministic).
+    _ANTWORT_FELD = {
+        "single_choice": "choice_id",
+        "multiple_choice": "choice_ids",
+        "matching": "pairs",
+        "ordering": "order",
+        "numeric": "value",
+        "fill_in": "text",
+    }
+
+    @classmethod
+    def _antwortformat(cls, item_type: str, task: PublicTask) -> dict[str, object]:
+        """The answer shape and the shown options; the options are the public ones, in shown order."""
+        form: dict[str, object] = {"form": cls._ANTWORT_FELD[item_type]}
+        if item_type in {"single_choice", "multiple_choice", "ordering"}:
+            form["optionen"] = [{"id": o.id, "text": o.label} for o in task.options]
+        return form
 
     def vorbewerten(self, command: VorbewertungCommand) -> Vorbewertung:
         """Grade the current attempt as a preview: stored, but no learning state changes.
