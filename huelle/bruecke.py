@@ -74,7 +74,7 @@ from .gruppe import (
 )
 from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
-from .kursabgabe import KursAbgabeStand, fall_fuer
+from .kursabgabe import KursAbgabeStand, fall_fuer, unlesbar_text
 from .kursrueckmeldung import aus_antwort, aus_zahlen, als_text, rueckmeldungsdaten
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .lernflaeche_bewertung import KiBewerter
@@ -191,6 +191,8 @@ MAX_FLAECHEN = 10_000  # gemerkte Kennung -> Person; darueber faellt die aeltest
 # Antwortkopf, wenn die Kennung der Anfrage einer anderen Person gehoert: die Seite vergibt dann eine neue.
 BELEGT_KOPF = b"x-lernflaeche-kennung"
 BELEGT = b"belegt"
+# „Kurs abgeben“: so lange wartet ein Schritt hoechstens auf `_ablauf`, bevor der Lauf mit `fehler` endet.
+ABLAUF_WARTEN_S = 120.0
 # Nur diese Routen (POST, letzter Pfadteil) binden eine Sitzung an den Tab der Anfrage; lesende nie.
 UMBINDEN = frozenset({
     "oeffnen", "neu", "antwort", "weiter", "zeichnung", "abgeben", "korrektur", "passt", "zeigen", "kurs-abgeben",
@@ -632,6 +634,8 @@ class Bruecke:
         self._kursabgabe_sperre = threading.Lock()
         self._kursabgaben: dict[str, tuple[int, KursAbgabeStand]] = {}
         self._kursabgabe_laeufe = 0
+        # Je sid: Nummer -> sha256 der letzten Aufnahme, deren Vorbewertung nicht lesbar war (nur im Speicher).
+        self._kursabgabe_unlesbar: dict[str, dict[int, str]] = {}
         p = "/lernen/api"
         self._app = Starlette(routes=[
             Route(f"{p}/kurse", self._r_kurse, methods=["GET"]),
@@ -2870,10 +2874,19 @@ class Bruecke:
         except Exception as fehler:  # noqa: BLE001 - die Abgabe darf nie stumm „in Bewertung“ bleiben
             self._abgabe_gescheitert(schluessel, NICHT_ERREICHBAR, fehler)
             return
+        self._karte_einreihen(sitzung, eintrag["task"], nummer, vorbewertung, rechteck)
+
+    def _karte_einreihen(
+        self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, vorbewertung: dict[str, Any],
+        rechteck: dict[str, int],
+    ) -> None:
+        """Karte einer fertigen Vorbewertung ueber die Flaechenspur neben ihre Aufgabe (`_im_hintergrund_rueckmelden`).
+        """
+        schluessel = (sitzung.sid, nummer)
         with self._abgaben_sperre:
             # Learning kennt die Vorbewertung jetzt: der Stand kommt ab hier von dort (rueckmeldung).
             self._abgaben.pop(schluessel, None)
-            self._karten[schluessel] = (eintrag["task"], vorbewertung)
+            self._karten[schluessel] = (task, vorbewertung)
             self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
         self._flaechenspur.einreihen(
             f"{sitzung.sid}:rueckmeldung:{nummer}",
@@ -3140,24 +3153,29 @@ class Bruecke:
     # Ende die naechste einreiht: der ganze Kurs in einer Arbeit hielte den einen Faden der Spur minutenlang fest, und
     # die Bewertungen aller anderen Personen warteten. Jede Arbeit liest die Liste neu (Revision, Status: die Person
     # kann inzwischen selbst bestaetigt haben). Wie bei `abgeben`: Aufnahme unter der Flaechensperre, Modellaufruf und
-    # Learning-Buchung ohne Sperre und ohne `_ablauf`.
+    # Learning-Buchung ohne Sperre und ohne `_ablauf`; das Ende jedes Schritts (Sperre, Kursende, Bericht) laeuft
+    # unter `_ablauf`.
     async def _r_kurs_abgeben(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
         actor = request.state.actor_id
+        schleife = asyncio.get_running_loop()  # die Ereignisschleife der App: dort laeuft das Ende jedes Schritts
 
         def arbeit() -> dict[str, Any]:
-            status, body = self._kurs_abgeben(actor, sid)
+            status, body = self._kurs_abgeben(actor, sid, schleife)
             if status != 202:
                 raise _Antwort(status, body)
             return body
 
         return await self._ausfuehren(arbeit, ablauf=False, status=202)
 
-    def _kurs_abgeben(self, actor: str, sid_roh: str) -> tuple[int, dict[str, Any]]:
+    def _kurs_abgeben(
+        self, actor: str, sid_roh: str, schleife: asyncio.AbstractEventLoop,
+    ) -> tuple[int, dict[str, Any]]:
         """Startet einen Lauf: 202 `{"kursabgabe": stand}`. Laeuft schon einer, 202 mit dessen Stand, ohne Neues.
 
         Sitzung ohne Merkmal: 409 `KURS_ABGEBEN_ALT`; ohne eigene Flaeche (Kopf `X-Lernflaeche`): 409 `KEINE_FLAECHE`.
         Ein frueherer Lauf (`fehler`, `fertig`) wird ersetzt; der neue macht dort weiter, wo Learning steht.
+        `schleife`: die Ereignisschleife der App, auf der jeder Schritt sein Ende unter `_ablauf` ausfuehrt.
         """
         _, sitzung, _ = self._sitzung(actor, sid_roh)
         if not sitzung.je_aufgabe:
@@ -3177,7 +3195,7 @@ class Bruecke:
             lauf = self._kursabgabe_laeufe
             stand = KursAbgabeStand("laeuft", min(1, gesamt), gesamt)
             self._kursabgaben[sitzung.sid] = (lauf, stand)
-        if not self._kursabgabe_einreihen(sitzung, lauf, 1):
+        if not self._kursabgabe_einreihen(sitzung, lauf, 1, schleife):
             with self._kursabgabe_sperre:  # Spur zu (Herunterfahren): kein Lauf, der nie endet
                 if vorher is None:
                     self._kursabgaben.pop(sitzung.sid, None)
@@ -3200,20 +3218,45 @@ class Bruecke:
             self._kursabgaben[sid] = (lauf, aendern(eintrag[1]))
             return True
 
-    def _kursabgabe_einreihen(self, sitzung: _Sitzung, lauf: int, nummer: int) -> bool:
+    def _kursabgabe_einreihen(
+        self, sitzung: _Sitzung, lauf: int, nummer: int, schleife: asyncio.AbstractEventLoop,
+    ) -> bool:
         return self._modellspur.einreihen(
             f"{sitzung.sid}:kursabgabe:{lauf}:{nummer}",
-            functools.partial(self._im_hintergrund_kurs_abgeben, sitzung, lauf, nummer),
+            functools.partial(self._im_hintergrund_kurs_abgeben, sitzung, lauf, nummer, schleife),
             vorrang=1, wer=sitzung.actor,
         )
 
-    def _im_hintergrund_kurs_abgeben(self, sitzung: _Sitzung, lauf: int, nummer: int) -> None:
+    async def _unter_ablauf(self, arbeit: Callable[[], T]) -> T:
+        async with self._ablauf:
+            return await run_in_threadpool(arbeit)
+
+    def _im_ablauf(self, schleife: asyncio.AbstractEventLoop, arbeit: Callable[[], T]) -> T:
+        """Aus einem Faden der Spur: `arbeit` auf der Ereignisschleife der App unter `_ablauf` (wie eine Route mit
+        `ablauf=True`), dann auf ihr Ergebnis warten. Ist die Schleife zu oder wartet es zu lange, ein Fehler."""
+        koroutine = self._unter_ablauf(arbeit)
+        try:
+            zukunft = asyncio.run_coroutine_threadsafe(koroutine, schleife)
+        except RuntimeError:
+            koroutine.close()
+            raise
+        try:
+            return zukunft.result(timeout=ABLAUF_WARTEN_S)
+        except TimeoutError:
+            zukunft.cancel()
+            raise
+
+    def _im_hintergrund_kurs_abgeben(
+        self, sitzung: _Sitzung, lauf: int, nummer: int, schleife: asyncio.AbstractEventLoop,
+    ) -> None:
         """Arbeit der Modellspur: Aufgabe `nummer` des Laufs `lauf`, dann die naechste einreihen.
 
-        Nach jeder Buchung `_nach_buchung` wie nach Passt (Sperre; am Kursende Kursende und `_kursbericht`, das nicht
-        auf die Flaechen-KI wartet). Nach der letzten Aufgabe `fertig`, wenn Learning den Kurs abgeschlossen meldet.
-        Jeder Fehler beendet den Lauf mit `fehler` und der Meldung; Gebuchtes bleibt, ein neuer Aufruf macht weiter.
-        Geloggt werden nur Nummer und Fehlertyp.
+        Aufnahme, Modellaufruf und Learning-Buchung laufen hier ohne `_ablauf`. Was danach geteilten Zustand anfasst
+        (`_nach_buchung` mit Sperre und `_frei`, am Kursende `_ende_setzen` und `_kursbericht`), laeuft ueber
+        `_im_ablauf` unter `_ablauf`, wie nach Passt. Nach der letzten Aufgabe `fertig`, wenn Learning den Kurs
+        abgeschlossen meldet; blieben Aufgaben unlesbar, `fehler` mit `unlesbar_text`. Jeder Fehler beendet den Lauf
+        mit `fehler` und der Meldung; Gebuchtes bleibt, ein neuer Aufruf macht weiter. Geloggt werden nur Nummer und
+        Fehlertyp.
         """
         sid = sitzung.sid
         with self._kursabgabe_sperre:
@@ -3232,58 +3275,112 @@ class Bruecke:
                 neu = self._kursabgabe_aufgabe(sitzung, turn, eintraege[nummer - 1])
                 if neu is not None:
                     turn, gebucht = neu, True
-                    self._nach_buchung(sitzung, turn, eintraege, [], nummer, zeigen=False)
+                    self._im_ablauf(schleife, functools.partial(
+                        self._nach_buchung, sitzung, neu, eintraege, [], nummer, zeigen=False))
             if nummer < gesamt:
-                if not self._kursabgabe_einreihen(sitzung, lauf, nummer + 1):
+                if not self._kursabgabe_einreihen(sitzung, lauf, nummer + 1, schleife):
                     raise LearningWeg("spur_zu")
                 return
+            if not gebucht:
+                # Ohne eigene Buchung (schon bestaetigt, anderswo gebucht, unlesbar): Learnings Stand jetzt.
+                turn, eintraege = self._liste_lesen(sitzung)
             if turn.get("state") != "completed":
+                unlesbar = self._unlesbar_offen(sid, eintraege)
+                if unlesbar:
+                    raise _Antwort(409, {"meldung": unlesbar_text(unlesbar)})
                 raise LearningWeg("nicht_abgeschlossen")
             if not gebucht:
                 # Nichts mehr zu buchen (alles schon bestaetigt): Kursende und Bericht wie nach der letzten Buchung.
-                self._ende_setzen(sitzung.actor, sitzung.kurs, sid, sitzung.gruppe)
-                self._bericht(sitzung, turn, {})
+                self._im_ablauf(schleife, functools.partial(self._kurs_beenden, sitzung, turn))
             self._kursabgabe_setzen(sid, lauf, lambda s: replace(s, zustand="fertig", aktuell=gesamt, gesamt=gesamt))
         except Exception as fehler:  # noqa: BLE001 - der Lauf darf nie stumm „laeuft“ bleiben
             log.warning("Kurs abgeben: Aufgabe %d nicht gebucht: %s", nummer, _typ(fehler))
             meldung = self._kursabgabe_meldung(fehler)
             self._kursabgabe_setzen(sid, lauf, lambda s: replace(s, zustand="fehler", meldung=meldung))
 
+    def _kurs_beenden(self, sitzung: _Sitzung, turn: dict[str, Any]) -> None:
+        """Kursende merken und Bericht (unter `_ablauf`, ueber `_im_ablauf`)."""
+        self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
+        self._bericht(sitzung, turn, {})
+
     def _kursabgabe_aufgabe(
         self, sitzung: _Sitzung, turn: dict[str, Any], eintrag: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Eine Aufgabe nach `fall_fuer` buchen; der neue Turn, oder None, wenn sie schon bestaetigt ist.
+        """Eine Aufgabe buchen; der neue Turn, oder None, wenn nichts gebucht wurde (schon bestaetigt, anderswo schon
+        gebucht oder nicht lesbar).
 
-        Ein Dokument hat eine Flaechenaufgabe, deren Canvas es gibt (Board in diesem Prozess oder gemerktes Dokument,
-        `_ohne_canvas`); Aufgaben der Seitenleiste (`code`) und nie geoeffnete werden leer gebucht (0 Punkte, ohne KI).
-        Sonst wie `abgeben`: Aufnahme vom eigenen Canvas (`_aufgabe_aufnehmen`, belegte Flaeche: 409
-        `FLAECHE_BESCHAEFTIGT`), merken, vorbewerten (`_mit_ki_bewertung`) und diese Vorbewertung sofort bestaetigen.
+        - Bestaetigt (`fall_fuer`): nichts.
+        - Neueste Vorbewertung getippt und lesbar („Falsch gelesen“/„Selbst eintippen“): so bestaetigen, ohne neue
+          Aufnahme und ohne neue Bewertung (Learnings Liste traegt `quelle` und `lesbar` der neuesten Vorbewertung).
+        - Ohne Dokument (Flaechenaufgabe ohne Canvas, `_ohne_canvas`; Aufgaben der Seitenleiste): leer, 0 Punkte.
+        - Sonst wie `abgeben`: Aufnahme vom eigenen Canvas (belegte Flaeche: 409 `FLAECHE_BESCHAEFTIGT`), merken.
+          Gleicht sie der zuletzt unlesbaren dieser Aufgabe (sha256), zaehlt sie als nicht bearbeitet (leer). Sonst
+          vorbewerten (`_mit_ki_bewertung`); lesbar: sofort bestaetigen. Nicht lesbar: nicht bestaetigen, die Karte
+          auf ihr Canvas (wie nach `abgeben`) und die Aufnahme als unlesbar merken.
         """
-        nummer, task = eintrag["nummer"], eintrag["task"]
+        nummer, task, sid = eintrag["nummer"], eintrag["task"], sitzung.sid
         hat_dokument = task.get("type") in _FLAECHEN_TYPEN and not self._ohne_canvas(sitzung, nummer)
         fall = fall_fuer(eintrag["status"], hat_dokument)
         if fall == "fertig":
+            self._unlesbar_vergessen(sid, nummer)
             return None
         revision = self._revision_von(turn)
+        leer = {"answer": {}, "attempt_id": eintrag["attempt_id"]}
+        vor = eintrag.get("vorbewertung")
+        if (isinstance(vor, dict) and vor.get("quelle") == "getippt" and vor.get("lesbar") is True
+                and isinstance(vor.get("id"), str)):
+            return self._kursabgabe_buchen(sitzung, nummer, "learning_task_confirm", "learning.task.confirm", revision,
+                                           {"vorbewertung_id": vor["id"], "attempt_id": eintrag["attempt_id"]})
         if fall == "leer":
-            result = self._rufe(
-                sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sitzung.sid,
-                expected_revision=revision, schreibend=True,
-                payload={"answer": {}, "attempt_id": eintrag["attempt_id"]},
-            )
-            return _turn(result)
+            return self._kursabgabe_buchen(sitzung, nummer, "learning_task_answer", "learning.task.answer", revision,
+                                           leer)
         png = self._aufgabe_aufnehmen(sitzung, task, nummer)
-        self._aufnahme_merken(sitzung.sid, nummer, png)
+        self._aufnahme_merken(sid, nummer, png)
+        pruefsumme = hashlib.sha256(png).hexdigest()
+        with self._kursabgabe_sperre:
+            unveraendert = self._kursabgabe_unlesbar.get(sid, {}).get(nummer) == pruefsumme
+        if unveraendert:
+            # Seit der unlesbaren Aufnahme nichts geaendert und erneut abgegeben: zaehlt als nicht bearbeitet.
+            return self._kursabgabe_buchen(sitzung, nummer, "learning_task_answer", "learning.task.answer", revision,
+                                           leer)
         payload = {"handschrift_png_base64": base64.b64encode(png).decode("ascii"), "attempt_id": eintrag["attempt_id"]}
-        vorbewertung = self._mit_ki_bewertung(sitzung, sitzung.sid, revision, payload).get("vorbewertung")
+        vorbewertung = self._mit_ki_bewertung(sitzung, sid, revision, payload).get("vorbewertung")
         if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
             raise LearningWeg("vorbewertung")
-        result = self._rufe(
-            sitzung.lern_actor, "learning_task_confirm", "learning.task.confirm", session_id=sitzung.sid,
-            expected_revision=revision, schreibend=True,
-            payload={"vorbewertung_id": vorbewertung["id"], "attempt_id": eintrag["attempt_id"]},
-        )
-        return _turn(result)
+        if vorbewertung.get("lesbar") is not True:
+            log.info("Kurs abgeben: Aufgabe %d nicht lesbar", nummer)
+            with self._kursabgabe_sperre:
+                self._kursabgabe_unlesbar.setdefault(sid, {})[nummer] = pruefsumme
+            self._karte_einreihen(sitzung, task, nummer, vorbewertung, EINZEL_RECHTECK)
+            return None
+        return self._kursabgabe_buchen(sitzung, nummer, "learning_task_confirm", "learning.task.confirm", revision,
+                                       {"vorbewertung_id": vorbewertung["id"], "attempt_id": eintrag["attempt_id"]})
+
+    def _kursabgabe_buchen(
+        self, sitzung: _Sitzung, nummer: int, tool: str, event_type: str, revision: int, payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Eigene Buchung (Antwort oder Bestaetigung). Meldet Learning „schon abgegeben“ (`_SCHON_ABGEGEBEN_CODES`),
+        zaehlt die Aufgabe als fertig: None, der Lauf geht weiter. Andere Ablehnungen gehen an den Aufrufer."""
+        try:
+            result = self._rufe(sitzung.lern_actor, tool, event_type, session_id=sitzung.sid,
+                                expected_revision=revision, schreibend=True, payload=payload)
+        except LearningAbgelehnt as fehler:
+            if fehler.code not in _SCHON_ABGEGEBEN_CODES:
+                raise
+            log.info("Kurs abgeben: Aufgabe %d schon gebucht (%s)", nummer, fehler.code)
+            result = None
+        self._unlesbar_vergessen(sitzung.sid, nummer)
+        return None if result is None else _turn(result)
+
+    def _unlesbar_vergessen(self, sid: str, nummer: int) -> None:
+        with self._kursabgabe_sperre:
+            self._kursabgabe_unlesbar.get(sid, {}).pop(nummer, None)
+
+    def _unlesbar_offen(self, sid: str, eintraege: list[dict[str, Any]]) -> list[int]:
+        """Nummern, die zuletzt nicht lesbar waren und laut Liste noch nicht bestaetigt sind."""
+        with self._kursabgabe_sperre:
+            nummern = sorted(self._kursabgabe_unlesbar.get(sid, {}))
+        return [n for n in nummern if n <= len(eintraege) and eintraege[n - 1]["status"] != "bestaetigt"]
 
     @staticmethod
     def _kursabgabe_meldung(fehler: BaseException) -> str:

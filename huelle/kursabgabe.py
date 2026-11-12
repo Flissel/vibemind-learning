@@ -6,11 +6,25 @@ Aufgabe je Arbeit der Modellspur.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 Zustand = Literal["laeuft", "fertig", "fehler"]
 Fall = Literal["fertig", "bewerten", "leer"]
+
+# Meldung im Stand `fehler`, wenn am Ende des Laufs Aufgaben nicht lesbar waren (feste Texte, `{liste}` aus
+# `nummernliste`). Ein erneuter Lauf mit unveraenderter Aufnahme bucht sie als nicht bearbeitet.
+UNLESBAR_EINE = (
+    "Aufgabe {liste} konnte nicht gelesen werden. Bitte schreiben Sie deutlicher oder tippen Sie Ihre Antwort über "
+    "„Falsch gelesen“ ein. Wenn Sie sie nicht bearbeiten möchten, drücken Sie noch einmal „Kurs abgeben“ – dann "
+    "zählt sie als nicht bearbeitet."
+)
+UNLESBAR_MEHRERE = (
+    "Aufgaben {liste} konnten nicht gelesen werden. Bitte schreiben Sie deutlicher oder tippen Sie Ihre Antworten "
+    "über „Falsch gelesen“ ein. Wenn Sie sie nicht bearbeiten möchten, drücken Sie noch einmal „Kurs abgeben“ – dann "
+    "zählen sie als nicht bearbeitet."
+)
 
 
 @dataclass(frozen=True)
@@ -37,3 +51,17 @@ def fall_fuer(status: str, hat_dokument: bool) -> Fall:
     if not hat_dokument:
         return "leer"
     return "bewerten"
+
+
+def nummernliste(nummern: Iterable[int]) -> str:
+    """Aufsteigend: „4“, „4 und 6“, „2, 4 und 6“."""
+    teile = [str(n) for n in sorted(nummern)]
+    if len(teile) <= 1:
+        return "".join(teile)
+    return ", ".join(teile[:-1]) + " und " + teile[-1]
+
+
+def unlesbar_text(nummern: Iterable[int]) -> str:
+    """Fester Text zu den nicht lesbaren Aufgaben: Einzahl bei einer, sonst Mehrzahl."""
+    liste = sorted(nummern)
+    return (UNLESBAR_EINE if len(liste) == 1 else UNLESBAR_MEHRERE).format(liste=nummernliste(liste))

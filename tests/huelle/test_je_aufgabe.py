@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 from spaces.learning.huelle.anordnung import EINZEL_RECHTECK, ZuVieleAufgaben, anordnung
 from spaces.learning.huelle.bruecke import _Sitzung
 from spaces.learning.huelle.einstellung import Kurs
+from spaces.learning.huelle.lern_mcp import LearningAbgelehnt
 from spaces.learning.huelle.penecho_mcp import PenEchoBeschaeftigt, PenEchoNichtErreichbar, aufgaben_titel
 from spaces.learning.huelle.zusammenfassung import Kursrueckmeldung
 
@@ -851,6 +852,8 @@ def test_weiter_am_kursende_laesst_kursrueckmeldung_vorn(tmp_path: Path) -> None
 
 
 # ---- Task 9: „Kurs abgeben“ sammelt und bewertet alle Aufgaben-Canvas ------------------------------------------
+# Die Tests laufen in `with client:`: eine Ereignisschleife fuer alle Anfragen, wie im Betrieb (uvicorn). Das Ende
+# jedes Schritts laeuft auf ihr unter `_ablauf`.
 
 def _kurs_abgeben(client: TestClient, kopf: bool = True) -> Any:
     return client.post(f"/lernen/api/sitzungen/{SID}/kurs-abgeben", headers={KOPF: KA} if kopf else {})
@@ -875,36 +878,42 @@ def _aid(ll: ListenLern, n: int) -> str:
     return ll.eintraege[n - 1]["attempt_id"]
 
 
+def _zeigen(client: TestClient, nummer: int) -> None:
+    r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": nummer}, headers={KOPF: KA})
+    assert r.status_code == 200, r.text
+
+
 def test_kurs_abgeben_bucht_alle_faelle(tmp_path: Path) -> None:
     # 1 bestaetigt, 2 mit Canvas (beim Oeffnen gezeigt, darauf gezeichnet), 3 nie geoeffnet.
     ll = _neu_lern(3)
     ll.eintraege[0]["status"], ll.eintraege[0]["vorbewertung"] = "bestaetigt", _vor(vid=_vid(1), gelesen="1")
     client, penecho = _kurs_oeffnen(ll, tmp_path)
     bruecke = client.app
-    try:
-        assert bruecke._sitzungen[SID].aufgaben_boards == {2: "board-2"}
-        vorher = len(penecho.aufrufe)
-        r = _kurs_abgeben(client)
-        assert r.status_code == 202, r.text
-        assert r.json()["kursabgabe"] == {"zustand": "laeuft", "aktuell": 1, "gesamt": 3, "meldung": None}
-        assert _kursabgabe_vorbei(client) == {"zustand": "fertig", "aktuell": 3, "gesamt": 3, "meldung": None}
-        neu = penecho.aufrufe[vorher:]
-        # Nur Aufgabe 2 wird aufgenommen und vorbewertet; 3 bekommt kein Canvas und wird leer gebucht.
-        assert [a[1:] for a in neu if a[0] == "aufgabe_aufnehmen"] == [("board-2", EINZEL_RECHTECK, True)]
-        assert "aufgabe_setzen" not in [a[0] for a in neu]
-        assert _aufnahme(tmp_path, 2).read_bytes() == PNG
-        (vorschau,) = _buchungen(ll, "learning_task_preview")
-        assert vorschau["attempt_id"] == _aid(ll, 2) and "handschrift_png_base64" in vorschau
-        assert _buchungen(ll, "learning_task_confirm") == [{"vorbewertung_id": _vid(2), "attempt_id": _aid(ll, 2)}]
-        assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 3)}]
-        assert all(e["status"] == "bestaetigt" for e in ll.eintraege)
-        # Kursende: gemerkt, Kursbericht auf dem Kurs-Canvas.
-        assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
-        assert [a[1] for a in neu if a[0] == "bericht_zeigen"] == ["board-kurs"]
-        assert bruecke._sitzungen[SID].bericht_gezeigt is True
-        assert SID not in _schluessel(penecho)
-    finally:
-        bruecke.beenden()
+    with client:
+        try:
+            assert bruecke._sitzungen[SID].aufgaben_boards == {2: "board-2"}
+            vorher = len(penecho.aufrufe)
+            r = _kurs_abgeben(client)
+            assert r.status_code == 202, r.text
+            assert r.json()["kursabgabe"] == {"zustand": "laeuft", "aktuell": 1, "gesamt": 3, "meldung": None}
+            assert _kursabgabe_vorbei(client) == {"zustand": "fertig", "aktuell": 3, "gesamt": 3, "meldung": None}
+            neu = penecho.aufrufe[vorher:]
+            # Nur Aufgabe 2 wird aufgenommen und vorbewertet; 3 bekommt kein Canvas und wird leer gebucht.
+            assert [a[1:] for a in neu if a[0] == "aufgabe_aufnehmen"] == [("board-2", EINZEL_RECHTECK, True)]
+            assert "aufgabe_setzen" not in [a[0] for a in neu]
+            assert _aufnahme(tmp_path, 2).read_bytes() == PNG
+            (vorschau,) = _buchungen(ll, "learning_task_preview")
+            assert vorschau["attempt_id"] == _aid(ll, 2) and "handschrift_png_base64" in vorschau
+            assert _buchungen(ll, "learning_task_confirm") == [{"vorbewertung_id": _vid(2), "attempt_id": _aid(ll, 2)}]
+            assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 3)}]
+            assert all(e["status"] == "bestaetigt" for e in ll.eintraege)
+            # Kursende: gemerkt, Kursbericht auf dem Kurs-Canvas.
+            assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
+            assert [a[1] for a in neu if a[0] == "bericht_zeigen"] == ["board-kurs"]
+            assert bruecke._sitzungen[SID].bericht_gezeigt is True
+            assert SID not in _schluessel(penecho)
+        finally:
+            bruecke.beenden()
 
 
 class HalteAufnahme(JePenEcho):
@@ -925,22 +934,22 @@ def test_kurs_abgeben_doppelt_ein_lauf(tmp_path: Path) -> None:
     penecho = HalteAufnahme()
     client, _ = _kurs_oeffnen(ll, tmp_path, penecho=penecho)
     bruecke = client.app
-    try:
-        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2},
-                           headers={KOPF: KA}).status_code == 200
-        assert _kurs_abgeben(client).status_code == 202
-        _bis(lambda: bruecke._modellspur.zustand(f"{SID}:kursabgabe:1:1") == "laeuft", 2)
-        r = _kurs_abgeben(client)
-        assert r.status_code == 202, r.text
-        assert r.json()["kursabgabe"]["zustand"] == "laeuft"
-        assert bruecke._modellspur.wartend(f"{SID}:kursabgabe") == 1  # nichts zusaetzlich eingereiht
-        penecho.frei.set()
-        assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
-        assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_confirm")] == [_aid(ll, 1), _aid(ll, 2)]
-        assert len(_buchungen(ll, "learning_task_preview")) == 2
-    finally:
-        penecho.frei.set()
-        bruecke.beenden()
+    with client:
+        try:
+            _zeigen(client, 2)
+            assert _kurs_abgeben(client).status_code == 202
+            _bis(lambda: bruecke._modellspur.zustand(f"{SID}:kursabgabe:1:1") == "laeuft", 2)
+            r = _kurs_abgeben(client)
+            assert r.status_code == 202, r.text
+            assert r.json()["kursabgabe"]["zustand"] == "laeuft"
+            assert bruecke._modellspur.wartend(f"{SID}:kursabgabe") == 1  # nichts zusaetzlich eingereiht
+            penecho.frei.set()
+            assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_confirm")] == [_aid(ll, 1), _aid(ll, 2)]
+            assert len(_buchungen(ll, "learning_task_preview")) == 2
+        finally:
+            penecho.frei.set()
+            bruecke.beenden()
 
 
 def test_kurs_abgeben_ohne_flaeche_409(tmp_path: Path) -> None:
@@ -975,26 +984,227 @@ def test_kurs_abgeben_fehler_und_fortsetzen(tmp_path: Path) -> None:
     ll = _neu_lern(3)
     client, penecho = _kurs_oeffnen(ll, tmp_path)
     bruecke = client.app
-    try:
-        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2},
-                           headers={KOPF: KA}).status_code == 200
-        # Die Flaeche bleibt bei Aufgabe 2 belegt (auch nach dem Warten in `aufgabe_aufnehmen`).
-        penecho.aufnahme_fehler = lambda rechteck: (
-            PenEchoBeschaeftigt("CANVAS_BUSY") if penecho.aufrufe[-1][1] == "board-2" else None)
-        assert _kurs_abgeben(client).status_code == 202
-        assert _kursabgabe_vorbei(client) == {
-            "zustand": "fehler", "aktuell": 2, "gesamt": 3, "meldung": "FLAECHE_BESCHAEFTIGT"}
-        assert [e["status"] for e in ll.eintraege] == ["bestaetigt", "offen", "offen"]  # Gebuchtes bleibt
-        assert _buchungen(ll, "learning_task_answer") == []
-        assert not (tmp_path / "kursende.json").exists()
-        # Erneut abgeben: macht weiter, Aufgabe 1 wird nicht noch einmal gebucht.
-        penecho.aufnahme_fehler = None
-        r = _kurs_abgeben(client)
-        assert r.status_code == 202 and r.json()["kursabgabe"]["zustand"] == "laeuft"
-        assert _kursabgabe_vorbei(client) == {"zustand": "fertig", "aktuell": 3, "gesamt": 3, "meldung": None}
-        assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_confirm")] == [_aid(ll, 1), _aid(ll, 2)]
-        assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_preview")] == [_aid(ll, 1), _aid(ll, 2)]
-        assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 3)}]
-        assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
-    finally:
-        bruecke.beenden()
+    with client:
+        try:
+            _zeigen(client, 2)
+            # Die Flaeche bleibt bei Aufgabe 2 belegt (auch nach dem Warten in `aufgabe_aufnehmen`).
+            penecho.aufnahme_fehler = lambda rechteck: (
+                PenEchoBeschaeftigt("CANVAS_BUSY") if penecho.aufrufe[-1][1] == "board-2" else None)
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client) == {
+                "zustand": "fehler", "aktuell": 2, "gesamt": 3, "meldung": "FLAECHE_BESCHAEFTIGT"}
+            assert [e["status"] for e in ll.eintraege] == ["bestaetigt", "offen", "offen"]  # Gebuchtes bleibt
+            assert _buchungen(ll, "learning_task_answer") == []
+            assert not (tmp_path / "kursende.json").exists()
+            # Erneut abgeben: macht weiter, Aufgabe 1 wird nicht noch einmal gebucht.
+            penecho.aufnahme_fehler = None
+            r = _kurs_abgeben(client)
+            assert r.status_code == 202 and r.json()["kursabgabe"]["zustand"] == "laeuft"
+            assert _kursabgabe_vorbei(client) == {"zustand": "fertig", "aktuell": 3, "gesamt": 3, "meldung": None}
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_confirm")] == [_aid(ll, 1), _aid(ll, 2)]
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_preview")] == [_aid(ll, 1), _aid(ll, 2)]
+            assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 3)}]
+            assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
+        finally:
+            bruecke.beenden()
+
+
+# ---- Task 9, Fix 1 ---------------------------------------------------------------------------------------------
+
+def test_kurs_abgeben_schritt_ende_unter_ablauf(tmp_path: Path) -> None:
+    # Was nach der Buchung geteilten Zustand anfasst (Sperre, Kursende, Bericht), laeuft unter `_ablauf`, nie im
+    # Faden der Modellspur ohne ihn.
+    ll = _neu_lern(3)
+    client, _ = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    protokoll: list[tuple[str, bool, str]] = []
+
+    def mitschreiben(name: str) -> None:
+        echt = getattr(bruecke, name)
+
+        def aufruf(*a: Any, **kw: Any) -> Any:
+            protokoll.append((name, bruecke._ablauf.locked(), threading.current_thread().name))
+            return echt(*a, **kw)
+
+        setattr(bruecke, name, aufruf)
+
+    for name in ("_nach_buchung", "_frei", "_ende_setzen", "_bericht", "_kursbericht"):
+        mitschreiben(name)
+    with client:
+        try:
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
+            namen = {p[0] for p in protokoll}
+            assert {"_nach_buchung", "_frei", "_ende_setzen", "_kursbericht"} <= namen
+            assert [p[0] for p in protokoll].count("_nach_buchung") == 3
+            assert all(gesperrt for _, gesperrt, _ in protokoll), protokoll
+            assert all(faden != "spur-modell" for _, _, faden in protokoll), protokoll
+        finally:
+            bruecke.beenden()
+
+
+def test_kurs_abgeben_wartet_auf_ablauf(tmp_path: Path) -> None:
+    # Haelt eine Route `_ablauf`, wartet das Ende des Schritts (die Buchung selbst ist schon geschehen).
+    ll = _neu_lern(1)
+    client, _ = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    halt, drin = threading.Event(), threading.Event()
+    echt = bruecke._weiter
+
+    def langsam(*a: Any, **kw: Any) -> Any:
+        drin.set()
+        assert halt.wait(5)
+        return echt(*a, **kw)
+
+    bruecke._weiter = langsam
+    with client:
+        try:
+            faden = threading.Thread(target=lambda: client.post(f"/lernen/api/sitzungen/{SID}/weiter",
+                                                                  headers={KOPF: KA}))
+            faden.start()
+            assert drin.wait(2)
+            assert _kurs_abgeben(client).status_code == 202
+            _bis(lambda: _buchungen(ll, "learning_task_confirm") != [], 2)
+            assert not (tmp_path / "kursende.json").exists()  # das Ende wartet auf `_ablauf`
+            assert _kursabgabe(client)["zustand"] == "laeuft"
+            halt.set()
+            faden.join(5)
+            assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
+            assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
+        finally:
+            halt.set()
+            bruecke.beenden()
+
+
+def _unlesbar_bei(ll: ListenLern, nummern: set[int]) -> None:
+    """Die Vorbewertung dieser Aufgaben ist nicht lesbar (etwa ein leeres, selbst angelegtes Canvas)."""
+    def vorbewerten(kw: dict[str, Any]) -> dict[str, Any]:
+        n = ll._nummer(kw)
+        if n not in nummern:
+            return ll._vorbewerten(kw)
+        vor = _vor(lesbar=False, vid=_vid(n), gelesen=None)
+        ll.eintraege[n - 1]["vorbewertung"] = vor
+        return {"session": ll.turn(), "vorbewertung": vor}
+
+    ll.lern.antworten["learning_task_preview"] = vorbewerten
+
+
+UNLESBAR_2 = ("Aufgabe 2 konnte nicht gelesen werden. Bitte schreiben Sie deutlicher oder tippen Sie Ihre Antwort über "
+              "„Falsch gelesen“ ein. Wenn Sie sie nicht bearbeiten möchten, drücken Sie noch einmal „Kurs abgeben“ – "
+              "dann zählt sie als nicht bearbeitet.")
+
+
+def test_kurs_abgeben_unlesbar_gleiche_aufnahme_zaehlt_nicht_bearbeitet(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    _unlesbar_bei(ll, {2})
+    client, penecho = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    with client:
+        try:
+            _unlesbar_lauf_in(ll, client, penecho, tmp_path)
+            # Zweiter Lauf, dieselbe Aufnahme: nicht bearbeitet, ohne neue Vorbewertung.
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client) == {"zustand": "fertig", "aktuell": 3, "gesamt": 3, "meldung": None}
+            assert len(_buchungen(ll, "learning_task_preview")) == 3
+            assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 2)}]
+            assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
+        finally:
+            bruecke.beenden()
+
+
+def test_kurs_abgeben_unlesbar_geaenderte_aufnahme_wird_bewertet(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    _unlesbar_bei(ll, {2})
+    client, penecho = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    with client:
+        try:
+            _unlesbar_lauf_in(ll, client, penecho, tmp_path)
+            penecho.bild = PNG + b"deutlicher"
+            _unlesbar_bei(ll, set())
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_preview")][-1] == _aid(ll, 2)
+            assert _buchungen(ll, "learning_task_confirm")[-1] == {"vorbewertung_id": _vid(2),
+                                                                   "attempt_id": _aid(ll, 2)}
+            assert _buchungen(ll, "learning_task_answer") == []
+            assert _aufnahme(tmp_path, 2).read_bytes() == PNG + b"deutlicher"
+        finally:
+            bruecke.beenden()
+
+
+def _unlesbar_lauf_in(ll: ListenLern, client: TestClient, penecho: FakePenEcho, tmp_path: Path) -> None:
+    """Erster Lauf: 3 Aufgaben mit Canvas, Aufgabe 2 nicht lesbar; er endet mit `fehler` und dem festen Text."""
+    _zeigen(client, 2)
+    _zeigen(client, 3)
+    assert _kurs_abgeben(client).status_code == 202
+    assert _kursabgabe_vorbei(client) == {"zustand": "fehler", "aktuell": 3, "gesamt": 3, "meldung": UNLESBAR_2}
+    _bis(lambda: _ruhig(client.app), 2)
+    assert [e["status"] for e in ll.eintraege] == ["bestaetigt", "offen", "bestaetigt"]
+    assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_confirm")] == [_aid(ll, 1), _aid(ll, 3)]
+    assert _buchungen(ll, "learning_task_answer") == []
+    # Die Karte der Vorbewertung kommt auf das Canvas der Aufgabe (wie bei „Abgeben“).
+    (karte,) = [k for k in _karten(penecho) if k[3] == 2]
+    assert karte[1] == "board-2" and karte[5] == "Nicht lesbar."
+    assert not (tmp_path / "kursende.json").exists()
+
+
+def test_kurs_abgeben_getippte_korrektur_wird_bestaetigt(tmp_path: Path) -> None:
+    # Aufgabe 1: getippte, lesbare Vorbewertung -> so bestaetigt, ohne Aufnahme. Aufgabe 2: Vorbewertung aus
+    # Handschrift -> neu aufgenommen und bewertet.
+    ll = _neu_lern(2)
+    ll.eintraege[0]["vorbewertung"] = _vor(vid=_vid(11), gelesen="1", quelle="getippt")
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(12), gelesen="2")
+    client, penecho = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    revision = ll.turn()["session_revision"]
+    with client:
+        try:
+            _zeigen(client, 2)
+            vorher = len(penecho.aufrufe)
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client)["zustand"] == "fertig"
+            assert [a[1] for a in penecho.aufrufe[vorher:] if a[0] == "aufgabe_aufnehmen"] == ["board-2"]
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_preview")] == [_aid(ll, 2)]
+            assert _buchungen(ll, "learning_task_confirm") == [
+                {"vorbewertung_id": _vid(11), "attempt_id": _aid(ll, 1)},
+                {"vorbewertung_id": _vid(2), "attempt_id": _aid(ll, 2)}]
+            (kw,) = [kw for kw in _aufrufe(ll.lern, "learning_task_confirm")
+                     if kw["payload"]["attempt_id"] == _aid(ll, 1)]
+            assert kw["expected_revision"] == revision
+        finally:
+            bruecke.beenden()
+
+
+def test_kurs_abgeben_schon_gebucht_zaehlt_fertig(tmp_path: Path) -> None:
+    # Learning meldet bei der eigenen Buchung „schon abgegeben“ (anderswo gebucht): zaehlt als fertig, weiter.
+    ll = _neu_lern(3)
+    client, penecho = _kurs_oeffnen(ll, tmp_path)
+    bruecke = client.app
+    echt_bestaetigen, echt_beantworten = ll._bestaetigen, ll._beantworten
+
+    def bestaetigen(kw: dict[str, Any]) -> dict[str, Any]:
+        if ll._nummer(kw) == 1:
+            ll.eintraege[0]["status"] = "bestaetigt"
+            raise LearningAbgelehnt("vorbewertung not current", "session_state_conflict")
+        return echt_bestaetigen(kw)
+
+    def beantworten(kw: dict[str, Any]) -> dict[str, Any]:
+        if ll._nummer(kw) == 3:
+            ll.eintraege[2]["status"] = "bestaetigt"
+            raise LearningAbgelehnt("adaptive task was already answered", "session_state_conflict")
+        return echt_beantworten(kw)
+
+    ll.lern.antworten["learning_task_confirm"] = bestaetigen
+    ll.lern.antworten["learning_task_answer"] = beantworten
+    with client:
+        try:
+            _zeigen(client, 2)
+            assert _kurs_abgeben(client).status_code == 202
+            assert _kursabgabe_vorbei(client) == {"zustand": "fertig", "aktuell": 3, "gesamt": 3, "meldung": None}
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_confirm")] == [_aid(ll, 1), _aid(ll, 2)]
+            assert [p["attempt_id"] for p in _buchungen(ll, "learning_task_answer")] == [_aid(ll, 3)]
+            assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
+            assert [a[1] for a in penecho.aufrufe if a[0] == "bericht_zeigen"] == ["board-kurs"]
+        finally:
+            bruecke.beenden()
