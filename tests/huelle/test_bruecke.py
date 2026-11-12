@@ -26,7 +26,8 @@ from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
 from spaces.learning.huelle.penecho_mcp import (
-    URTEILE, Aufgabenbild, PenEchoMcp, PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, bereich,
+    URTEILE, Aufgabenbild, PenEchoBeschaeftigt, PenEchoMcp, PenEchoNichtErreichbar, PenEchoNichtSichtbar,
+    PenEchoSitzungUnbekannt, bereich,
 )
 from spaces.learning.huelle.person import PERSON_COOKIE, person_cookie
 from spaces.learning.huelle.sperre import Sperre
@@ -2754,6 +2755,28 @@ def test_zusammenfassung_werkzeugfehler_einer_aufgabe_stoppt_nicht() -> None:
         penecho.aufnahme_fehler = lambda rt: PenEchoNichtErreichbar("werkzeug") if rt == bereiche[0] else None
         assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
         assert len(penecho.aufnahme_rechtecke) == 3
+    finally:
+        client.app.beenden()
+
+
+@pytest.mark.parametrize(("fehler", "aufnahmen"), [
+    # Bis zum Canvas je Aufgabe kamen CANVAS_NOT_VISIBLE und CANVAS_BUSY als Werkzeugfehler: nur dieses Bild fehlt.
+    (PenEchoNichtSichtbar("CANVAS_NOT_VISIBLE"), 3),
+    (PenEchoBeschaeftigt("CANVAS_BUSY"), 3),
+    # ACTIVE_CANVAS_REQUIRED war schon vorher eine eigene Klasse und beendet die Aufnahmen wie bisher.
+    (PenEchoNichtSichtbar("ACTIVE_CANVAS_REQUIRED"), 1),
+])
+def test_zusammenfassung_alte_sitzung_belegt_oder_unsichtbar_wie_werkzeugfehler(
+    fehler: Exception, aufnahmen: int,
+) -> None:
+    ll = ListenLern(3)
+    client, penecho = _zf_offen(ll)
+    try:
+        assert client.app._sitzungen[SID].je_aufgabe is False
+        bereiche = anordnung([False] * 3)
+        penecho.aufnahme_fehler = lambda rt: fehler if rt == bereiche[0] else None
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        assert len(penecho.aufnahme_rechtecke) == aufnahmen
     finally:
         client.app.beenden()
 

@@ -84,7 +84,7 @@ from .medien import gross as _gross
 from .medien import medien as _medien
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoBeschaeftigt, PenEchoGruppenbindung, PenEchoMcp,
-    PenEchoNichtErreichbar, PenEchoSitzungUnbekannt, aufgaben_titel, loesungsfeld,
+    PenEchoNichtErreichbar, PenEchoNichtSichtbar, PenEchoSitzungUnbekannt, aufgaben_titel, loesungsfeld,
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
@@ -1883,7 +1883,14 @@ class Bruecke:
 
     @staticmethod
     def _aufnahme_fehler_einzeln(fehler: Exception) -> bool:
-        """Ein Werkzeugfehler von PenEcho (z. B. Aufnahme-Zeitueberschreitung) betrifft nur dieses eine Bild."""
+        """Ein Werkzeugfehler von PenEcho (z. B. Aufnahme-Zeitueberschreitung) betrifft nur dieses eine Bild.
+
+        CANVAS_NOT_VISIBLE und CANVAS_BUSY haben seit dem Canvas je Aufgabe eigene Klassen; vorher kamen sie als
+        Werkzeugfehler und liessen nur dieses Bild weg. Das bleibt so (ACTIVE_CANVAS_REQUIRED beendet wie bisher)."""
+        if type(fehler) is PenEchoNichtSichtbar and fehler.args == ("CANVAS_NOT_VISIBLE",):
+            return True
+        if type(fehler) is PenEchoBeschaeftigt and fehler.args == ("CANVAS_BUSY",):
+            return True
         return type(fehler) is PenEchoNichtErreichbar and fehler.args in (("werkzeug",), ("bild",))
 
     def _aufnahmen(self, sitzung: _Sitzung, rechtecke: list[dict[str, int]]) -> list[bytes | None]:
