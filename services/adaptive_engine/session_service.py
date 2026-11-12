@@ -43,6 +43,11 @@ from spaces.learning.services.adaptive_engine.selector import select_next_item
 from spaces.learning.services.course_factory.repository import SessionFactory
 from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.services.evaluation.deterministic import score_response
+from spaces.learning.services.evaluation.rubric import (
+    answer_outcome_code,
+    rubric_contract_violation,
+    rubric_score,
+)
 from spaces.learning.services.evaluation.schemas import (
     ChoiceOption,
     DeterministicItem,
@@ -114,6 +119,39 @@ class AnswerCommand(_Command):
         return str(UUID(value))
 
 
+class ExterneKriteriumBewertung(_Command):
+    criterion_id: str = Field(min_length=1, max_length=200)
+    punkte: float = Field(ge=0, le=1_000)
+    rueckmeldung: str = Field(min_length=1, max_length=5_000)
+
+
+class ExterneGelesen(_Command):
+    lesbar: bool
+    text: str = Field(max_length=200)
+    antwort: dict[str, object] | None = None
+
+
+class ExterneBewertung(_Command):
+    """A grade made outside Learning (the canvas AI), in exactly one of two forms.
+
+    Rubric form: `kriterien` (+ `rueckmeldung`), checked against the item rubric.
+    Fixed-answer form: `gelesen`, the answer as read; Learning scores it itself.
+    """
+
+    grader: Literal["ki_flaeche"]
+    kriterien: list[ExterneKriteriumBewertung] | None = Field(default=None, max_length=100)
+    rueckmeldung: str | None = Field(default=None, max_length=5_000)
+    gelesen: ExterneGelesen | None = None
+
+    @model_validator(mode="after")
+    def validate_form(self) -> "ExterneBewertung":
+        if (self.kriterien is None) == (self.gelesen is None):
+            raise ValueError("give exactly one of kriterien and gelesen")
+        if self.gelesen is not None and self.rueckmeldung is not None:
+            raise ValueError("rueckmeldung belongs to the rubric form")
+        return self
+
+
 class VorbewertungCommand(_Command):
     """A preview grading: exactly one of a typed answer and a handwriting PNG.
 
@@ -128,6 +166,8 @@ class VorbewertungCommand(_Command):
     handschrift_png: bytes | None = Field(default=None, min_length=1)
     korrigiert_aus: str | None = None
     attempt_id: str | None = None
+    # A grade from outside (canvas AI); only for a handwriting preview, never a correction.
+    externe_bewertung: ExterneBewertung | None = None
 
     @field_validator("session_id")
     @classmethod
@@ -145,6 +185,10 @@ class VorbewertungCommand(_Command):
             raise ValueError("give exactly one of answer and handschrift_png")
         if self.korrigiert_aus is not None and self.answer is None:
             raise ValueError("korrigiert_aus needs a typed answer")
+        if self.externe_bewertung is not None and (
+            self.handschrift_png is None or self.korrigiert_aus is not None
+        ):
+            raise ValueError("externe_bewertung belongs to a handwriting preview")
         return self
 
 
@@ -206,6 +250,8 @@ class Vorbewertung(BaseModel):
     feedback: TurnFeedback | None
     # The typed answer as sent (quelle "getippt"); handwriting has its reading in gelesen_text.
     antwort: dict[str, object] | None = None
+    # Who graded: the canvas AI (external grade) or this server.
+    bewertet_von: Literal["ki_flaeche", "server"] = "server"
 
 
 class BewertungsKriterium(BaseModel):
@@ -627,6 +673,9 @@ class AdaptiveSessionService:
                 db, row, command.expected_session_revision, command.attempt_id
             )
             rubrik = self._vorschau_rubrik(item, command)
+            extern = command.externe_bewertung
+            if extern is not None and (extern.kriterien is not None) != rubrik:
+                raise ValueError("externe_bewertung does not match the grading kind of the task")
             if command.korrigiert_aus is not None:
                 korrigiert = db.get(LearningVorbewertung, command.korrigiert_aus)
                 if korrigiert is None or korrigiert.attempt_id != attempt.id:
@@ -638,7 +687,15 @@ class AdaptiveSessionService:
         vorbewertung_id = str(uuid4())
         gelesen: GelesenV1 | None = None
         bewertung: _Bewertung | None = None
-        if rubrik:
+        if extern is not None and extern.kriterien is not None:
+            # An external rubric grade passes the same contract check as a model answer;
+            # neither the server evaluator nor its confidence/source gates apply.
+            bewertung = self._bewertung_extern_rubrik(
+                item,
+                extern,
+                {"kind": "handschrift", "vorbewertung_id": vorbewertung_id, "bild_sha256": sha},
+            )
+        elif rubrik:
             if self._rubric_evaluator is None:
                 raise RuntimeError("rubric evaluator is not configured")
             # The booked answer refers to this preview, which keeps the PNG for review.
@@ -648,9 +705,21 @@ class AdaptiveSessionService:
                 bild_png=png,
             )
         elif png is not None:
-            if self._handschrift_leser is None:
-                raise RuntimeError("handwriting reader is not configured")
-            gelesen, antwort = self._handschrift_leser.lesen(task, png)
+            if extern is not None:
+                assert extern.gelesen is not None
+                # The canvas AI read the answer; Learning only compares it, the reader stays idle.
+                from spaces.learning.services.evaluation.handschrift import GelesenV1
+
+                gelesen = GelesenV1(
+                    lesbar=extern.gelesen.lesbar,
+                    roh=dict(extern.gelesen.antwort or {}),
+                    text=extern.gelesen.text,
+                )
+                antwort = extern.gelesen.antwort
+            else:
+                if self._handschrift_leser is None:
+                    raise RuntimeError("handwriting reader is not configured")
+                gelesen, antwort = self._handschrift_leser.lesen(task, png)
             if gelesen.lesbar and antwort is not None:
                 try:
                     bewertung = self._bewerten(item, antwort)
@@ -660,6 +729,7 @@ class AdaptiveSessionService:
         else:
             assert command.answer is not None
             bewertung = self._bewerten(item, command.answer)
+        grader = "ki_flaeche" if extern is not None else "server"
         now = self._aware_now()
         with self._session_factory() as db, db.begin():
             row = self._active_session(db, command.session_id, command.actor_id, lock=True)
@@ -679,7 +749,7 @@ class AdaptiveSessionService:
                 gelesen=gelesen.model_dump(mode="json") if gelesen is not None else None,
                 lesbar=bewertung is not None,
                 created_at=now,
-                **self._bewertung_spalten(bewertung),
+                **self._bewertung_spalten(bewertung, grader),
             )
             db.add(stored)
             db.flush()
@@ -698,6 +768,7 @@ class AdaptiveSessionService:
                 if stored.quelle == "getippt" and isinstance(stored.answer, dict)
                 else None
             ),
+            bewertet_von=grader,
         )
 
     def bestaetigen(
@@ -839,6 +910,11 @@ class AdaptiveSessionService:
                 if stored.quelle == "getippt" and isinstance(stored.answer, dict)
                 else None
             ),
+            bewertet_von=(
+                "ki_flaeche"
+                if (stored.evaluator_versions or {}).get("grader") == "ki_flaeche"
+                else "server"
+            ),
         )
 
     @staticmethod
@@ -853,10 +929,14 @@ class AdaptiveSessionService:
         raise ValueError(f"{item.item_type} tasks have no preview grading")
 
     @staticmethod
-    def _bewertung_spalten(bewertung: _Bewertung | None) -> dict[str, object]:
-        """The columns of a stored preview grading; empty when nothing was graded."""
+    def _bewertung_spalten(bewertung: _Bewertung | None, grader: str) -> dict[str, object]:
+        """The columns of a stored preview grading; the grader is always recorded.
+
+        The DB check on evaluator_type stays deterministic/rubric, so the grader lives
+        in evaluator_versions["grader"].
+        """
         if bewertung is None:
-            return {}
+            return {"evaluator_versions": {"grader": grader}}
         return {
             "answer": bewertung.answer,
             "response_id": bewertung.response_id,
@@ -866,7 +946,7 @@ class AdaptiveSessionService:
             "confidence": bewertung.confidence,
             "accepted": bewertung.accepted,
             "rationale_codes": list(bewertung.rationale_codes),
-            "evaluator_versions": bewertung.evaluator_versions,
+            "evaluator_versions": {**bewertung.evaluator_versions, "grader": grader},
             "source_refs": list(bewertung.source_refs),
             "criteria": [value.model_dump(mode="json") for value in bewertung.criteria],
             "review_reason": bewertung.review_reason,
@@ -1215,6 +1295,51 @@ class AdaptiveSessionService:
                 "confidence": decision.confidence,
                 "evidence_ref": decision.evidence_ref,
             },
+        )
+
+    def _bewertung_extern_rubrik(
+        self,
+        item: AdaptiveItem,
+        extern: ExterneBewertung,
+        answer: dict[str, object],
+    ) -> _Bewertung:
+        """An external rubric grade as a grading; the shared contract check decides.
+
+        Raises ValueError on a mismatch (nothing is stored). Accepted and the feedback
+        bands follow the score exactly like the accepted server rubric path.
+        """
+        assert extern.kriterien is not None
+        criteria = [RubricCriterion.model_validate(value) for value in item.rubric]
+        violation = rubric_contract_violation(
+            [(value.criterion_id, value.punkte) for value in extern.kriterien], criteria
+        )
+        if violation is not None:
+            raise ValueError(f"external rubric grade violates the rubric: {violation}")
+        score = rubric_score([value.punkte for value in extern.kriterien], criteria)
+        known = {value.criterion_id: value for value in criteria}
+        shown = tuple(
+            CriterionFeedback(
+                criterion_id=value.criterion_id,
+                description=known[value.criterion_id].description,
+                score=min(1.0, max(0.0, value.punkte / known[value.criterion_id].points)),
+                feedback=value.rueckmeldung,
+            )
+            for value in extern.kriterien
+        )
+        return _Bewertung(
+            response_id=str(uuid4()),
+            evaluation_id=str(uuid4()),
+            answer=answer,
+            evaluator_type="rubric",
+            score=score,
+            confidence=1.0,
+            accepted=True,
+            rationale_codes=("rubric_accepted", answer_outcome_code(score)),
+            evaluator_versions={},
+            source_refs=self._string_list(item.scoring_config.get("source_refs", [])),
+            criteria=shown,
+            review_reason=None,
+            review_details={},
         )
 
     def _uebernehmen(

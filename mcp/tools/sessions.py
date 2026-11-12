@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # 5 MB of PNG (model_gateway cap) is 4 * ceil(5_000_000 / 3) base64 characters.
 _MAX_PNG_BASE64_CHARS = 6_666_668
 _PREVIEW_KEYS = frozenset(
-    {"handschrift_png_base64", "answer", "korrigiert_aus", "attempt_id"}
+    {"handschrift_png_base64", "answer", "korrigiert_aus", "attempt_id", "externe_bewertung"}
 )
 
 
@@ -304,6 +304,7 @@ class AdaptiveSessionGateway:
             raise ValueError("task preview requires session and revision")
         actor_id = request.event.actor.actor_id
         answer, png, korrigiert_aus = _preview_payload(request.event.payload)
+        externe_bewertung = request.event.payload.get("externe_bewertung")
         attempt_id = _attempt_id(request.event.payload)
         try:
             vorbewertung = self._service.vorbewerten(
@@ -314,6 +315,7 @@ class AdaptiveSessionGateway:
                     answer=answer,
                     handschrift_png=png,
                     korrigiert_aus=korrigiert_aus,
+                    externe_bewertung=externe_bewertung,
                     attempt_id=attempt_id,
                 )
             )

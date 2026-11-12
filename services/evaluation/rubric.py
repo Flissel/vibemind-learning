@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from spaces.learning.services.course_factory.model_gateway import (
 )
 from spaces.learning.services.evaluation.review_queue import ReviewItem, ReviewQueue
 from spaces.learning.services.evaluation.schemas import (
+    RubricCriterion,
     RubricDecision,
     RubricEvaluationRequest,
     RubricModelOutput,
@@ -23,6 +25,43 @@ _CONFIDENCE_THRESHOLD = 0.65
 
 class RubricEvaluationUnavailable(RuntimeError):
     pass
+
+
+def rubric_contract_violation(
+    awarded: Sequence[tuple[str, float]], rubric: Sequence[RubricCriterion]
+) -> str | None:
+    """The one rubric contract check, shared by the model path and external graders.
+
+    `awarded` is (criterion_id, awarded_points) per graded criterion. The grade must
+    name every rubric criterion exactly once, no other, with 0 <= points <= maximum.
+    Returns the first violation as a short reason, or None when the contract holds.
+    """
+    maximum = {item.criterion_id: item.points for item in rubric}
+    ids = [criterion_id for criterion_id, _ in awarded]
+    if len(ids) != len(set(ids)):
+        return "duplicate criterion"
+    if set(ids) != set(maximum):
+        return "criteria do not match the rubric"
+    for criterion_id, points in awarded:
+        if points < 0:
+            return f"negative points for {criterion_id}"
+        if points > maximum[criterion_id]:
+            return f"points above the maximum for {criterion_id}"
+    return None
+
+
+def rubric_score(awarded_points: Sequence[float], rubric: Sequence[RubricCriterion]) -> float:
+    """Sum of awarded points over the sum of maximum points; call after the contract check."""
+    return sum(awarded_points) / sum(item.points for item in rubric)
+
+
+def answer_outcome_code(score: float) -> str:
+    """Names the outcome of an accepted rubric decision (same bands as the session feedback)."""
+    return (
+        "answer_correct" if score >= 0.999
+        else "answer_partial" if score >= 0.65
+        else "answer_incorrect"
+    )
 
 
 class EvaluationRecorder(Protocol):
@@ -105,16 +144,12 @@ class RubricEvaluator:
                 ]
             }
         )
-        criteria_by_id = {item.criterion_id: item for item in request.rubric}
-        output_ids = [item.criterion_id for item in output.criteria]
         contract_matches = (
-            len(output_ids) == len(set(output_ids))
-            and set(output_ids) == set(criteria_by_id)
-            and all(
-                item.awarded_points <= criteria_by_id[item.criterion_id].points
-                for item in output.criteria
-                if item.criterion_id in criteria_by_id
+            rubric_contract_violation(
+                [(item.criterion_id, item.awarded_points) for item in output.criteria],
+                request.rubric,
             )
+            is None
         )
         allowed_sources = set(request.source_refs)
         feedback_grounded = all(
@@ -122,9 +157,9 @@ class RubricEvaluator:
             for item in output.criteria
         )
         if contract_matches:
-            awarded = sum(item.awarded_points for item in output.criteria)
-            maximum = sum(item.points for item in request.rubric)
-            score = awarded / maximum
+            score = rubric_score(
+                [item.awarded_points for item in output.criteria], request.rubric
+            )
         else:
             score = 0.0
 
@@ -141,11 +176,7 @@ class RubricEvaluator:
         if accepted:
             # "rubric_accepted" says the decision is trustworthy, not that the answer
             # is right; name the outcome too (same bands as the session feedback).
-            rationale_codes.append(
-                "answer_correct" if score >= 0.999
-                else "answer_partial" if score >= 0.65
-                else "answer_incorrect"
-            )
+            rationale_codes.append(answer_outcome_code(score))
         decision = RubricDecision(
             evaluation_id=request.evaluation_id,
             response_id=request.response_id,

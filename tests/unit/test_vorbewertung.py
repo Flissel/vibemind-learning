@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -458,7 +459,11 @@ def test_gespeicherte_bewertung_kommt_verlustfrei_zurueck(tmp_path: Path) -> Non
 
     with factory() as db:
         row = db.get(LearningVorbewertung, vor.id)
-        assert service._bewertung_aus(row) == gesehen[0]
+        # The stored grading is the graded one plus the recorded grader.
+        erwartet = replace(
+            gesehen[0], evaluator_versions={**gesehen[0].evaluator_versions, "grader": "server"}
+        )
+        assert service._bewertung_aus(row) == erwartet
     engine.dispose()
 
 

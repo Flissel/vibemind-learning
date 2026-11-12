@@ -413,6 +413,40 @@ def test_preview_handschrift_ohne_leser_ist_nicht_verfuegbar(tmp_path: Path) -> 
     engine.dispose()
 
 
+def test_preview_externe_bewertung_fest_wird_uebernommen(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    extern = {
+        "grader": "ki_flaeche",
+        "gelesen": {"lesbar": True, "text": "A", "antwort": {"choice_id": "a"}},
+    }
+    result = _preview(
+        dispatcher, turn, {"handschrift_png_base64": PNG_B64, "externe_bewertung": extern}
+    )
+    assert result["state"] == "completed", result
+    vor = result["result"]["vorbewertung"]
+    assert vor["bewertet_von"] == "ki_flaeche" and vor["score"] == 1.0
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "zusatz",
+    [{"answer": {"choice_id": "a"}}, {"korrigiert_aus": str(uuid4())}, {}],
+    ids=["mit_antwort", "mit_korrektur", "ohne_bild"],
+)
+def test_preview_externe_bewertung_nur_mit_bild(tmp_path: Path, zusatz) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    extern = {
+        "grader": "ki_flaeche",
+        "gelesen": {"lesbar": True, "text": "A", "antwort": {"choice_id": "a"}},
+    }
+    result = _preview(dispatcher, turn, {"externe_bewertung": extern, **zusatz})
+    assert result["state"] == "rejected", result
+    assert result["error"]["code"] == "invalid_session_request"
+    engine.dispose()
+
+
 def test_server_verdrahtet_den_leser() -> None:
     import inspect
 
