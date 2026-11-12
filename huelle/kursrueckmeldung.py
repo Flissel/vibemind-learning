@@ -3,6 +3,7 @@
 Rein: liest nichts bei Learning, PenEcho oder der Lernflaeche. Die Eingabe enthaelt nur, was die Person ohnehin
 sieht (Aufgabentext, ihr Ergebnis, die Rueckmeldung, KI-Schritte, Begriffe), nie Musterloesung oder Rubrik. Die
 Lernflaeche prueft sie mit `exactKeys`; darum entsteht hier genau dieses Schema, schon auf die Grenzen gekuerzt.
+Alle Grenzen zaehlen UTF-16-Codeeinheiten wie JavaScripts `.length` (`laenge`), nicht Python-Zeichen.
 """
 
 from __future__ import annotations
@@ -27,10 +28,31 @@ STAND_ZEICHEN = 40
 ANTWORT_ZEICHEN = 2000
 
 
+def laenge(text: str) -> int:
+    """Laenge wie JavaScripts `.length` (UTF-16-Codeeinheiten): so zaehlt der Pruefer der Lernflaeche. Ein Zeichen
+    ausserhalb der BMP (Emoji, mathematische Buchstaben) zaehlt doppelt."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _abschneiden(text: str, grenze: int) -> str:
+    """Laengster Anfang mit hoechstens `grenze` UTF-16-Codeeinheiten; nie ein halbes Zeichen."""
+    if laenge(text) <= grenze:
+        return text
+    teile: list[str] = []
+    einheiten = 0
+    for zeichen in text:
+        breite = 2 if ord(zeichen) > 0xFFFF else 1
+        if einheiten + breite > grenze:
+            break
+        teile.append(zeichen)
+        einheiten += breite
+    return "".join(teile)
+
+
 def _kurz(text: object, grenze: int) -> str:
-    """Einzeilig und hoechstens `grenze` Zeichen (gekuerzt mit „…“)."""
+    """Einzeilig und hoechstens `grenze` UTF-16-Codeeinheiten (gekuerzt mit „…“, das eine Einheit zaehlt)."""
     t = " ".join(str(text).split())
-    return t if len(t) <= grenze else t[: grenze - 1].rstrip() + "…"
+    return t if laenge(t) <= grenze else _abschneiden(t, grenze - 1).rstrip() + "…"
 
 
 def rueckmeldungsdaten(kurs: str, zeilen: Sequence[AufgabeZeile], begriffe: Sequence[Mapping[str, Any]]
@@ -63,7 +85,7 @@ def aus_antwort(wert: Mapping[str, Any] | None) -> Kursrueckmeldung | None:
     felder = [wert.get(k) for k in ("staerken", "luecken", "naechste_schritte")]
     if not all(isinstance(f, str) and f.strip() for f in felder):
         return None
-    staerken, luecken, schritte = (str(f).strip()[:ANTWORT_ZEICHEN] for f in felder)
+    staerken, luecken, schritte = (_abschneiden(str(f).strip(), ANTWORT_ZEICHEN) for f in felder)
     return Kursrueckmeldung(staerken, luecken, schritte, "ki_flaeche")
 
 

@@ -106,6 +106,8 @@ ZU_VIELE_AUFGABEN = "Dieser Kurs hat mehr Aufgaben, als auf eine Fläche passen.
 WIRD_GEPRUEFT = "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist."
 FLAECHE_WEG = "Die Fläche ist gerade nicht erreichbar."
 KURS_CANVAS_TITEL = "Kursrückmeldung"  # Titel des Kurs-Canvas (Schluessel `<sid>#kurs`), ein Canvas je Aufgabe
+# Unter der Karte, solange die Flaechen-KI die Kursrueckmeldung im Hintergrund erstellt.
+KURSRUECKMELDUNG_FOLGT = "Die ausführliche Rückmeldung wird erstellt …"
 # Nach dem Fork (apps/web/lib/learning/practiceModel.ts). Die Huelle zeigt keine Quellenbelege;
 # nach der Abgabe ist PenEchos KI frei und erklaert den Weg auf der Flaeche.
 _RUECKMELDUNG = {
@@ -898,7 +900,8 @@ class Bruecke:
 
     # ---- Ein Canvas je Aufgabe: Kursrueckmeldung ---------------------------------
     def _kursrueckmeldungen_lesen(self) -> dict[str, Kursrueckmeldung]:
-        """sid -> Kursrueckmeldung aus `kursrueckmeldungen.json`; Kaputtes faellt einzeln weg."""
+        """sid -> Kursrueckmeldung der Flaechen-KI aus `kursrueckmeldungen.json`; Kaputtes und anderes als
+        `quelle == "ki_flaeche"` faellt einzeln weg (der Zahlen-Rueckfall wird nie gespeichert)."""
         if self._rueckmeldung_datei is None:
             return {}
         try:
@@ -912,7 +915,7 @@ class Bruecke:
                 continue
             texte = [eintrag.get(k) for k in ("staerken", "luecken", "naechste_schritte")]
             quelle = eintrag.get("quelle")
-            if all(isinstance(t, str) and t for t in texte) and quelle in ("ki_flaeche", "zahlen"):
+            if all(isinstance(t, str) and t for t in texte) and quelle == "ki_flaeche":
                 ergebnis[sid] = Kursrueckmeldung(*texte, quelle)  # type: ignore[arg-type]
         return ergebnis
 
@@ -921,7 +924,10 @@ class Bruecke:
             return self._kursrueckmeldungen.get(sid)
 
     def _kursrueckmeldung_merken(self, sid: str, k: Kursrueckmeldung) -> None:
-        """Rueckmeldung der Sitzung merken, atomar gespeichert (Temp-Datei + replace); Fehler nur als Typ geloggt."""
+        """Rueckmeldung der Flaechen-KI merken, atomar gespeichert (Temp-Datei + replace); Fehler nur als Typ geloggt.
+        Der Zahlen-Rueckfall wird nicht gespeichert: so fragt ein spaeteres Oeffnen die Flaechen-KI erneut."""
+        if k.quelle != "ki_flaeche":
+            return
         with self._rueckmeldung_sperre:
             self._kursrueckmeldungen[sid] = k
             if self._rueckmeldung_datei is None:
@@ -1663,58 +1669,117 @@ class Bruecke:
 
     def _kursbericht(self, sitzung: _Sitzung, turn: dict[str, Any]) -> None:
         """Kursende im Modell „ein Canvas je Aufgabe“: Bericht und Kursrueckmeldung auf dem Kurs-Canvas (`<sid>#kurs`,
-        „Kursrückmeldung“), hoechstens einmal je Sitzung, nie ein Abbruch, nie das gemeinsame Board `<sid>`.
+        „Kursrückmeldung“), nie ein Abbruch, nie das gemeinsame Board `<sid>`, nie ein Modellaufruf (laeuft unter
+        `_ablauf`).
 
         1. Zusammenfassung ohne Bilder (keine Anordnung, also auch ueber 20 Aufgaben).
-        2. Rueckmeldung: die gespeicherte, sonst die der Flaechen-KI (`KiBewerter.kursrueckmeldung`), sonst aus den
-           Zahlen; gespeichert in `kursrueckmeldungen.json`, ein erneutes Oeffnen fragt die KI also nicht noch einmal.
-        3. Kurs-Canvas zeigen, darauf Berichtskarte (Bericht + Rueckmeldung) und die gespeicherten Aufnahmen.
-        4. Textfassung in den Wissensordner (wie `_bericht`).
-        5. Steht der Bericht, die Dokumente der Aufgaben im Tab schliessen (False nur geloggt).
-        Ist der Bericht schon gezeigt (erneutes Oeffnen, Weiter am Kursende), kommt nur das Kurs-Canvas nach vorn.
+        2. Rueckmeldung: die gespeicherte der Flaechen-KI (`kursrueckmeldungen.json`), sonst die aus den Zahlen.
+        3. Kurs-Canvas nach vorn, darauf sofort die Berichtskarte (Bericht + Rueckmeldung) und die gespeicherten
+           Aufnahmen. Fehlt die Antwort der Flaechen-KI (und gibt es einen aktiven Bewerter), steht darunter
+           `KURSRUECKMELDUNG_FOLGT`, und `_im_hintergrund_kursrueckmeldung` kommt in die Modellspur
+           (`<sid>:kursrueckmeldung`, hoechstens einmal zugleich).
+        4. Beim ersten Mal: Textfassung in den Wissensordner (wie `_bericht`); steht der Bericht, die Dokumente der
+           Aufgaben im Tab schliessen (False nur geloggt).
+        Ist der Bericht schon gezeigt (erneutes Oeffnen, Weiter am Kursende) und die KI-Antwort gespeichert, kommt nur
+        das Kurs-Canvas nach vorn. Ohne gespeicherte KI-Antwort wird sie erneut angefragt (im Hintergrund).
         """
         summary = turn.get("summary")
         if not isinstance(summary, dict):
             return
-        if sitzung.bericht_gezeigt:
+        gespeichert = self._kursrueckmeldung_lesen(sitzung.sid)  # nur Antworten der Flaechen-KI
+        ki_folgt = gespeichert is None and self._bewerter is not None and self._bewerter.aktiv
+        erstmals = not sitzung.bericht_gezeigt
+        if not erstmals and not ki_folgt:
             self._still(lambda: self._auf_kurs(sitzung, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
             return
         try:
             z = self._zusammenfassung_bauen(sitzung, bilder=False)
-            k = z.rueckmeldung
-            if k is None:
-                k = self._kursrueckmeldung_holen(z)
-                self._kursrueckmeldung_merken(sitzung.sid, k)
-                z = replace(z, rueckmeldung=k)
-            text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung) or []) + "\n\n" + als_text(k)
+            ki_folgt = ki_folgt and bool(z.aufgaben)
+            z = replace(z, rueckmeldung=gespeichert or aus_zahlen(z.aufgaben))
+            begriffe = self._begriffe(sitzung) or []
             nummern = tuple(a.nummer for a in z.aufgaben)
             bilder = {n: png for n in nummern if (png := self._aufnahme_lesen(sitzung.sid, n)) is not None}
+            text = self._kurskarte_text(sitzung, summary, begriffe, z.rueckmeldung, folgt=ki_folgt)
 
             def zeigen(s: str) -> None:
                 # Kurs-Canvas nach vorn; PenEcho setzt die Karte in diese Ansicht, die Bilder stehen rechts daneben.
                 self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)
                 self._penecho.bericht_zeigen(s, sitzung.sid, text, nummern, bilder=bilder)
 
-            sitzung.bericht_gezeigt = self._still(lambda: self._auf_kurs(sitzung, zeigen))
-            self._zusammenfassung_ablegen(sitzung, z)
-            if sitzung.bericht_gezeigt:
-                self._aufgaben_schliessen(sitzung, nummern)
+            gezeigt = self._still(lambda: self._auf_kurs(sitzung, zeigen))
+            if erstmals:
+                sitzung.bericht_gezeigt = gezeigt
+                self._zusammenfassung_ablegen(sitzung, z)
+                if gezeigt:
+                    self._aufgaben_schliessen(sitzung, nummern)
+            if ki_folgt:
+                self._modellspur.einreihen(
+                    f"{sitzung.sid}:kursrueckmeldung",
+                    functools.partial(self._im_hintergrund_kursrueckmeldung, sitzung, summary, begriffe, z, nummern,
+                                      bilder),
+                    vorrang=1, wer=sitzung.actor,
+                )
         except Exception as fehler:  # noqa: BLE001 - der Bericht darf das Kursende nie blockieren
             log.warning("Kursbericht nicht gezeigt: %s", _typ(fehler))
 
-    def _kursrueckmeldung_holen(self, z: Zusammenfassung) -> Kursrueckmeldung:
-        """Rueckmeldung der Flaechen-KI (nur mit aktivem Bewerter und mindestens einer Aufgabe), sonst aus den Zahlen.
-        Die Eingabe enthaelt nie Musterloesung oder Rubrik (`rueckmeldungsdaten`)."""
-        bewerter = self._bewerter
-        daten = rueckmeldungsdaten(z.kurs, z.aufgaben, [{"name": t, "stand": s} for t, s in z.begriffe])
-        antwort: dict[str, Any] | None = None
-        if bewerter is not None and bewerter.aktiv and daten["aufgaben"]:
-            try:
-                antwort = bewerter.kursrueckmeldung(daten)
-            except Exception as fehler:  # noqa: BLE001 - ohne KI gibt es die Rueckmeldung aus den Zahlen
-                log.warning("Kursrueckmeldung der Flaechen-KI nicht verfuegbar: %s", _typ(fehler))
-        return aus_antwort(antwort) or aus_zahlen(z.aufgaben)
+    @staticmethod
+    def _kurskarte_text(sitzung: _Sitzung, summary: dict[str, Any], begriffe: list[Any], k: Kursrueckmeldung | None,
+                        *, folgt: bool) -> str:
+        """Text der Berichtskarte: Bericht, Kursrueckmeldung und, solange die Flaechen-KI rechnet, der feste Hinweis."""
+        teile = [bericht_text(sitzung.kurs.titel, summary, begriffe)]
+        if k is not None:
+            teile.append(als_text(k))
+        if folgt:
+            teile.append(KURSRUECKMELDUNG_FOLGT)
+        return "\n\n".join(teile)
 
+    def _im_hintergrund_kursrueckmeldung(
+        self, sitzung: _Sitzung, summary: dict[str, Any], begriffe: list[Any], z: Zusammenfassung,
+        nummern: tuple[int, ...], bilder: dict[int, bytes],
+    ) -> None:
+        """Arbeit der Modellspur (ohne `_ablauf`, ohne Sperre): die Flaechen-KI fragen (`KiBewerter.kursrueckmeldung`,
+        nie Musterloesung oder Rubrik), dann dieselbe Karte `bericht-{sid}` ueber die Flaechenspur neu setzen.
+
+        Gueltige Antwort: gespeichert (`quelle == "ki_flaeche"`), Textfassung neu abgelegt, die Karte zeigt sie.
+        Sonst bleibt die Karte bei den Zahlen, nur ohne den Hinweis; gespeichert wird nichts, ein spaeteres Oeffnen
+        fragt also erneut.
+        """
+        k: Kursrueckmeldung | None = None
+        bewerter = self._bewerter
+        try:
+            if bewerter is not None:
+                daten = rueckmeldungsdaten(z.kurs, z.aufgaben, [{"name": t, "stand": s} for t, s in z.begriffe])
+                k = aus_antwort(bewerter.kursrueckmeldung(daten))
+        except Exception as fehler:  # noqa: BLE001 - ohne KI bleibt die Rueckmeldung aus den Zahlen
+            log.warning("Kursrueckmeldung der Flaechen-KI nicht verfuegbar: %s", _typ(fehler))
+        if k is not None:
+            self._kursrueckmeldung_merken(sitzung.sid, k)
+            self._zusammenfassung_ablegen(sitzung, replace(z, rueckmeldung=k))
+        else:
+            log.info("Kursrueckmeldung ohne Flaechen-KI, es bleibt bei den Zahlen")
+            k = aus_zahlen(z.aufgaben)
+        text = self._kurskarte_text(sitzung, summary, begriffe, k, folgt=False)
+        self._flaechenspur.einreihen(
+            f"{sitzung.sid}:kurskarte",
+            functools.partial(self._im_hintergrund_kurskarte, sitzung, text, nummern, bilder),
+            vorrang=0, wer=sitzung.actor,
+        )
+
+    def _im_hintergrund_kurskarte(
+        self, sitzung: _Sitzung, text: str, nummern: tuple[int, ...], bilder: dict[int, bytes],
+    ) -> None:
+        """Arbeit der Flaechenspur (vorrang 0): dieselbe Berichtskarte `bericht-{sid}` auf dem Kurs-Canvas neu, ohne
+        show. Ist die Sitzung nicht mehr die offene, entfaellt sie; das naechste Oeffnen zeigt die gespeicherte."""
+        try:
+            with self._flaeche_sperre:
+                if not self._noch_offen(sitzung):
+                    log.info("Kursrueckmeldung: Sitzung nicht mehr offen, entfaellt")
+                    return
+                if not self._still(lambda: self._auf_kurs(sitzung, lambda s: self._penecho.bericht_zeigen(
+                        s, sitzung.sid, text, nummern, bilder=bilder))):
+                    log.warning("Kursrueckmeldung nicht auf der Flaeche")
+        except Exception as fehler:  # noqa: BLE001 - eine Karte darf die Spur nie anhalten
+            log.warning("Kursrueckmeldung nicht gesetzt: %s", _typ(fehler))
     def _auf_kurs(self, sitzung: _Sitzung, aktion: Callable[[str], T]) -> T:
         """Wie `_auf_aufgabe`, nur auf dem Kurs-Canvas (`<sid>#kurs`, Titel „Kursrückmeldung“); danach sein Dokument
         merken (still), damit ein erneutes Oeffnen genau dieses Dokument nimmt. Nie `sitzung.board`."""
@@ -1768,7 +1833,8 @@ class Bruecke:
         nichts zu lesen ist (live 09.11.: 74 x 888 Pixel fuer 16 Aufgaben).
 
         Ein Canvas je Aufgabe: die Bilder sind die gespeicherten Aufnahmen der Abgaben (`_aufnahme_lesen`, kein
-        PenEcho-Aufruf, keine Anordnung), die Kursrueckmeldung kommt aus `kursrueckmeldungen.json`.
+        PenEcho-Aufruf, keine Anordnung), die Kursrueckmeldung ist die gespeicherte der Flaechen-KI
+        (`kursrueckmeldungen.json`), sonst bei beendetem Kurs die aus den Zahlen.
         """
         turn, eintraege = self._liste_lesen(sitzung)
         rueckmeldung: Kursrueckmeldung | None = None
@@ -1793,6 +1859,8 @@ class Bruecke:
                 kernaussage(vor) if isinstance(vor, dict) else "–", bild,
                 self._ki_schritte_lesen(sitzung.sid, e["nummer"]), richtig,
             ))
+        if sitzung.je_aufgabe and rueckmeldung is None and turn.get("state") == "completed":
+            rueckmeldung = aus_zahlen(zeilen)
         return Zusammenfassung(sitzung.kurs.titel, date.today(), tuple(zeilen),
                                self._begriffe_zeilen(sitzung), rueckmeldung)
 

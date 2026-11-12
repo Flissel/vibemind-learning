@@ -4,6 +4,7 @@ PenEcho-Dokument unter dem Schluessel `<sid>#<nummer>`; Sitzungen ohne Merkmal l
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -595,21 +596,28 @@ KI_ANTWORT = {"grader": "ki_flaeche", "staerken": "Sie rechnen sicher.", "luecke
 
 
 class KursBewerter:
-    """Bewerter mit Kursrueckmeldung (wie KiBewerter); `antwort` ist die Antwort der Flaechen-KI oder None."""
+    """Bewerter mit Kursrueckmeldung (wie KiBewerter); `antwort` ist die Antwort der Flaechen-KI oder None.
+
+    `halt`: die Anfrage wartet darauf (wie ein langsames Modell); `faeden` haelt fest, in welchem Faden sie lief.
+    """
 
     aktiv = True
 
     def __init__(self, antwort: dict[str, Any] | None) -> None:
         self.antwort = antwort
         self.daten: list[dict[str, Any]] = []
+        self.faeden: list[str] = []
+        self.halt: threading.Event | None = None
 
     def bewerten(self, bild_png: bytes, daten: dict[str, Any]) -> None:
         return None
 
     def kursrueckmeldung(self, daten: dict[str, Any]) -> dict[str, Any] | None:
+        self.faeden.append(threading.current_thread().name)
+        if self.halt is not None:
+            assert self.halt.wait(5), "Kursrueckmeldung nie freigegeben"
         self.daten.append(daten)
         return self.antwort
-
 
 def _kurs_oeffnen(ll: ListenLern, tmp_path: Path, bewerter: Any = None, penecho: FakePenEcho | None = None
                   ) -> tuple[TestClient, FakePenEcho]:
@@ -635,28 +643,56 @@ def _rueckmeldungen(tmp_path: Path) -> dict[str, Any]:
     return json.loads((tmp_path / "kursrueckmeldungen.json").read_text(encoding="utf-8"))
 
 
+FOLGT = "Die ausführliche Rückmeldung wird erstellt …"
+
+
+def _kurs_ruhig(bruecke: Any) -> bool:
+    """Keine Kursrueckmeldung mehr in der Modellspur und keine Kurskarte mehr in der Flaechenspur."""
+    return bruecke._modellspur.wartend(f"{SID}:kurs") == 0 and bruecke._flaechenspur.wartend(f"{SID}:kurs") == 0
+
+
+def _berichtstexte(penecho: FakePenEcho) -> list[str]:
+    return [a[3] for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
+
+
 def test_kursbericht_ki_und_schliessen(tmp_path: Path) -> None:
     ll = _neu_lern(2)
     bewerter = KursBewerter(KI_ANTWORT)
+    bewerter.halt = threading.Event()
     client, penecho = _kurs_oeffnen(ll, tmp_path, bewerter)
+    bruecke = client.app
     try:
         _abgeben_passt(client, 1)
         vorher = len(penecho.aufrufe)
-        _abgeben_passt(client, 2)
+        _abgeben_passt(client, 2)  # Kursende: kehrt zurueck, waehrend die Flaechen-KI noch rechnet
         neu = penecho.aufrufe[vorher:]
         assert ("sitzung", f"{SID}#kurs", "Kursrückmeldung", KA) in neu
         (bericht,) = [a for a in neu if a[0] == "bericht_zeigen"]
         assert bericht[1:3] == ("board-kurs", SID) and bericht[4] == (1, 2)
         assert penecho.bericht_bilder[-1] == {1: PNG, 2: PNG} and penecho.bericht_rechtecke[-1] is None
         text = bericht[3]
+        # Sofort: die Zahlen und der feste Hinweis, die Flaechen-KI wurde unter `_ablauf` nicht gefragt.
         assert text.startswith("# Bericht: ") and "## Kursrückmeldung" in text
-        assert "**Stärken:** Sie rechnen sicher." in text and "**Nächste Schritte:** Üben Sie Einheiten." in text
+        assert "**Stärken:** 1 von 2 Aufgaben richtig." in text and text.rstrip().endswith(FOLGT)
+        assert bewerter.daten == [] and not (tmp_path / "kursrueckmeldungen.json").exists()
         assert ("bereich_zeigen", "board-kurs", EINZEL_RECHTECK) in neu
         assert ("dokument_merken", "board-kurs") in neu
         assert [a[1:] for a in neu if a[0] == "dokument_schliessen"] == [(f"{SID}#1", KA), (f"{SID}#2", KA)]
         # Nach dem Bericht holt nichts mehr ein Aufgaben-Canvas nach vorn.
         i = max(k for k, a in enumerate(neu) if a[0] == "bericht_zeigen")
         assert not [a for a in neu[i:] if a[0] in ("bereich_zeigen", "aufgabe_setzen")]
+        assert bruecke._sitzungen[SID].bericht_gezeigt is True
+        # Im Hintergrund: Antwort der Flaechen-KI, gespeichert, dieselbe Karte neu (ohne Hinweis, ohne Zeigen).
+        vorher = len(penecho.aufrufe)
+        bewerter.halt.set()
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
+        assert bewerter.faeden == ["spur-modell"]
+        neu = penecho.aufrufe[vorher:]
+        (bericht,) = [a for a in neu if a[0] == "bericht_zeigen"]
+        assert bericht[1:3] == ("board-kurs", SID)
+        assert "**Stärken:** Sie rechnen sicher." in bericht[3]
+        assert "**Nächste Schritte:** Üben Sie Einheiten." in bericht[3]
+        assert FOLGT not in bericht[3] and "bereich_zeigen" not in [a[0] for a in neu]
         assert _rueckmeldungen(tmp_path)[SID] == {
             "staerken": "Sie rechnen sicher.", "luecken": "Einheiten fehlen.",
             "naechste_schritte": "Üben Sie Einheiten.", "quelle": "ki_flaeche"}
@@ -664,32 +700,44 @@ def test_kursbericht_ki_und_schliessen(tmp_path: Path) -> None:
         assert set(daten) == {"kurs", "aufgaben", "begriffe"}
         assert [a["nummer"] for a in daten["aufgaben"]] == [1, 2] and "musterloesung" not in repr(daten)
         assert "schnappschuss" not in penecho.namen() and "ergebnis_schnappschuss" not in penecho.namen()
-        assert SID not in _schluessel(penecho) and client.app._sitzungen[SID].board is None
-        assert client.app._sitzungen[SID].bericht_gezeigt is True
+        assert SID not in _schluessel(penecho) and bruecke._sitzungen[SID].board is None
+        z = bruecke._zusammenfassung_bauen(bruecke._sitzungen[SID], bilder=False)
+        assert z.rueckmeldung is not None and z.rueckmeldung.quelle == "ki_flaeche"
     finally:
-        client.app.beenden()
+        bruecke.beenden()
 
 
-@pytest.mark.parametrize("bewerter", [KursBewerter(None), None], ids=["endpunkt-none", "ohne-bewerter"])
+class KaputterBewerter(KursBewerter):
+    def kursrueckmeldung(self, daten: dict[str, Any]) -> dict[str, Any] | None:
+        super().kursrueckmeldung(daten)
+        raise RuntimeError("weg")
+
+
+@pytest.mark.parametrize("bewerter", [KursBewerter(None), KaputterBewerter(None), None],
+                         ids=["endpunkt-none", "endpunkt-fehler", "ohne-bewerter"])
 def test_kursbericht_ohne_endpunkt_und_ohne_schliessen(tmp_path: Path, bewerter: Any) -> None:
     ll = _neu_lern(2)
     penecho = JePenEcho()
     penecho.schliessen_ergebnis = False
     client, _ = _kurs_oeffnen(ll, tmp_path, bewerter, penecho)
+    bruecke = client.app
     try:
         _abgeben_passt(client, 1)
         _abgeben_passt(client, 2)
-        eintrag = _rueckmeldungen(tmp_path)[SID]
-        # BERICHT (Learning): Aufgabe 1 mit 1.0 richtig, Aufgabe 2 mit 0.7 nur teilweise.
-        assert eintrag == {"staerken": "1 von 2 Aufgaben richtig.", "luecken": "Offen: Aufgabe 2.",
-                           "naechste_schritte": "Wiederholen Sie die offenen Aufgaben.", "quelle": "zahlen"}
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
+        # Der Zahlen-Rueckfall wird nie gespeichert (ein spaeteres Oeffnen fragt die Flaechen-KI erneut).
+        assert not (tmp_path / "kursrueckmeldungen.json").exists()
         assert SID in json.loads((tmp_path / "kursende.json").read_text(encoding="utf-8")).values()
         assert penecho.namen().count("dokument_schliessen") == 2
-        (bericht,) = [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
-        assert "**Stärken:** 1 von 2 Aufgaben richtig." in bericht[3]
+        texte = _berichtstexte(penecho)
+        # BERICHT (Learning): Aufgabe 1 mit 1.0 richtig, Aufgabe 2 mit 0.7 nur teilweise.
+        assert "**Stärken:** 1 von 2 Aufgaben richtig." in texte[-1] and "**Lücken:** Offen: Aufgabe 2." in texte[-1]
+        assert FOLGT not in texte[-1]  # die Karte bleibt ohne Hinweis
+        assert len(texte) == (1 if bewerter is None else 2)
+        z = bruecke._zusammenfassung_bauen(bruecke._sitzungen[SID], bilder=False)
+        assert z.rueckmeldung is not None and z.rueckmeldung.quelle == "zahlen"  # das PDF nimmt die Zahlen
     finally:
-        client.app.beenden()
-
+        bruecke.beenden()
 
 def test_zusammenfassung_je_aufgabe_aus_aufnahmen_auch_ueber_zwanzig(tmp_path: Path) -> None:
     ll = _neu_lern(45)
@@ -698,7 +746,7 @@ def test_zusammenfassung_je_aufgabe_aus_aufnahmen_auch_ueber_zwanzig(tmp_path: P
     try:
         bruecke._aufnahme_merken(SID, 1, PNG)
         bruecke._aufnahme_merken(SID, 30, PNG)
-        bruecke._kursrueckmeldung_merken(SID, Kursrueckmeldung("S", "L", "N", "zahlen"))
+        bruecke._kursrueckmeldung_merken(SID, Kursrueckmeldung("S", "L", "N", "ki_flaeche"))
         assert _rueckmeldungen(tmp_path)[SID]["staerken"] == "S"
         vorher = len(penecho.aufrufe)
         r = client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf")
@@ -706,7 +754,7 @@ def test_zusammenfassung_je_aufgabe_aus_aufnahmen_auch_ueber_zwanzig(tmp_path: P
         assert penecho.aufrufe[vorher:] == []  # keine Aufnahme, kein Board
         z = bruecke._zusammenfassung_bauen(bruecke._sitzungen[SID], bilder=True)
         assert [a.bild for a in z.aufgaben][:2] == [PNG, None] and z.aufgaben[29].bild == PNG
-        assert z.rueckmeldung is not None and (z.rueckmeldung.staerken, z.rueckmeldung.quelle) == ("S", "zahlen")
+        assert z.rueckmeldung is not None and (z.rueckmeldung.staerken, z.rueckmeldung.quelle) == ("S", "ki_flaeche")
         assert bruecke._zusammenfassung_bauen(bruecke._sitzungen[SID], bilder=False).aufgaben[0].bild is None
     finally:
         bruecke.beenden()
@@ -731,15 +779,18 @@ def test_oeffnen_nach_kursende_zeigt_kursrueckmeldung(tmp_path: Path) -> None:
     try:
         assert bruecke._sitzungen[SID].je_aufgabe is True
         assert ("sitzung", f"{SID}#kurs", "Kursrückmeldung", KA) in penecho.aufrufe
-        assert [a[1] for a in penecho.aufrufe if a[0] == "bericht_zeigen"] == ["board-kurs"]
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
+        assert [a[1] for a in penecho.aufrufe if a[0] == "bericht_zeigen"] == ["board-kurs", "board-kurs"]
         assert SID not in _schluessel(penecho) and len(bewerter.daten) == 1
         assert _rueckmeldungen(tmp_path)[SID]["quelle"] == "ki_flaeche"
-        # Erneutes Oeffnen: dieselbe Kursrueckmeldung nach vorn, kein zweiter Bericht, keine zweite KI-Anfrage.
+        # Erneutes Oeffnen nach der KI-Antwort: das Kurs-Canvas nach vorn, kein zweiter Bericht, nichts eingereiht.
         vorher = len(penecho.aufrufe)
         r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
         assert r.status_code == 200 and r.json()["abgeschlossen"] is True
+        assert bruecke._modellspur.wartend(f"{SID}:kurs") == 0
         neu = penecho.aufrufe[vorher:]
         assert ("bereich_zeigen", "board-kurs", EINZEL_RECHTECK) in neu and "bericht_zeigen" not in [a[0] for a in neu]
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
         assert len(bewerter.daten) == 1
     finally:
         bruecke.beenden()
@@ -755,12 +806,31 @@ def test_oeffnen_nach_kursende_zeigt_kursrueckmeldung(tmp_path: Path) -> None:
     try:
         r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
         assert r.status_code == 200 and r.json()["abgeschlossen"] is True
+        assert client.app._modellspur.wartend(f"{SID}:kurs") == 0
         (bericht,) = [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
-        assert bericht[1] == "board-kurs" and "Sie rechnen sicher." in bericht[3]
+        assert bericht[1] == "board-kurs" and "Sie rechnen sicher." in bericht[3] and FOLGT not in bericht[3]
         assert bewerter2.daten == [] and SID not in _schluessel(penecho)
     finally:
         client.app.beenden()
 
+
+def test_oeffnen_nach_gescheiterter_ki_fragt_erneut(tmp_path: Path) -> None:
+    # Ohne gespeicherte KI-Rueckmeldung fragt ein spaeteres Oeffnen die Flaechen-KI erneut (im Hintergrund).
+    ll = _beendet(2, tmp_path)
+    bewerter = KursBewerter(None)
+    client, penecho = _kurs_oeffnen(ll, tmp_path, bewerter)
+    bruecke = client.app
+    try:
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
+        assert len(bewerter.daten) == 1 and FOLGT not in _berichtstexte(penecho)[-1]
+        bewerter.antwort = KI_ANTWORT
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
+        assert r.status_code == 200
+        _bis(lambda: _kurs_ruhig(bruecke), 2)
+        assert len(bewerter.daten) == 2 and _rueckmeldungen(tmp_path)[SID]["quelle"] == "ki_flaeche"
+        assert "Sie rechnen sicher." in _berichtstexte(penecho)[-1]
+    finally:
+        bruecke.beenden()
 
 def test_weiter_am_kursende_laesst_kursrueckmeldung_vorn(tmp_path: Path) -> None:
     ll = _neu_lern(2)

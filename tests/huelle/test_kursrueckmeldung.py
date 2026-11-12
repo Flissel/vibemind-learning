@@ -76,6 +76,26 @@ def test_als_text_fuer_die_karte() -> None:
     assert "**Nächste Schritte:** Üben" in text
 
 
+def _einheiten(text: str) -> int:
+    """Laenge wie JavaScripts `.length` (UTF-16-Codeeinheiten), so prueft die Lernflaeche."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def test_grenzen_zaehlen_utf16_wie_die_lernflaeche() -> None:
+    emoji = "😀"  # ausserhalb der BMP: zwei Codeeinheiten
+    zeilen = [_zeile(1, text=emoji * 150, ergebnis="a" * 198 + emoji * 2, kernaussage="𝔸" * 1500)]
+    daten = rueckmeldungsdaten(emoji * 150, zeilen, [{"name": emoji * 150, "stand": emoji * 30}])
+    (a,) = daten["aufgaben"]
+    (b,) = daten["begriffe"]
+    for text, grenze in ((daten["kurs"], 200), (a["titel"], 200), (a["ergebnis"], 200), (a["rueckmeldung"], 2000),
+                         (b["name"], 200), (b["stand"], 40)):
+        assert _einheiten(text) <= grenze and text.endswith("…")
+    assert a["titel"] == emoji * 99 + "…" and a["ergebnis"] == "a" * 198 + "…"
+    assert _einheiten(rueckmeldungsdaten(emoji * 100, [], [])["kurs"]) == 200  # passt genau: ungekuerzt
+    k = aus_antwort({"grader": "ki_flaeche", "staerken": emoji * 1500, "luecken": "l", "naechste_schritte": "n"})
+    assert k is not None and k.staerken == emoji * 1000
+
+
 @pytest.mark.parametrize("feld", ["staerken", "luecken", "naechste_schritte"])
 def test_aus_antwort_kuerzt_auf_2000(feld: str) -> None:
     wert = {"grader": "ki_flaeche", "staerken": "a", "luecken": "b", "naechste_schritte": "c", feld: "x" * 3000}
