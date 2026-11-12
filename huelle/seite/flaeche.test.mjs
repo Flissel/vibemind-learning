@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BELEGT_KOPF, flaecheErneuern, flaecheSpeichern, flaechenAdresse, flaechenKennung, flaechenKopf, gruppeAusAdresse, KENNUNG_SCHLUESSEL,
-  kennungBelegt, mitFlaechenKennung, wiederholbar,
+  kennungBelegt, mitFlaechenKennung, nachrichtAusFlaeche, wiederholbar,
 } from "./flaeche.js";
 
 const FLAECHE = "https://flaeche.example.test";
@@ -282,4 +282,61 @@ test("huelle.js: Gruppenroute, Person aus der Antwort, Kopf „Gruppe: …“, M
   // Die Person im Rahmen kommt nur aus der Antwort der Brücke (sonst wären die eigenen Kacheln „fremd“).
   assert.match(huelle, /person: g\.person/);
   assert.match(huelle, /kennung = await flaecheErneuern\(\{ rahmen: \$\("rahmen"\), gruppe: z\.rahmenGruppe \}\);/);
+});
+// ---- Nachrichten der Flaeche an die Huelle -------------------------------------------------------
+test("nachrichtAusFlaeche: gueltige Nachrichten werden normalisiert", () => {
+  const quelle = {};
+  const e = (data, o = {}) => ({ source: quelle, origin: FLAECHE, data, ...o });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-abgeben", bereich: 2, extra: 1 }), quelle, FLAECHE), { typ: "huelle-abgeben", bereich: 2 });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-ki-schritt", bereich: 0, aktion: "frage", ausloeser: "auto" }), quelle, FLAECHE),
+    { typ: "huelle-ki-schritt", bereich: 0, aktion: "frage", ausloeser: "auto" });
+  assert.deepEqual(nachrichtAusFlaeche(e({ typ: "huelle-mcp-bereit" }), quelle, FLAECHE), { typ: "huelle-mcp-bereit" });
+});
+
+test("nachrichtAusFlaeche: falsche Herkunft, Quelle, Typ oder Bereich ergeben null", () => {
+  const quelle = {};
+  const gut = { typ: "huelle-abgeben", bereich: 1 };
+  assert.equal(nachrichtAusFlaeche({ source: quelle, origin: "https://boese.example.test", data: gut }, quelle, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche({ source: {}, origin: FLAECHE, data: gut }, quelle, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche({ source: quelle, origin: FLAECHE, data: gut }, null, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche({ source: quelle, origin: FLAECHE, data: gut }, quelle, null), null);
+  for (const data of [null, "x", { typ: "unbekannt", bereich: 1 }, { typ: "huelle-speichern", id: "a" }]) {
+    assert.equal(nachrichtAusFlaeche({ source: quelle, origin: FLAECHE, data }, quelle, FLAECHE), null);
+  }
+  for (const bereich of [-1, 1.5, "2", null, undefined, NaN, 500]) {
+    assert.equal(nachrichtAusFlaeche({ source: quelle, origin: FLAECHE, data: { typ: "huelle-abgeben", bereich } }, quelle, FLAECHE), null, String(bereich));
+    assert.equal(nachrichtAusFlaeche({ source: quelle, origin: FLAECHE, data: { typ: "huelle-ki-schritt", bereich, aktion: "a", ausloeser: "auto" } }, quelle, FLAECHE), null);
+  }
+});
+
+test("nachrichtAusFlaeche: ki-schritt braucht aktion (String) und bekannten Ausloeser", () => {
+  const quelle = {};
+  const e = (data) => ({ source: quelle, origin: FLAECHE, data });
+  assert.equal(nachrichtAusFlaeche(e({ typ: "huelle-ki-schritt", bereich: 1, aktion: "frage", ausloeser: "sonst" }), quelle, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche(e({ typ: "huelle-ki-schritt", bereich: 1, aktion: 5, ausloeser: "manuell" }), quelle, FLAECHE), null);
+  assert.equal(nachrichtAusFlaeche(e({ typ: "huelle-ki-schritt", bereich: 1, ausloeser: "manuell" }), quelle, FLAECHE), null);
+});
+
+test("huelle.js verdrahtet die Nachrichten der Flaeche (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(js, /addEventListener\("message", flaechenNachricht\)/);
+  assert.match(js, /nachrichtAusFlaeche\(ereignis, rahmen\.contentWindow, flaechenHerkunft\(rahmen\)\)/);
+  assert.match(js, /abgabeNummerZulaessig\(nummer, abgabeZustand\(\)\)/);
+  assert.match(js, /await abgeben\(\)/); // dieselbe Funktion wie der Knopf
+  assert.match(js, /\/ki-schritt`/);
+  assert.match(js, /m\.bereich \+ 1/);
+  assert.match(js, /mcpAutoVerbunden/);
+});
+
+test("huelle.js verdrahtet die Nachrichten der Flaeche (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(js, /addEventListener\("message", flaechenNachricht\)/);
+  assert.match(js, /nachrichtAusFlaeche\(ereignis, rahmen\.contentWindow, flaechenHerkunft\(rahmen\)\)/);
+  assert.match(js, /abgabeNummerZulaessig\(nummer, abgabeZustand\(\)\)/);
+  assert.match(js, /await abgeben\(\)/); // dieselbe Funktion wie der Knopf
+  assert.match(js, /\/ki-schritt`/);
+  assert.match(js, /m\.bereich \+ 1/);
+  assert.match(js, /mcpAutoVerbunden/);
 });

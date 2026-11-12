@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { antwortAus, formel, klartext, parseZahl } from "./aufgabe.js";
+import { abgabeNummerZulaessig, antwortAus, formel, klartext, parseZahl } from "./aufgabe.js";
 
 test("single_choice: choice_id", () => {
   assert.deepEqual(antwortAus({ type: "single_choice" }, { auswahl: ["b"] }), { choice_id: "b" });
@@ -479,4 +479,28 @@ test("FESTE_MELDUNGEN kennt die Texte der Gruppenfläche (Teil C)", () => {
     assert.ok(FESTE_MELDUNGEN.has(m), m);
     assert.equal(meldungFuer({ meldung: m }), m);
   }
+});
+test("abgabeNummerZulaessig: anpassender Kurs nur die aktuelle Aufgabe", () => {
+  const z = { liste: false, aktuell: 3 };
+  assert.equal(abgabeNummerZulaessig(3, z), true);
+  assert.equal(abgabeNummerZulaessig(2, z), false);
+  assert.equal(abgabeNummerZulaessig(4, z), false);
+  assert.equal(abgabeNummerZulaessig(3, { liste: false, aktuell: null }), false);
+});
+
+test("abgabeNummerZulaessig: Listenkurs nur noch nicht gebuchte Aufgaben", () => {
+  const z = { liste: true, aufgaben: [
+    { nummer: 1, status: "bestaetigt" }, { nummer: 2, status: "offen" },
+    { nummer: 3, status: "rueckmeldung" }, { nummer: 4, status: "in_bewertung" }, { nummer: 5, status: "fehler" },
+  ] };
+  assert.equal(abgabeNummerZulaessig(1, z), false);
+  assert.equal(abgabeNummerZulaessig(2, z), true);
+  assert.equal(abgabeNummerZulaessig(3, z), true); // Ueberarbeiten: noch nicht mit „Passt“ gebucht
+  assert.equal(abgabeNummerZulaessig(4, z), false);
+  assert.equal(abgabeNummerZulaessig(5, z), true);
+  assert.equal(abgabeNummerZulaessig(9, z), false);
+  assert.equal(abgabeNummerZulaessig(0, z), false);
+  assert.equal(abgabeNummerZulaessig(2.5, z), false);
+  assert.equal(abgabeNummerZulaessig(2, null), false);
+  assert.equal(abgabeNummerZulaessig(2, { liste: true }), false);
 });

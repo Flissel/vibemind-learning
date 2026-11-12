@@ -183,3 +183,34 @@ export function flaecheSpeichern(iframe, {
     }
   });
 }
+
+// ---- Nachrichten der Flaeche an die Huelle ---------------------------------------------------------
+// PenEcho meldet drei Dinge an `window.parent`: huelle-abgeben, huelle-ki-schritt, huelle-mcp-bereit. PenEcho kennt
+// sein Ziel nur ungefaehr (ancestorOrigins, Referrer, sonst "*"); deshalb prueft die Huelle hier selbst: die Quelle
+// muss der eigene Flaechen-iframe sein und die Herkunft die der Flaechen-Adresse (wie beim Speichern).
+const BEREICH_MAX = 499; // Route ki-schritt: nummer = bereich + 1, hoechstens 500
+const AUSLOESER = new Set(["manuell", "auto"]);
+
+function bereichGueltig(b) {
+  return Number.isInteger(b) && b >= 0 && b <= BEREICH_MAX;
+}
+
+/** `{typ, ...}` (normalisiert) oder null, wenn Quelle, Herkunft, Typ oder Felder nicht stimmen. */
+export function nachrichtAusFlaeche(ereignis, erwarteteQuelle, erwarteteHerkunft) {
+  if (!ereignis || !erwarteteQuelle || !erwarteteHerkunft) return null;
+  if (ereignis.source !== erwarteteQuelle || ereignis.origin !== erwarteteHerkunft) return null;
+  const d = ereignis.data;
+  if (!d || typeof d !== "object") return null;
+  if (d.typ === "huelle-mcp-bereit") return { typ: d.typ };
+  if (d.typ === "huelle-abgeben") return bereichGueltig(d.bereich) ? { typ: d.typ, bereich: d.bereich } : null;
+  if (d.typ === "huelle-ki-schritt") {
+    if (!bereichGueltig(d.bereich) || typeof d.aktion !== "string" || !AUSLOESER.has(d.ausloeser)) return null;
+    return { typ: d.typ, bereich: d.bereich, aktion: d.aktion, ausloeser: d.ausloeser };
+  }
+  return null;
+}
+
+/** Herkunft der Flaeche des iframes (oder null), fuer `nachrichtAusFlaeche`. */
+export function flaechenHerkunft(iframe) {
+  return herkunftVon(iframe);
+}

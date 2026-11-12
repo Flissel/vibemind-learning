@@ -541,3 +541,15 @@ export function fehlerText(r) {
   if (r?.status === 409 && r.daten?.turn && r.daten.meldung === SCHON_ABGEGEBEN) return { text: VERALTET, veraltet: true };
   return { text: meldungFuer(r?.daten), veraltet: false };
 }
+
+/**
+ * Darf die Aufgabe `nummer` jetzt aus der Flaeche heraus abgegeben werden? `zustand` kommt aus der Seite:
+ * anpassender Kurs `{liste: false, aktuell}` (nur die aktuelle Aufgabe), Listenkurs `{liste: true, aufgaben:
+ * [{nummer, status}]}` (nur Aufgaben, die weder bewertet werden noch mit „Passt“ gebucht sind).
+ */
+export function abgabeNummerZulaessig(nummer, zustand) {
+  if (!Number.isInteger(nummer) || nummer < 1 || !zustand || typeof zustand !== "object") return false;
+  if (!zustand.liste) return zustand.aktuell === nummer;
+  const a = Array.isArray(zustand.aufgaben) ? zustand.aufgaben.find((x) => x?.nummer === nummer) : null;
+  return !!a && a.status !== "in_bewertung" && a.status !== "bestaetigt";
+}

@@ -1,13 +1,13 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
+  abgabeNummerZulaessig, antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import {
-  flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, gruppeAusAdresse, kennungBelegt,
-  mitFlaechenKennung, neueFlaechenKennung, wiederholbar,
+  flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, flaechenHerkunft, gruppeAusAdresse, kennungBelegt,
+  mitFlaechenKennung, nachrichtAusFlaeche, neueFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 import {
   eintragSetzen, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, standAnnehmen, statusText,
@@ -30,6 +30,7 @@ const TEXT = {
   keinKurs: "Dieser Kurs hat noch keine freigegebenen Aufgaben.",
   flaecheWeg: "Die Fläche ist gerade nicht erreichbar.",
   sperre: SPERR_HINWEIS,
+  abgabeUnzulaessig: "Diese Aufgabe kann gerade nicht abgegeben werden.",
   nichtAngenommen: "Diese Abgabe wurde nicht angenommen. Bitte prüfen Sie Ihre Eingabe.",
   wirdGeprueft: "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist.",
   keinHinweis: "Kein Hinweis verfügbar.",
@@ -82,6 +83,8 @@ const z = {
   sendend: new Set(), // Nummern, deren Abgabe gerade unterwegs ist
   // Gruppenfläche (Teil C): Gruppe aus der Adresse; Gruppe und Person der Fläche kommen aus der Antwort der Brücke.
   gruppeId,
+  flaechenAbgabe: false, // eine Abgabe aus PenEcho läuft gerade an (Doppelklick: die zweite Nachricht wird verworfen)
+  mcpAutoVerbunden: false, // „Fläche verbinden“ wurde auf PenEchos Meldung schon einmal ausgelöst (höchstens einmal je Laden)
   rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
 
@@ -999,6 +1002,55 @@ async function abgeben() {
   ergebnisUebernehmen(await api("POST", `/sitzungen/${t.session_id}/abgeben`, { revision: t.session_revision }));
 }
 
+// ---- Nachrichten aus der Fläche (PenEcho im iframe) -------------------------------------------------------
+// Zustand für `abgabeNummerZulaessig`: nur die eigene Sitzung (Gruppe: eigene Mappe), nie die einer anderen Person.
+function abgabeZustand() {
+  const t = z.turn;
+  if (z.liste) return { liste: true, aufgaben: z.liste.aufgaben };
+  const aktiv = t && z.phase === "aufgabe" && t.state === "active";
+  return { liste: false, aktuell: aktiv ? (z.nummer ?? (t.progress?.completed ?? 0) + 1) : null };
+}
+
+// „Ich gebe ab“ / Knopf in PenEcho: dieselbe Funktion wie der Knopf „Abgeben“ der Leiste (mit ihrer Sperre).
+async function flaecheAbgeben(bereich) {
+  const nummer = bereich + 1;
+  const t = z.turn;
+  if (!t || z.flaechenAbgabe || z.busy) return;
+  if (!abgabeNummerZulaessig(nummer, abgabeZustand())) {
+    z.hinweis = TEXT.abgabeUnzulaessig;
+    leisteZeigen();
+    return;
+  }
+  z.flaechenAbgabe = true;
+  try {
+    if (z.liste && z.gewaehlt !== nummer) await aufgabeWaehlen(nummer);
+    if (z.turn !== t) return; // inzwischen anderer Kurs oder andere Aufgabe
+    await abgeben();
+  } finally {
+    z.flaechenAbgabe = false;
+  }
+}
+
+// Fire-and-forget: das Protokoll der KI-Schritte darf die Fläche nie stören.
+function kiSchrittMelden(m) {
+  const t = z.turn;
+  if (!t) return;
+  void api("POST", `/sitzungen/${t.session_id}/ki-schritt`,
+    { nummer: m.bereich + 1, aktion: m.aktion, ausloeser: m.ausloeser }).catch(() => {});
+}
+
+function flaechenNachricht(ereignis) {
+  const rahmen = $("rahmen");
+  const m = nachrichtAusFlaeche(ereignis, rahmen.contentWindow, flaechenHerkunft(rahmen));
+  if (!m) return;
+  if (m.typ === "huelle-abgeben") void flaecheAbgeben(m.bereich);
+  else if (m.typ === "huelle-ki-schritt") kiSchrittMelden(m);
+  else if (m.typ === "huelle-mcp-bereit" && !z.mcpAutoVerbunden && $("flaechen-hinweis").hidden === false) {
+    z.mcpAutoVerbunden = true;
+    void flaecheVerbinden();
+  }
+}
+
 async function korrekturSenden() {
   if (z.liste) { await listenKorrektur(); return; }
   const t = z.turn;
@@ -1048,6 +1100,7 @@ async function start() {
     }
   } else if (rahmen.dataset.src) rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
   layoutSetzen(speicher("lesen", "huelle-layout"));
+  window.addEventListener("message", flaechenNachricht);
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
   $("korrektur").addEventListener("submit", (ereignis) => { ereignis.preventDefault(); void korrekturSenden(); });
   $("layout-a").addEventListener("click", () => layoutSetzen("a"));
