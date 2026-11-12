@@ -21,7 +21,7 @@ EXPECTED = {
         # vibemind/learning: the Learning extension rescued from the running image (25.10.);
         # the old pin 1363478 existed in no branch of the fork. 30.10.: the fork live on the VM.
         # 12.11.: vibemind/learning with the access-log token masking (API image learning-ba13c689).
-        "commit": "e0a3eb1b92d15951c7d7a42b46ec5231c3edac93",
+        "commit": "2fea0266dca52058c6a32cf9da4ff87f8f2737e2",
         "license": "AGPL-3.0-only",
     },
     "penecho": {
