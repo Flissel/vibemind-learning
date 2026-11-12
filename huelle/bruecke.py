@@ -75,6 +75,7 @@ from .gruppe import (
 from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
+from .lernflaeche_bewertung import KiBewerter
 from .medien import MEDIEN_NAME, MEDIEN_ROUTE
 from .medien import bildname as _bildname
 from .medien import gross as _gross
@@ -545,8 +546,11 @@ class Bruecke:
         katalog: Katalog | None = None,
         gruppen: Gruppen | None = None,
         abgleich: AbgleichDienst | None = None,
+        bewerter: KiBewerter | None = None,
     ) -> None:
         self._e = einstellung
+        # KI-Tutor Teil 2: Bewertung durch die KI der Lernflaeche; ohne (aktiven) Bewerter bewertet der Server.
+        self._bewerter = bewerter
         self._lern = lern
         self._penecho = penecho
         self._sperre = sperre
@@ -1898,17 +1902,67 @@ class Bruecke:
             raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
         return self._vorbewerten(sid, sitzung, revision, task, nummer, {"answer": answer, "korrigiert_aus": kennung})
 
+    def _mit_ki_bewertung(
+        self, sitzung: _Sitzung, sid: str, revision: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """`learning_task_preview` fuer eine Handschrift-Abgabe, wenn moeglich mit der Bewertung der Flaechen-KI.
+
+        Ablauf: Bewertungsdaten holen (lesend, ohne Schluessel), die Flaechen-KI bewerten lassen, dann die
+        Vorbewertung mit `externe_bewertung`. Jeder Fehler auf diesem Weg (kein Bewerter, Bewertungsdaten weg,
+        KI weg oder unbrauchbar) fuehrt zur Vorbewertung ohne sie, also zur Bewertung durch den Server. Lehnt Learning
+        die externe Bewertung ab, gibt es genau einen zweiten Aufruf ohne sie; dessen Fehler gelten unveraendert.
+        Die Nutzlast ohne `externe_bewertung` ergibt einen eigenen Idempotenzschluessel (nie den des ersten Aufrufs).
+        Bewertungsdaten (Musterloesung, Rubrik) bleiben in dieser Methode und gehen nie in Antwort oder Log.
+        """
+        def vorbewerten(nutzlast: dict[str, Any]) -> dict[str, Any]:
+            return self._rufe(
+                sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
+                expected_revision=revision, payload=nutzlast, schreibend=True,
+            )
+
+        extern = self._externe_bewertung(sitzung, sid, revision, payload)
+        if extern is None:
+            return vorbewerten(payload)
+        try:
+            return vorbewerten({**payload, "externe_bewertung": extern})
+        except Exception as fehler:  # noqa: BLE001 - jede Ablehnung der externen Bewertung: Rueckfall auf den Server
+            log.warning("Externe Bewertung nicht angenommen, der Server bewertet: %s", _typ(fehler))
+            return vorbewerten(payload)
+
+    def _externe_bewertung(
+        self, sitzung: _Sitzung, sid: str, revision: int, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        bewerter = self._bewerter
+        png_text = payload.get("handschrift_png_base64")
+        if bewerter is None or not bewerter.aktiv or not isinstance(png_text, str):
+            return None
+        anfrage = {"attempt_id": payload["attempt_id"]} if "attempt_id" in payload else {}
+        try:
+            daten = self._rufe(
+                sitzung.lern_actor, "learning_task_bewertungsdaten", "learning.task.grading_data", session_id=sid,
+                expected_revision=revision, payload=anfrage,
+            )
+            if not daten:
+                return None
+            return bewerter.bewerten(base64.b64decode(png_text), daten)
+        except Exception as fehler:  # noqa: BLE001 - nie die Abgabe stoeren; geloggt wird nur der Typ
+            log.warning("Bewertungsdaten oder KI-Bewertung nicht verfuegbar: %s", _typ(fehler))
+            return None
+
     def _vorbewerten(
         self, sid: str, sitzung: _Sitzung, revision: int, task: dict[str, Any], nummer: int,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """`learning_task_preview`, dann die Karte zur Aufgabe; die Revision bleibt unveraendert."""
         try:
-            result = self._rufe(
-                sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
-                expected_revision=revision,
-                payload=payload, schreibend=True,
-            )
+            if "handschrift_png_base64" in payload:
+                result = self._mit_ki_bewertung(sitzung, sid, revision, payload)
+            else:
+                result = self._rufe(
+                    sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
+                    expected_revision=revision,
+                    payload=payload, schreibend=True,
+                )
         except LearningAbgelehnt as fehler:
             self._vorbewertung_abgelehnt(sid, sitzung, fehler, bestaetigen=False)
         turn = _turn(result)
@@ -2175,10 +2229,7 @@ class Bruecke:
         nummer = eintrag["nummer"]
         schluessel = (sitzung.sid, nummer)
         try:
-            result = self._rufe(
-                sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sitzung.sid,
-                expected_revision=revision, payload=payload, schreibend=True,
-            )
+            result = self._mit_ki_bewertung(sitzung, sitzung.sid, revision, payload)
             vorbewertung = result.get("vorbewertung")
             if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
                 raise LearningWeg("vorbewertung")

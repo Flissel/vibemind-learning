@@ -18,6 +18,7 @@ from .einstellung import Einstellung, einstellung_lesen
 from .gruppe import AbgleichDienst, Gruppen
 from .katalog import TIMEOUT_S, Katalog
 from .lern_mcp import LernMcp
+from .lernflaeche_bewertung import KiBewerter
 from .penecho_mcp import PenEchoMcp
 from .seite_app import seite_app
 from .sperre import Sperre, penecho_version_pruefen
@@ -69,6 +70,7 @@ def _bauen(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche, Bruecke]:
         katalog=katalog,
         gruppen=gruppen,
         abgleich=abgleich,
+        bewerter=KiBewerter(einstellung.lernflaeche_url, einstellung.bewertung_schluessel),
     )
     durchreicher = Durchreicher(
         einstellung.penecho_url, sperre, frozenset(einstellung.flaechen_herkuenfte),

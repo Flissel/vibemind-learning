@@ -47,6 +47,11 @@ ABGLEICH_SCHLUESSEL = "LEARNING_HUELLE_ABGLEICH_SCHLUESSEL"
 # Optional (Teil C): wie viele freie KI-Anfragen (/api/ai/command) der Personen gleichzeitig laufen (Vorgabe 3).
 KI_GLEICHZEITIG = "LEARNING_HUELLE_KI_GLEICHZEITIG"
 KI_GLEICHZEITIG_VORGABE = 3
+# Optional (KI-Tutor Teil 2): Bewertung der Abgabe durch die KI der Lernflaeche (Server zu Server). Ohne Schluessel
+# bewertet der Server wie bisher. Derselbe Wert steht als LERNFLAECHE_BEWERTUNG_SCHLUESSEL in penecho.env.
+LERNFLAECHE_URL = "LEARNING_HUELLE_LERNFLAECHE_URL"
+LERNFLAECHE_URL_VORGABE = "http://127.0.0.1:3888"
+BEWERTUNG_SCHLUESSEL = "LEARNING_HUELLE_BEWERTUNG_SCHLUESSEL"
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,8 @@ class Einstellung:
     abgleich_url: str = ""
     abgleich_schluessel: str = field(default="", repr=False)
     ki_gleichzeitig: int = KI_GLEICHZEITIG_VORGABE
+    lernflaeche_url: str = LERNFLAECHE_URL_VORGABE
+    bewertung_schluessel: str = field(default="", repr=False)
 
     @property
     def gruppen_aktiv(self) -> bool:
@@ -182,6 +189,14 @@ def _abgleich_schluessel(env: Mapping[str, str]) -> str:
     return wert
 
 
+def _bewertung_schluessel(env: Mapping[str, str]) -> str:
+    """Leer (Bewertung durch die Lernflaeche aus) oder mindestens MIN_SCHLUESSEL Zeichen."""
+    wert = (env.get(BEWERTUNG_SCHLUESSEL) or "").strip()
+    if wert and len(wert) < MIN_SCHLUESSEL:
+        raise RuntimeError(f"{BEWERTUNG_SCHLUESSEL} ist zu kurz")
+    return wert
+
+
 def _ki_gleichzeitig(env: Mapping[str, str]) -> int:
     """Ganze Zahl >= 1; leer, ungueltig oder <= 0 ergibt die Vorgabe (geloggt wird nur die Art des Fehlers)."""
     roh = (env.get(KI_GLEICHZEITIG) or "").strip()
@@ -241,4 +256,6 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         abgleich_url=_http_basis(env, ABGLEICH_URL),
         abgleich_schluessel=_abgleich_schluessel(env),
         ki_gleichzeitig=_ki_gleichzeitig(env),
+        lernflaeche_url=_http_basis(env, LERNFLAECHE_URL) or LERNFLAECHE_URL_VORGABE,
+        bewertung_schluessel=_bewertung_schluessel(env),
     )

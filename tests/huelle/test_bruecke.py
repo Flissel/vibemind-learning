@@ -221,11 +221,12 @@ def _api_leer(request: httpx.Request) -> httpx.Response:
 
 def bauen(lern: FakeLern, penecho: FakePenEcho | None = None, *, api=_api_leer,
           sperre: Sperre | None = None, einstellung=E, kursende=None, katalog: Katalog | None = None,
-          actor: str = ACTOR) -> tuple[TestClient, Sperre, FakePenEcho]:
+          actor: str = ACTOR, bewerter: Any = None) -> tuple[TestClient, Sperre, FakePenEcho]:
     sperre = sperre or Sperre()
     penecho = penecho or FakePenEcho()
     http = httpx.Client(transport=httpx.MockTransport(api))
-    bruecke = Bruecke(einstellung, lern, penecho, sperre, http, kursende, katalog=katalog)  # type: ignore[arg-type]
+    bruecke = Bruecke(einstellung, lern, penecho, sperre, http, kursende, katalog=katalog,  # type: ignore[arg-type]
+                      bewerter=bewerter)
     return als(TestClient(bruecke), actor), sperre, penecho
 
 
@@ -3827,13 +3828,15 @@ class Laeufe:
 
 def _gruppen_bruecke(laeufe: Laeufe, *, gruppen: FakeGruppen | None = None, abgleich: FakeAbgleich | None = None,
                      penecho: FakePenEcho | None = None, kursende: Any = None, actor: str = PA,
-                     kennung: str | None = KA) -> tuple[TestClient, FakePenEcho, FakeAbgleich, FakeGruppen]:
+                     kennung: str | None = KA, bewerter: Any = None,
+                     ) -> tuple[TestClient, FakePenEcho, FakeAbgleich, FakeGruppen]:
     """`kennung`: Flaechen-Kennung des Tabs (Kopf X-Lernflaeche); die Gruppenflaeche gibt es nur mit ihr."""
     penecho = penecho or FakePenEcho()
     abgleich = abgleich or FakeAbgleich(penecho.aufrufe)
     gruppen = gruppen or FakeGruppen()
     bruecke = Bruecke(E_LH, laeufe.lern, penecho, Sperre(), httpx.Client(transport=httpx.MockTransport(_api_leer)),  # type: ignore[arg-type]
-                      kursende, katalog=_katalog(LearnHouse()), gruppen=gruppen, abgleich=abgleich)
+                      kursende, katalog=_katalog(LearnHouse()), gruppen=gruppen, abgleich=abgleich,
+                      bewerter=bewerter)
     client = als(TestClient(bruecke), actor)
     if kennung is not None:
         client.headers[KOPF] = kennung
@@ -4395,3 +4398,184 @@ def test_neue_gruppe_16_aufgaben_zehn_mappen_dann_voll(tmp_path) -> None:
         assert [x for x in penecho_b.aufrufe if x[0] in ("schild_setzen", "aufgabe_setzen")] == []
     finally:
         b.app.beenden()
+
+
+# ---- KI-Tutor Teil 2, Task 3: Abgabe mit der Bewertung der Flaechen-KI, Rueckfall auf den Server -------------------
+
+GEHEIM = "MUSTERLOESUNG-GEHEIM"
+BEWERTUNGSDATEN = {"attempt_id": "77777777-7777-4777-8777-777777777771", "item_type": "numeric", "art": "deterministic",
+                   "aufgabe": "Frage", "musterloesung": GEHEIM,
+                   "kriterien": [{"criterion_id": "c1", "description": "GEHEIMES-KRITERIUM", "points": 10}],
+                   "antwortformat": {"form": "value"}}
+EXTERN = {"grader": "ki_flaeche", "gelesen": {"lesbar": True, "text": "-1,5", "antwort": {"value": "-1,5"}}}
+
+
+class FakeBewerter:
+    """Ersatz fuer KiBewerter: haelt fest, was die Huelle ihm gibt; `antwort` None = Flaechen-KI weg."""
+
+    def __init__(self, antwort: dict[str, Any] | None = None, *, aktiv: bool = True,
+                 ereignisse: list[str] | None = None) -> None:
+        self.antwort = antwort
+        self.aktiv = aktiv
+        self.aufrufe: list[tuple[bytes, dict[str, Any]]] = []
+        self.ereignisse = ereignisse if ereignisse is not None else []
+
+    def bewerten(self, bild_png: bytes, daten: dict[str, Any]) -> dict[str, Any] | None:
+        self.ereignisse.append("bewerter")
+        self.aufrufe.append((bild_png, daten))
+        return self.antwort
+
+
+def _ki_sitzung(typ: str = "numeric", *, bewerter: Any, daten: Any = None, vorschau: Any = None):
+    offen = turn(TASK_1, typ=typ, mode="training")
+    ereignisse: list[str] = bewerter.ereignisse if bewerter is not None else []
+
+    def protokoll(name: str, wert: Any):
+        def antwort(kw: dict[str, Any]) -> Any:
+            ereignisse.append(name)
+            if isinstance(wert, list):
+                eintrag = wert.pop(0) if len(wert) > 1 else wert[0]
+            else:
+                eintrag = wert
+            if isinstance(eintrag, Exception):
+                raise eintrag
+            return eintrag(kw) if callable(eintrag) else eintrag
+        return antwort
+
+    lern = FakeLern({
+        "learning_course_overview": _ueberblick(offen),
+        "learning_task_next": {"session": offen},
+        "learning_task_bewertungsdaten": protokoll("bewertungsdaten", BEWERTUNGSDATEN if daten is None else daten),
+        "learning_task_preview": protokoll(
+            "preview", {"session": offen, "vorbewertung": _vor()} if vorschau is None else vorschau),
+    })
+    client, sperre, penecho, _ = _offen(lern, None, bewerter=bewerter)
+    return lern, client, penecho, ereignisse
+
+
+def test_abgabe_mit_ki_bewertung() -> None:
+    bewerter = FakeBewerter(EXTERN)
+    lern, client, penecho, ereignisse = _ki_sitzung("numeric", bewerter=bewerter)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200, r.text
+    # Erst Bewertungsdaten (lesend), dann die Flaechen-KI, dann die Vorbewertung mit der externen Bewertung.
+    assert ereignisse == ["bewertungsdaten", "bewerter", "preview"]
+    (daten_kw,) = _aufrufe(lern, "learning_task_bewertungsdaten")
+    assert daten_kw["session_id"] == SID and daten_kw["expected_revision"] == 1
+    assert daten_kw["payload"] == {} and not daten_kw.get("schreibend")
+    assert bewerter.aufrufe == [(PNG, BEWERTUNGSDATEN)]
+    (kw,) = _aufrufe(lern, "learning_task_preview")
+    assert kw["payload"]["externe_bewertung"] == EXTERN
+    assert base64.b64decode(kw["payload"]["handschrift_png_base64"]) == PNG
+    # Die Rueckmeldungskarte erscheint wie bisher.
+    (karte,) = _karten(penecho)
+    assert karte[:6] == ("rueckmeldung_zeigen", "pe-1", TASK_1, 1, "-1,5", "Richtig.")
+    assert r.json()["vorbewertung"]["id"] == VOR_ID
+
+
+def test_abgabe_rubrik_nimmt_den_ganzen_bereich_auch_fuer_die_ki() -> None:
+    bewerter = FakeBewerter({"grader": "ki_flaeche", "kriterien": [], "rueckmeldung": "x"})
+    _, client, penecho, _ = _ki_sitzung("open", bewerter=bewerter)
+    assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).status_code == 200
+    assert "schnappschuss" in penecho.namen() and "ergebnis_schnappschuss" not in penecho.namen()
+    assert bewerter.aufrufe[0][0] == PNG
+
+
+@pytest.mark.parametrize("fall", ["ki_none", "learning_lehnt_ab", "learning_weg", "bewertungsdaten_scheitern",
+                                  "bewertungsdaten_abgelehnt"])
+def test_abgabe_ruecklauf_auf_server(fall: str) -> None:
+    ablehnung = LearningAbgelehnt("external grade invalid", "invalid_session_request")
+    bewerter = FakeBewerter(None if fall == "ki_none" else EXTERN)
+    daten = (LearningWeg("learning_task_bewertungsdaten") if fall == "bewertungsdaten_scheitern"
+             else LearningAbgelehnt("exam", "session_access_denied") if fall == "bewertungsdaten_abgelehnt" else None)
+    offen = turn(TASK_1, typ="numeric", mode="training")
+    gut = {"session": offen, "vorbewertung": _vor()}
+    vorschau = None
+    if fall == "learning_lehnt_ab":
+        vorschau = [ablehnung, gut]
+    elif fall == "learning_weg":
+        vorschau = [LearningWeg("learning_task_preview"), gut]
+    lern, client, penecho, _ = _ki_sitzung("numeric", bewerter=bewerter, daten=daten, vorschau=vorschau)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 200, r.text
+    vorschauen = _aufrufe(lern, "learning_task_preview")
+    # Der letzte (erfolgreiche) Aufruf geht immer ohne externe Bewertung an den Server.
+    assert "externe_bewertung" not in vorschauen[-1]["payload"]
+    assert base64.b64decode(vorschauen[-1]["payload"]["handschrift_png_base64"]) == PNG
+    if fall in ("learning_lehnt_ab", "learning_weg"):
+        assert len(vorschauen) == 2 and "externe_bewertung" in vorschauen[0]["payload"]
+    else:
+        assert len(vorschauen) == 1
+    if fall.startswith("bewertungsdaten"):
+        assert bewerter.aufrufe == []  # ohne Bewertungsdaten keine Anfrage an die Flaechen-KI
+    # Die Karte erscheint wie bisher; kein Fehler fuer die Lernenden.
+    assert len(_karten(penecho)) == 1 and r.json()["urteil"] == "Richtig."
+
+
+def test_ruecklauf_zweiter_fehler_geht_durch_die_bekannte_behandlung() -> None:
+    bewerter = FakeBewerter(EXTERN)
+    fehler = LearningAbgelehnt("conflict", "session_revision_conflict")
+    lern, client, _, _ = _ki_sitzung("numeric", bewerter=bewerter, vorschau=[fehler, fehler])
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 409
+    assert len(_aufrufe(lern, "learning_task_preview")) == 2  # genau ein Wiederholungsversuch
+
+
+def test_ohne_bewerter_oder_schluessel_keine_bewertungsdaten() -> None:
+    for bewerter in (None, FakeBewerter(EXTERN, aktiv=False)):
+        lern, client, _, _ = _ki_sitzung("numeric", bewerter=bewerter)
+        assert client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}).status_code == 200
+        assert "learning_task_bewertungsdaten" not in lern.tools()
+        (kw,) = _aufrufe(lern, "learning_task_preview")
+        assert set(kw["payload"]) == {"handschrift_png_base64"}
+
+
+def test_korrektur_bleibt_ohne_ki_bewertung() -> None:
+    bewerter = FakeBewerter(EXTERN)
+    lern, client, _, _ = _ki_sitzung("numeric", bewerter=bewerter)
+    r = client.post(f"/lernen/api/sitzungen/{SID}/korrektur",
+                    json={"revision": 1, "vorbewertung_id": VOR_ID, "answer": {"value": "2"}})
+    assert r.status_code == 200, r.text
+    assert "learning_task_bewertungsdaten" not in lern.tools() and bewerter.aufrufe == []
+    assert "externe_bewertung" not in _aufrufe(lern, "learning_task_preview")[0]["payload"]
+
+
+def test_bewertungsdaten_nicht_an_den_browser(caplog: pytest.LogCaptureFixture) -> None:
+    bewerter = FakeBewerter(EXTERN)
+    _, client, _, _ = _ki_sitzung("numeric", bewerter=bewerter)
+    with caplog.at_level("DEBUG"):
+        antworten = [
+            client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1}),
+            client.get("/lernen/api/kurse"),
+        ]
+    for r in antworten:
+        for wort in ("musterloesung", "kriterien", GEHEIM, "GEHEIMES-KRITERIUM"):
+            assert wort not in r.text
+    assert GEHEIM not in caplog.text and "GEHEIMES-KRITERIUM" not in caplog.text
+
+
+def test_listenabgabe_mit_ki_bewertung_gruppe() -> None:
+    gk = gruppen_lern_kennung(PA, GID)
+    laeufe = Laeufe({gk: SID_GA})
+    ereignisse: list[str] = []
+    bewerter = FakeBewerter(EXTERN, ereignisse=ereignisse)
+    laeufe.lern.antworten["learning_task_bewertungsdaten"] = lambda kw: (
+        ereignisse.append("bewertungsdaten") or {**BEWERTUNGSDATEN, "attempt_id": kw["payload"]["attempt_id"]})
+    client, _, _, _ = _gruppen_bruecke(laeufe, bewerter=bewerter)
+    bruecke = client.app
+    try:
+        assert client.post(f"/lernen/api/gruppen/{GID}/oeffnen").status_code == 200
+        assert client.post(f"/lernen/api/sitzungen/{SID_GA}/abgeben", json={"nummer": 1}).status_code == 202
+        _bis(lambda: bruecke._modellspur.wartend("") == 0 and bruecke._flaechenspur.wartend("") == 0)
+        assert ereignisse == ["bewertungsdaten", "bewerter"]
+        aid = laeufe.eintraege[gk][0]["attempt_id"]
+        (daten_kw,) = _aufrufe(laeufe.lern, "learning_task_bewertungsdaten")
+        assert daten_kw["payload"] == {"attempt_id": aid} and daten_kw["session_id"] == SID_GA
+        (kw,) = _aufrufe(laeufe.lern, "learning_task_preview")
+        assert kw["payload"]["attempt_id"] == aid and kw["payload"]["externe_bewertung"] == EXTERN
+        # Der Akteur ist die Lern-Kennung der Person in der Gruppe, nie die Person selbst.
+        bewertungsakteure = [a for (t, _), a in zip(laeufe.lern.aufrufe, laeufe.lern.akteure)
+                             if t in ("learning_task_bewertungsdaten", "learning_task_preview")]
+        assert bewertungsakteure == [gk, gk] and gk != PA
+    finally:
+        bruecke.beenden()
