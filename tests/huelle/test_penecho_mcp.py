@@ -1478,6 +1478,42 @@ def test_bericht_mit_rechtecken_je_nummer(zustand: Path) -> None:
     assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_capture_canvas")] == [bereiche[1], bereiche[24]]
 
 
+def test_bericht_mit_bildern_nimmt_keine_schnappschuesse(zustand: Path) -> None:
+    # Ein Canvas je Aufgabe: die Bilder kommen aus den gespeicherten Aufnahmen, auch bei mehr als 20 Aufgaben.
+    from spaces.learning.huelle.penecho_mcp import _ueberlappt, kursbild_platz
+
+    fake = Fake()
+    bild = BILD_PNG
+    bilder ={1: bild, 3: bild, 25: bild}
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "# Bericht", (1, 2, 3, 25), bilder=bilder)
+    assert fake.aufrufe("penecho_capture_canvas") == []
+    gesetzt = [b["arguments"] for b in fake.aufrufe("penecho_place_image")]
+    assert [b["requestId"] for b in gesetzt] == [f"bericht-{LERN_SID}-{n}" for n in (1, 3, 25)]
+    assert [b["region"] for b in gesetzt] == [kursbild_platz(i) for i in range(3)]
+    assert all(b["width"] == 700 and b["source"].startswith("data:image/png;base64,") for b in gesetzt)
+    plaetze = [kursbild_platz(i) for i in range(100)]
+    for p in plaetze:  # rechts neben dem gezeigten Bereich (dort steht die Karte), alle auf der Flaeche
+        assert p["x"] >= 2200 and p["x"] + p["w"] <= FLAECHE_GROESSE and p["y"] + p["h"] <= FLAECHE_GROESSE
+    assert not any(_ueberlappt(a, b) for i, a in enumerate(plaetze) for b in plaetze[i + 1:])
+
+
+def test_bericht_mit_bildern_setzt_vorhandenes_nicht_neu(zustand: Path) -> None:
+    from spaces.learning.huelle.penecho_mcp import kursbild_platz
+
+    fake = Fake()
+    bild = BILD_PNG
+    objekte = [("image", "image-1", {**kursbild_platz(0), "h": 490})]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).bericht_zeigen(
+        "sess-1", LERN_SID, "x", (1, 2), bilder={1: bild, 2: bild})
+    assert [b["arguments"]["region"] for b in fake.aufrufe("penecho_place_image")] == [kursbild_platz(1)]
+
+
+def test_bericht_mit_bildern_unlesbares_bild_faellt_weg(zustand: Path) -> None:
+    fake = Fake()
+    _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "x", (1,), bilder={1: b"kein bild"})
+    assert len(fake.aufrufe("penecho_present_widget")) == 1 and fake.aufrufe("penecho_place_image") == []
+
+
 class KontextFake(Fake):
     """Wie Fake, mit einer context.md wie PenEchos virtuelle Datei (Inhalt und contentHash)."""
 

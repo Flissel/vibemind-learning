@@ -112,6 +112,7 @@ class FakePenEcho:
         self.aufnahme_timeouts: list[float | None] = []
         self.aufnahme_fehler: Any = None  # rechteck -> Exception | None
         self.bericht_rechtecke: list[dict[int, dict[str, int]] | None] = []
+        self.bericht_bilder: list[dict[int, bytes] | None] = []  # je bericht_zeigen; None = Schnappschuesse
         self.rueckmeldung_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je rueckmeldung_setzen
         # Aufgaben-Canvas: Antworten der neuen Methoden (Standard: Canvas schliesst, kein Dokument).
         self.schliessen_ergebnis = True
@@ -200,9 +201,10 @@ class FakePenEcho:
         return self.bild
 
     def bericht_zeigen(self, session_id: str, sid: str, text: str, nummern: tuple[int, ...] = (), *,
-                       rechteck: Any = None) -> None:
+                       rechteck: Any = None, bilder: Any = None) -> None:
         self.aufrufe.append(("bericht_zeigen", session_id, sid, text, tuple(nummern)))
         self.bericht_rechtecke.append(None if rechteck is None else dict(rechteck))
+        self.bericht_bilder.append(None if bilder is None else dict(bilder))
         self._pruefen("bericht_zeigen")
 
     def schild_setzen(self, session_id: str, request_id: str, text: str, rechteck: dict[str, int]) -> None:

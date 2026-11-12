@@ -16,6 +16,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 PFAD = "/api/lernflaeche/bewerten"
+KURS_PFAD = "/api/lernflaeche/kursrueckmeldung"
 KOPF = "X-Lernflaeche-Bewertung"
 TIMEOUT_S = 120.0
 GRADER = "ki_flaeche"
@@ -59,5 +60,31 @@ class KiBewerter:
             return None
         if not isinstance(wert, dict) or wert.get("grader") != GRADER:
             log.warning("KI-Bewertung unbrauchbar")
+            return None
+        return wert
+
+    def kursrueckmeldung(self, daten: dict[str, Any]) -> dict[str, Any] | None:
+        """Kursrueckmeldung der Flaechen-KI (`POST /api/lernflaeche/kursrueckmeldung`, gleicher Kopf und Zeitrahmen).
+
+        Das JSON bei 200 mit `grader == "ki_flaeche"`; sonst None (kein Schluessel, 404 bei einer alten Lernflaeche,
+        400/403/502, Zeit, unlesbare Antwort). Geloggt werden nur Typen und Statuscodes.
+        """
+        if not self.aktiv:
+            return None
+        try:
+            antwort = self._client.post(self._url + KURS_PFAD, json=daten, headers={KOPF: self._schluessel})
+        except httpx.HTTPError as fehler:
+            log.warning("Kursrueckmeldung nicht erreichbar: %s", type(fehler).__name__)
+            return None
+        if antwort.status_code != 200:
+            log.warning("Kursrueckmeldung: HTTP %s", antwort.status_code)
+            return None
+        try:
+            wert = antwort.json()
+        except ValueError as fehler:
+            log.warning("Kursrueckmeldung ohne lesbare Antwort: %s", type(fehler).__name__)
+            return None
+        if not isinstance(wert, dict) or wert.get("grader") != GRADER:
+            log.warning("Kursrueckmeldung unbrauchbar")
             return None
         return wert

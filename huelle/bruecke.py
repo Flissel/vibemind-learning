@@ -48,7 +48,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
@@ -66,7 +66,7 @@ from .anordnung import (
     EINZEL_RECHTECK, GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_abschluss,
     mappen_bereiche, mappen_kopf, mappen_ursprung, passt_in,
 )
-from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text
+from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text, urteil as score_urteil
 from .einstellung import Einstellung, Kurs
 from .gruppe import (
     GRUPPE_UNGUELTIG, GRUPPE_VOLL, GRUPPE_WEG, KEIN_MITGLIED, AbgleichDienst, Gruppen, GruppeWeg, KeinMitglied,
@@ -74,6 +74,7 @@ from .gruppe import (
 )
 from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
+from .kursrueckmeldung import aus_antwort, aus_zahlen, als_text, rueckmeldungsdaten
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .lernflaeche_bewertung import KiBewerter
 from .medien import MEDIEN_NAME, MEDIEN_ROUTE
@@ -88,8 +89,8 @@ from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
 from .uebergabe import ACTOR_MUSTER
 from .zusammenfassung import (
-    BILD_BUDGET_S, KI_AKTIONEN, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von,
-    kernaussage, kurs_kurz,
+    BILD_BUDGET_S, KI_AKTIONEN, AufgabeZeile, Kursrueckmeldung, Zusammenfassung, als_markdown, als_pdf,
+    begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz,
 )
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ KEIN_KURS = "Dieser Kurs hat noch keine freigegebenen Aufgaben."
 ZU_VIELE_AUFGABEN = "Dieser Kurs hat mehr Aufgaben, als auf eine Fläche passen."
 WIRD_GEPRUEFT = "Ihre Abgabe wird noch geprüft. Sie zählt, sobald die Prüfung fertig ist."
 FLAECHE_WEG = "Die Fläche ist gerade nicht erreichbar."
+KURS_CANVAS_TITEL = "Kursrückmeldung"  # Titel des Kurs-Canvas (Schluessel `<sid>#kurs`), ein Canvas je Aufgabe
 # Nach dem Fork (apps/web/lib/learning/practiceModel.ts). Die Huelle zeigt keine Quellenbelege;
 # nach der Abgabe ist PenEchos KI frei und erklaert den Weg auf der Flaeche.
 _RUECKMELDUNG = {
@@ -590,6 +592,11 @@ class Bruecke:
         self._je_aufgabe = self._je_lesen()
         # Ein Canvas je Aufgabe: die Aufnahme jeder Abgabe (`aufnahmen/<sid>/<nummer>.png`), ohne Datei keine.
         self._aufnahmen_ordner = None if kursende is None else kursende.parent / "aufnahmen"
+        # Ein Canvas je Aufgabe: die Kursrueckmeldung je Sitzung (`{sid: {staerken, luecken, naechste_schritte,
+        # quelle}}`), neben kursende.json. Ein erneutes Oeffnen fragt die Flaechen-KI nicht noch einmal.
+        self._rueckmeldung_datei = None if kursende is None else kursende.parent / "kursrueckmeldungen.json"
+        self._rueckmeldung_sperre = threading.Lock()
+        self._kursrueckmeldungen = self._kursrueckmeldungen_lesen()
         self._ablauf = asyncio.Lock()
         # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
         # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
@@ -888,6 +895,51 @@ class Bruecke:
             return pfad.read_bytes()
         except OSError:
             return None
+
+    # ---- Ein Canvas je Aufgabe: Kursrueckmeldung ---------------------------------
+    def _kursrueckmeldungen_lesen(self) -> dict[str, Kursrueckmeldung]:
+        """sid -> Kursrueckmeldung aus `kursrueckmeldungen.json`; Kaputtes faellt einzeln weg."""
+        if self._rueckmeldung_datei is None:
+            return {}
+        try:
+            wert = json.loads(self._rueckmeldung_datei.read_text(encoding="utf-8"))
+            items = list(wert.items())
+        except (OSError, ValueError, AttributeError):
+            return {}
+        ergebnis: dict[str, Kursrueckmeldung] = {}
+        for sid, eintrag in items:
+            if not isinstance(sid, str) or not isinstance(eintrag, dict):
+                continue
+            texte = [eintrag.get(k) for k in ("staerken", "luecken", "naechste_schritte")]
+            quelle = eintrag.get("quelle")
+            if all(isinstance(t, str) and t for t in texte) and quelle in ("ki_flaeche", "zahlen"):
+                ergebnis[sid] = Kursrueckmeldung(*texte, quelle)  # type: ignore[arg-type]
+        return ergebnis
+
+    def _kursrueckmeldung_lesen(self, sid: str) -> Kursrueckmeldung | None:
+        with self._rueckmeldung_sperre:
+            return self._kursrueckmeldungen.get(sid)
+
+    def _kursrueckmeldung_merken(self, sid: str, k: Kursrueckmeldung) -> None:
+        """Rueckmeldung der Sitzung merken, atomar gespeichert (Temp-Datei + replace); Fehler nur als Typ geloggt."""
+        with self._rueckmeldung_sperre:
+            self._kursrueckmeldungen[sid] = k
+            if self._rueckmeldung_datei is None:
+                return
+            ziel = self._rueckmeldung_datei
+            tmp: str | None = None
+            try:
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                    json.dump({s: {"staerken": r.staerken, "luecken": r.luecken,
+                                   "naechste_schritte": r.naechste_schritte, "quelle": r.quelle}
+                               for s, r in self._kursrueckmeldungen.items()}, f, ensure_ascii=False)
+                os.replace(tmp, ziel)
+            except OSError as fehler:
+                log.warning("Kursrueckmeldung nicht gespeichert: %s", _typ(fehler))
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
 
     def _aufnahme_zuruecksetzen(self, sid: str, nummer: int, alt: bytes | None) -> None:
         """Eine gescheiterte Abgabe nimmt ihre Aufnahme zurueck: die vorige kommt wieder (atomar), gab es keine, faellt
@@ -1556,7 +1608,11 @@ class Bruecke:
         Feste Kennungen (Karte `bericht-{sid}`, Bild `bericht-{sid}-{nummer}`) machen auch ein erneutes
         Oeffnen nach einem Neustart der Bruecke wiederholbar. Die Kursende-Seite bleibt die letzte Seite.
         `rechtecke` (Listenkurs): Bereich je Nummer; dann gelten diese Nummern statt der festen 1..20.
+        Ein Canvas je Aufgabe: `_kursbericht` auf dem Kurs-Canvas (`rechtecke` zaehlt dort nicht).
         """
+        if sitzung.je_aufgabe:
+            self._kursbericht(sitzung, turn)
+            return
         summary = turn.get("summary")
         if sitzung.bericht_gezeigt or not isinstance(summary, dict):
             return
@@ -1590,7 +1646,10 @@ class Bruecke:
         """Listenkurs: Rechteck je Nummer fuer den Bericht (aus der Liste); sonst oder ohne Liste None.
 
         Ohne lesbare Liste kein Bericht am alten Raster: dann ein leeres Mapping (nur die Karte).
+        Ein Canvas je Aufgabe hat kein gemeinsames Raster (nie `_bereiche`, auch ueber 20 Aufgaben): `{}`.
         """
+        if sitzung.je_aufgabe:
+            return {}
         if (not (sitzung.liste or turn.get("ablauf") == "liste") or sitzung.bericht_gezeigt
                 or sitzung.gruppe is not None):
             return None  # Gruppe: keine Berichtsbilder (`_bericht`), also auch keine Rechtecke
@@ -1601,6 +1660,94 @@ class Bruecke:
             log.warning("Bericht ohne Rechtecke: %s", _typ(fehler))
             return {}
         return {e["nummer"]: bereiche[e["nummer"] - 1] for e in eintraege}
+
+    def _kursbericht(self, sitzung: _Sitzung, turn: dict[str, Any]) -> None:
+        """Kursende im Modell „ein Canvas je Aufgabe“: Bericht und Kursrueckmeldung auf dem Kurs-Canvas (`<sid>#kurs`,
+        „Kursrückmeldung“), hoechstens einmal je Sitzung, nie ein Abbruch, nie das gemeinsame Board `<sid>`.
+
+        1. Zusammenfassung ohne Bilder (keine Anordnung, also auch ueber 20 Aufgaben).
+        2. Rueckmeldung: die gespeicherte, sonst die der Flaechen-KI (`KiBewerter.kursrueckmeldung`), sonst aus den
+           Zahlen; gespeichert in `kursrueckmeldungen.json`, ein erneutes Oeffnen fragt die KI also nicht noch einmal.
+        3. Kurs-Canvas zeigen, darauf Berichtskarte (Bericht + Rueckmeldung) und die gespeicherten Aufnahmen.
+        4. Textfassung in den Wissensordner (wie `_bericht`).
+        5. Steht der Bericht, die Dokumente der Aufgaben im Tab schliessen (False nur geloggt).
+        Ist der Bericht schon gezeigt (erneutes Oeffnen, Weiter am Kursende), kommt nur das Kurs-Canvas nach vorn.
+        """
+        summary = turn.get("summary")
+        if not isinstance(summary, dict):
+            return
+        if sitzung.bericht_gezeigt:
+            self._still(lambda: self._auf_kurs(sitzung, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
+            return
+        try:
+            z = self._zusammenfassung_bauen(sitzung, bilder=False)
+            k = z.rueckmeldung
+            if k is None:
+                k = self._kursrueckmeldung_holen(z)
+                self._kursrueckmeldung_merken(sitzung.sid, k)
+                z = replace(z, rueckmeldung=k)
+            text = bericht_text(sitzung.kurs.titel, summary, self._begriffe(sitzung) or []) + "\n\n" + als_text(k)
+            nummern = tuple(a.nummer for a in z.aufgaben)
+            bilder = {n: png for n in nummern if (png := self._aufnahme_lesen(sitzung.sid, n)) is not None}
+
+            def zeigen(s: str) -> None:
+                # Kurs-Canvas nach vorn; PenEcho setzt die Karte in diese Ansicht, die Bilder stehen rechts daneben.
+                self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)
+                self._penecho.bericht_zeigen(s, sitzung.sid, text, nummern, bilder=bilder)
+
+            sitzung.bericht_gezeigt = self._still(lambda: self._auf_kurs(sitzung, zeigen))
+            self._zusammenfassung_ablegen(sitzung, z)
+            if sitzung.bericht_gezeigt:
+                self._aufgaben_schliessen(sitzung, nummern)
+        except Exception as fehler:  # noqa: BLE001 - der Bericht darf das Kursende nie blockieren
+            log.warning("Kursbericht nicht gezeigt: %s", _typ(fehler))
+
+    def _kursrueckmeldung_holen(self, z: Zusammenfassung) -> Kursrueckmeldung:
+        """Rueckmeldung der Flaechen-KI (nur mit aktivem Bewerter und mindestens einer Aufgabe), sonst aus den Zahlen.
+        Die Eingabe enthaelt nie Musterloesung oder Rubrik (`rueckmeldungsdaten`)."""
+        bewerter = self._bewerter
+        daten = rueckmeldungsdaten(z.kurs, z.aufgaben, [{"name": t, "stand": s} for t, s in z.begriffe])
+        antwort: dict[str, Any] | None = None
+        if bewerter is not None and bewerter.aktiv and daten["aufgaben"]:
+            try:
+                antwort = bewerter.kursrueckmeldung(daten)
+            except Exception as fehler:  # noqa: BLE001 - ohne KI gibt es die Rueckmeldung aus den Zahlen
+                log.warning("Kursrueckmeldung der Flaechen-KI nicht verfuegbar: %s", _typ(fehler))
+        return aus_antwort(antwort) or aus_zahlen(z.aufgaben)
+
+    def _auf_kurs(self, sitzung: _Sitzung, aktion: Callable[[str], T]) -> T:
+        """Wie `_auf_aufgabe`, nur auf dem Kurs-Canvas (`<sid>#kurs`, Titel „Kursrückmeldung“); danach sein Dokument
+        merken (still), damit ein erneutes Oeffnen genau dieses Dokument nimmt. Nie `sitzung.board`."""
+        schluessel = self._aufgaben_schluessel(sitzung.sid, "kurs")
+        with self._flaeche_sperre:
+            session_id = self._aufgaben_sitzung(sitzung, schluessel, KURS_CANVAS_TITEL)
+            try:
+                ergebnis = aktion(session_id)
+            except PenEchoSitzungUnbekannt:
+                self._penecho.vergessen(schluessel)
+                session_id = self._aufgaben_sitzung(sitzung, schluessel, KURS_CANVAS_TITEL)
+                ergebnis = aktion(session_id)
+        self._board_merken(sitzung, session_id)
+        return ergebnis
+
+    def _aufgaben_schliessen(self, sitzung: _Sitzung, nummern: Iterable[int]) -> None:
+        """Die Dokumente der Aufgaben im Tab der Person schliessen (`dokument_schliessen`), je Aufgabe mit Canvas oder
+        gemerktem Dokument. Ohne Tab-Kennung nichts; False (alte Lernflaeche, schon zu) und Fehler nur geloggt."""
+        flaeche = sitzung.flaeche
+        if flaeche is None:
+            return
+        for nummer in nummern:
+            schluessel = self._aufgaben_schluessel(sitzung.sid, nummer)
+            if nummer not in sitzung.aufgaben_boards and not self._penecho.dokument_von(schluessel):
+                continue
+            try:
+                with self._flaeche_sperre:
+                    zu = self._penecho.dokument_schliessen(schluessel, flaeche)
+            except Exception as fehler:  # noqa: BLE001 - Aufraeumen haelt das Kursende nie auf
+                log.warning("Aufgaben-Canvas nicht geschlossen: %s", _typ(fehler))
+                continue
+            if not zu:
+                log.info("Aufgaben-Canvas nicht geschlossen (nicht moeglich oder schon zu)")
 
     def _begriffe(self, sitzung: _Sitzung) -> list[Any] | None:
         """Aktuelle Beherrschung nach einer Abgabe; None, wenn Learning sie gerade nicht liefert."""
@@ -1619,21 +1766,35 @@ class Bruecke:
 
         Die ganze Flaeche wird nicht mehr aufgenommen: PenEcho liefert sie bei vielen Aufgaben so klein, dass
         nichts zu lesen ist (live 09.11.: 74 x 888 Pixel fuer 16 Aufgaben).
+
+        Ein Canvas je Aufgabe: die Bilder sind die gespeicherten Aufnahmen der Abgaben (`_aufnahme_lesen`, kein
+        PenEcho-Aufruf, keine Anordnung), die Kursrueckmeldung kommt aus `kursrueckmeldungen.json`.
         """
-        _, eintraege = self._liste_lesen(sitzung)
-        bereiche = self._bereiche(sitzung, eintraege)
-        aufnahmen: list[bytes | None] = self._aufnahmen(sitzung, bereiche) if bilder else [None] * len(eintraege)
+        turn, eintraege = self._liste_lesen(sitzung)
+        rueckmeldung: Kursrueckmeldung | None = None
+        if sitzung.je_aufgabe:
+            aufnahmen: list[bytes | None] = [self._aufnahme_lesen(sitzung.sid, e["nummer"]) if bilder else None
+                                             for e in eintraege]
+            rueckmeldung = self._kursrueckmeldung_lesen(sitzung.sid)
+        else:
+            bereiche = self._bereiche(sitzung, eintraege)
+            aufnahmen = self._aufnahmen(sitzung, bereiche) if bilder else [None] * len(eintraege)
+        summary = turn.get("summary")
+        scores = dict(bericht_aufgaben(summary)) if isinstance(summary, dict) else {}  # wie der Bericht zaehlen
         zeilen = []
         for e, bild in zip(eintraege, aufnahmen):
             vor = e.get("vorbewertung")
             prompt = e["task"].get("prompt")
+            score = scores.get(e["nummer"])
+            richtig = (score_urteil(score) == "richtig" if score is not None
+                       else e["status"] == "bestaetigt" and isinstance(vor, dict) and urteil_aus(vor) == "Richtig.")
             zeilen.append(AufgabeZeile(
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
                 kernaussage(vor) if isinstance(vor, dict) else "–", bild,
-                self._ki_schritte_lesen(sitzung.sid, e["nummer"]),
+                self._ki_schritte_lesen(sitzung.sid, e["nummer"]), richtig,
             ))
         return Zusammenfassung(sitzung.kurs.titel, date.today(), tuple(zeilen),
-                               self._begriffe_zeilen(sitzung))
+                               self._begriffe_zeilen(sitzung), rueckmeldung)
 
     @staticmethod
     def _aufnahme_fehler_einzeln(fehler: Exception) -> bool:
@@ -2857,6 +3018,9 @@ class Bruecke:
         if turn.get("state") == "completed":
             self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
             self._bericht(sitzung, turn, self._listen_rechtecke(sitzung, eintraege, bereiche))
+            if sitzung.je_aufgabe:
+                # Am Kursende bleibt das Kurs-Canvas vorn: kein Aufgaben-Canvas mehr ins Bild holen.
+                return {"turn": turn, **stand, "nummer": stand["aktuell"], "flaeche": sitzung.bericht_gezeigt}
         if sitzung.je_aufgabe:
             # `aktuell` auf seinem Canvas ins Bild (bei Bedarf angelegt) und sein Dokument merken.
             aktuell = self._eintrag_zu(eintraege, stand["aktuell"])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import re
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 import pypdf
 
 from spaces.learning.huelle.zusammenfassung import (
-    KERNAUSSAGE_ZEICHEN, AufgabeZeile, Zusammenfassung, als_markdown, als_pdf, begriff_titel,
+    KERNAUSSAGE_ZEICHEN, AufgabeZeile, Kursrueckmeldung, Zusammenfassung, als_markdown, als_pdf, begriff_titel,
     begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz, ohne_latex,
 )
 
@@ -102,6 +103,33 @@ def test_markdown_format() -> None:
     assert zeilen[i + 1:i + 4] == ["Aufgabe: Frage 1", "Ergebnis: 42", "Rückmeldung: Richtig. Gut gemacht."]
     assert zeilen[zeilen.index("## Begriffe") + 1] == "- Begriff: 80 %"
     assert "png" not in text and text.endswith("\n")
+
+
+_RUECKMELDUNG = Kursrueckmeldung("Brüche sicher gelöst.", "Geraden zeichnen.", "Üben Sie Steigungen.", "ki_flaeche")
+
+
+def test_markdown_mit_kursrueckmeldung() -> None:
+    ohne = _zusammenfassung(bilder=False)
+    assert ohne.rueckmeldung is None
+    assert "Kursrückmeldung" not in als_markdown(ohne)
+    zeilen = als_markdown(replace(ohne, rueckmeldung=_RUECKMELDUNG)).splitlines()
+    i = zeilen.index("## Kursrückmeldung")
+    assert zeilen[i + 1:i + 9] == ["### Stärken", "Brüche sicher gelöst.", "", "### Lücken", "Geraden zeichnen.", "",
+                                   "### Nächste Schritte", "Üben Sie Steigungen."]
+    assert i < zeilen.index("## Aufgabe 1") and zeilen.index("## Begriffe") > i
+
+
+def test_pdf_mit_kursrueckmeldung() -> None:
+    ohne = _text(als_pdf(_zusammenfassung(bilder=False)))
+    assert not any("Kursrückmeldung" in s for s in ohne)
+    lang = Kursrueckmeldung("Stark " * 330, "Lücke " * 330, "Schritt " * 250, "zahlen")
+    for k in (_RUECKMELDUNG, lang):
+        seiten = _text(als_pdf(replace(_zusammenfassung(bilder=False), rueckmeldung=k)))
+        assert len(seiten) > 4
+        seite = next(s for s in seiten if "Kursrückmeldung" in s)
+        assert "Stärken" in seite and "Lücken" in seite
+        assert any("Nächste Schritte" in s for s in seiten)
+        assert "Aufgabe 1" in seiten[-3] and "Begriffe" in seiten[-1]
 
 
 def test_kernaussage_gekuerzt() -> None:

@@ -247,6 +247,27 @@ def berichtsplatz(nummer: int) -> dict[str, int]:
     return felder(bereich(nummer)).berichtsplatz
 
 
+# Kurs-Canvas (ein Canvas je Aufgabe): die Karte setzt PenEcho in die Ansicht (`EINZEL_RECHTECK`, x bis 2200); die
+# Bilder der Aufgaben stehen rechts daneben in einem Raster. Eine Aufnahme des 2000 x 1400 grossen Bereichs ist bei
+# Breite 700 genau 490 hoch. Vier Spalten tragen 100 Aufgaben (25 Zeilen bis y = 14 600).
+KURSBILD_X = 2300
+KURSBILD_SPALTEN = 4
+KURSBILD_HOEHE = 500
+_KURSBILD_ABSTAND = 80
+
+
+def kursbild_platz(position: int) -> dict[str, int]:
+    """Platz des `position`-ten Aufgabenbilds (ab 0) auf dem Kurs-Canvas; ausserhalb der Flaeche ValueError."""
+    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+        raise ValueError("Bildplatz ausserhalb der Flaeche")
+    zeile, spalte = divmod(position, KURSBILD_SPALTEN)
+    platz = {"x": KURSBILD_X + spalte * (BERICHT_BILD_BREITE + _KURSBILD_ABSTAND),
+             "y": _RAND + zeile * (KURSBILD_HOEHE + _KURSBILD_ABSTAND), "w": BERICHT_BILD_BREITE, "h": KURSBILD_HOEHE}
+    if platz["y"] + platz["h"] > FLAECHE_GROESSE - _RAND:
+        raise ValueError("Bildplatz ausserhalb der Flaeche")
+    return platz
+
+
 def _ueberlappt(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]
 
@@ -1232,7 +1253,7 @@ class PenEchoMcp:
 
     def bericht_zeigen(
         self, session_id: str, sid: str, text: str, nummern: Sequence[int] = (), *,
-        rechteck: Mapping[int, dict[str, int]] | None = None,
+        rechteck: Mapping[int, dict[str, int]] | None = None, bilder: Mapping[int, bytes] | None = None,
     ) -> None:
         """Berichtskarte `bericht-{sid}` und, je Aufgabe, der Schnappschuss ihres Bereichs.
 
@@ -1246,6 +1267,9 @@ class PenEchoMcp:
 
         `rechteck` (Listenkurs): Bereich je Nummer; Bild und Platz kommen dann aus diesem Rechteck.
         Eine Nummer ohne Eintrag nimmt `bereich(nummer)`.
+
+        `bilder` (ein Canvas je Aufgabe, Kurs-Canvas): fertige PNGs je Nummer (die gespeicherten Aufnahmen). Dann
+        wird nichts aufgenommen; die Nummern mit Bild stehen der Reihe nach an `kursbild_platz(0, 1, ...)`.
         """
         erste = text.splitlines()[0] if text.strip() else ""
         titel = re.sub(r"\\(.)", r"\1", erste.lstrip("# ").strip()) or "Bericht"
@@ -1256,12 +1280,23 @@ class PenEchoMcp:
             return
         ende = _uhr() + BERICHT_BILD_ZEIT
         bereiche = dict(rechteck or {})
+        fertig = None if bilder is None else dict(bilder)
+        if fertig is not None:
+            nummern = [n for n in nummern if n in fertig]
+        reihe = {n: position for position, n in enumerate(nummern)}
 
         def platz_von(nummer: int) -> dict[str, int]:
+            if fertig is not None:
+                return kursbild_platz(reihe[nummer])
             r = bereiche.get(nummer)
             return felder(r).berichtsplatz if r is not None else berichtsplatz(nummer)
 
-        if bereiche:
+        def aufnahme(nummer: int) -> bytes:
+            if fertig is not None:
+                return fertig[nummer]
+            return self.schnappschuss(session_id, nummer, rechteck=bereiche.get(nummer))
+
+        if fertig is not None or bereiche:
             plaetze = []
             for n in nummern:
                 try:
@@ -1283,7 +1318,7 @@ class PenEchoMcp:
                 if any(_ueberlappt(e["bounds"], platz) for e in belegung):
                     log.info("Berichtsbild %d: Platz schon belegt", nummer)
                     continue
-                quelle = _datenurl(self.schnappschuss(session_id, nummer, rechteck=bereiche.get(nummer)))
+                quelle = _datenurl(aufnahme(nummer))
                 if quelle is None or len(quelle) > MAX_BILD_DATENURL:
                     log.warning("Berichtsbild uebersprungen: Format oder Groesse")
                     continue

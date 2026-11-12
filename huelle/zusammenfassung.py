@@ -11,7 +11,7 @@ import re
 import textwrap
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 import matplotlib
 
@@ -57,6 +57,17 @@ class AufgabeZeile:
     kernaussage: str
     bild: bytes | None
     ki_schritte: tuple[str, ...] = ()   # Aktionen der KI auf der Flaeche in der Reihenfolge des Auftretens
+    richtig: bool = False               # nach Learnings Score (wie der Bericht), sonst nach dem Urteil der Karte
+
+
+@dataclass(frozen=True)
+class Kursrueckmeldung:
+    """Rueckmeldung zum ganzen Kurs (ein Canvas je Aufgabe): von der Flaechen-KI oder aus den Zahlen."""
+
+    staerken: str
+    luecken: str
+    naechste_schritte: str
+    quelle: Literal["ki_flaeche", "zahlen"]
 
 
 @dataclass(frozen=True)
@@ -65,6 +76,14 @@ class Zusammenfassung:
     datum: date
     aufgaben: tuple[AufgabeZeile, ...]
     begriffe: tuple[tuple[str, str], ...]
+    rueckmeldung: Kursrueckmeldung | None = None
+
+    def abschnitte(self) -> tuple[tuple[str, str], ...]:
+        """(Unterueberschrift, Text) der Kursrueckmeldung; ohne Rueckmeldung leer."""
+        k = self.rueckmeldung
+        if k is None:
+            return ()
+        return (("Stärken", k.staerken), ("Lücken", k.luecken), ("Nächste Schritte", k.naechste_schritte))
 
 
 def kurs_kurz(titel: str) -> str:
@@ -309,6 +328,10 @@ def _datum(d: date) -> str:
 
 def als_markdown(z: Zusammenfassung) -> str:
     zeilen = [f"# {_einzeilig(z.kurs)} – Zusammenfassung ({_datum(z.datum)})", ""]
+    if z.rueckmeldung is not None:
+        zeilen.append("## Kursrückmeldung")
+        for titel, text in z.abschnitte():
+            zeilen += [f"### {titel}", _einzeilig(text), ""]
     for a in z.aufgaben:
         zeilen += [
             f"## Aufgabe {a.nummer}",
@@ -365,6 +388,11 @@ class _Seite:
             self.y -= self.ZEILE * groesse / 10.5
         self.y -= 0.006
 
+    def zeile(self, text: str, *, groesse: float = 10.5) -> None:
+        """Eine schon umgebrochene Zeile Klartext (ohne erneute Formel-Umschrift)."""
+        self.fig.text(0.09, self.y, text, fontsize=groesse, color="#1a1a1a", va="top", parse_math=False)
+        self.y -= self.ZEILE * groesse / 10.5
+
     def luft(self, menge: float = 0.015) -> None:
         self.y -= menge
 
@@ -412,6 +440,31 @@ def _aufgabenseite(a: AufgabeZeile) -> Figure:
     return s.fig
 
 
+def _rueckmeldungsseiten(z: Zusammenfassung) -> list[Figure]:
+    """„Kursrückmeldung“ mit „Stärken“, „Lücken“, „Nächste Schritte“; langer Text laeuft auf die naechste Seite."""
+    if z.rueckmeldung is None:
+        return []
+    seiten: list[Figure] = []
+    s = _Seite()
+    s.text("Kursrückmeldung", groesse=18, fett=True)
+    s.luft()
+    for titel, text in z.abschnitte():
+        if s.y < 0.12:
+            seiten.append(s.fig)
+            s = _Seite()
+            s.text("Kursrückmeldung (Fortsetzung)", groesse=14, fett=True)
+        s.text(titel, groesse=12, fett=True)
+        for zeile in textwrap.wrap(_einzeilig(ohne_latex(text)), width=_Seite.BREITE) or [""]:
+            if s.y < 0.07:
+                seiten.append(s.fig)
+                s = _Seite()
+                s.text("Kursrückmeldung (Fortsetzung)", groesse=14, fett=True)
+            s.zeile(zeile)
+        s.luft()
+    seiten.append(s.fig)
+    return seiten
+
+
 def _begriffeseiten(z: Zusammenfassung) -> list[Figure]:
     seiten: list[Figure] = []
     s = _Seite()
@@ -429,11 +482,13 @@ def _begriffeseiten(z: Zusammenfassung) -> list[Figure]:
 
 
 def als_pdf(z: Zusammenfassung) -> bytes:
-    """A4 hoch: Seite 1 Kurs, Datum, Uebersicht; je Aufgabe eine Seite; zum Schluss „Begriffe“."""
+    """A4 hoch: Seite 1 Kurs, Datum, Uebersicht; dann (falls vorhanden) die Kursrueckmeldung; je Aufgabe eine
+    Seite; zum Schluss „Begriffe“."""
     puffer = io.BytesIO()
     # fonttype 42: die Schrift (DejaVu Sans, liegt matplotlib bei) steckt als TrueType im PDF, der Text bleibt lesbar.
     with matplotlib.rc_context({"font.family": "DejaVu Sans", "pdf.fonttype": 42}):
         with PdfPages(puffer) as pdf:
-            for fig in [*_titelseiten(z), *(_aufgabenseite(a) for a in z.aufgaben), *_begriffeseiten(z)]:
+            for fig in [*_titelseiten(z), *_rueckmeldungsseiten(z), *(_aufgabenseite(a) for a in z.aufgaben),
+                        *_begriffeseiten(z)]:
                 pdf.savefig(fig)
     return puffer.getvalue()

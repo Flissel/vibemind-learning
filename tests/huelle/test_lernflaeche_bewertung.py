@@ -80,6 +80,47 @@ def test_ki_bewerter_verbindungsfehler_ist_none() -> None:
     assert _bewerter(handler).bewerten(PNG, DATEN) is None
 
 
+KURS_DATEN = {"kurs": "K", "aufgaben": [{"nummer": 1, "titel": "T", "ergebnis": "4", "rueckmeldung": "Richtig.",
+                                        "ki_schritte": []}], "begriffe": []}
+KURS_GUT = {"grader": "ki_flaeche", "staerken": "s", "luecken": "l", "naechste_schritte": "n"}
+
+
+def test_kursrueckmeldung_schickt_schluessel_und_daten() -> None:
+    gesehen: list[httpx.Request] = []
+
+    def handler(anfrage: httpx.Request) -> httpx.Response:
+        gesehen.append(anfrage)
+        return httpx.Response(200, json=KURS_GUT)
+
+    assert _bewerter(handler).kursrueckmeldung(KURS_DATEN) == KURS_GUT
+    (anfrage,) = gesehen
+    assert anfrage.method == "POST" and anfrage.url == httpx.URL(f"{URL}/api/lernflaeche/kursrueckmeldung")
+    assert anfrage.headers["X-Lernflaeche-Bewertung"] == SCHLUESSEL
+    assert json.loads(anfrage.content) == KURS_DATEN
+    assert anfrage.extensions["timeout"]["read"] == 120
+
+
+@pytest.mark.parametrize("handler", [
+    lambda a: httpx.Response(404, json={"fehler": "nicht da"}),
+    lambda a: httpx.Response(400, json={"fehler": "exactKeys"}),
+    lambda a: httpx.Response(502, text=MUSTER),
+    _timeout,
+    lambda a: httpx.Response(200, content=b"{kaputt"),
+    lambda a: httpx.Response(200, json={"grader": "server"}),
+], ids=["404", "400", "502", "timeout", "kaputtes-json", "falscher-bewerter"])
+def test_kursrueckmeldung_client_404_none(handler: Any, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG):
+        assert _bewerter(handler).kursrueckmeldung(KURS_DATEN) is None
+    assert MUSTER not in caplog.text and SCHLUESSEL not in caplog.text
+
+
+def test_kursrueckmeldung_ohne_schluessel_ruft_nicht() -> None:
+    def handler(anfrage: httpx.Request) -> httpx.Response:
+        raise AssertionError("kein HTTP-Aufruf erwartet")
+
+    assert _bewerter(handler, "").kursrueckmeldung(KURS_DATEN) is None
+
+
 _BASIS = {
     "LEARNING_HUELLE_BASIS": "https://lernen.example.test",
     "LEARNING_HUELLE_FLAECHE_BASIS": "https://lernen.example.test:8443",
