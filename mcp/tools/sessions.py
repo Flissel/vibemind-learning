@@ -20,6 +20,9 @@ from spaces.learning.contracts.ui_intents import (
     ShowProgressIntentV1,
     ShowResultIntentV1,
 )
+# Group capacity: the Huelle's grid and height rule, shared (pure modules, no Huelle runtime).
+from spaces.learning.huelle.anordnung import gruppen_kapazitaet
+from spaces.learning.huelle.medien import aufgaben_hoehen
 from spaces.learning.services.adaptive_engine.session_service import (
     AdaptiveSessionService,
     AnswerCommand,
@@ -49,6 +52,7 @@ SESSION_TOOL_NAMES = frozenset(
         LearningToolName.COURSE_OVERVIEW,
         LearningToolName.TASK_NEXT,
         LearningToolName.TASK_LIST,
+        LearningToolName.GROUP_CAPACITY,
         LearningToolName.TASK_ANSWER,
         LearningToolName.TASK_PREVIEW,
         LearningToolName.TASK_CONFIRM,
@@ -129,6 +133,8 @@ class AdaptiveSessionGateway:
                 return self._turn_outcome(self._current(request))
             if request.tool is LearningToolName.TASK_LIST:
                 return self._list(request)
+            if request.tool is LearningToolName.GROUP_CAPACITY:
+                return self._group_capacity(request)
             if request.tool is LearningToolName.HINT_REQUEST:
                 turn = self._current(request)
                 hint = self._service.hint(
@@ -372,6 +378,20 @@ class AdaptiveSessionGateway:
             turn,
             extra={"aufgaben": [e.model_dump(mode="json") for e in eintraege]},
             intent=False,
+        )
+
+    def _group_capacity(self, request: ToolRequestV1) -> ApplicationOutcomeV1:
+        """How many folders (Mappen) a NEW group canvas of the course holds: the task list a new list session
+        would get, heights by the Huelle's rule, places by its new grid. Read-only, any actor."""
+        course_id = request.event.course_id
+        if course_id is None:
+            raise ValueError("group capacity requires course_id")
+        revision, tasks = self._service.listen_aufgaben(course_id=str(course_id))
+        heights = aufgaben_hoehen(task.model_dump(mode="json") for task in tasks)
+        return self._course_outcome(
+            str(course_id),
+            revision,
+            {"kapazitaet": gruppen_kapazitaet(heights), "aufgaben": len(tasks), "course_revision": revision},
         )
 
     def _current(self, request: ToolRequestV1) -> SessionTurn:

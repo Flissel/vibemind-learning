@@ -19,6 +19,7 @@ class LearningEventType(StrEnum):
     COURSE_OVERVIEW = "learning.course.overview"
     TASK_NEXT = "learning.task.next"
     TASK_LIST = "learning.task.list"
+    GROUP_CAPACITY = "learning.group.capacity"
     TASK_ANSWER = "learning.task.answer"
     TASK_PREVIEW = "learning.task.preview"
     TASK_CONFIRM = "learning.task.confirm"
@@ -48,6 +49,7 @@ class LearningToolName(StrEnum):
     COURSE_OVERVIEW = "learning_course_overview"
     TASK_NEXT = "learning_task_next"
     TASK_LIST = "learning_task_list"
+    GROUP_CAPACITY = "learning_group_capacity"
     TASK_ANSWER = "learning_task_answer"
     TASK_PREVIEW = "learning_task_preview"
     TASK_CONFIRM = "learning_task_confirm"
@@ -77,6 +79,7 @@ EVENT_TOOL_MAP: dict[LearningEventType, LearningToolName] = {
     LearningEventType.COURSE_OVERVIEW: LearningToolName.COURSE_OVERVIEW,
     LearningEventType.TASK_NEXT: LearningToolName.TASK_NEXT,
     LearningEventType.TASK_LIST: LearningToolName.TASK_LIST,
+    LearningEventType.GROUP_CAPACITY: LearningToolName.GROUP_CAPACITY,
     LearningEventType.TASK_ANSWER: LearningToolName.TASK_ANSWER,
     LearningEventType.TASK_PREVIEW: LearningToolName.TASK_PREVIEW,
     LearningEventType.TASK_CONFIRM: LearningToolName.TASK_CONFIRM,

@@ -51,6 +51,7 @@ EXPECTED_EVENTS = {
     "learning.course.overview",
     "learning.task.next",
     "learning.task.list",
+    "learning.group.capacity",
     "learning.task.answer",
     "learning.task.preview",
     "learning.task.confirm",
@@ -80,6 +81,7 @@ EXPECTED_TOOLS = {
     "learning_course_overview",
     "learning_task_next",
     "learning_task_list",
+    "learning_group_capacity",
     "learning_task_answer",
     "learning_task_preview",
     "learning_task_confirm",
@@ -153,6 +155,16 @@ def test_neue_werkzeuge_sind_schreibend() -> None:
     assert LearningEventType.TASK_CONFIRM in WRITE_EVENTS
     assert EVENT_TOOL_MAP[LearningEventType.TASK_PREVIEW].value == "learning_task_preview"
     assert EVENT_TOOL_MAP[LearningEventType.TASK_CONFIRM].value == "learning_task_confirm"
+
+
+def test_gruppenkapazitaet_ist_lesend() -> None:
+    from spaces.learning.contracts.events import WRITE_EVENTS
+
+    assert LearningEventType.GROUP_CAPACITY not in WRITE_EVENTS
+    assert EVENT_TOOL_MAP[LearningEventType.GROUP_CAPACITY].value == "learning_group_capacity"
+    # Lesend: ohne idempotency_key gueltig.
+    event = _event(LearningEventType.GROUP_CAPACITY, idempotency_key=None, course_id=uuid4(), payload={})
+    assert ToolRequestV1(tool="learning_group_capacity", event=event).event.idempotency_key is None
 
 
 def test_publish_requires_confirmation_and_expected_revision() -> None:

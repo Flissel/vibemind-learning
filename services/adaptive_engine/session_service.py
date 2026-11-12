@@ -368,16 +368,40 @@ class AdaptiveSessionService:
             )
             return self._with_readback(self._turn(db, row)) if row is not None else None
 
+    @staticmethod
+    def _neueste_revision(db: Session, course_id: str) -> int | None:
+        """The newest course revision with approved items (the one new sessions start on)."""
+        return db.scalar(
+            select(func.max(AdaptiveItem.course_revision)).where(
+                AdaptiveItem.course_id == course_id,
+                AdaptiveItem.quality_status == "approved",
+            )
+        )
+
+    def listen_aufgaben(self, *, course_id: str) -> tuple[int, tuple[PublicTask, ...]]:
+        """Revision and fixed task list a NEW list session of the course would get, without starting one.
+
+        Same path as `start` with `ablauf="liste"` and a training blueprint without item types (the Huelle's
+        group sessions): newest approved revision, `_catalog`, `_listen_blueprint`. Read-only.
+        """
+        course_id = str(UUID(course_id))
+        with self._session_factory() as db:
+            revision = self._neueste_revision(db, course_id)
+            if revision is None:
+                raise LookupError("adaptive course has no approved items")
+            items = self._catalog(db, course_id, revision)
+            if not items:
+                raise LookupError("adaptive course revision has no approved items")
+            by_id = {item.id: item for item in items}
+            liste = self._listen_blueprint({}, items)["liste"]
+            assert isinstance(liste, list)
+            return revision, tuple(self._public_task(by_id[item_id], course_id) for item_id in liste)
+
     def ueberblick(self, *, course_id: str, actor_id: str) -> dict[str, object]:
         """Begriffe mit Beherrschung der Person und die aktive Sitzung."""
         course_id = str(UUID(course_id))
         with self._session_factory() as db:
-            revision = db.scalar(
-                select(func.max(AdaptiveItem.course_revision)).where(
-                    AdaptiveItem.course_id == course_id,
-                    AdaptiveItem.quality_status == "approved",
-                )
-            )
+            revision = self._neueste_revision(db, course_id)
             if revision is None:
                 return {
                     "course_id": course_id,
