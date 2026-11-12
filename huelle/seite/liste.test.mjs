@@ -206,3 +206,28 @@ test("huelle.js: unbekanntes Dokument im Modell je Aufgabe lädt die Zuordnung n
   const gebucht = js.split("function gebuchtUebernehmen(")[1].split("\n}\n")[0];
   assert.match(gebucht, /dokumenteUebernehmen\(daten\)/);
 });
+
+import { kursEndeLaden } from "./liste.js";
+
+test("kursEndeLaden: nur wenn „Kurs abgeben“ eben fertig wurde und die Seite noch nicht am Ende ist", () => {
+  assert.equal(kursEndeLaden({ vorher: "laeuft", nachher: "fertig", phase: "aufgabe" }), true);
+  assert.equal(kursEndeLaden({ vorher: "laeuft", nachher: "fertig", phase: "rueckmeldung" }), true);
+  assert.equal(kursEndeLaden({ vorher: undefined, nachher: "fertig", phase: "aufgabe" }), true);
+  assert.equal(kursEndeLaden({ vorher: "fertig", nachher: "fertig", phase: "aufgabe" }), false);
+  assert.equal(kursEndeLaden({ vorher: "laeuft", nachher: "fertig", phase: "ende" }), false);
+  assert.equal(kursEndeLaden({ vorher: "laeuft", nachher: "laeuft", phase: "aufgabe" }), false);
+  assert.equal(kursEndeLaden({ vorher: "laeuft", nachher: "fehler", phase: "aufgabe" }), false);
+  assert.equal(kursEndeLaden({ vorher: "laeuft", nachher: undefined, phase: "aufgabe" }), false);
+});
+
+test("huelle.js: fertig abgegebener Kurs lädt die Endansicht über „weiter“, der Knopf verschwindet (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  const abfrage = js.split("function abfragePlanen(")[1].split("\n}\n")[0];
+  const vorher = abfrage.indexOf("const vorher = z.kursabgabe?.zustand;");
+  assert.ok(vorher >= 0 && vorher < abfrage.indexOf("standAnwenden(r.daten, nr)"));
+  assert.match(abfrage, /kursEndeLaden\(\{ vorher, nachher: z\.kursabgabe\?\.zustand, phase: z\.phase \}\)\) void listenWeiter\(true\)/);
+  // Der Knopf richtet sich nach `kursAbgebenSichtbar` (am Ende: versteckt), auch wenn der Listenkopf zu ist.
+  const kopf = js.split("function listenkopfZeigen(")[1].split("\n}\n")[0];
+  assert.ok(kopf.indexOf('$("kurs-abgeben").hidden') < kopf.indexOf("if (!an) return;"));
+});

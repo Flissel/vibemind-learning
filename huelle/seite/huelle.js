@@ -11,7 +11,7 @@ import {
 } from "./flaeche.js";
 import {
   entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_OHNE_AUFGABE, KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText,
-  kursAbgebenSichtbar, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument,
+  kursAbgebenSichtbar, kursEndeLaden, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument,
   nummerZurNachricht, standAnnehmen, statusText, warteText, zusammenfassungSessionId,
 } from "./liste.js";
 
@@ -255,8 +255,12 @@ function abfragePlanen() {
     const nr = neueAnfrage();
     const r = await api("GET", `/sitzungen/${t.session_id}/stand`);
     if (token !== z.token || !z.liste) return;
-    if (r.ok && standAnwenden(r.daten, nr)) listeZeigen();
-    else abfragePlanen(); // fehlgeschlagen oder veraltet: der eigene Stand sagt noch „wird bewertet“
+    const vorher = z.kursabgabe?.zustand;
+    if (r.ok && standAnwenden(r.daten, nr)) {
+      listeZeigen();
+      // „Kurs abgeben“ ist eben fertig: die Endansicht (Bewertung) kommt wie sonst über „weiter“.
+      if (kursEndeLaden({ vorher, nachher: z.kursabgabe?.zustand, phase: z.phase })) void listenWeiter(true);
+    } else abfragePlanen(); // fehlgeschlagen oder veraltet: der eigene Stand sagt noch „wird bewertet“
   }, ABFRAGE_MS);
 }
 
@@ -272,6 +276,7 @@ function listenkopfZeigen() {
   zusammenfassungZeigen();
   const an = z.liste !== null && z.phase !== "ende";
   $("listenkopf").hidden = !an;
+  $("kurs-abgeben").hidden = !kursAbgebenSichtbar({ jeAufgabe: z.jeAufgabe, phase: z.phase, kursabgabe: z.kursabgabe });
   if (!an) return;
   const aufgaben = z.liste.aufgaben;
   const wahl = $("aufgabe-wahl");
@@ -289,7 +294,6 @@ function listenkopfZeigen() {
   status.textContent = a ? statusText(a.status, a.meldung) : "";
   status.dataset.status = a?.status ?? "";
   $("warte-text").textContent = warteText(z.liste.wartend);
-  $("kurs-abgeben").hidden = !kursAbgebenSichtbar({ jeAufgabe: z.jeAufgabe, phase: z.phase, kursabgabe: z.kursabgabe });
   $("kurs-abgabe-text").textContent = z.jeAufgabe ? kursAbgabeText(z.kursabgabe) : "";
 }
 

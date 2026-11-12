@@ -146,6 +146,14 @@ export function kursAbgebenSichtbar({ jeAufgabe, phase, kursabgabe }) {
   return jeAufgabe === true && phase !== "ende" && kursabgabe?.zustand !== "laeuft";
 }
 
+/**
+ * Die Abfrage zeigt „Kurs abgeben“ eben als fertig (`vorher` → `nachher`, je `kursabgabe.zustand`): die Seite lädt
+ * die Endansicht über „weiter“, solange sie nicht schon am Ende ist.
+ */
+export function kursEndeLaden({ vorher, nachher, phase }) {
+  return vorher !== "fertig" && nachher === "fertig" && phase !== "ende";
+}
+
 /** Ein nicht gesendeter Antwortentwurf (Typ `code`) sperrt „Kurs abgeben“, solange die Aufgabe nicht bestätigt ist. */
 export function entwurfSperrt({ typ, status, entwurf }) {
   return typ === "code" && status !== "bestaetigt" && typeof entwurf === "string" && entwurf.trim() !== "";
