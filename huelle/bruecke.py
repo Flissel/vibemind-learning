@@ -1990,7 +1990,9 @@ class Bruecke:
         Ablauf: Bewertungsdaten holen (lesend, ohne Schluessel), die Flaechen-KI bewerten lassen, dann die
         Vorbewertung mit `externe_bewertung`. Jeder Fehler auf diesem Weg (kein Bewerter, Bewertungsdaten weg,
         KI weg oder unbrauchbar) fuehrt zur Vorbewertung ohne sie, also zur Bewertung durch den Server. Lehnt Learning
-        die externe Bewertung ab, gibt es genau einen zweiten Aufruf ohne sie; dessen Fehler gelten unveraendert.
+        die externe Bewertung ab (`LearningAbgelehnt`), gibt es genau einen zweiten Aufruf ohne sie; dessen Fehler
+        gelten unveraendert. Ist Learning nicht erreichbar (`LearningWeg`), gibt es keinen zweiten Aufruf: dann greift
+        die bekannte Fehlerbehandlung.
         Die Nutzlast ohne `externe_bewertung` ergibt einen eigenen Idempotenzschluessel (nie den des ersten Aufrufs).
         Bewertungsdaten (Musterloesung, Rubrik) bleiben in dieser Methode und gehen nie in Antwort oder Log.
         """
@@ -2005,8 +2007,9 @@ class Bruecke:
             return vorbewerten(payload)
         try:
             return vorbewerten({**payload, "externe_bewertung": extern})
-        except Exception as fehler:  # noqa: BLE001 - jede Ablehnung der externen Bewertung: Rueckfall auf den Server
-            log.warning("Externe Bewertung nicht angenommen, der Server bewertet: %s", _typ(fehler))
+        except LearningAbgelehnt as fehler:
+            # Nur der Fehlercode, nie die Nachricht (sie koennte Gelesenes enthalten).
+            log.warning("Externe Bewertung nicht angenommen (%s), der Server bewertet", fehler.code)
             return vorbewerten(payload)
 
     def _externe_bewertung(

@@ -121,6 +121,35 @@ def _id_of(entry: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _beschriftung(task: Mapping[str, object]) -> tuple[str, Beschriftung, dict[str, object]]:
+    """Type, labels and the label table of a public task, exactly as the canvas shows them."""
+    task_type = str(task.get("type", ""))
+    presentation = task.get("presentation")
+    beschriftung = beschriften(
+        task_type,
+        presentation if isinstance(presentation, dict) else {},
+        [o for o in _entries(task.get("options")) if isinstance(o, dict)],
+    )
+    # Whitelist: only what the learner sees. Nothing else of the task is forwarded.
+    return task_type, beschriftung, _etiketten(beschriftung, task)
+
+
+def leseauftrag(task: Mapping[str, object]) -> dict[str, object]:
+    """What any reader of the handwriting gets besides the task text: the format of its
+    `roh` reading and the label table (label -> shown text). No ids, no solution."""
+    task_type, _, etiketten = _beschriftung(task)
+    return {"roh": dict(_FORMAT.get(task_type, {})), "etiketten": etiketten}
+
+
+def antwort_aus_lesung(task: Mapping[str, object], roh: dict[str, object]) -> dict[str, object] | None:
+    """A `roh` reading (labels, values as written) as an answer for `score_response`, or None.
+
+    The one mapping for every reader: the server's reader model and the canvas AI alike.
+    """
+    task_type, beschriftung, etiketten = _beschriftung(task)
+    return antwort_aus_etiketten(task_type, beschriftung, _auf_etiketten(task_type, roh, etiketten))
+
+
 class HandschriftLeser:
     """One vision-model reading per call; never sees the expected answer."""
 
@@ -133,19 +162,12 @@ class HandschriftLeser:
     ) -> tuple[GelesenV1, dict[str, object] | None]:
         bild = png_bild(png)  # signature and size are checked before any model call
         task_type = str(task.get("type", ""))
-        presentation = task.get("presentation")
-        beschriftung = beschriften(
-            task_type,
-            presentation if isinstance(presentation, dict) else {},
-            [o for o in _entries(task.get("options")) if isinstance(o, dict)],
-        )
-        # Whitelist: only what the learner sees. Nothing else of the task is forwarded.
-        etiketten = _etiketten(beschriftung, task)
+        auftrag = leseauftrag(task)
         payload: dict[str, object] = {
             "aufgabentyp": task_type,
             "aufgabentext": str(task.get("prompt", ""))[:5_000],
-            "etiketten": etiketten,
-            "antwortformat": _FORMAT.get(task_type, {}),
+            "etiketten": auftrag["etiketten"],
+            "antwortformat": auftrag["roh"],
         }
         invocation = ModelInvocation(
             role="handschrift_leser",
@@ -157,11 +179,7 @@ class HandschriftLeser:
             image_inputs=(bild,),
         )
         gelesen = asyncio.run(self._lesen(invocation))
-        antwort = (
-            antwort_aus_etiketten(task_type, beschriftung, _auf_etiketten(task_type, gelesen.roh, etiketten))
-            if gelesen.lesbar
-            else None
-        )
+        antwort = antwort_aus_lesung(task, gelesen.roh) if gelesen.lesbar else None
         if antwort is None and gelesen.lesbar:
             gelesen = gelesen.model_copy(update={"lesbar": False})
         return gelesen, antwort

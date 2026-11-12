@@ -126,9 +126,15 @@ class ExterneKriteriumBewertung(_Command):
 
 
 class ExterneGelesen(_Command):
+    """The canvas AI in the role of the handwriting reader: the same fields as `GelesenV1`.
+
+    `roh` holds labels and values as written (format from `Bewertungsdaten.antwortformat`);
+    Learning maps it to an answer with the reader's own mapping.
+    """
+
     lesbar: bool
     text: str = Field(max_length=200)
-    antwort: dict[str, object] | None = None
+    roh: dict[str, object] = Field(default_factory=dict)
 
 
 class ExterneBewertung(_Command):
@@ -274,7 +280,8 @@ class Bewertungsdaten(BaseModel):
     # Rubric tasks: the model solution and the criteria. Fixed solutions stay in Learning.
     musterloesung: str | None = None
     kriterien: list[BewertungsKriterium] = Field(default_factory=list)
-    # Fixed solutions: the answer shape `score_response` takes and the options, without the solution.
+    # Fixed solutions: what the handwriting reader gets, the format of its `roh` reading and
+    # the label table (label -> shown text). No ids, no solution: Learning maps and compares.
     antwortformat: dict[str, object] = Field(default_factory=dict)
 
 
@@ -608,20 +615,25 @@ class AdaptiveSessionService:
             if row.mode == "exam":
                 raise PermissionError("exam sessions have no grading data")
             attempt, item = self._open_attempt(db, row, expected_session_revision, attempt_id)
+            # The same types as the handwriting preview (`_vorschau_rubrik`): what it refuses
+            # (e.g. code) gets no grading data, so no AI is asked for it.
             if item.item_type in _DETERMINISTIC_TYPES:
                 art: Literal["rubric", "deterministic"] = "deterministic"
-            elif item.item_type in _RUBRIC_TYPES or item.item_type == "penecho_canvas":
+            elif item.item_type in _HANDSCHRIFT_RUBRIC_TYPES:
                 art = "rubric"
             else:
                 raise ValueError(f"{item.item_type} tasks have no grading data")
             task = self._public_task(item, row.id)
             if art == "deterministic":
+                from spaces.learning.services.evaluation.handschrift import leseauftrag
+
+                aufgabe = task.model_dump(mode="json")
                 return Bewertungsdaten(
                     attempt_id=attempt.id,
                     item_type=item.item_type,
                     art=art,
-                    aufgabe=task.model_dump(mode="json"),
-                    antwortformat=self._antwortformat(item.item_type, task),
+                    aufgabe=aufgabe,
+                    antwortformat=leseauftrag(aufgabe),
                 )
             expected = item.expected_answer if isinstance(item.expected_answer, dict) else {}
             text = expected.get("text")
@@ -640,24 +652,6 @@ class AdaptiveSessionService:
                     for k in item.rubric
                 ],
             )
-
-    # Field of the answer object per fixed-solution type (see evaluation.deterministic).
-    _ANTWORT_FELD = {
-        "single_choice": "choice_id",
-        "multiple_choice": "choice_ids",
-        "matching": "pairs",
-        "ordering": "order",
-        "numeric": "value",
-        "fill_in": "text",
-    }
-
-    @classmethod
-    def _antwortformat(cls, item_type: str, task: PublicTask) -> dict[str, object]:
-        """The answer shape and the shown options; the options are the public ones, in shown order."""
-        form: dict[str, object] = {"form": cls._ANTWORT_FELD[item_type]}
-        if item_type in {"single_choice", "multiple_choice", "ordering"}:
-            form["optionen"] = [{"id": o.id, "text": o.label} for o in task.options]
-        return form
 
     def vorbewerten(self, command: VorbewertungCommand) -> Vorbewertung:
         """Grade the current attempt as a preview: stored, but no learning state changes.
@@ -707,15 +701,22 @@ class AdaptiveSessionService:
         elif png is not None:
             if extern is not None:
                 assert extern.gelesen is not None
-                # The canvas AI read the answer; Learning only compares it, the reader stays idle.
-                from spaces.learning.services.evaluation.handschrift import GelesenV1
+                # The canvas AI takes the reader's role: its raw reading (labels, values as
+                # written) goes through the reader's own mapping; the reader stays idle.
+                from spaces.learning.services.evaluation.handschrift import (
+                    GelesenV1,
+                    antwort_aus_lesung,
+                )
 
                 gelesen = GelesenV1(
                     lesbar=extern.gelesen.lesbar,
-                    roh=dict(extern.gelesen.antwort or {}),
+                    roh=dict(extern.gelesen.roh),
                     text=extern.gelesen.text,
                 )
-                antwort = extern.gelesen.antwort
+                antwort = antwort_aus_lesung(task, gelesen.roh) if gelesen.lesbar else None
+                if gelesen.lesbar and antwort is None:
+                    # Not a reading of this task: refused, so the Huelle lets the server grade.
+                    raise ValueError("externe_bewertung reading does not map to an answer")
             else:
                 if self._handschrift_leser is None:
                     raise RuntimeError("handwriting reader is not configured")
@@ -724,6 +725,8 @@ class AdaptiveSessionService:
                 try:
                     bewertung = self._bewerten(item, antwort)
                 except ValueError:
+                    if extern is not None:
+                        raise ValueError("externe_bewertung reading cannot be scored") from None
                     # A reading the scorer cannot take counts as unreadable.
                     bewertung = None
         else:

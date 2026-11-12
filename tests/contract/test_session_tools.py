@@ -385,7 +385,8 @@ def test_bewertungsdaten_werkzeug_lesend_ohne_loesung_und_ohne_aenderung(tmp_pat
     assert result["state"] == "completed"
     daten = result["result"]
     assert daten["art"] == "deterministic"
-    assert daten["antwortformat"]["form"] == "choice_id"
+    assert daten["antwortformat"]["roh"] == {"auswahl": "list with exactly one label"}
+    assert set(daten["antwortformat"]["etiketten"]["optionen"]) == {"A", "B"}
     assert daten["musterloesung"] is None and daten["kriterien"] == []
     assert "ui_intent" not in result
     # Lesend: Revision unveraendert, zweiter Aufruf mit derselben Revision gelingt.
@@ -416,9 +417,11 @@ def test_preview_handschrift_ohne_leser_ist_nicht_verfuegbar(tmp_path: Path) -> 
 def test_preview_externe_bewertung_fest_wird_uebernommen(tmp_path: Path) -> None:
     engine, dispatcher, course_id, _ = _setup(tmp_path)
     turn = _start(dispatcher, course_id)
+    # Die KI liest das Etikett, unter dem die Flaeche die richtige Option "a" zeigt.
+    etikett = "AB"[[o["id"] for o in turn["task"]["options"]].index("a")]
     extern = {
         "grader": "ki_flaeche",
-        "gelesen": {"lesbar": True, "text": "A", "antwort": {"choice_id": "a"}},
+        "gelesen": {"lesbar": True, "text": etikett, "roh": {"auswahl": [etikett]}},
     }
     result = _preview(
         dispatcher, turn, {"handschrift_png_base64": PNG_B64, "externe_bewertung": extern}
@@ -426,6 +429,22 @@ def test_preview_externe_bewertung_fest_wird_uebernommen(tmp_path: Path) -> None
     assert result["state"] == "completed", result
     vor = result["result"]["vorbewertung"]
     assert vor["bewertet_von"] == "ki_flaeche" and vor["score"] == 1.0
+    engine.dispose()
+
+
+def test_preview_externe_bewertung_nicht_zuordenbar_wird_abgelehnt(tmp_path: Path) -> None:
+    engine, dispatcher, course_id, _ = _setup(tmp_path)
+    turn = _start(dispatcher, course_id)
+    extern = {
+        "grader": "ki_flaeche",
+        "gelesen": {"lesbar": True, "text": "Z", "roh": {"auswahl": ["Z"]}},
+    }
+    result = _preview(
+        dispatcher, turn, {"handschrift_png_base64": PNG_B64, "externe_bewertung": extern}
+    )
+    # Abgelehnt (nicht "unavailable"): die Huelle wiederholt dann ohne externe Bewertung.
+    assert result["state"] == "rejected", result
+    assert result["error"]["code"] == "invalid_session_request"
     engine.dispose()
 
 
@@ -439,7 +458,7 @@ def test_preview_externe_bewertung_nur_mit_bild(tmp_path: Path, zusatz) -> None:
     turn = _start(dispatcher, course_id)
     extern = {
         "grader": "ki_flaeche",
-        "gelesen": {"lesbar": True, "text": "A", "antwort": {"choice_id": "a"}},
+        "gelesen": {"lesbar": True, "text": "A", "roh": {"auswahl": ["A"]}},
     }
     result = _preview(dispatcher, turn, {"externe_bewertung": extern, **zusatz})
     assert result["state"] == "rejected", result

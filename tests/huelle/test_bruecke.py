@@ -4406,8 +4406,9 @@ GEHEIM = "MUSTERLOESUNG-GEHEIM"
 BEWERTUNGSDATEN = {"attempt_id": "77777777-7777-4777-8777-777777777771", "item_type": "numeric", "art": "deterministic",
                    "aufgabe": "Frage", "musterloesung": GEHEIM,
                    "kriterien": [{"criterion_id": "c1", "description": "GEHEIMES-KRITERIUM", "points": 10}],
-                   "antwortformat": {"form": "value"}}
-EXTERN = {"grader": "ki_flaeche", "gelesen": {"lesbar": True, "text": "-1,5", "antwort": {"value": "-1,5"}}}
+                   "antwortformat": {"roh": {"wert": "the number as written"},
+                                     "etiketten": {"optionen": {}, "links": {}, "rechts": {}}}}
+EXTERN = {"grader": "ki_flaeche", "gelesen": {"lesbar": True, "text": "-1,5", "roh": {"wert": "-1,5"}}}
 
 
 class FakeBewerter:
@@ -4481,9 +4482,9 @@ def test_abgabe_rubrik_nimmt_den_ganzen_bereich_auch_fuer_die_ki() -> None:
     assert bewerter.aufrufe[0][0] == PNG
 
 
-@pytest.mark.parametrize("fall", ["ki_none", "learning_lehnt_ab", "learning_weg", "bewertungsdaten_scheitern",
+@pytest.mark.parametrize("fall", ["ki_none", "learning_lehnt_ab", "bewertungsdaten_scheitern",
                                   "bewertungsdaten_abgelehnt"])
-def test_abgabe_ruecklauf_auf_server(fall: str) -> None:
+def test_abgabe_ruecklauf_auf_server(fall: str, caplog: pytest.LogCaptureFixture) -> None:
     ablehnung = LearningAbgelehnt("external grade invalid", "invalid_session_request")
     bewerter = FakeBewerter(None if fall == "ki_none" else EXTERN)
     daten = (LearningWeg("learning_task_bewertungsdaten") if fall == "bewertungsdaten_scheitern"
@@ -4493,23 +4494,39 @@ def test_abgabe_ruecklauf_auf_server(fall: str) -> None:
     vorschau = None
     if fall == "learning_lehnt_ab":
         vorschau = [ablehnung, gut]
-    elif fall == "learning_weg":
-        vorschau = [LearningWeg("learning_task_preview"), gut]
     lern, client, penecho, _ = _ki_sitzung("numeric", bewerter=bewerter, daten=daten, vorschau=vorschau)
-    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    with caplog.at_level("WARNING"):
+        r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
     assert r.status_code == 200, r.text
     vorschauen = _aufrufe(lern, "learning_task_preview")
     # Der letzte (erfolgreiche) Aufruf geht immer ohne externe Bewertung an den Server.
     assert "externe_bewertung" not in vorschauen[-1]["payload"]
     assert base64.b64decode(vorschauen[-1]["payload"]["handschrift_png_base64"]) == PNG
-    if fall in ("learning_lehnt_ab", "learning_weg"):
+    if fall == "learning_lehnt_ab":
         assert len(vorschauen) == 2 and "externe_bewertung" in vorschauen[0]["payload"]
+        # Der Rueckfall nennt den Fehlercode, nie den Inhalt der Ablehnung.
+        assert "invalid_session_request" in caplog.text and "external grade invalid" not in caplog.text
     else:
         assert len(vorschauen) == 1
     if fall.startswith("bewertungsdaten"):
         assert bewerter.aufrufe == []  # ohne Bewertungsdaten keine Anfrage an die Flaechen-KI
     # Die Karte erscheint wie bisher; kein Fehler fuer die Lernenden.
     assert len(_karten(penecho)) == 1 and r.json()["urteil"] == "Richtig."
+
+
+def test_learning_weg_mit_ki_bewertung_ohne_wiederholung() -> None:
+    # Learning nicht erreichbar ist keine Ablehnung der externen Bewertung: kein zweiter Aufruf,
+    # die bekannte Fehlerbehandlung (503, Sperre bleibt) greift.
+    bewerter = FakeBewerter(EXTERN)
+    offen = turn(TASK_1, typ="numeric", mode="training")
+    gut = {"session": offen, "vorbewertung": _vor()}
+    lern, client, penecho, _ = _ki_sitzung(
+        "numeric", bewerter=bewerter, vorschau=[LearningWeg("learning_task_preview"), gut])
+    r = client.post(f"/lernen/api/sitzungen/{SID}/abgeben", json={"revision": 1})
+    assert r.status_code == 503, r.text
+    vorschauen = _aufrufe(lern, "learning_task_preview")
+    assert len(vorschauen) == 1 and "externe_bewertung" in vorschauen[0]["payload"]
+    assert _karten(penecho) == []
 
 
 def test_ruecklauf_zweiter_fehler_geht_durch_die_bekannte_behandlung() -> None:

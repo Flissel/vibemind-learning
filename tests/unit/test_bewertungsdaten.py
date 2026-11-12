@@ -68,14 +68,15 @@ def test_bewertungsdaten_deterministisch_ohne_loesung(tmp_path: Path) -> None:
     assert daten.art == "deterministic"
     assert daten.musterloesung is None
     assert daten.kriterien == []
-    assert daten.antwortformat["form"] == "choice_id"
-    assert {o["id"] for o in daten.antwortformat["optionen"]} == {"correct-1", "wrong-1"}
-    assert {o["text"] for o in daten.antwortformat["optionen"]} == {
-        "Quellen zuerst pruefen", "Antwort frei erfinden",
+    # Wie der Handschriftleser: das Leseformat und die Etiketten, die die Flaeche zeigt (A, B, ...).
+    angezeigt = [o.label for o in turn.task.options]
+    assert daten.antwortformat == {
+        "roh": {"auswahl": "list with exactly one label"},
+        "etiketten": {"optionen": {"A": angezeigt[0], "B": angezeigt[1]}, "links": {}, "rechts": {}},
     }
-    # Die Form nennt nur Felder, die der Lernende fuellt; nichts markiert die richtige Option.
-    assert set(daten.antwortformat) == {"form", "optionen"}
-    assert all(set(o) == {"id", "text"} for o in daten.antwortformat["optionen"])
+    # Keine Kennungen, nichts markiert die richtige Option.
+    format_text = json.dumps(daten.antwortformat)
+    assert "correct-1" not in format_text and "wrong-1" not in format_text
     engine.dispose()
 
     (tmp_path / "n").mkdir()
@@ -85,8 +86,49 @@ def test_bewertungsdaten_deterministisch_ohne_loesung(tmp_path: Path) -> None:
     daten = _daten(service, turn)
     assert daten.art == "deterministic"
     assert daten.musterloesung is None and daten.kriterien == []
-    assert daten.antwortformat == {"form": "value"}
+    assert daten.antwortformat == {
+        "roh": {"wert": "the number as written"},
+        "etiketten": {"optionen": {}, "links": {}, "rechts": {}},
+    }
     assert "4217" not in json.dumps(daten.model_dump(mode="json"))
+    engine.dispose()
+
+
+def test_bewertungsdaten_zuordnung_etiketten_ohne_loesung(tmp_path: Path) -> None:
+    from spaces.learning.tests.unit.test_externe_bewertung import _zuordnung
+
+    engine, factory, course_id, _ = _store(tmp_path, [_zuordnung()])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW)
+    turn = _start(service, course_id)
+    daten = _daten(service, turn)
+    rechts = [r["text"] for r in turn.task.presentation["right"]]
+    assert daten.antwortformat == {
+        "roh": {"paare": "left label -> right label"},
+        "etiketten": {
+            "optionen": {},
+            "links": {"1": "Hund", "2": "Katze", "3": "Kuh"},
+            "rechts": dict(zip("ABC", rechts)),
+        },
+    }
+    format_text = json.dumps(daten.antwortformat)
+    assert not any(k in format_text for k in ('"l1"', '"r1"', "pairs"))
+    engine.dispose()
+
+
+def test_bewertungsdaten_nur_fuer_typen_mit_vorschau(tmp_path: Path) -> None:
+    # Was die Vorbewertung ablehnt (code), bekommt auch keine Bewertungsdaten: die Huelle fragt dann keine KI.
+    engine, factory, course_id, _ = _store(tmp_path, [_rubric_item("code")])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
+    turn = _start(service, course_id)
+    with pytest.raises(ValueError, match="no grading data"):
+        _daten(service, turn)
+    engine.dispose()
+
+    (tmp_path / "p").mkdir()
+    engine, factory, course_id, _ = _store(tmp_path / "p", [_rubric_item("penecho_canvas")])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
+    turn = _start(service, course_id)
+    assert _daten(service, turn).art == "rubric"
     engine.dispose()
 
 
