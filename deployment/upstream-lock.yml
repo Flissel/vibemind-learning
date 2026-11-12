@@ -4,7 +4,7 @@ sources:
     path: learnhouse
     url: https://github.com/Flissel/learnhouse.git
     upstream: https://github.com/learnhouse/learnhouse.git
-    commit: cd321767811342bd1f551a4ecc942c538264d8fc
+    commit: ba13c68900c2312e93fd30f21b60fcb9daa5bded
     license: AGPL-3.0-only
   penecho:
     path: penecho
