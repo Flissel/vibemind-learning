@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  abgabeNummerZulaessig, antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
+  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
@@ -84,6 +84,7 @@ const z = {
   // Gruppenfläche (Teil C): Gruppe aus der Adresse; Gruppe und Person der Fläche kommen aus der Antwort der Brücke.
   gruppeId,
   flaechenAbgabe: false, // eine Abgabe aus PenEcho läuft gerade an (Doppelklick: die zweite Nachricht wird verworfen)
+  mcpBereit: false, // PenEcho hat „MCP bereit“ gemeldet (egal ob vor oder nach dem Öffnen)
   mcpAutoVerbunden: false, // „Fläche verbinden“ wurde auf PenEchos Meldung schon einmal ausgelöst (höchstens einmal je Laden)
   rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
@@ -617,6 +618,15 @@ function begriffeZeigen(begriffe) {
 function flaechenHinweisZeigen(daten) {
   $("flaechen-hinweis-text").textContent = FLAECHEN_HINWEIS;
   $("flaechen-hinweis").hidden = !flaechenHinweis(daten);
+  autoVerbindenPruefen();
+}
+
+// PenEcho kann „bereit“ melden, bevor die Brücke „nicht verbunden“ antwortet (und umgekehrt): beide Reihenfolgen
+// führen zu höchstens einem automatischen Verbinden je Laden.
+function autoVerbindenPruefen() {
+  if (!autoVerbindenFaellig({ mcpBereit: z.mcpBereit, hinweisSichtbar: !$("flaechen-hinweis").hidden, schonAutoVerbunden: z.mcpAutoVerbunden })) return;
+  z.mcpAutoVerbunden = true;
+  void flaecheVerbinden();
 }
 
 // Erneutes Oeffnen des aktuellen Kurses nur zum Pruefen der Verbindung: nichts wird abgegeben oder neu geladen.
@@ -1024,7 +1034,12 @@ async function flaecheAbgeben(bereich) {
   z.flaechenAbgabe = true;
   try {
     if (z.liste && z.gewaehlt !== nummer) await aufgabeWaehlen(nummer);
-    if (z.turn !== t) return; // inzwischen anderer Kurs oder andere Aufgabe
+    // z.turn wird bei jeder Standabfrage ersetzt; maßgeblich sind Sitzung und gewählte Aufgabe, nicht die Objektidentität.
+    if (z.turn?.session_id !== t.session_id || (z.liste && z.gewaehlt !== nummer)) {
+      z.hinweis = TEXT.abgabeUnzulaessig;
+      leisteZeigen();
+      return;
+    }
     await abgeben();
   } finally {
     z.flaechenAbgabe = false;
@@ -1045,9 +1060,9 @@ function flaechenNachricht(ereignis) {
   if (!m) return;
   if (m.typ === "huelle-abgeben") void flaecheAbgeben(m.bereich);
   else if (m.typ === "huelle-ki-schritt") kiSchrittMelden(m);
-  else if (m.typ === "huelle-mcp-bereit" && !z.mcpAutoVerbunden && $("flaechen-hinweis").hidden === false) {
-    z.mcpAutoVerbunden = true;
-    void flaecheVerbinden();
+  else if (m.typ === "huelle-mcp-bereit") {
+    z.mcpBereit = true;
+    autoVerbindenPruefen();
   }
 }
 

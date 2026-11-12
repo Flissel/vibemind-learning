@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { abgabeNummerZulaessig, antwortAus, formel, klartext, parseZahl } from "./aufgabe.js";
+import { abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, formel, klartext, parseZahl } from "./aufgabe.js";
 
 test("single_choice: choice_id", () => {
   assert.deepEqual(antwortAus({ type: "single_choice" }, { auswahl: ["b"] }), { choice_id: "b" });
@@ -503,4 +503,15 @@ test("abgabeNummerZulaessig: Listenkurs nur noch nicht gebuchte Aufgaben", () =>
   assert.equal(abgabeNummerZulaessig(2.5, z), false);
   assert.equal(abgabeNummerZulaessig(2, null), false);
   assert.equal(abgabeNummerZulaessig(2, { liste: true }), false);
+});
+
+test("autoVerbindenFaellig: beide Reihenfolgen, einmal je Laden", () => {
+  // Nachricht vor dem Hinweis: noch nicht faellig, dann faellig sobald der Hinweis steht
+  assert.equal(autoVerbindenFaellig({ mcpBereit: true, hinweisSichtbar: false, schonAutoVerbunden: false }), false);
+  assert.equal(autoVerbindenFaellig({ mcpBereit: true, hinweisSichtbar: true, schonAutoVerbunden: false }), true);
+  // Hinweis vor der Nachricht
+  assert.equal(autoVerbindenFaellig({ mcpBereit: false, hinweisSichtbar: true, schonAutoVerbunden: false }), false);
+  // nie ein zweites Mal
+  assert.equal(autoVerbindenFaellig({ mcpBereit: true, hinweisSichtbar: true, schonAutoVerbunden: true }), false);
+  assert.equal(autoVerbindenFaellig(), false);
 });

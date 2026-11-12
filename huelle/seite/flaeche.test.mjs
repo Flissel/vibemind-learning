@@ -327,16 +327,6 @@ test("huelle.js verdrahtet die Nachrichten der Flaeche (Quelltext)", async () =>
   assert.match(js, /\/ki-schritt`/);
   assert.match(js, /m\.bereich \+ 1/);
   assert.match(js, /mcpAutoVerbunden/);
-});
-
-test("huelle.js verdrahtet die Nachrichten der Flaeche (Quelltext)", async () => {
-  const { readFileSync } = await import("node:fs");
-  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
-  assert.match(js, /addEventListener\("message", flaechenNachricht\)/);
-  assert.match(js, /nachrichtAusFlaeche\(ereignis, rahmen\.contentWindow, flaechenHerkunft\(rahmen\)\)/);
-  assert.match(js, /abgabeNummerZulaessig\(nummer, abgabeZustand\(\)\)/);
-  assert.match(js, /await abgeben\(\)/); // dieselbe Funktion wie der Knopf
-  assert.match(js, /\/ki-schritt`/);
-  assert.match(js, /m\.bereich \+ 1/);
-  assert.match(js, /mcpAutoVerbunden/);
+  assert.match(js, /autoVerbindenFaellig\(/);
+  assert.match(js, /z\.turn\?\.session_id !== t\.session_id/);
 });

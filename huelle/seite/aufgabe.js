@@ -553,3 +553,8 @@ export function abgabeNummerZulaessig(nummer, zustand) {
   const a = Array.isArray(zustand.aufgaben) ? zustand.aufgaben.find((x) => x?.nummer === nummer) : null;
   return !!a && a.status !== "in_bewertung" && a.status !== "bestaetigt";
 }
+
+/** Soll die Seite die Flaeche jetzt von selbst verbinden? Einmal je Laden, wenn PenEcho bereit ist und der Hinweis „nicht verbunden“ steht. */
+export function autoVerbindenFaellig({ mcpBereit, hinweisSichtbar, schonAutoVerbunden } = {}) {
+  return mcpBereit === true && hinweisSichtbar === true && schonAutoVerbunden !== true;
+}
