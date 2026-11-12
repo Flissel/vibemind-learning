@@ -344,9 +344,6 @@ def _an_ecke(belegung: Sequence[dict[str, Any]], platz: dict[str, int], art: str
     return None
 
 
-_EIGENE_ARTEN = frozenset({"text", "image"})  # was die Huelle selbst setzt (siehe PenEchoMcp.ist_leer)
-
-
 def _hindernisse(struktur: dict[str, Any]) -> list[dict[str, Any]]:
     details = struktur.get("details")
     roh = details.get("obstacles") if isinstance(details, dict) else None
@@ -602,7 +599,7 @@ class PenEchoMcp:
                 raise PenEchoNichtSichtbar(code)
             if code == "CANVAS_BUSY":
                 raise PenEchoBeschaeftigt(code)
-            if code == "unsupported_operation":
+            if code in ("unsupported_operation", "tool_not_found"):
                 raise PenEchoNichtUnterstuetzt(code)
             if code == "document_not_found":
                 raise PenEchoDokumentFehlt(code)
@@ -615,13 +612,12 @@ class PenEchoMcp:
             raise PenEchoNichtErreichbar("werkzeug")
         return ergebnis
 
-    def _belegung(self, session_id: str, region: dict[str, int], *, streng: bool = False) -> list[dict[str, Any]]:
+    def _belegung(self, session_id: str, region: dict[str, int]) -> list[dict[str, Any]]:
         """Objekte in `region` (penecho_list_files, nur lesend), je {objectId, kind, bounds}.
 
         Abnahme 06.11. (F18): "steht schon da" per LAYOUT_CONFLICT zu erkennen hinterliess je Probe einen
         unaufgeloesten Eintrag in PenEchos Sitzung (siehe PenEchoAnfragenStau). Lesen zaehlt dort nicht.
         Nicht lesbar: leere Liste, dann gilt wie bisher die Probe beim Setzen. Hoechstens 5 Seiten.
-        `streng`: nicht lesbar heisst Fehler (fuer `ist_leer`, das "leer" nicht von "unbekannt" trennen darf).
         """
         belegung: list[dict[str, Any]] = []
         versatz: object = 0
@@ -640,8 +636,6 @@ class PenEchoMcp:
         except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
             raise
         except PenEchoNichtErreichbar as fehler:
-            if streng:
-                raise
             log.warning("Belegung nicht gelesen: %s", _typ(fehler))
         return belegung
 
@@ -720,7 +714,7 @@ class PenEchoMcp:
 
         True bei Quittung. False, wenn nichts zu schliessen ist oder es nicht geht: kein gemerktes Dokument,
         Tab/Browser nicht gelistet, `unsupported_operation` (alter Browser), `document_not_found`, unbekanntes
-        Werkzeug (JSON-RPC-Fehler). Andere Fehler werfen. Die instanceId kommt wie beim Oeffnen aus
+        Werkzeug (`tool_not_found`, alte Lernflaeche). Andere Fehler werfen. Die instanceId kommt wie beim Oeffnen aus
         penecho_list_canvases.
         """
         dokument = self.dokument_von(schluessel)
@@ -747,10 +741,6 @@ class PenEchoMcp:
             })
         except (PenEchoNichtUnterstuetzt, PenEchoDokumentFehlt):
             return False
-        except PenEchoNichtErreichbar as fehler:
-            if fehler.args and fehler.args[0] == "jsonrpc":  # Werkzeug dem Server unbekannt
-                return False
-            raise
         return True
 
     # ---- Oeffentliche Methoden -------------------------------------------
@@ -1414,20 +1404,6 @@ class PenEchoMcp:
                 if _jetzt() >= ende:
                     raise PenEchoBeschaeftigt("CANVAS_BUSY") from None
                 _schlafen(ZEIGEN_ABSTAND_S)
-
-    def ist_leer(self, session_id: str, rechteck: dict[str, int]) -> bool:
-        """Liegt im Arbeits- und Ergebnisfeld von `felder(rechteck)` nur, was die Huelle selbst gesetzt hat?
-
-        Eigen sind Objekte der Art "text" (Schild) und "image" (Aufgabenbilder): die Huelle setzt nur diese
-        beiden per create_text/place_image; der Aufgabentext selbst liegt im Textfeld, der blaue Rahmen ist
-        Tinte ohne Objekt (siehe `_feld_zeichnen`). Handschrift der Lernenden ist jede andere Art
-        (Strich/Tinte/...). Nicht lesbar: Fehler (nie "leer" raten).
-        """
-        f = felder(rechteck)
-        for feld in (f.arbeitsfeld, f.ergebnisfeld):
-            if any(o["kind"] not in _EIGENE_ARTEN for o in self._belegung(session_id, feld, streng=True)):
-                return False
-        return True
 
     def _aufnahme(self, session_id: str, region: dict[str, int], timeout: float | None = None) -> bytes:
         # schema.js:666 penecho_capture_canvas: target "region" verlangt region {x,y,w,h};

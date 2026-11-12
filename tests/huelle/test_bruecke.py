@@ -113,9 +113,8 @@ class FakePenEcho:
         self.aufnahme_fehler: Any = None  # rechteck -> Exception | None
         self.bericht_rechtecke: list[dict[int, dict[str, int]] | None] = []
         self.rueckmeldung_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je rueckmeldung_setzen
-        # Aufgaben-Canvas: Antworten der neuen Methoden (Standard: Canvas schliesst, ist nicht leer, kein Dokument).
+        # Aufgaben-Canvas: Antworten der neuen Methoden (Standard: Canvas schliesst, kein Dokument).
         self.schliessen_ergebnis = True
-        self.leer = False
         self.dokumente_je_schluessel: dict[str, str] = {}
 
     def _pruefen(self, name: str) -> None:
@@ -230,11 +229,6 @@ class FakePenEcho:
     def dokument_von(self, schluessel: str) -> str | None:
         self.aufrufe.append(("dokument_von", schluessel))
         return self.dokumente_je_schluessel.get(schluessel)
-
-    def ist_leer(self, session_id: str, rechteck: dict[str, int]) -> bool:
-        self.aufrufe.append(("ist_leer", session_id))
-        self._pruefen("ist_leer")
-        return self.leer
 
     def namen(self) -> list[str]:
         return [a[0] for a in self.aufrufe]

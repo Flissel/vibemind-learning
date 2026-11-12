@@ -1959,18 +1959,6 @@ def _schliess_transport(fake: Fake, *, schliessen: str | None = None, canvases: 
     return httpx.MockTransport(antwort)
 
 
-def _ohne_close_werkzeug(fake: Fake):
-    inner = _schliess_transport(fake)
-
-    def antwort(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_close_canvas":
-            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32601, "message": "x"}})
-        return inner.handle_request(request)
-
-    return antwort
-
-
 def _dok1(zustand: Path) -> None:
     datei = zustand.parent / "learning-huelle" / DOKUMENTE
     datei.parent.mkdir(parents=True, exist_ok=True)
@@ -2000,8 +1988,8 @@ def test_dokument_schliessen_ohne_dokument_oder_werkzeug(zustand: Path) -> None:
     assert PenEchoMcp(zustand, transport=_schliess_transport(fake)).dokument_schliessen("s1#1", "cv-a") is False
     assert fake.aufrufe("penecho_close_canvas") == []
     _dok1(zustand)
-    # Unbekanntes Werkzeug (alter Browser/PenEcho): JSON-RPC-Fehler statt Quittung.
-    c = PenEchoMcp(zustand, transport=httpx.MockTransport(_ohne_close_werkzeug(Fake())))
+    # Unbekanntes Werkzeug (alte Lernflaeche): isError-Ergebnis mit code tool_not_found.
+    c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen="tool_not_found"))
     assert c.dokument_schliessen("s1#1", "cv-a") is False
 
 
@@ -2010,47 +1998,3 @@ def test_dokument_schliessen_anderer_fehler_wirft(zustand: Path) -> None:
     c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen="REQUEST_ID_CONFLICT"))
     with pytest.raises(PenEchoAnfrageSchonBekannt):
         c.dokument_schliessen("s1#1", "cv-a")
-
-
-RECHTECK = {"x": 100, "y": 100, "w": 2000, "h": 1400}
-
-
-def _leer_transport(fake: Fake, objekte: list[tuple[str, str, dict]]) -> httpx.MockTransport:
-    def antwort(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if body.get("method") == "tools/call" and body["params"]["name"] == "penecho_list_files":
-            fake.anfragen.append((body, request.headers))
-            reg = body["params"]["arguments"]["region"]
-            treffer = [(art, oid, p) for art, oid, p in objekte
-                       if p["x"] < reg["x"] + reg["w"] and p["x"] + p["w"] > reg["x"]
-                       and p["y"] < reg["y"] + reg["h"] and p["y"] + p["h"] > reg["y"]]
-            eintraege = [{"objectId": oid, "kind": art, "bounds": p} for art, oid, p in treffer]
-            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
-                "structuredContent": {"documentId": "d", "entries": eintraege}, "content": []}})
-        return fake(request)
-
-    return httpx.MockTransport(antwort)
-
-
-def test_ist_leer(zustand: Path) -> None:
-    f = felder(RECHTECK)
-    eigene = [
-        ("text", "text-box-1", {**f.textfeld, "h": 300}),
-        ("image", "image-1", {"x": f.arbeitsfeld["x"] + 20, "y": f.arbeitsfeld["y"] + 20, "w": 400, "h": 300}),
-        ("text", "text-box-2", {"x": f.arbeitsfeld["x"] + 20, "y": f.arbeitsfeld["y"], "w": 300, "h": 40}),
-    ]
-    fake = Fake()
-    assert PenEchoMcp(zustand, transport=_leer_transport(fake, eigene)).ist_leer("sess-1", RECHTECK) is True
-    # Gelesen wird nur in Arbeits- und Ergebnisfeld.
-    assert [a["arguments"]["region"] for a in fake.aufrufe("penecho_list_files")] == [f.arbeitsfeld, f.ergebnisfeld]
-    for feld in (f.arbeitsfeld, f.ergebnisfeld):
-        strich = ("ink", "stroke-1", {"x": feld["x"] + 50, "y": feld["y"] + 50, "w": 200, "h": 30})
-        assert PenEchoMcp(zustand, transport=_leer_transport(Fake(), eigene + [strich])).ist_leer(
-            "sess-1", RECHTECK) is False
-
-
-def test_ist_leer_nicht_lesbar_wirft(zustand: Path) -> None:
-    c = PenEchoMcp(zustand, transport=_antwort_mit_fehler(Fake(), lambda n, a: "invalid_arguments"
-                                                          if n == "penecho_list_files" else None))
-    with pytest.raises(PenEchoNichtErreichbar):
-        c.ist_leer("sess-1", RECHTECK)
