@@ -1183,6 +1183,25 @@ class AdaptiveSessionService:
         `bild_png` (handwriting) goes to the rubric with the answer; for a handwritten
         preview penecho_canvas is graded here even when its drawing path is external.
         """
+        if answer == {} and bild_png is None:
+            # Empty answer = "not worked on": 0 points, booked at once, no model call.
+            return _Bewertung(
+                response_id=str(uuid4()),
+                evaluation_id=str(uuid4()),
+                answer=answer,
+                evaluator_type=(
+                    "deterministic" if item.item_type in _DETERMINISTIC_TYPES else "rubric"
+                ),
+                score=0.0,
+                confidence=1.0,
+                accepted=True,
+                rationale_codes=("nicht_bearbeitet",),
+                evaluator_versions={"scorer": "leer-v1", "grader": "server"},
+                source_refs=self._string_list(item.scoring_config.get("source_refs", [])),
+                criteria=(),
+                review_reason=None,
+                review_details={},
+            )
         if item.item_type in _DETERMINISTIC_TYPES:
             return self._bewerten_deterministic(item, answer)
         handschrift = bild_png is not None and item.item_type in _HANDSCHRIFT_RUBRIC_TYPES
