@@ -46,7 +46,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
@@ -63,8 +63,8 @@ from starlette.routing import Route
 
 from ..contracts.beschriftung import beschriften
 from .anordnung import (
-    GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_abschluss, mappen_bereiche,
-    mappen_kopf, mappen_ursprung, passt_in,
+    EINZEL_RECHTECK, GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_abschluss,
+    mappen_bereiche, mappen_kopf, mappen_ursprung, passt_in,
 )
 from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text
 from .einstellung import Einstellung, Kurs
@@ -82,7 +82,7 @@ from .medien import gross as _gross
 from .medien import medien as _medien
 from .penecho_mcp import (
     BEREICHE, BEREICH_BREITE, BEREICH_HOEHE, Aufgabenbild, PenEchoGruppenbindung, PenEchoMcp, PenEchoNichtErreichbar,
-    PenEchoSitzungUnbekannt, loesungsfeld,
+    PenEchoSitzungUnbekannt, aufgaben_titel, loesungsfeld,
 )
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
@@ -282,6 +282,10 @@ class _Sitzung:
     # Teil C: Gruppensitzung (eigene Mappe auf der Gruppenflaeche); None = Solo wie bisher.
     gruppe: int | None = None
     platz: int | None = None        # Platz der Mappe laut Abgleichdienst
+    # Ein Canvas je Aufgabe (Merkmal aus `je-aufgabe.json`, nur neue Solo-Listensitzungen); False = ein Board.
+    je_aufgabe: bool = False
+    # Nur mit `je_aufgabe`: Nummer -> PenEcho-Sitzung ihres Canvas (Schluessel `<sid>#<nummer>`), nur im Speicher.
+    aufgaben_boards: dict[int, str] = field(default_factory=dict)
 
     @property
     def lern_actor(self) -> str:
@@ -579,6 +583,11 @@ class Bruecke:
         self._ki_datei = None if kursende is None else kursende.parent / "ki-schritte.json"
         self._ki_sperre = threading.Lock()
         self._ki = self._ki_lesen()
+        # Ein Canvas je Aufgabe: Merkmal der neuen Solo-Sitzungen (Liste von sids), neben kursende.json. Ohne Datei
+        # kein Merkmal: eines, das einen Neustart nicht uebersteht, wechselte das Modell mitten im Kurs.
+        self._je_datei = None if kursende is None else kursende.parent / "je-aufgabe.json"
+        self._je_sperre = threading.Lock()
+        self._je_aufgabe = self._je_lesen()
         self._ablauf = asyncio.Lock()
         # PenEchoMcp ist nicht fuer parallele Aufrufe gebaut: jeder Flaechenaufruf (Handler wie Spur) laeuft
         # unter dieser Sperre. Reentrant, weil ein Handler verschachtelte Flaechenhelfer ruft.
@@ -808,6 +817,42 @@ class Bruecke:
                 if tmp is not None:
                     Path(tmp).unlink(missing_ok=True)
 
+    # ---- Ein Canvas je Aufgabe: Merkmal --------------------------------------
+    def _je_lesen(self) -> set[str]:
+        """sids mit Merkmal aus `je-aufgabe.json`; fehlend oder kaputt = keine (alles laeuft wie bisher)."""
+        if self._je_datei is None:
+            return set()
+        try:
+            wert = json.loads(self._je_datei.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        return {s for s in wert if isinstance(s, str)} if isinstance(wert, list) else set()
+
+    def _je_aufgabe_merken(self, sid: str) -> None:
+        """Merkmal setzen, atomar gespeichert (Temp-Datei + replace). Es gilt erst, wenn es auf Platte steht:
+        ohne Datei oder bei einem Schreibfehler bleibt die Sitzung im alten Modell (Fehler nur als Typ geloggt)."""
+        with self._je_sperre:
+            if self._je_datei is None or sid in self._je_aufgabe:
+                return
+            ziel = self._je_datei
+            tmp: str | None = None
+            try:
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=ziel.parent, suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                    json.dump(sorted(self._je_aufgabe | {sid}), f)
+                os.replace(tmp, ziel)
+            except OSError as fehler:
+                log.warning("Merkmal je Aufgabe nicht gespeichert: %s", _typ(fehler))
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
+                return
+            self._je_aufgabe.add(sid)
+
+    def _ist_je_aufgabe(self, sid: str) -> bool:
+        with self._je_sperre:
+            return sid in self._je_aufgabe
+
     async def _r_ki_schritt(self, request: Request) -> Response:
         """Die Flaeche meldet einen KI-Schritt; Besitz wie bei jeder Sitzungsroute (fremde Sitzung: 404)."""
         sid = request.path_params["sid"]
@@ -974,7 +1019,8 @@ class Bruecke:
         liste = turn.get("ablauf") == "liste"
         # Im Listenkurs kommt die Nummer nur aus der Liste (oeffnen, weiter, passt), nie aus `completed + 1`.
         sitzung = _Sitzung(kurs, norm, actor, task["id"] if task else None,
-                           _nummer(turn) if task and not liste else None, liste=liste)
+                           _nummer(turn) if task and not liste else None, liste=liste,
+                           je_aufgabe=self._ist_je_aufgabe(norm))
         self._sitzungen[norm] = sitzung
         self._flaeche_binden(sitzung)
         if actor not in self._zuletzt:
@@ -1423,7 +1469,8 @@ class Bruecke:
                 if andere_sid is not None:
                     liste = laufend.get("ablauf") == "liste"
                     self._sitzungen.setdefault(andere_sid, _Sitzung(
-                        kurs, andere_sid, sitzung.actor, task["id"], None if liste else _nummer(laufend), liste=liste))
+                        kurs, andere_sid, sitzung.actor, task["id"], None if liste else _nummer(laufend), liste=liste,
+                        je_aufgabe=self._ist_je_aufgabe(andere_sid)))
                 if _sperrt(laufend):
                     self._sperre.offen(task["id"])
                     return
@@ -1700,7 +1747,8 @@ class Bruecke:
             self._zuletzt[actor] = ende_sid
             sitzung = self._sitzungen.get(ende_sid)
             if sitzung is None or sitzung.actor != actor or sitzung.gruppe is not None:
-                sitzung = self._sitzungen[ende_sid] = _Sitzung(kurs, ende_sid, actor, liste=turn.get("ablauf") == "liste")
+                sitzung = self._sitzungen[ende_sid] = _Sitzung(
+                    kurs, ende_sid, actor, liste=turn.get("ablauf") == "liste", je_aufgabe=self._ist_je_aufgabe(ende_sid))
             self._flaeche_binden(sitzung)
             self._zeigen(sitzung, turn)
             begriffe = ueberblick.get("begriffe")
@@ -1726,6 +1774,7 @@ class Bruecke:
             sid = _uuid(str(gestartet.get("session_id")))
             if sid is None:
                 raise LearningWeg("session_id")
+            self._je_aufgabe_merken(sid)  # nur neue Solo-Durchlaeufe: ein Canvas je Aufgabe
         turn = _turn(self._rufe(actor, "learning_task_next", "learning.task.next", session_id=sid))
         # Learning nennt fuer diesen Kurs genau diese Sitzung: aeltere gemerkte Sitzungen des Kurses
         # (abgebrochen, ersetzt) wuerden sonst die Sperre mit ihrer alten Aufgabe zuhalten.
@@ -1736,7 +1785,7 @@ class Bruecke:
             del self._sitzungen[alt]
         sitzung = self._sitzungen.get(sid)
         if sitzung is None or sitzung.kurs.course_id != kurs.course_id or sitzung.actor != actor                 or sitzung.gruppe is not None:
-            sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid, actor)
+            sitzung = self._sitzungen[sid] = _Sitzung(kurs, sid, actor, je_aufgabe=self._ist_je_aufgabe(sid))
         self._flaeche_binden(sitzung)
         self._zuletzt[actor] = sid  # Hintergrundarbeiten frueherer Sitzungen dieser Person entfallen ab hier
         sitzung.liste = turn.get("ablauf") == "liste"
@@ -1765,10 +1814,13 @@ class Bruecke:
         Nummer einer Aufgabe ist ihre Listennummer, ihr Bereich `anordnung(gross)[nummer - 1]`. Die uebrigen
         Aufgaben (auch bestaetigte) setzt die Flaechenspur, je eine Arbeit `"<sid>:setzen:<nummer>"`.
         Liefert zusaetzlich `stand` und die Aufgaben (`[{nummer, task}]`, fuer Korrektur und Leiste der Seite).
+
+        Ein Canvas je Aufgabe (`sitzung.je_aufgabe`): keine Anordnung (also nie `zu_viele_aufgaben`); nur die erste
+        offene Aufgabe kommt auf ihr eigenes Canvas und wird gezeigt, die uebrigen erst bei `zeigen`.
         """
         abgaben = self._abgabestaende(sitzung.sid)
         _, eintraege = self._liste_lesen(sitzung)
-        bereiche = self._bereiche(sitzung, eintraege)
+        bereiche = [] if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)
         erste = next((e for e in eintraege if e["status"] == "offen"), None)
         if erste is None:
             raise LearningWeg("aufgaben")  # aktiver Turn, aber keine offene Aufgabe in der Liste
@@ -1777,6 +1829,10 @@ class Bruecke:
             self._sperre.offen(aufgabe_id)
         else:
             self._frei(sitzung)
+        if sitzung.je_aufgabe:
+            ok = self._still(lambda: self._einzel_setzen(sitzung, erste["task"], nummer, zeigen=True))
+            sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+            return nummer, ok, self._listenantwort(sitzung, eintraege, abgaben)
         rechteck = bereiche[nummer - 1]
         auftrag = self._setzauftrag(erste["task"], nummer, rechteck)  # Bilder laden, bevor die Sperre greift
         with self._flaeche_sperre:
@@ -1793,11 +1849,102 @@ class Bruecke:
                                       self._kartenstand_von(sitzung.sid, e["nummer"])),
                     vorrang=1, wer=sitzung.actor,
                 )
-        liste = {
-            "stand": self._stand_aus(sitzung.sid, eintraege, abgaben),
+        return nummer, ok, self._listenantwort(sitzung, eintraege, abgaben)
+
+    def _listenantwort(
+        self, sitzung: _Sitzung, eintraege: list[dict[str, Any]], abgaben: dict[int, _Abgabe],
+    ) -> dict[str, Any]:
+        """Listenteil der Antwort von `oeffnen`: `stand`, die Aufgaben und das Modell (oben und im `stand`)."""
+        modell = self._modellangaben(sitzung, eintraege)
+        return {
+            "stand": {**self._stand_aus(sitzung.sid, eintraege, abgaben), **modell},
             "aufgaben": [{"nummer": e["nummer"], "task": e["task"]} for e in eintraege],
+            **modell,
         }
-        return nummer, ok, liste
+
+    # ---- Ein Canvas je Aufgabe ---------------------------------------------
+    @staticmethod
+    def _aufgaben_schluessel(sid: str, nummer: int | str) -> str:
+        """Sitzungsschluessel des Aufgaben-Canvas bei PenEcho (und in `dokumente.json`)."""
+        return f"{sid}#{nummer}"
+
+    def _modellangaben(self, sitzung: _Sitzung, eintraege: list[dict[str, Any]]) -> dict[str, Any]:
+        """`je_aufgabe` und `dokumente` (documentId -> Nummer) fuer die Seite; ohne Merkmal immer `{}`."""
+        return {"je_aufgabe": sitzung.je_aufgabe,
+                "dokumente": self._dokumentkarte(sitzung, [e["nummer"] for e in eintraege]) if sitzung.je_aufgabe
+                else {}}
+
+    def _dokumentkarte(self, sitzung: _Sitzung, nummern: Iterable[int] | None = None) -> dict[str, int]:
+        """documentId -> Aufgabennummer aus `dokumente.json` (Schluessel `<sid>#<nummer>`); ohne `nummern` die der
+        Liste. Nur im neuen Modell; Aufgaben ohne gemerktes Dokument fehlen."""
+        if not sitzung.je_aufgabe:
+            return {}
+        if nummern is None:
+            nummern = [e["nummer"] for e in self._liste_lesen(sitzung)[1]]
+        karte: dict[str, int] = {}
+        for nummer in nummern:
+            dokument = self._penecho.dokument_von(self._aufgaben_schluessel(sitzung.sid, nummer))
+            if dokument:
+                karte[dokument] = nummer
+        return karte
+
+    def _aufgaben_sitzung(self, sitzung: _Sitzung, schluessel: str, titel: str) -> str:
+        """PenEcho-Sitzung des Aufgaben-Canvas auf dem Tab der Person; Regeln ohne Kennung wie `_penecho_sitzung`."""
+        if sitzung.flaeche is None:
+            anfrage = _ANFRAGE.get()
+            if sitzung.kennung_pflicht or (anfrage is not None and anfrage.belegt):
+                raise PenEchoNichtErreichbar("flaeche_belegt")  # nie der zuletzt verbundene Browser
+        return self._penecho.sitzung(schluessel, titel, canvas_id=sitzung.flaeche)
+
+    def _auf_aufgabe(self, sitzung: _Sitzung, nummer: int, titel: str, aktion: Callable[[str], T]) -> T:
+        """Wie `_auf_flaeche`, nur auf dem Canvas der Aufgabe `nummer` (Schluessel `<sid>#<nummer>`).
+
+        Kennt PenEcho die Sitzung nicht mehr, einmal den Aufgabenschluessel vergessen, neu anlegen und wiederholen.
+        Merkt das Board in `aufgaben_boards` und als `board` (zuletzt gelungener Flaechenaufruf, fuer `_board_merken`).
+        """
+        schluessel = self._aufgaben_schluessel(sitzung.sid, nummer)
+        with self._flaeche_sperre:
+            session_id = self._aufgaben_sitzung(sitzung, schluessel, titel)
+            try:
+                ergebnis = aktion(session_id)
+            except PenEchoSitzungUnbekannt:
+                sitzung.aufgaben_boards.pop(nummer, None)
+                self._penecho.vergessen(schluessel)
+                session_id = self._aufgaben_sitzung(sitzung, schluessel, titel)
+                ergebnis = aktion(session_id)
+            sitzung.aufgaben_boards[nummer] = session_id
+            sitzung.board = session_id
+        return ergebnis
+
+    @staticmethod
+    def _still(arbeit: Callable[[], object]) -> bool:
+        """Flaechenarbeit ohne Fehlermeldung an die Person (wie `_flaeche_still`): Fehler nur als Typ geloggt."""
+        try:
+            arbeit()
+        except (PenEchoNichtErreichbar, OSError, ValueError) as fehler:
+            log.warning("Flaeche uebersprungen: %s", _typ(fehler))
+            return False
+        return True
+
+    def _einzel_setzen(self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, *, zeigen: bool) -> None:
+        """Aufgabe auf ihr eigenes Canvas: Bereich `EINZEL_RECHTECK` melden, setzen (Felder und Bilder wie
+        `_setzauftrag`), danach das Dokument merken. PenEcho-Fehler beim Setzen gehen an den Aufrufer."""
+        auftrag = self._setzauftrag(task, nummer, EINZEL_RECHTECK, zeigen=zeigen)  # Bilder laden vor der Sperre
+        titel = aufgaben_titel(nummer, str(task.get("prompt") or ""))
+        with self._flaeche_sperre:
+            self._still(lambda: self._auf_aufgabe(
+                sitzung, nummer, titel, lambda s: self._penecho.bereiche_melden(s, [EINZEL_RECHTECK])))
+            self._auf_aufgabe(sitzung, nummer, titel, auftrag)
+        self._board_merken(sitzung)
+
+    def _aufgabe_zeigen(self, sitzung: _Sitzung, task: dict[str, Any], nummer: int) -> bool:
+        """Canvas der Aufgabe aktiv machen; gibt es noch keines (kein Board, kein gemerktes Dokument), anlegen."""
+        if nummer not in sitzung.aufgaben_boards and \
+                self._penecho.dokument_von(self._aufgaben_schluessel(sitzung.sid, nummer)) is None:
+            return self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
+        titel = aufgaben_titel(nummer, str(task.get("prompt") or ""))
+        return self._still(lambda: self._auf_aufgabe(
+            sitzung, nummer, titel, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
 
     def _listenaufgabe_setzen(
         self, sitzung: _Sitzung, eintrag: dict[str, Any], rechteck: dict[str, int],
@@ -1927,7 +2074,7 @@ class Bruecke:
     async def _r_stand(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
         actor = request.state.actor_id
-        return await self._ausfuehren(lambda: self._stand(self._listensitzung(actor, sid)), ablauf=False)
+        return await self._ausfuehren(lambda: self._stand_mit_modell(self._listensitzung(actor, sid)), ablauf=False)
 
     async def _r_zeigen(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
@@ -2221,6 +2368,12 @@ class Bruecke:
         abgaben = self._abgabestaende(sitzung.sid)  # vor dem Lesen bei Learning (siehe dort)
         _, eintraege = self._liste_lesen(sitzung)
         return self._stand_aus(sitzung.sid, eintraege, abgaben)
+
+    def _stand_mit_modell(self, sitzung: _Sitzung) -> dict[str, Any]:
+        """Antwort von `/stand`: der Stand plus `je_aufgabe` und `dokumente` (siehe `_modellangaben`)."""
+        abgaben = self._abgabestaende(sitzung.sid)  # vor dem Lesen bei Learning (siehe `_abgabestaende`)
+        _, eintraege = self._liste_lesen(sitzung)
+        return {**self._stand_aus(sitzung.sid, eintraege, abgaben), **self._modellangaben(sitzung, eintraege)}
 
     def _listen_abgelehnt(self, sitzung: _Sitzung, fehler: LearningAbgelehnt, *, bestaetigen: bool) -> NoReturn:
         """Wie `_vorbewertung_abgelehnt`, nur mit dem Stand der Liste statt eines Turns."""
@@ -2549,11 +2702,13 @@ class Bruecke:
         return self._stand_aus(sitzung.sid, neu, abgaben)
 
     def _listen_zeigen(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Die gewaehlte Aufgabe ins Bild holen (`bereich_zeigen`)."""
+        """Die gewaehlte Aufgabe ins Bild holen (`bereich_zeigen`); je Aufgabe ihr Canvas, bei Bedarf neu angelegt."""
         nummer = self._listennummer(body)
         sitzung = self._listensitzung(actor, sid_roh)
         _, eintraege = self._liste_lesen(sitzung)
-        self._eintrag_zu(eintraege, nummer)
+        eintrag = self._eintrag_zu(eintraege, nummer)
+        if sitzung.je_aufgabe:
+            return {"nummer": nummer, "flaeche": self._aufgabe_zeigen(sitzung, eintrag["task"], nummer)}
         rechteck = self._bereiche(sitzung, eintraege)[nummer - 1]
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
         return {"nummer": nummer, "flaeche": flaeche}
