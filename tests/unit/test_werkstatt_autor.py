@@ -579,3 +579,55 @@ def test_mathe_grobentwurf_und_pruefer_texte() -> None:
     pruefer = _mathe_text("werkstatt_pruefer_mathe")
     for pflicht in ("Recompute", "every result", "contradict", "Do not rewrite", "German sentence"):
         assert pflicht in pruefer, pflicht
+
+
+# Consulting roles (Stufe 1, Task 3): own role texts for `fach == "consulting"`.
+def test_fach_aus() -> None:
+    from spaces.learning.services.werkstatt.inhalt import fach_aus
+
+    assert fach_aus({"fach": "consulting"}) == "consulting"
+    assert fach_aus({"fach": "mathe"}) == "mathe"
+    assert fach_aus({"fach": "chemie"}) == "terminal"
+    assert fach_aus({}) == "terminal"
+    assert fach_aus(None) == "terminal"
+
+
+def test_consulting_rollen_haben_eigene_prompt_version_und_dasselbe_schema() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    for basis, (stage, _prompt, schema) in _TERMINAL_VERTRAEGE.items():
+        rolle = f"{basis}_consulting"
+        name = basis.replace("_", "-")
+        assert ROLE_CONTRACTS[rolle] == (stage, f"{name}-consulting-prompt-v1", schema), rolle
+        assert ROLE_PROMPTS[rolle] and ROLE_PROMPTS[rolle] != ROLE_PROMPTS[basis]
+
+
+def test_jede_rolle_hat_einen_prompt() -> None:
+    from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
+
+    assert {r for r in ROLE_CONTRACTS if r.startswith("werkstatt_")} <= set(ROLE_PROMPTS)
+
+
+@pytest.mark.asyncio
+async def test_consulting_kurs_nutzt_consulting_rollen() -> None:
+    fake = _Fake(_autor(), _sauber_pruefer())
+    await _ausformulieren(fake, kurs={**_MATHE_KURS, "fach": "consulting"})
+    assert fake.calls == ["werkstatt_aufgabe_consulting", "werkstatt_pruefer_consulting"]
+    assert [i.prompt_version for i in fake.invocations] == [
+        "werkstatt-aufgabe-consulting-prompt-v1", "werkstatt-pruefer-consulting-prompt-v1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_consulting_grobentwurf_nutzt_die_consulting_rolle() -> None:
+    entwurf = Grobentwurf.model_validate({
+        "schema_version": "werkstatt-grobentwurf-v1", "title": "K", "audience": "O", "default_kind": "open",
+        "chapters": [{"title": "K", "tasks": [{"summary": "s"}]}],
+    })
+    fake = _Fake(entwurf)
+    await grobentwurf_erzeugen(
+        fake, correlation_id=str(uuid4()), title="K", audience="O", outcomes=["o"], default_kind="open",
+        hinweise=[], source_refs=REFS_2, fach="consulting",
+    )
+    assert fake.calls == ["werkstatt_grobentwurf_consulting"]
+    assert fake.invocations[0].prompt_version == "werkstatt-grobentwurf-consulting-prompt-v1"

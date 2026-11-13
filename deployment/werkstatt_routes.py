@@ -49,7 +49,7 @@ from spaces.learning.services.werkstatt.freigabe import (
     freigabe_vorbereiten,
     katalog_nachholen,
 )
-from spaces.learning.services.werkstatt.inhalt import Fach, fassungs_art, inhalt_lesen
+from spaces.learning.services.werkstatt.inhalt import Fach, fach_aus, fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
 from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
@@ -391,7 +391,7 @@ def ausformulieren(
 
 
 def _fach(kurs: dict[str, Any] | None) -> Fach:
-    return "mathe" if kurs and kurs.get("fach") == "mathe" else "terminal"
+    return fach_aus(kurs)
 
 
 def _katalog(kurs: dict[str, Any]) -> SourceCatalog:

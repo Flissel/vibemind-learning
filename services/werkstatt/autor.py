@@ -18,7 +18,7 @@ from spaces.learning.services.course_factory.model_gateway import (
 )
 from spaces.learning.services.course_factory.verification import SourceSnapshot
 from spaces.learning.services.werkstatt.belege import nur_ueberschrift
-from spaces.learning.services.werkstatt.inhalt import AufgabeInhalt, Fach, Grobentwurf
+from spaces.learning.services.werkstatt.inhalt import AufgabeInhalt, Fach, Grobentwurf, fach_aus
 from spaces.learning.services.werkstatt.pruefung import (
     Befund,
     aufgabe_pruefen,
@@ -64,8 +64,8 @@ def _invocation(role: str, correlation_id: str, payload: dict[str, object]) -> M
 
 
 def _rolle(basis: str, fach: Fach) -> str:
-    """A mathe course gets the mathe variant of a role; every other course the terminal one."""
-    return f"{basis}_mathe" if fach == "mathe" else basis
+    """A mathe or consulting course gets its own variant of a role; every other course the terminal one."""
+    return basis if fach == "terminal" else f"{basis}_{fach}"
 
 
 def _fuer_modell(keyed: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -148,7 +148,7 @@ async def aufgabe_ausformulieren(
         # Stored citation ids mean nothing to the model: it sees the S-keys of today's catalog.
         payload["vorherige"] = mit_quellenschluesseln(vorherige, source_refs)
     course_id = str(kurs.get("course_id", ""))
-    fach: Fach = "mathe" if kurs.get("fach") == "mathe" else "terminal"
+    fach = fach_aus(kurs)
 
     inhalt, zitate = quellen_aufloesen(
         await _autor(gateway, correlation_id, payload, fach), source_refs, course_id=course_id

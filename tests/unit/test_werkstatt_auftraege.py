@@ -325,3 +325,10 @@ async def test_terminal_kurs_grobentwurf_bleibt_bei_der_terminal_rolle(tmp_path:
     plan = _MerkenderFake(_grob())
     await _arbeiter(s, plan).einen_ausfuehren()
     assert plan.rollen == ["werkstatt_grobentwurf"]
+
+
+def test_consulting_plan_zeile_waehlt_art() -> None:
+    from spaces.learning.services.werkstatt.auftraege import _art_aus_kurzfassung
+
+    assert _art_aus_kurzfassung({"fach": "consulting"}, "matching: Ordnen Sie ...") == "matching"
+    assert _art_aus_kurzfassung({"fach": "terminal"}, "matching: Ordnen Sie ...") is None

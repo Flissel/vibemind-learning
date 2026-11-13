@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
@@ -16,7 +17,13 @@ from spaces.learning.services.course_factory.schemas import (
 )
 from spaces.learning.services.adaptive_engine.darstellung import FALL_MAX
 
-Fach = Literal["terminal", "mathe"]
+Fach = Literal["terminal", "mathe", "consulting"]
+
+
+def fach_aus(kurs: Mapping[str, object] | None) -> Fach:
+    """The course's fach; a missing or unknown value is a terminal course."""
+    fach = kurs.get("fach") if kurs else None
+    return "mathe" if fach == "mathe" else "consulting" if fach == "consulting" else "terminal"
 
 _PLATZHALTER = re.compile(r"\{\{([^{}]+)\}\}")
 

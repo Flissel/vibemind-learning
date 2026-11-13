@@ -210,9 +210,9 @@ _ARTEN: frozenset[str] = frozenset(get_args(Grobentwurf.model_fields["default_ki
 
 
 def _art_aus_kurzfassung(kurs: dict[str, Any], summary: str) -> str | None:
-    """The mathe plan begins every task line with its kind ("number: ..."); without an explicit
+    """The mathe and consulting plans begin every task line with its kind ("number: ..."); without an explicit
     kind from the chat that prefix picks it. Terminal courses keep the course's default kind."""
-    if kurs.get("fach") != "mathe":
+    if kurs.get("fach") not in ("mathe", "consulting"):
         return None
     kopf, trenner, _ = summary.partition(":")
     art = kopf.strip().lower()

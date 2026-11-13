@@ -69,6 +69,15 @@ ROLE_CONTRACTS = {
     ),
     "werkstatt_aufgabe_mathe": ("werkstatt", "werkstatt-aufgabe-mathe-prompt-v1", "werkstatt-aufgabe-v1"),
     "werkstatt_pruefer_mathe": ("werkstatt", "werkstatt-pruefer-mathe-prompt-v1", "werkstatt-pruefer-v1"),
+    "werkstatt_grobentwurf_consulting": (
+        "werkstatt", "werkstatt-grobentwurf-consulting-prompt-v1", "werkstatt-grobentwurf-v1"
+    ),
+    "werkstatt_aufgabe_consulting": (
+        "werkstatt", "werkstatt-aufgabe-consulting-prompt-v1", "werkstatt-aufgabe-v1"
+    ),
+    "werkstatt_pruefer_consulting": (
+        "werkstatt", "werkstatt-pruefer-consulting-prompt-v1", "werkstatt-pruefer-v1"
+    ),
 }
 # Every name and command these texts allow is pinned against the checks' own lists in
 # tests/unit/test_werkstatt_autor.py (ERLAUBTE_NAMEN, GRAPH_NAMEN, ERLAUBTE_BEFEHLE).
@@ -175,11 +184,40 @@ _WERKSTATT_PRUEFER_MATHE = (
     "unsolvable from the lesson or has a second correct answer. Worked example calculations need "
     "no source. Do not rewrite. Each issue: a short code and one German sentence."
 )
+_WERKSTATT_GROBENTWURF_CONSULTING = (
+    "Plan an AI consulting course as chapters with a short list of tasks (one line each: what the learner must do). "
+    "No lessons, no answers. Tasks make the learner apply the material to the course's fictive client case: find AI "
+    "use cases in it, place them in a benefit-effort matrix, pick quick wins, classify risks, explain a concept to the "
+    "client's managing director, write a one-page recommendation. Use quiz, ordering and matching for terms, phases "
+    "and risk classes; open and case for analysis and recommendation. Begin every task line with its kind and a colon. "
+    "Keep the given default task kind as default_kind. German, address 'Sie'. Use only facts from the supplied "
+    "sources; if the input contains reviewer_feedback, address every point."
+)
+_WERKSTATT_AUFGABE_CONSULTING = (
+    "Write exactly one AI consulting task of the given kind from its summary, and the lesson section the learner "
+    "needs to solve it. German, address the learner with 'Sie'. The client case is the source whose heading begins "
+    "with 'Fall': copy its short profile (company, industry, size, processes, figures, quotes) into `fall`, at most "
+    "1200 characters, the same wording in every task; never invent a real company or person. If no such source "
+    "exists, leave `fall` empty. For an open or case task that asks the learner to place use cases by benefit and "
+    "effort, set `vorlage` to \"matrix\"; for a one-page recommendation set it to \"onepager\"; otherwise leave it "
+    "empty. If `wunsch` is given, change the previous version accordingly and keep everything else. If the input "
+    "contains reviewer_feedback, fix every point. Cite sources by their S-key only."
+)
+_WERKSTATT_PRUEFER_CONSULTING = (
+    "Check one AI consulting task and its lesson section against the cited source excerpts. The `fall` is a fictive "
+    "client case and must match the case source; report it if it adds facts the case source does not state. Report "
+    "only problems: a claim the sources do not support, an expected answer that contradicts the lesson, a task that "
+    "is unsolvable from the lesson and the case, a second correct answer in a quiz, ordering or matching. Do not "
+    "rewrite. Each issue: a short code and one German sentence."
+)
 ROLE_PROMPTS = {
     "handschrift_leser": "Read what the learner handwrote on the image and report it as JSON; do not solve, check or correct the task. The input names the task type, the task text and the labels printed on the canvas (etiketten). Report only labels from etiketten, never option ids or option texts. Put the reading in roh by task type: single_choice and multiple_choice {\"auswahl\": [labels]}; ordering {\"reihenfolge\": [labels in the written order]}; matching {\"paare\": {left label: right label}}; numeric {\"wert\": the number exactly as written, as a string}; fill_in {\"text\": the text as written}. In anzeige give a short German rendering of what you read (at most 200 characters, for example \"x = -1,5\" or \"B\"). If you are unsure, the writing is ambiguous, crossed out, empty or does not fit the task type, set lesbar to false and leave roh empty instead of guessing. Never invent a value that is not on the image.",
     "werkstatt_grobentwurf_mathe": _WERKSTATT_GROBENTWURF_MATHE,
     "werkstatt_aufgabe_mathe": _WERKSTATT_AUFGABE_MATHE,
     "werkstatt_pruefer_mathe": _WERKSTATT_PRUEFER_MATHE,
+    "werkstatt_grobentwurf_consulting": _WERKSTATT_GROBENTWURF_CONSULTING,
+    "werkstatt_aufgabe_consulting": _WERKSTATT_AUFGABE_CONSULTING,
+    "werkstatt_pruefer_consulting": _WERKSTATT_PRUEFER_CONSULTING,
     "werkstatt_grobentwurf": "Plan a course as chapters with a short list of tasks (one line each: what the learner must do). No lessons, no answers. Tasks make the learner apply and decide, never recall a URL or quote an English message verbatim. Use the default task kind for every task. German, address 'Sie'. Use only facts from the supplied sources; if the input contains reviewer_feedback, address every point.",
     "werkstatt_aufgabe": "Write exactly one task of the given kind from its summary, and the lesson section the learner needs to solve it. The lesson section teaches every fact the task requires in full sentences, shows every command verbatim in a fenced code block with a language tag, cites claims by source key (S1, S2, …) and contains no tasks, options or answers. The expected answer must follow the lesson and never contradict it. If `wunsch` is given, change the previous version accordingly and keep everything else. German, 'Sie'. Only facts from the cited sources. Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of each claim of the lesson section; never write source keys or \"(S…)\" into the body, the prompt or any answer text. Every claim of the lesson section has at least one source key. Code fences use exactly one of the language tags powershell, cmd or bash. The lesson section never announces what it, the chapter or the tasks will do (no \"In diesem Abschnitt lernen Sie …\"); it states the facts directly.",
     "werkstatt_pruefer": "Check one task and its lesson section against the cited source excerpts. Report only problems: a claim the sources do not support, an expected answer that contradicts the lesson, a task that is unsolvable from the lesson. Do not rewrite. Each issue: a short code and one German sentence.",

@@ -826,7 +826,8 @@ def werkstatt_kurs_neu(
 ) -> dict[str, Any]:
     """Legt einen Werkstatt-Kurs an und startet den Grobentwurf aus den Quellen
     (`standard_typ`: quiz, open, case, cloze, ordering, matching, number oder sketch; `fach`:
-    "terminal" ist die Vorgabe, "mathe" fuer Mathe-Kurse). Gibt `auftrag_id`
+    "terminal" ist die Vorgabe, "mathe" fuer Mathe-Kurse, "consulting" fuer
+    AI-Consulting-Kurse; der Fall gehoert als Quelle mit der Ueberschrift "Fall ..." dazu). Gibt `auftrag_id`
     zurueck. Auftraege laufen im Hintergrund; mit werkstatt_auftrag nachsehen.
     """
     body: dict[str, Any] = {
