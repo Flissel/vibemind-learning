@@ -198,6 +198,12 @@ class WerkstattKatalog:
                 "hints": _section_hints(cited, mathe=mathe), "options": [],
                 "presentation": {}, **config,
             }
+            sichtbar = {
+                k: v for k, v in (("fall", getattr(inhalt, "fall", None)),
+                                  ("vorlage", getattr(inhalt, "vorlage", None))) if v is not None
+            }
+            if sichtbar:
+                scoring_config["presentation"] = {**scoring_config["presentation"], **sichtbar}
             if mathe:
                 # Opt-in: the practice window typesets $…$ only for math courses.
                 scoring_config["presentation"] = {**scoring_config["presentation"], "math": True}

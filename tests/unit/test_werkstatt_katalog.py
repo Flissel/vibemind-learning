@@ -983,3 +983,28 @@ def test_werkstatt_setzt_listen_platz(tmp_path):
     items = _items(factory, 3)
     # The author's order, not the alphabet of the keys.
     assert [items[k].listen_platz for k in ("zeta", "alpha", "mitte")] == [1, 2, 3]
+
+
+# --- Fall und Vorlage im Katalog -------------------------------------------------------
+
+
+def test_katalog_schreibt_fall_und_vorlage_in_presentation(tmp_path):
+    factory = _factory(tmp_path)
+    fall = "Muster GmbH plant den Einstieg in KI."
+    quiz = {**_quiz("Welcher Befehl listet Dateien auf?", "k1"), "fall": fall}
+    eintraege = [
+        _eintrag("fall", {**_offen("case"), "fall": fall, "vorlage": "matrix"}),
+        _eintrag("quiz", quiz),
+        _eintrag("ohne", _offen()),
+    ]
+
+    WerkstattKatalog(factory).projizieren(COURSE, 3, eintraege, None, fach="mathe")
+    WerkstattKatalog(factory).projizieren(COURSE, 4, eintraege, None)
+
+    mathe, terminal = _items(factory, 3), _items(factory, 4)
+    assert terminal["fall"].scoring_config["presentation"] == {"fall": fall, "vorlage": "matrix"}
+    assert terminal["quiz"].scoring_config["presentation"] == {"fall": fall}
+    assert terminal["ohne"].scoring_config["presentation"] == {}
+    assert mathe["fall"].scoring_config["presentation"] == {
+        "fall": fall, "vorlage": "matrix", "math": True,
+    }

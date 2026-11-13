@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
@@ -14,6 +14,7 @@ from spaces.learning.services.course_factory.schemas import (
     RubricCriterion,
     _StrictDraft,
 )
+from spaces.learning.services.adaptive_engine.darstellung import FALL_MAX
 
 Fach = Literal["terminal", "mathe"]
 
@@ -34,6 +35,14 @@ class _AufgabeBasis(_StrictDraft):
     # Activity plus lesson claims: a merged chapter lesson can cite many chunks.
     zitate: list[Citation] = Field(default_factory=list, max_length=2_000)
     lektion: Lektionsabschnitt | None = None
+    fall: str | None = Field(None, min_length=1, max_length=FALL_MAX)
+    vorlage: Literal["matrix", "onepager"] | None = None
+
+    @model_validator(mode="after")
+    def _vorlage_nur_bei_freien_aufgaben(self) -> Self:
+        if self.vorlage is not None and getattr(self, "kind", None) not in {"open", "case", "sketch"}:
+            raise ValueError("vorlage only for open, case and sketch tasks")
+        return self
 
 
 class Quiz(_AufgabeBasis):

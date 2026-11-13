@@ -248,3 +248,33 @@ def test_fassungs_art_skizze() -> None:
     assert fassungs_art(skizze(), skizze(rubric=[*kriterien[:2], {**kriterien[2], "points": 3}])) == "neu"
     assert fassungs_art(skizze(), skizze(rubric=list(reversed(kriterien)))) == "textkorrektur"
     assert fassungs_art(skizze(), skizze(prompt="Zeichnen Sie $f(x)=x^2$.")) == "textkorrektur"
+
+
+# --- Fall und Vorlage --------------------------------------------------------------------
+
+
+def test_fall_und_vorlage_an_offener_aufgabe() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Offen
+
+    inhalt = Offen(**offen(fall="Muster GmbH plant den Einstieg in KI.", vorlage="matrix"))
+    assert inhalt.fall == "Muster GmbH plant den Einstieg in KI." and inhalt.vorlage == "matrix"
+    gelesen = inhalt_lesen(inhalt.model_dump())
+    assert gelesen.fall == inhalt.fall and gelesen.vorlage == "matrix"
+
+
+def test_vorlage_an_quiz_wird_abgelehnt() -> None:
+    with pytest.raises(ValidationError):
+        Quiz(**quiz(vorlage="matrix"))
+
+
+def test_fall_laenger_als_1200_wird_abgelehnt() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Offen
+
+    Offen(**offen(fall="x" * 1200))
+    with pytest.raises(ValidationError):
+        Offen(**offen(fall="x" * 1201))
+
+
+def test_alter_inhalt_ohne_fall_bleibt_lesbar() -> None:
+    gelesen = inhalt_lesen(offen())
+    assert gelesen.fall is None and gelesen.vorlage is None
