@@ -27,7 +27,7 @@ from spaces.learning.services.werkstatt.autor import (
     aufgabe_ausformulieren,
     grobentwurf_erzeugen,
 )
-from spaces.learning.services.werkstatt.inhalt import Grobentwurf, fassungs_art
+from spaces.learning.services.werkstatt.inhalt import Grobentwurf, fach_aus, fassungs_art
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
 
 logger = logging.getLogger(__name__)
@@ -150,7 +150,7 @@ class WerkstattArbeiter:
                 default_kind=kurs["default_kind"],
                 hinweise=list(eingabe.get("hinweise", [])),
                 source_refs=katalog.model_refs,
-                fach=kurs["fach"],
+                fach=fach_aus(kurs),
             )
             # Validated model output is applied in one transaction: all of it or nothing.
             task_ids = self._store.grobentwurf_anwenden(

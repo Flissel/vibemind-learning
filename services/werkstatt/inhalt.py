@@ -45,10 +45,22 @@ class _AufgabeBasis(_StrictDraft):
     fall: str | None = Field(None, min_length=1, max_length=FALL_MAX)
     vorlage: Literal["matrix", "onepager"] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _leere_zierde_ist_none(cls, daten: Any) -> Any:
+        """Ein Modell liefert fuer "keine" oft "" statt null: leeres `fall`/`vorlage` heisst nicht gesetzt."""
+        if isinstance(daten, dict):
+            for feld in ("fall", "vorlage"):
+                wert = daten.get(feld)
+                if isinstance(wert, str) and not wert.strip():
+                    daten = {**daten, feld: None}
+        return daten
+
     @model_validator(mode="after")
     def _vorlage_nur_bei_freien_aufgaben(self) -> Self:
+        # Die Vorlage ist Zierde: an einer Auswahl-Aufgabe wird sie still verworfen, die Aufgabe bleibt gueltig.
         if self.vorlage is not None and getattr(self, "kind", None) not in {"open", "case", "sketch"}:
-            raise ValueError("vorlage only for open, case and sketch tasks")
+            self.vorlage = None
         return self
 
 

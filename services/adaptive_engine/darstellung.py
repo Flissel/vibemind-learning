@@ -4,10 +4,13 @@ from __future__ import annotations
 
 FALL_MAX = 1200
 VORLAGEN: tuple[str, ...] = ("matrix", "onepager")
-# Nur freie Aufgaben haben ein Canvas, auf dem eine Vorlage vorgedruckt sein kann.
+# Nur freie Aufgaben haben ein Canvas, auf dem eine Vorlage vorgedruckt sein kann (nicht jede Huelle druckt sie).
 VORLAGE_TYPEN: frozenset[str] = frozenset({"open", "case", "penecho_canvas"})
 
-_VORGEDRUCKT = "Auf dem Canvas vorgedruckt (nicht Teil der Antwort): "
+_VORGEDRUCKT = (
+    "Falls vorgedruckt, zählen die vorgedruckten Beschriftungen nicht als Antwort "
+    "(eine von Hand gezeichnete Vorlage zählt): "
+)
 _VORLAGE_TEXT: dict[str, str] = {
     "matrix": (
         _VORGEDRUCKT

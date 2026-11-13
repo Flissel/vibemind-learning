@@ -332,3 +332,15 @@ def test_consulting_plan_zeile_waehlt_art() -> None:
 
     assert _art_aus_kurzfassung({"fach": "consulting"}, "matching: Ordnen Sie ...") == "matching"
     assert _art_aus_kurzfassung({"fach": "terminal"}, "matching: Ordnen Sie ...") is None
+
+
+@pytest.mark.asyncio
+async def test_unbekanntes_fach_faellt_beim_grobentwurf_auf_terminal_zurueck(tmp_path: Path, monkeypatch) -> None:
+    s = _store(tmp_path)
+    _kurs(s)
+    echt = s.kurs
+    monkeypatch.setattr(s, "kurs", lambda course_id: {**echt(course_id), "fach": "unbekannt"})
+    s.auftrag_anlegen("c1", kind="grobentwurf", input={})
+    plan = _MerkenderFake(_grob())
+    await _arbeiter(s, plan).einen_ausfuehren()
+    assert plan.rollen == ["werkstatt_grobentwurf"]

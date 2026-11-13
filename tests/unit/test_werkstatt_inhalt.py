@@ -262,9 +262,17 @@ def test_fall_und_vorlage_an_offener_aufgabe() -> None:
     assert gelesen.fall == inhalt.fall and gelesen.vorlage == "matrix"
 
 
-def test_vorlage_an_quiz_wird_abgelehnt() -> None:
-    with pytest.raises(ValidationError):
-        Quiz(**quiz(vorlage="matrix"))
+def test_vorlage_an_quiz_wird_still_verworfen() -> None:
+    inhalt = Quiz(**quiz(vorlage="matrix"))
+    assert inhalt.vorlage is None
+
+
+def test_leerer_fall_und_leere_vorlage_werden_zu_none() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Offen
+
+    for leer in ("", "   "):
+        inhalt = Offen(**offen(fall=leer, vorlage=leer))
+        assert inhalt.fall is None and inhalt.vorlage is None
 
 
 def test_fall_laenger_als_1200_wird_abgelehnt() -> None:

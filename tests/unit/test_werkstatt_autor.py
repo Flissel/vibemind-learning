@@ -608,6 +608,38 @@ def test_jede_rolle_hat_einen_prompt() -> None:
     assert {r for r in ROLE_CONTRACTS if r.startswith("werkstatt_")} <= set(ROLE_PROMPTS)
 
 
+# Consulting author text: the lesson rules that aufgabe_pruefen checks must be steered by the text itself
+# (same sentences as the mathe text where they are subject-independent).
+_CONSULTING_STEUERUNG = {
+    "claim_uncited": ["each with at least one source key", "keys that appear in `source_refs`"],
+    "quellenschluessel_im_text": [
+        "Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of "
+        "each claim of the lesson section; never write source keys or \"(S…)\" into the body, the "
+        "prompt or any answer text",
+    ],
+    "lesson_contains_tasks": ["no tasks, options or answers", "Lösung:", "Richtig ist", "Erwartete Antwort"],
+    "lektion_kuendigt_an": [
+        "never announces what it, the chapter or the tasks will do",
+        "\"In diesem Abschnitt\", \"In dieser Lektion\", \"Im Folgenden\" or \"Dieser Abschnitt\"",
+    ],
+}
+
+
+@pytest.mark.parametrize("code", sorted(_CONSULTING_STEUERUNG))
+def test_consulting_autortext_steuert_die_lektionspruefungen(code: str) -> None:
+    text = _mathe_text("werkstatt_aufgabe_consulting")
+    fehlt = [p for p in _CONSULTING_STEUERUNG[code] if p not in text]
+    assert not fehlt, (code, fehlt)
+    # No formula, KaTeX or code parts of the mathe text.
+    assert "KaTeX" not in text and "LaTeX" not in text
+
+
+def test_consulting_autortext_sagt_null_statt_leer() -> None:
+    text = _mathe_text("werkstatt_aufgabe_consulting")
+    assert "set `fall` to null" in text and "set `vorlage` to null" in text
+    assert "leave `fall` empty" not in text and "leave it empty" not in text
+
+
 @pytest.mark.asyncio
 async def test_consulting_kurs_nutzt_consulting_rollen() -> None:
     fake = _Fake(_autor(), _sauber_pruefer())

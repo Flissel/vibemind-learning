@@ -181,7 +181,9 @@ def test_bewertungsdaten_nennt_vorlage_als_vorgedruckt(tmp_path: Path) -> None:
     prompt = daten.aufgabe["prompt"]
     assert prompt.startswith("Begruende den autorisierten Pfad.")
     assert "Fall: Muster GmbH" in prompt
-    assert "vorgedruckt" in prompt
+    assert "Falls vorgedruckt" in prompt
+    assert "Auf dem Canvas vorgedruckt" not in prompt  # druckt die Huelle nicht, behauptet der Hinweis es nicht
+    assert "Beschriftungen" in prompt and "nicht als Antwort" in prompt
     # Der Browser sieht den Hinweis nicht.
     assert "vorgedruckt" not in turn.task.prompt
     engine.dispose()

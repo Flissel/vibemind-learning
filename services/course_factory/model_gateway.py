@@ -198,10 +198,22 @@ _WERKSTATT_AUFGABE_CONSULTING = (
     "needs to solve it. German, address the learner with 'Sie'. The client case is the source whose heading begins "
     "with 'Fall': copy its short profile (company, industry, size, processes, figures, quotes) into `fall`, at most "
     "1200 characters, the same wording in every task; never invent a real company or person. If no such source "
-    "exists, leave `fall` empty. For an open or case task that asks the learner to place use cases by benefit and "
-    "effort, set `vorlage` to \"matrix\"; for a one-page recommendation set it to \"onepager\"; otherwise leave it "
-    "empty. If `wunsch` is given, change the previous version accordingly and keep everything else. If the input "
-    "contains reviewer_feedback, fix every point. Cite sources by their S-key only."
+    "exists, set `fall` to null. For an open or case task that asks the learner to place use cases by benefit and "
+    "effort, set `vorlage` to \"matrix\"; for a one-page recommendation set it to \"onepager\"; otherwise set "
+    "`vorlage` to null. If `wunsch` is given, change the previous version accordingly and keep everything else. If "
+    "the input contains reviewer_feedback, fix every point. "
+    # The lesson section (lesson_contains_tasks, lektion_kuendigt_an, claim_uncited).
+    "The lesson section teaches every concept, rule and procedure the task needs in full sentences; it contains no "
+    "tasks, options or answers, and no line starts with \"Aufgabe\", \"Lösung:\", \"Richtig ist\" or "
+    "\"Erwartete Antwort\". It states the facts directly and never announces what it, the chapter "
+    "or the tasks will do: no sentence starts with \"In diesem Abschnitt\", \"In dieser Lektion\", "
+    "\"Im Folgenden\" or \"Dieser Abschnitt\". List as claims only the rules, definitions and "
+    "procedures, each with at least one source key and worded as a sentence of the lesson text. Use only rules, "
+    "definitions and procedures from the cited sources. "
+    # Sources (quellenschluessel_im_text).
+    "Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of "
+    "each claim of the lesson section; never write source keys or \"(S…)\" into the body, the "
+    "prompt or any answer text; use only keys that appear in `source_refs`."
 )
 _WERKSTATT_PRUEFER_CONSULTING = (
     "Check one AI consulting task and its lesson section against the cited source excerpts. The `fall` is a fictive "
