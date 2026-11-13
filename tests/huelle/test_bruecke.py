@@ -108,6 +108,7 @@ class FakePenEcho:
         self.merken_fehler: Exception | None = None
         # (nummer, rechteck) je aufgabe_setzen; rechteck None = fester Bereich wie bisher.
         self.rechtecke: list[tuple[int, dict[str, int] | None]] = []
+        self.vorlagen: list[str | None] = []  # vorlage je aufgabe_setzen
         self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
         self.aufnahme_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je Schnappschuss
@@ -140,7 +141,9 @@ class FakePenEcho:
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
-                       bilder: Any = (), rechteck: dict[str, int] | None = None, zeigen: bool = True) -> None:
+                       bilder: Any = (), rechteck: dict[str, int] | None = None, zeigen: bool = True,
+                       vorlage: str | None = None) -> None:
+        self.vorlagen.append(vorlage)
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
         self.zeigen.append((nummer, zeigen))
         self.bilder.append(list(bilder))
@@ -4788,3 +4791,18 @@ def test_ki_schritt_gruppe_eigene_person() -> None:
         assert bruecke._ki_schritte_lesen(SID_GB, 1) == ("plot",)
     finally:
         bruecke.beenden()
+
+
+@pytest.mark.parametrize("typ, vorlage, erwartet", [
+    ("case", "matrix", "matrix"), ("open", "onepager", "onepager"), ("penecho_canvas", "matrix", "matrix"),
+    ("single_choice", "matrix", None), ("case", "unbekannt", None), ("case", None, None),
+])
+def test_setzauftrag_reicht_vorlage_nur_bei_bereichstypen(typ: str, vorlage: str | None, erwartet: str | None) -> None:
+    offen = turn(TASK_1, typ=typ, mode="training")
+    if typ == "single_choice":
+        offen["task"]["options"] = [{"id": "o1", "label": "Eins"}, {"id": "o2", "label": "Zwei"}]
+    if vorlage is not None:
+        offen["task"].setdefault("presentation", {})["vorlage"] = vorlage
+    lern = FakeLern({"learning_course_overview": _ueberblick(offen), "learning_task_next": {"session": offen}})
+    _, _, penecho, _ = _offen(lern)
+    assert penecho.vorlagen == [erwartet]

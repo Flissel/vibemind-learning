@@ -86,6 +86,9 @@ def aufgabentext(task: Mapping[str, object], nummer: int) -> str:
             block = _beschriftet(etiketten.optionen, optionen)
         if block:
             zeilen += [""] + block
+    fall = (task.get("presentation") or {}).get("fall") if isinstance(task.get("presentation"), dict) else None
+    if isinstance(fall, str) and fall.strip():
+        zeilen += ["", "Fall:"] + _zeilen(fall)  # ungekuerzt: der Fall gehoert zur Aufgabe
     return "\n".join(zeilen)
 
 

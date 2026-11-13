@@ -25,6 +25,7 @@ import httpx
 
 from .anordnung import markenzeile, zeile
 from .tafel import kuerzen, rueckmeldungstext
+from .vorlage import Vorlagenplan, vorlagenfeld, vorlagenplan
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ _FELD_RAND_RECHTS = 20
 _FELD_RAND_OBEN = 80
 _RAHMEN_ABSTAND = 8
 _RAHMEN_STAERKE = 4
+_VORLAGE_STAERKE = 2  # Vorlagenlinien: duenner als der Feld-Rahmen
 _RAHMEN_FARBE = "#2b6cb0"
 # "Wird noch geprüft.": Learnings Zustand needs_review (Rubrik-Bewertung nicht angenommen).
 URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesbar.", "Wird noch geprüft.")
@@ -1008,7 +1010,7 @@ class PenEchoMcp:
     def aufgabe_setzen(
         self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
         mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (), rechteck: dict[str, int] | None = None,
-        zeigen: bool = True,
+        zeigen: bool = True, vorlage: str | None = None,
     ) -> None:
         """Aufgabe `nummer` in ihren Bereich: `bereich(nummer)` oder, im Listenkurs, `rechteck` (ohne Grenze 1..20).
 
@@ -1016,6 +1018,8 @@ class PenEchoMcp:
         gemacht (der Rahmen braucht es aktiv); den Bereich zeigt die Huelle selbst (`bereich_zeigen`).
         `zeigen=False` (Setzen im Hintergrund): kein show, denn jedes show macht dieses Board in der
         Lernflaeche zum aktiven. Ist das Board dann nicht aktiv, entfaellt nur der Rahmen.
+        `vorlage` ("matrix", "onepager"): nur mit Arbeitsfeld, dann steht die Vorlage als Text und Tinte im
+        Arbeitsfeld (Texte vor der Tinte: PenEcho zaehlt Tinte als Hindernis fuer Text), sonst ignoriert.
         """
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
@@ -1063,10 +1067,47 @@ class PenEchoMcp:
             self._bilder_setzen(session_id, aufgabe_id, nummer, bilder,
                                 bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld, rechteck=b),
                                 beschriften=not voll, belegung=belegung)
+        if vorlage and mit_arbeitsfeld:
+            plan = vorlagenplan(vorlage, vorlagenfeld(f.arbeitsfeld, mit_bildern=bool(bilder)))
+            if plan is not None:
+                self._vorlage_setzen(session_id, aufgabe_id, nummer, plan, belegung, texte=not voll, zeigen=zeigen)
         feld = loesungsfeld(b, mit_ergebnisfeld=mit_ergebnisfeld, mit_arbeitsfeld=mit_arbeitsfeld)
         if feld is not None:
             praefix = "ergebnis" if mit_ergebnisfeld else "arbeit"
             self._feld_zeichnen(session_id, aufgabe_id, nummer, feld, praefix, zeigen=zeigen)
+
+    def _vorlage_setzen(
+        self, session_id: str, aufgabe_id: str, nummer: int, plan: Vorlagenplan, belegung: Sequence[dict[str, Any]],
+        *, texte: bool, zeigen: bool,
+    ) -> None:
+        """Vorlage im Arbeitsfeld: erst alle Texte (create_text), dann alle Striche in einem draw_ink.
+
+        Die Texte muessen vor der Tinte stehen, denn PenEcho zaehlt Tinte als Hindernis fuer die Textplatzierung.
+        Was laut `belegung` schon an seiner Ecke liegt (Board nach Neustart wiederhergestellt), wird nicht
+        erneut gesendet; PenEchoPlatzBelegt heisst ebenfalls "steht schon da". Bei voller Flaeche folgen keine
+        Texte mehr. Die Vorlage ist Zierde: Fehler ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab.
+        """
+        for i, (wortlaut, region) in enumerate(plan.texte if texte else ()):
+            try:
+                if _an_ecke(belegung, region, "text") is None:
+                    self._werkzeug("penecho_edit_canvas", {
+                        "sessionId": session_id,
+                        "requestId": self._feld_id("vorlage", aufgabe_id, nummer, f"-t{i}"),
+                        "action": "create_text",
+                        "text": wortlaut,
+                        "region": region,
+                    })
+            except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+                raise
+            except PenEchoPlatzBelegt:
+                log.info("Vorlagentext %d steht schon da", i + 1)
+            except PenEchoFlaecheVoll:
+                log.warning("Vorlagentext %d: Flaeche voll, keine weiteren Texte", i + 1)
+                break
+            except PenEchoNichtErreichbar as fehler:
+                log.warning("Vorlagentext %d nicht gesetzt: %s", i + 1, _typ(fehler))
+        self._tinte_zeichnen(session_id, "vorlage", aufgabe_id, nummer, "-ink", plan.striche, zeigen=zeigen,
+                             was="Vorlage", staerke=_VORLAGE_STAERKE)
 
     def _bilder_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, bilder: Sequence[Aufgabenbild], feld: dict[str, int],
@@ -1155,6 +1196,17 @@ class PenEchoMcp:
         rechts, unten = feld["x"] + feld["w"] + a, feld["y"] + feld["h"] + a
         rahmen = [{"x": links, "y": oben}, {"x": rechts, "y": oben}, {"x": rechts, "y": unten},
                   {"x": links, "y": unten}, {"x": links, "y": oben}]
+        self._tinte_zeichnen(session_id, praefix, aufgabe_id, nummer, "", [rahmen], zeigen=zeigen, was="Feld-Rahmen")
+
+    def _tinte_zeichnen(
+        self, session_id: str, praefix: str, aufgabe_id: str, nummer: int, zusatz: str,
+        striche: list[list[dict[str, int]]], *, zeigen: bool, was: str, staerke: int = _RAHMEN_STAERKE,
+    ) -> None:
+        """Striche als ein draw_ink in `_RAHMEN_FARBE`; gemeinsamer Weg von Feld-Rahmen und Vorlage.
+
+        Die Kennung bildet `_feld_id(praefix, aufgabe_id, nummer, zusatz)`, die Wiederholung hat `zusatz + "-r2"`
+        (der Zusatz bleibt auch bei der Kuerzung auf MAX_SCHLUESSEL erhalten). `was` benennt die Tinte im Log.
+        """
         for versuch in (1, 2):
             try:
                 # PenEchos Signatur einer Anfrage umfasst baseRevision: eine neue Revision unter
@@ -1163,10 +1215,10 @@ class PenEchoMcp:
                 # versuch nach REVISION_CONFLICT bekommt eine abgeleitete frische Kennung.
                 self._werkzeug("penecho_edit_canvas", {
                     "sessionId": session_id,
-                    "requestId": self._feld_id(praefix, aufgabe_id, nummer, "" if versuch == 1 else "-r2"),
+                    "requestId": self._feld_id(praefix, aufgabe_id, nummer, zusatz if versuch == 1 else zusatz + "-r2"),
                     "action": "draw_ink",
                     "baseRevision": self._revision(session_id),
-                    "strokes": [{"points": rahmen, "color": _RAHMEN_FARBE, "width": _RAHMEN_STAERKE}],
+                    "strokes": [{"points": s, "color": _RAHMEN_FARBE, "width": staerke} for s in striche],
                 })
                 return
             except PenEchoAnfrageSchonBekannt:
@@ -1174,24 +1226,24 @@ class PenEchoMcp:
                     # Nur beim Erstversuch heisst REQUEST_ID_CONFLICT "schon gezeichnet": dieselbe feste
                     # Kennung kam in dieser Sitzung schon an (Wiederholung der Aufgabe, andere Revision).
                     return
-                log.warning("Feld-Rahmen nicht gezeichnet: REQUEST_ID_CONFLICT")
+                log.warning("%s nicht gezeichnet: REQUEST_ID_CONFLICT", was)
                 return
             except PenEchoRevisionVeraltet:
                 if versuch == 1:
                     continue  # Flaeche hat sich geaendert: Revision neu lesen, einmal wiederholen
-                log.warning("Feld-Rahmen nicht gezeichnet: Revision veraltet")
+                log.warning("%s nicht gezeichnet: Revision veraltet", was)
             except PenEchoNichtSichtbar:
                 if versuch == 1 and zeigen:
                     self._zeigen(session_id)  # Board inzwischen verdeckt: zeigen, einmal wiederholen
                     continue
                 if not zeigen:
-                    log.warning("Feld-Rahmen nicht gezeichnet: Board nicht aktiv, im Hintergrund kein show")
+                    log.warning("%s nicht gezeichnet: Board nicht aktiv, im Hintergrund kein show", was)
                     return
-                log.warning("Feld-Rahmen nicht gezeichnet: Board nicht sichtbar")
+                log.warning("%s nicht gezeichnet: Board nicht sichtbar", was)
             except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
                 raise
             except PenEchoNichtErreichbar as fehler:
-                log.warning("Feld-Rahmen nicht gezeichnet: %s", _typ(fehler))
+                log.warning("%s nicht gezeichnet: %s", was, _typ(fehler))
                 return
 
     def _revision(self, session_id: str) -> int:

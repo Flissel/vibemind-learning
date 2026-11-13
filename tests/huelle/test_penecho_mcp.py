@@ -16,6 +16,7 @@ from spaces.learning.huelle.penecho_mcp import (
     berichtsplatz, bildraster, felder, textfeld,
 )
 from spaces.learning.huelle.anordnung import anordnung, markenzeile, zeile
+from spaces.learning.huelle.vorlage import vorlagenfeld, vorlagenplan
 
 TOKEN = "ab" * 32
 SID = "s" * 64
@@ -2163,3 +2164,98 @@ def test_dokumente_schliessen_anderer_fehler_wirft(zustand: Path) -> None:
     c = PenEchoMcp(zustand, transport=_schliess_transport(Fake(), schliessen="REQUEST_ID_CONFLICT"))
     with pytest.raises(PenEchoAnfrageSchonBekannt):
         c.dokumente_schliessen(["s1#1", "s1#2"], "cv-a")
+
+
+# ---- Hülle-Board: Vorlage im Arbeitsfeld (Aufgabentypen Stufe 1, Task 4) ------------------------
+
+def _vorlage_aufrufe(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] != "show"]
+
+
+def test_aufgabe_mit_vorlage_setzt_texte_vor_tinte(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix")
+    edits = _vorlage_aufrufe(fake)
+    assert [e["action"] for e in edits] == ["create_text"] * 7 + ["draw_ink", "draw_ink"]
+    assert edits[0]["requestId"] == "aufgabe-t1-3"
+    assert [e["requestId"] for e in edits[1:7]] == [f"vorlage-t1-3-t{i}" for i in range(6)]
+    assert [e["text"] for e in edits[1:7]] == [
+        "Nutzen ↑", "Aufwand →", "Quick Wins", "Große Vorhaben", "Nebenbei", "Lieber nicht"]
+    feld = vorlagenfeld(felder(bereich(3)).arbeitsfeld, mit_bildern=False)
+    assert all(e["region"]["x"] >= feld["x"] and e["region"]["y"] >= feld["y"] for e in edits[1:7])
+    vorlage_tinte, rahmen = edits[7], edits[8]
+    assert vorlage_tinte["requestId"] == "vorlage-t1-3-ink" and len(vorlage_tinte["strokes"]) == 4
+    assert all(s["color"] == "#2b6cb0" and s["width"] == 2 for s in vorlage_tinte["strokes"])
+    assert rahmen["requestId"] == "arbeit-t1-3"
+    # Das show kommt nach dem Aufgabentext, vor allem anderen.
+    aktionen = [a["arguments"]["action"] for a in fake.aufrufe("penecho_edit_canvas")]
+    assert aktionen[:2] == ["create_text", "show"]
+
+
+def test_vorlage_ink_wiederholung_behaelt_den_zusatz_bei_langer_id(zustand: Path) -> None:
+    fake = FeldFake(revision=1)
+    transport = _fehler_bei_ink(fake, "REVISION_CONFLICT")
+    lang = "a" * 200
+    PenEchoMcp(zustand, transport=transport).aufgabe_setzen(
+        "s", lang, "x", 1, mit_arbeitsfeld=True, vorlage="onepager")
+    ink = _ink(fake)
+    assert ink[0]["requestId"].endswith("-1-ink") and ink[1]["requestId"].endswith("-1-ink-r2")
+    assert all(len(i["requestId"]) <= 128 for i in ink)
+
+
+def test_vorlage_nach_neustart_nicht_doppelt(zustand: Path) -> None:
+    fake = FeldFake()
+    plan = vorlagenplan("matrix", vorlagenfeld(felder(bereich(3)).arbeitsfeld, mit_bildern=False))
+    assert plan is not None
+    objekte = [("text", f"text-box-v{i}", region) for i, (_, region) in enumerate(plan.texte)]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).aufgabe_setzen(
+        "sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix")
+    edits = _vorlage_aufrufe(fake)
+    assert [e["action"] for e in edits] == ["create_text", "draw_ink", "draw_ink"]  # nur Aufgabentext, Tinte, Rahmen
+
+
+def test_vorlage_tinte_schon_bekannt_gilt_als_gezeichnet(zustand: Path) -> None:
+    fake = FeldFake()
+    c = _client(zustand, fake)
+    c.aufgabe_setzen("sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix")
+    fake.revision += 1  # Flaeche hat sich geaendert: gleiche Kennung, andere Revision = REQUEST_ID_CONFLICT
+    c.aufgabe_setzen("sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix")
+    assert fake.gezeichnet == 2  # Vorlage + Rahmen genau einmal; die Wiederholung zeichnet nichts neu
+    assert not any(i["requestId"].endswith("-r2") for i in _ink(fake))
+
+
+def test_vorlage_ohne_arbeitsfeld_wird_ignoriert(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 3, mit_ergebnisfeld=True, vorlage="matrix")
+    assert [e["requestId"] for e in _vorlage_aufrufe(fake)] == ["aufgabe-t1-3", "ergebnis-t1-3"]
+
+
+def test_vorlage_mit_bildern_liegt_in_der_unteren_haelfte(zustand: Path) -> None:
+    fake = FeldFake()
+    bild = Aufgabenbild(None, base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), 1.0)
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="onepager", bilder=[bild])
+    a = felder(bereich(3)).arbeitsfeld
+    texte = [e for e in _vorlage_aufrufe(fake) if e["requestId"].startswith("vorlage-") and e["action"] == "create_text"]
+    assert len(texte) == 6 and all(t["region"]["y"] >= a["y"] + a["h"] // 2 + 20 for t in texte)
+
+
+def test_vorlage_flaeche_voll_sendet_keine_weiteren_texte(zustand: Path) -> None:
+    fake = FeldFake()
+    zaehler = {"n": 0}
+
+    def antwort(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        args = body["params"].get("arguments", {}) if body["method"] == "tools/call" else {}
+        if args.get("requestId", "").startswith("vorlage-") and args.get("action") == "create_text":
+            zaehler["n"] += 1
+            fake.anfragen.append((body, request.headers))
+            sc = {"code": "OBJECT_LIMIT", "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": []}})
+        return fake(request)
+
+    PenEchoMcp(zustand, transport=httpx.MockTransport(antwort)).aufgabe_setzen(
+        "sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix")
+    assert zaehler["n"] == 1  # nach der ersten Ablehnung keine weiteren Texte
+    assert len(_ink(fake)) == 2  # Tinte und Rahmen kommen trotzdem

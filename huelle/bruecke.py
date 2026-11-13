@@ -89,6 +89,7 @@ from .penecho_mcp import (
 from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
 from .uebergabe import ACTOR_MUSTER
+from .vorlage import VORLAGEN
 from .zusammenfassung import (
     BILD_BUDGET_S, KI_AKTIONEN, NICHT_BEARBEITET_RUECKMELDUNG, AufgabeZeile, Kursrueckmeldung, Zusammenfassung,
     als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz, nicht_bearbeitet,
@@ -1505,7 +1506,11 @@ class Bruecke:
         lage: dict[str, Any] = {} if rechteck is None else {"rechteck": rechteck}
         if not zeigen:
             lage["zeigen"] = False
-        art = _feldart(task)
+        art: dict[str, Any] = dict(_feldart(task))
+        praesentation = task.get("presentation")
+        vorlage = praesentation.get("vorlage") if isinstance(praesentation, dict) else None
+        if typ in BEREICHS_TYPEN and vorlage in VORLAGEN:
+            art["vorlage"] = vorlage
         return lambda s: self._penecho.aufgabe_setzen(s, task["id"], text, nummer, bilder=bilder, **art, **lage)
 
     def _board_merken(self, sitzung: _Sitzung, board: str | None = None) -> None:

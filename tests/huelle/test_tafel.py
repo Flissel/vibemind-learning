@@ -150,3 +150,22 @@ def test_kuerzen_laesst_passenden_text_und_schneidet_an_wortgrenzen() -> None:
     assert kuerzen("kurz genug", zeichen=20) == "kurz genug"
     assert kuerzen("eins zwei drei vier", zeichen=12) == "eins zwei …"
     assert kuerzen("a\nb\nc\nd", zeichen=100, zeilen=2, je_zeile=10) == "a\nb …"
+
+
+def test_aufgabentext_mit_fall() -> None:
+    aufgabe = _aufgabe("open", prompt="Finden Sie …", presentation={"fall": "Muster GmbH"})
+    assert aufgabentext(aufgabe, 3) == "Aufgabe 3: Finden Sie …\n\nFall:\nMuster GmbH"
+
+
+def test_fall_steht_bei_auswahl_nach_dem_etikettenblock() -> None:
+    aufgabe = _aufgabe("single_choice", options=[{"id": "a1", "label": "Erster"}, {"id": "b2", "label": "Zweiter"}],
+                       presentation={"fall": "Muster GmbH\nZweite Zeile"})
+    zeilen = aufgabentext(aufgabe, 1).splitlines()
+    assert zeilen[-3:] == ["Fall:", "Muster GmbH", "Zweite Zeile"]
+    assert zeilen.index("B) Zweiter") < zeilen.index("Fall:")
+
+
+def test_leerer_fall_aendert_nichts() -> None:
+    ohne = _aufgabe("open", prompt="Finden Sie …")
+    mit = _aufgabe("open", prompt="Finden Sie …", presentation={"fall": "  "})
+    assert aufgabentext(mit, 2) == aufgabentext(ohne, 2)
