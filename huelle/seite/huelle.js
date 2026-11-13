@@ -10,7 +10,8 @@ import {
   mitFlaechenKennung, nachrichtAusFlaeche, neueFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 import {
-  entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_OHNE_AUFGABE, KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText,
+  entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_OHNE_AUFGABE, hinweisFuerAktiv, KURS_ABGEBEN_RUECKFRAGE,
+  kursAbgabeText,
   kursAbgebenSichtbar, kursEndeLaden, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument,
   nummerZurNachricht, standAnnehmen, statusText, warteText, zusammenfassungSessionId,
 } from "./liste.js";
@@ -1135,6 +1136,11 @@ async function dokumentAktiv(dokument) {
       leisteZeigen();
       return;
     }
+  }
+  const hinweis = hinweisFuerAktiv(z.hinweis, nummer);
+  if (hinweis !== z.hinweis) {
+    z.hinweis = hinweis;
+    leisteZeigen();
   }
   if (nummer === null || !z.liste || !z.turn || z.gewaehlt === nummer) return;
   if (!z.liste.aufgaben.some((a) => a.nummer === nummer)) return;

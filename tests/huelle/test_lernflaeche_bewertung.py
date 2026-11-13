@@ -96,7 +96,9 @@ def test_kursrueckmeldung_schickt_schluessel_und_daten() -> None:
     (anfrage,) = gesehen
     assert anfrage.method == "POST" and anfrage.url == httpx.URL(f"{URL}/api/lernflaeche/kursrueckmeldung")
     assert anfrage.headers["X-Lernflaeche-Bewertung"] == SCHLUESSEL
-    assert json.loads(anfrage.content) == KURS_DATEN
+    # Vertrag der Lernflaeche (main.js, Route kursrueckmeldung): `kursrueckmeldungDatenGueltig(body?.daten)`, wie bei
+    # `/bewerten` unter `daten`. Unverpackt antwortete sie immer 400 `invalid-body` (Abnahme 13.11., Befund F4).
+    assert json.loads(anfrage.content) == {"daten": KURS_DATEN}
     assert anfrage.extensions["timeout"]["read"] == 120
 
 

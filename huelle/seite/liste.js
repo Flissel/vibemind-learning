@@ -115,6 +115,14 @@ export const FLAECHE_OHNE_AUFGABE =
   "Diese Fläche gehört zu keiner Aufgabe dieses Kurses. Bitte wählen Sie die Aufgabe in der Liste.";
 
 /**
+ * Hinweis, nachdem ein Dokument der Fläche nach vorn kam (`nummer`: seine Aufgabe oder null). Ein bekanntes Dokument
+ * nimmt `FLAECHE_OHNE_AUFGABE` zurück, auch wenn seine Aufgabe schon gewählt ist; andere Hinweise bleiben.
+ */
+export function hinweisFuerAktiv(hinweis, nummer) {
+  return nummer !== null && hinweis === FLAECHE_OHNE_AUFGABE ? null : hinweis;
+}
+
+/**
  * Aufgabennummer zu einer Nachricht der Fläche ({dokument, bereich}).
  * - Altes Modell (`jeAufgabe` nicht true): wie bisher das bekannte Dokument, sonst Bereich + 1.
  * - Ein Canvas je Aufgabe: nur ein bekanntes Dokument, sonst null. Der Bereich ist dort immer 0 und hieße

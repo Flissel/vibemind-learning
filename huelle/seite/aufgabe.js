@@ -301,9 +301,13 @@ export function begriffeZusammenfassen(begriffe) {
 export const FLAECHEN_HINWEIS =
   "Die Fläche ist noch nicht verbunden. Schalten Sie oben in der Fläche „MCP“ ein und tippen Sie dann auf „Fläche verbinden“.";
 
-/** Ob der Hinweis zur nicht verbundenen Flaeche gezeigt wird: Antwort mit flaeche false und offene Aufgabe. */
+/**
+ * Ob der Hinweis zur nicht verbundenen Flaeche gezeigt wird: Antwort mit flaeche false und offene Aufgabe, oder
+ * abgeschlossener Kurs, dessen Kurs-Canvas nicht nach vorn kam (dann verbindet die Seite auf „MCP bereit“ neu).
+ */
 export function flaechenHinweis(daten) {
-  return !!daten && daten.flaeche === false && daten.turn?.state === "active" && !!daten.turn?.task;
+  if (!daten || daten.flaeche !== false) return false;
+  return daten.abgeschlossen === true || (daten.turn?.state === "active" && !!daten.turn?.task);
 }
 
 // ---- Fläche zuerst: Etiketten und Korrektur (Spiegel von contracts/beschriftung.py) -----------------

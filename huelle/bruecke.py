@@ -283,6 +283,7 @@ class _Sitzung:
     tutor: list[tuple[str, str]] = field(default_factory=list)
     tutor_aufgabe: str | None = None
     bericht_gezeigt: bool = False   # Bericht dieser Sitzung steht auf dem Board
+    kurs_vorn: bool = True          # je Aufgabe: kam das Kurs-Canvas beim letzten Kursende-Zeigen nach vorn
     liste: bool = False             # Listenkurs (Turn mit `ablauf == "liste"`): Routen mit `nummer`
     flaeche: str | None = None      # Teil B: Flaechen-Kennung (canvasId) des Tabs der Person; None = wie bisher
     # Kam eine fremde Kennung, solange die Sitzung keine eigene Flaeche hat: nie der alte Weg (auch nicht im
@@ -1707,8 +1708,10 @@ class Bruecke:
         ki_folgt = gespeichert is None and self._bewerter is not None and self._bewerter.aktiv
         erstmals = not sitzung.bericht_gezeigt
         if not erstmals and not ki_folgt:
-            self._still(lambda: self._auf_kurs(sitzung, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
+            sitzung.kurs_vorn = self._still(
+                lambda: self._auf_kurs(sitzung, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
             return
+        sitzung.kurs_vorn = False
         try:
             z = self._zusammenfassung_bauen(sitzung, bilder=False)
             ki_folgt = ki_folgt and bool(z.aufgaben)
@@ -1723,7 +1726,7 @@ class Bruecke:
                 self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)
                 self._penecho.bericht_zeigen(s, sitzung.sid, text, nummern, bilder=bilder)
 
-            gezeigt = self._still(lambda: self._auf_kurs(sitzung, zeigen))
+            gezeigt = sitzung.kurs_vorn = self._still(lambda: self._auf_kurs(sitzung, zeigen))
             if erstmals:
                 sitzung.bericht_gezeigt = gezeigt
                 self._zusammenfassung_ablegen(sitzung, z)
@@ -2074,7 +2077,8 @@ class Bruecke:
                 "begriffe": begriffe if isinstance(begriffe, list) else [],
                 "turn": turn,
                 "nummer": None,
-                "flaeche": True,
+                # Je Aufgabe: ehrlich, ob das Kurs-Canvas vorn ist; sonst verbindet die Seite nie neu (Abnahme F3).
+                "flaeche": sitzung.kurs_vorn if sitzung.je_aufgabe else True,
                 "abgeschlossen": True,
             }
             if sitzung.liste:
@@ -2260,6 +2264,9 @@ class Bruecke:
             self._still(lambda: self._auf_aufgabe(
                 sitzung, nummer, titel, lambda s: self._penecho.bereiche_melden(s, [EINZEL_RECHTECK])))
             self._auf_aufgabe(sitzung, nummer, titel, auftrag)
+            if zeigen:  # mit Rechteck macht `aufgabe_setzen` das Board nur sichtbar; einpassen muss die Huelle (F2)
+                self._still(lambda: self._auf_aufgabe(
+                    sitzung, nummer, titel, lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK)))
         self._board_merken(sitzung, sitzung.aufgaben_boards[nummer])  # gesetzt, sonst haette `_auf_aufgabe` geworfen
 
     @staticmethod

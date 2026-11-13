@@ -127,6 +127,30 @@ def test_oeffnen_ohne_anordnung_auch_bei_vielen_aufgaben(tmp_path: Path) -> None
         client.app.beenden()
 
 
+def test_neues_canvas_wird_ins_bild_geholt(tmp_path: Path) -> None:
+    # Mit Rechteck macht `aufgabe_setzen` das Board nur sichtbar; einpassen muss die Huelle selbst (`bereich_zeigen`),
+    # sonst steht ein frisch angelegtes Canvas in der Ansicht des vorigen (Abnahme 13.11., Befund F2).
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        namen = [a[0] for a in _flaechenaufrufe(penecho)]
+        assert ("bereich_zeigen", "board-1", EINZEL_RECHTECK) in penecho.aufrufe
+        assert namen.index("aufgabe_setzen") < namen.index("bereich_zeigen")
+        vorher = len(penecho.aufrufe)
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        neu = [a[0] for a in _flaechenaufrufe(penecho, vorher)]
+        assert ("bereich_zeigen", "board-2", EINZEL_RECHTECK) in penecho.aufrufe[vorher:]
+        assert neu.index("aufgabe_setzen") < neu.index("bereich_zeigen")
+        # Scheitert nur das Einpassen, bleibt die Aufgabe gesetzt (Zierde wie der Rahmen).
+        def scheitert(session_id: str, rechteck: dict[str, int]) -> None:
+            raise PenEchoNichtErreichbar("weg")
+
+        penecho.bereich_zeigen = scheitert  # type: ignore[method-assign]
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3})
+        assert r.status_code == 200 and r.json()["flaeche"] is True
+    finally:
+        client.app.beenden()
+
+
 def test_zeigen_legt_canvas_bei_bedarf_an(tmp_path: Path) -> None:
     ll = _neu_lern(3)
     penecho = JePenEcho()
@@ -974,6 +998,46 @@ def test_oeffnen_nach_kursende_zeigt_kursrueckmeldung(tmp_path: Path) -> None:
         (bericht,) = [a for a in penecho.aufrufe if a[0] == "bericht_zeigen"]
         assert bericht[1] == "board-kurs" and "Sie rechnen sicher." in bericht[3] and FOLGT not in bericht[3]
         assert bewerter2.daten == [] and SID not in _schluessel(penecho)
+    finally:
+        client.app.beenden()
+
+
+def test_oeffnen_nach_kursende_meldet_flaeche_ehrlich(tmp_path: Path) -> None:
+    # Abnahme 13.11. (F3): die Seite oeffnet beim Laden, bevor die Flaeche verbunden ist. Kam das Kurs-Canvas nicht nach
+    # vorn, muss `flaeche` false sein, sonst verbindet die Seite nie neu und die Flaeche bleibt leer.
+    ll = _beendet(2, tmp_path)
+    penecho = JePenEcho()
+    penecho.fehler = PenEchoNichtErreichbar("weg")
+    ll.lern.antworten["learning_task_bewertungsdaten"] = lambda kw: {}
+    client, _, _ = bauen(ll.lern, penecho, kursende=tmp_path / "kursende.json")
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
+        assert r.status_code == 200 and r.json()["abgeschlossen"] is True
+        assert r.json()["flaeche"] is False
+        penecho.fehler = None
+        vorher = len(penecho.aufrufe)
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
+        assert r.status_code == 200 and r.json()["flaeche"] is True
+        assert ("bereich_zeigen", "board-kurs", EINZEL_RECHTECK) in penecho.aufrufe[vorher:]
+        # Schon gezeigt: erneutes Oeffnen holt nur das Kurs-Canvas nach vorn; scheitert das, wieder false.
+        penecho.fehler = PenEchoNichtErreichbar("weg")
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
+        assert r.status_code == 200 and r.json()["flaeche"] is False
+    finally:
+        client.app.beenden()
+
+
+def test_oeffnen_nach_kursende_alte_sitzung_bleibt_flaeche_true(tmp_path: Path) -> None:
+    # Ohne Merkmal (ein Board) bleibt die Antwort am Kursende wie bisher.
+    ll = _beendet(2, tmp_path)
+    (tmp_path / "je-aufgabe.json").write_text(json.dumps(["andere-sitzung"]), encoding="utf-8")
+    penecho = FakePenEcho()
+    penecho.fehler = PenEchoNichtErreichbar("weg")
+    ll.lern.antworten["learning_task_bewertungsdaten"] = lambda kw: {}
+    client, _, _ = bauen(ll.lern, penecho, kursende=tmp_path / "kursende.json")
+    try:
+        r = client.post(f"/lernen/api/kurse/{KURS}/oeffnen", headers={KOPF: KA})
+        assert r.status_code == 200 and r.json()["flaeche"] is True
     finally:
         client.app.beenden()
 

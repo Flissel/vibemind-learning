@@ -179,6 +179,26 @@ test("FLAECHE_OHNE_AUFGABE: fester Text", () => {
     "Diese Fläche gehört zu keiner Aufgabe dieses Kurses. Bitte wählen Sie die Aufgabe in der Liste.");
 });
 
+import { hinweisFuerAktiv } from "./liste.js";
+
+test("hinweisFuerAktiv: bekanntes Dokument vorn löscht nur den Hinweis „gehört zu keiner Aufgabe“", () => {
+  // Abnahme 13.11. (F1): die Fläche legt beim Laden ein leeres Dokument an; danach kommt das Canvas der schon
+  // gewählten Aufgabe nach vorn, der Hinweis blieb trotzdem stehen.
+  assert.equal(hinweisFuerAktiv(FLAECHE_OHNE_AUFGABE, 1), null);
+  assert.equal(hinweisFuerAktiv(FLAECHE_OHNE_AUFGABE, null), FLAECHE_OHNE_AUFGABE);
+  assert.equal(hinweisFuerAktiv("Anderer Hinweis", 2), "Anderer Hinweis");
+  assert.equal(hinweisFuerAktiv(null, 2), null);
+});
+
+test("huelle.js: dokumentAktiv räumt den Hinweis vor dem frühen Ausstieg (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  const aktiv = js.split("async function dokumentAktiv(")[1].split("\n}\n")[0];
+  const raeumen = aktiv.indexOf("hinweisFuerAktiv(z.hinweis, nummer)");
+  assert.ok(raeumen > 0, "dokumentAktiv ruft hinweisFuerAktiv");
+  assert.ok(raeumen < aktiv.indexOf("z.gewaehlt === nummer) return;"), "vor dem Ausstieg bei gleicher Aufgabe");
+});
+
 test("huelle.js: unbekanntes Dokument im Modell je Aufgabe lädt die Zuordnung neu, nie Bereich + 1 (Quelltext)", async () => {
   const { readFileSync } = await import("node:fs");
   const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");

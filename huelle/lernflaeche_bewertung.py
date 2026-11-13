@@ -72,7 +72,8 @@ class KiBewerter:
         if not self.aktiv:
             return None
         try:
-            antwort = self._client.post(self._url + KURS_PFAD, json=daten, headers={KOPF: self._schluessel})
+            # Wie `/bewerten`: die Lernflaeche liest `body.daten` (sonst 400 `invalid-body`).
+            antwort = self._client.post(self._url + KURS_PFAD, json={"daten": daten}, headers={KOPF: self._schluessel})
         except httpx.HTTPError as fehler:
             log.warning("Kursrueckmeldung nicht erreichbar: %s", type(fehler).__name__)
             return None

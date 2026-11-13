@@ -189,6 +189,13 @@ test("flaechenHinweis: nur bei flaeche false und offener Aufgabe", () => {
   assert.equal(flaechenHinweis(null), false);
 });
 
+test("flaechenHinweis: auch am Kursende, wenn das Kurs-Canvas nicht nach vorn kam (Abnahme F3)", () => {
+  const ende = { state: "completed" };
+  assert.equal(flaechenHinweis({ flaeche: false, abgeschlossen: true, turn: ende }), true);
+  assert.equal(flaechenHinweis({ flaeche: true, abgeschlossen: true, turn: ende }), false);
+  assert.equal(flaechenHinweis({ abgeschlossen: true, turn: ende }), false);
+});
+
 // ---- Flaeche zuerst: Etiketten, Korrektur, Leiste ---------------------------------------------------
 import { readFileSync } from "node:fs";
 import {
