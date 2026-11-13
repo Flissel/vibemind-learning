@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from spaces.learning.services.adaptive_engine.darstellung import bewertungshinweis, fall_und_vorlage
 from spaces.learning.services.adaptive_engine.eligibility import (
     CandidateItem,
     SelectionContext,
@@ -624,10 +625,13 @@ class AdaptiveSessionService:
             else:
                 raise ValueError(f"{item.item_type} tasks have no grading data")
             task = self._public_task(item, row.id)
+            hinweis = bewertungshinweis(task.presentation)
             if art == "deterministic":
                 from spaces.learning.services.evaluation.handschrift import leseauftrag
 
                 aufgabe = task.model_dump(mode="json")
+                if hinweis:
+                    aufgabe["prompt"] = f"{aufgabe['prompt']}\n\n{hinweis}"
                 return Bewertungsdaten(
                     attempt_id=attempt.id,
                     item_type=item.item_type,
@@ -637,11 +641,14 @@ class AdaptiveSessionService:
                 )
             expected = item.expected_answer if isinstance(item.expected_answer, dict) else {}
             text = expected.get("text")
+            aufgabe = task.model_dump(mode="json")
+            if hinweis:
+                aufgabe["prompt"] = f"{aufgabe['prompt']}\n\n{hinweis}"
             return Bewertungsdaten(
                 attempt_id=attempt.id,
                 item_type=item.item_type,
                 art=art,
-                aufgabe=task.model_dump(mode="json"),
+                aufgabe=aufgabe,
                 musterloesung=text if isinstance(text, str) else None,
                 kriterien=[
                     BewertungsKriterium(
@@ -1259,6 +1266,9 @@ class AdaptiveSessionService:
         expected = item.expected_answer.get("text")
         if not isinstance(expected, str) or not expected:
             raise ValueError("rubric item expected answer is invalid")
+        hinweis = bewertungshinweis(self._presentation(item))
+        if hinweis:
+            expected = f"{expected}\n\n{hinweis}"
         source_refs = self._string_list(item.scoring_config.get("source_refs", []))
         criteria = [RubricCriterion.model_validate(value) for value in item.rubric]
         request = RubricEvaluationRequest(
@@ -2110,7 +2120,7 @@ class AdaptiveSessionService:
         raw = item.scoring_config.get("presentation", {})
         if not isinstance(raw, dict):
             raise ValueError("adaptive item presentation is invalid")
-        return {key: value for key, value in raw.items() if key in allowed}
+        return {key: value for key, value in raw.items() if key in allowed} | fall_und_vorlage(item.item_type, raw)
 
     @staticmethod
     def _feedback(

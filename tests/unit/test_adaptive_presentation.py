@@ -45,3 +45,18 @@ def test_the_learner_sees_the_filtered_refs_while_grading_keeps_all() -> None:
     ohne = SimpleNamespace(scoring_config={"source_refs": ["a", "b"]})
     assert AdaptiveSessionService._anzeige_refs(mit) == ("a",)
     assert AdaptiveSessionService._anzeige_refs(ohne) == ("a", "b")
+
+
+def test_fall_wird_bei_jedem_typ_gezeigt() -> None:
+    shown = AdaptiveSessionService._presentation(_item("single_choice", {"fall": "Muster GmbH, 40 Beschäftigte"}))
+    assert shown == {"fall": "Muster GmbH, 40 Beschäftigte"}
+
+
+def test_fall_zu_lang_wird_nicht_gezeigt() -> None:
+    assert AdaptiveSessionService._presentation(_item("open", {"fall": "x" * 1201})) == {}
+
+
+def test_vorlage_nur_bei_freien_typen() -> None:
+    assert AdaptiveSessionService._presentation(_item("case", {"vorlage": "matrix"})) == {"vorlage": "matrix"}
+    assert AdaptiveSessionService._presentation(_item("ordering", {"vorlage": "matrix"})) == {}
+    assert AdaptiveSessionService._presentation(_item("open", {"vorlage": "tabelle"})) == {}

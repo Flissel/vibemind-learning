@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService
+from spaces.learning.services.adaptive_engine.session_service import AdaptiveSessionService, AnswerCommand
 from spaces.learning.services.db.repository import PersistenceConflict
 from spaces.learning.tests.unit.test_vorbewertung import (
     ACTOR,
@@ -159,4 +159,64 @@ def test_bewertungsdaten_veraltete_revision(tmp_path: Path) -> None:
     turn = _start(service, course_id)
     with pytest.raises(PersistenceConflict, match="revision"):
         _daten(service, turn, revision=turn.session_revision + 1)
+    engine.dispose()
+
+
+def _case_mit_vorlage() -> dict[str, object]:
+    spec = _rubric_item("case")
+    spec["scoring_config"] = {
+        **spec["scoring_config"],  # type: ignore[dict-item]
+        "presentation": {"fall": "Muster GmbH", "vorlage": "matrix"},
+    }
+    return spec
+
+
+def test_bewertungsdaten_nennt_vorlage_als_vorgedruckt(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_case_mit_vorlage()])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
+    turn = _start(service, course_id)
+
+    daten = _daten(service, turn)
+
+    prompt = daten.aufgabe["prompt"]
+    assert prompt.startswith("Begruende den autorisierten Pfad.")
+    assert "Fall: Muster GmbH" in prompt
+    assert "vorgedruckt" in prompt
+    # Der Browser sieht den Hinweis nicht.
+    assert "vorgedruckt" not in turn.task.prompt
+    engine.dispose()
+
+
+def test_bewertungsdaten_ohne_fall_und_vorlage_unveraendert(tmp_path: Path) -> None:
+    engine, factory, course_id, _ = _store(tmp_path, [_rubric_item("case")])
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
+    turn = _start(service, course_id)
+
+    daten = _daten(service, turn)
+
+    assert daten.aufgabe["prompt"] == "Begruende den autorisierten Pfad."
+    engine.dispose()
+
+
+def test_rubrik_anfrage_bekommt_hinweis(tmp_path: Path) -> None:
+    from spaces.learning.services.adaptive_engine.darstellung import bewertungshinweis
+
+    engine, factory, course_id, _ = _store(tmp_path, [_case_mit_vorlage()])
+    rubrik = _Rubrik()
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=rubrik)
+    turn = _start(service, course_id)
+    hinweis = bewertungshinweis({"fall": "Muster GmbH", "vorlage": "matrix"})
+    assert hinweis is not None
+
+    attempt_id = _daten(service, turn).attempt_id
+    service.answer(
+        AnswerCommand(
+            session_id=turn.session_id, actor_id=ACTOR,
+            expected_session_revision=turn.session_revision,
+            attempt_id=attempt_id, answer={"text": "Der Pfad."},
+        )
+    )
+
+    request = rubrik.calls[0][0]
+    assert request.expected_answer == "Der autorisierte Pfad.\n\n" + hinweis
     engine.dispose()
