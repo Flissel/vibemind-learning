@@ -144,3 +144,17 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .kurswahl select { max-width: 100%; }
   .listenkopf { flex-basis: 100%; }
 }
+
+.fall { margin: .5rem 0; padding: .4rem .7rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #faf9f5; }
+.fall summary { min-height: 2.75rem; display: flex; align-items: center; font-weight: 600; cursor: pointer; }
+.fall p { margin: 0 0 .5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kaertchen { margin: .5rem 0; }
+.kaertchen-reihe { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0; }
+.kaertchen-knopf { position: relative; min-height: 2.75rem; min-width: 2.75rem; padding: .3rem .8rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff; text-align: left; overflow-wrap: anywhere; }
+.kaertchen button[aria-pressed="true"] { background: #17191c; color: #fff; box-shadow: 0 0 0 2px #3a6ea5; }
+.kaertchen-nr { display: inline-block; min-width: 1.2rem; margin-right: .4rem; padding: 0 .3rem; border-radius: .6rem; background: #3a6ea5; color: #fff; font-size: .75rem; text-align: center; }
+.kaertchen-zeile { margin: .4rem 0; }
+.kaertchen-links { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.kaertchen-legende { margin: .4rem 0; padding-left: 1.2rem; list-style: none; color: #55524a; font-size: .95rem; }
+#kaertchen-abgeben { min-height: 2.75rem; padding: 0 1rem; border: 1px solid #17191c; border-radius: .5rem; background: #17191c; color: #fff; }
+#kaertchen-abgeben:disabled { opacity: .45; }

@@ -1,7 +1,8 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
   abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
-  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kursVorwahl, leistenKnoepfe, leistenZustand,
+  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen,
+  KAERTCHEN_TYPEN, etiketten, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
@@ -44,6 +45,9 @@ const TEXT = {
   ueberarbeiten: "Ändern Sie Ihre Antwort auf der Fläche und drücken Sie dann erneut „Abgeben“.",
   nichtZugeordnet: "Das konnte ich nicht zuordnen.",
   wirdBewertet: "Wird bewertet …",
+  kaertchenHinweis: "Antippen statt schreiben – oder weiter mit dem Stift auf der Fläche.",
+  kaertchenAbgeben: "Mit Kärtchen abgeben",
+  fallSeitenleiste: "Fall",
 };
 const BEWERTET_NACH_MS = 4000; // Passt wartet höchstens so lange auf das Speichern, dann geht es weiter
 const ABFRAGE_MS = 2000; // Listenkurs: Stand abfragen, solange eine Abgabe bewertet wird
@@ -94,6 +98,7 @@ const z = {
   flaechenAbgabe: false, // eine Abgabe aus PenEcho läuft gerade an (Doppelklick: die zweite Nachricht wird verworfen)
   mcpBereit: false, // PenEcho hat „MCP bereit“ gemeldet (egal ob vor oder nach dem Öffnen)
   mcpAutoVerbunden: false, // „Fläche verbinden“ wurde auf PenEchos Meldung schon einmal ausgelöst (höchstens einmal je Laden)
+  kaertchen: null, // {taskId, zustand}: Auswahl der Begriffs-Kärtchen der gezeigten Aufgabe
   rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
 
@@ -532,6 +537,138 @@ function hilfeZeigen(inhalt) {
   $("hilfe").replaceChildren(box);
 }
 
+// Der vollständige Fall (das Brett zeigt ihn nur gekürzt) als aufklappbarer Block unter dem Aufgabentext.
+function fallBlock(task, math) {
+  const fall = task.presentation?.fall;
+  if (typeof fall !== "string" || !fall.trim()) return null;
+  return el("details", { class: "fall" }, el("summary", { text: TEXT.fallSeitenleiste }), setzeText(el("p"), fall, math));
+}
+
+// ---- Begriffs-Kärtchen: Antippen statt Schreiben ------------------------------------------------------
+function kaertchenAufgabe() {
+  const t = z.turn;
+  if (!t || z.phase !== "aufgabe" || t.state !== "active") return null;
+  const task = z.liste ? z.listenAufgaben.get(z.gewaehlt) ?? null : t.task;
+  return task && KAERTCHEN_TYPEN.has(task.type) ? task : null;
+}
+
+function kaertchenGesperrt(task) {
+  const gewaehlt = z.liste ? gewaehlteAufgabe() : null;
+  const bewertet = gewaehlt !== null && (gewaehlt.status === "in_bewertung" || gewaehlt.status === "bestaetigt");
+  return z.busy || bewertet || kaertchenAntwort(task, z.kaertchen?.zustand) === null;
+}
+
+function kaertchenKnopf(etikett, label, gedrueckt, onclick, badge) {
+  const knopf = el("button", { type: "button", class: "kaertchen-knopf", "aria-pressed": gedrueckt ? "true" : "false", onclick });
+  if (badge) knopf.append(el("span", { class: "kaertchen-nr", text: String(badge) }));
+  knopf.append(setzeText(el("span"), `${etikett}) ${label}`, z.aufgabeMathe));
+  return knopf;
+}
+
+// Baut die Kärtchen nur neu, wenn sich Auswahl oder Sperrzustand ändern (sonst verlieren Klicks beim Abfragen den Knopf).
+function kaertchenAktualisieren() {
+  const box = document.getElementById("kaertchen");
+  const task = kaertchenAufgabe();
+  if (!box || !task) return;
+  if (z.kaertchen?.taskId !== task.id) z.kaertchen = { taskId: task.id, zustand: kaertchenStart(task) };
+  const zu = z.kaertchen.zustand;
+  const gesperrt = kaertchenGesperrt(task);
+  const plan = `${kaertchenKennung(task, zu)}|${gesperrt ? 1 : 0}|${z.busy ? 1 : 0}`;
+  if (box.dataset.plan !== plan) {
+    let et;
+    try {
+      et = etiketten(task);
+    } catch {
+      box.replaceChildren();
+      box.dataset.plan = plan;
+      return;
+    }
+    const tippen = (etikett) => () => {
+      z.kaertchen.zustand = kaertchenTippen(task, z.kaertchen.zustand, etikett);
+      kaertchenAktualisieren();
+    };
+    const eintraege = (liste) => (Array.isArray(liste) ? liste : []);
+    const labelZu = (liste, id) => eintraege(liste).find((e) => e?.id === id)?.label ?? "";
+    const teile = [el("p", { class: "hinweistext", text: TEXT.kaertchenHinweis })];
+    if (task.type === "matching") {
+      const links = eintraege(task.presentation?.left);
+      const rechts = eintraege(task.presentation?.right);
+      for (const [nr, id] of Object.entries(et.links)) {
+        const zeile = el("div", { class: "kaertchen-zeile" },
+          setzeText(el("p", { class: "kaertchen-links" }), `${nr}) ${labelZu(links, id)}`, z.aufgabeMathe));
+        const knoepfe = el("div", { class: "kaertchen-reihe" });
+        for (const b of Object.keys(et.rechts)) {
+          knoepfe.append(el("button", {
+            type: "button", class: "kaertchen-knopf", "aria-pressed": zu.paare[nr] === b ? "true" : "false", text: b,
+            onclick: () => {
+              z.kaertchen.zustand = kaertchenPaar(z.kaertchen.zustand, nr, b);
+              kaertchenAktualisieren();
+            },
+          }));
+        }
+        zeile.append(knoepfe);
+        teile.push(zeile);
+      }
+      const legende = el("ul", { class: "kaertchen-legende" });
+      for (const [b, id] of Object.entries(et.rechts)) {
+        legende.append(setzeText(el("li"), `${b}) ${labelZu(rechts, id)}`, z.aufgabeMathe));
+      }
+      teile.push(legende);
+    } else {
+      const reihe = el("div", { class: "kaertchen-reihe" });
+      for (const [b, id] of Object.entries(et.optionen)) {
+        const nr = task.type === "ordering" ? zu.wahl.indexOf(b) + 1 : 0;
+        reihe.append(kaertchenKnopf(b, labelZu(task.options, id), zu.wahl.includes(b), tippen(b), nr || null));
+      }
+      teile.push(reihe);
+    }
+    teile.push(el("button", {
+      type: "button", id: "kaertchen-abgeben", class: "haupt-knopf", text: TEXT.kaertchenAbgeben,
+      disabled: gesperrt, onclick: () => void kaertchenAbgeben(),
+    }));
+    box.replaceChildren(...teile);
+    box.dataset.plan = plan;
+  }
+  // `sperren` setzt alle Knöpfe der Karte; hier gilt wieder der echte Stand.
+  const abgeben = document.getElementById("kaertchen-abgeben");
+  if (abgeben) abgeben.disabled = gesperrt;
+}
+
+async function kaertchenAbgeben() {
+  const t = z.turn;
+  const task = kaertchenAufgabe();
+  if (!t || !task || z.busy || kaertchenGesperrt(task)) return;
+  const antwort = kaertchenAntwort(task, z.kaertchen?.zustand);
+  if (!antwort) return;
+  z.hinweis = null;
+  banner("");
+  if (z.liste) {
+    const a = gewaehlteAufgabe();
+    if (!a) return;
+    sperren(true);
+    const token = z.token;
+    const nr = neueAnfrage();
+    const r = await api("POST", `/sitzungen/${t.session_id}/waehlen`, { nummer: a.nummer, answer: antwort });
+    if (token !== z.token) return;
+    sperren(false);
+    if (!r.ok) { listenFehler(r, nr); return; }
+    dokumenteUebernehmen(r.daten);
+    standAnwenden(r.daten.stand, nr);
+    z.korrektur = null;
+    z.kaertchen = null;
+    // Karte nicht auf der Fläche (z. B. kein Platz): die Brücke schickt die Rückmeldung als Text.
+    z.hinweis = typeof r.daten.karte === "string" && r.daten.karte ? r.daten.karte : null;
+    listeZeigen();
+    void speichern(false);
+    return;
+  }
+  sperren(true);
+  const r = await api("POST", `/sitzungen/${t.session_id}/waehlen`, { revision: t.session_revision, answer: antwort });
+  if (r.ok) z.kaertchen = null;
+  ergebnisUebernehmen(r);
+  kaertchenAktualisieren();
+}
+
 function karteAufgabe() {
   const t = z.turn;
   // Listenkurs: die Karte gilt der gewählten Aufgabe (Antwortfeld für Typ `code`, `{nummer, answer}`).
@@ -555,14 +692,18 @@ function karteAufgabe() {
     // Alles andere wird auf der Fläche beantwortet; Abgeben, Passt usw. sitzen in der Leiste über der Fläche.
     $("karte").replaceChildren(...ohneLeere(
       setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
+      fallBlock(task, math),
       el("p", { class: "hinweistext", text: TEXT.aufFlaeche }),
+      KAERTCHEN_TYPEN.has(task.type) ? el("section", { id: "kaertchen", class: "kaertchen", "aria-label": "Kärtchen" }) : null,
       sperre,
       el("div", { class: "knoepfe" }, ...hilfeKnoepfe)));
+    kaertchenAktualisieren();
     return;
   }
   const feld = el("textarea", { name: "antwort", required: true, placeholder: "Lösung und Begründung eingeben" });
   const form = el("form", { novalidate: false },
     setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
+    fallBlock(task, math),
     el("div", {}, feld, el("p", { class: "hinweistext", text: TEXT.rechnen })),
     sperre,
     el("div", { class: "knoepfe" },
@@ -991,6 +1132,7 @@ function speichern(manuell) {
 function leisteZeigen() {
   const leiste = $("flaechenleiste");
   const t = z.turn;
+  kaertchenAktualisieren();
   // Listenkurs: die Leiste gilt der gewählten Aufgabe; ihre Knöpfe folgen deren Stand.
   const gewaehlt = z.liste ? gewaehlteAufgabe() : null;
   const task = z.liste ? z.listenAufgaben.get(z.gewaehlt) ?? null : t?.task;

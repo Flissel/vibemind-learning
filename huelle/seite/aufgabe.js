@@ -426,6 +426,58 @@ export function korrekturAntwort(task, text) {
   }
 }
 
+// ---- Begriffs-Kärtchen: Antippen statt Schreiben (baut denselben Etiketten-Text wie die Korrektur) ----------
+export const KAERTCHEN_TYPEN = new Set(["single_choice", "multiple_choice", "ordering", "matching"]);
+
+/** Leerer Kärtchen-Zustand `{wahl, paare}`; null für Typen ohne Kärtchen. */
+export function kaertchenStart(task) {
+  return KAERTCHEN_TYPEN.has(task?.type) ? { wahl: [], paare: {} } : null;
+}
+
+/** Tippen auf ein Etikett: single ersetzt, multiple schaltet um, ordering hängt an oder nimmt heraus. */
+export function kaertchenTippen(task, zustand, etikett) {
+  const z = zustand ?? { wahl: [], paare: {} };
+  const drin = z.wahl.includes(etikett);
+  let wahl;
+  if (task?.type === "single_choice") wahl = [etikett];
+  else if (drin) wahl = z.wahl.filter((e) => e !== etikett);
+  else wahl = [...z.wahl, etikett];
+  return { wahl, paare: { ...z.paare } };
+}
+
+/** Matching: `paare[links] = rechts`; dasselbe Paar noch einmal löscht es. */
+export function kaertchenPaar(zustand, links, rechts) {
+  const z = zustand ?? { wahl: [], paare: {} };
+  const paare = { ...z.paare };
+  if (paare[links] === rechts) delete paare[links];
+  else paare[links] = rechts;
+  return { wahl: [...z.wahl], paare };
+}
+
+/** Der Etiketten-Text zum Zustand: „B“, „A, C“, „C, A, B“, „1-B, 2-A“. */
+export function kaertchenText(task, zustand) {
+  if (!zustand) return "";
+  if (task?.type === "matching") {
+    return Object.keys(zustand.paare)
+      .sort((a, b) => Number(a) - Number(b))
+      .map((l) => `${l}-${zustand.paare[l]}`)
+      .join(", ");
+  }
+  const wahl = task?.type === "multiple_choice" ? [...zustand.wahl].sort() : zustand.wahl;
+  return wahl.join(", ");
+}
+
+/** Antwort im Format der Bewertung (gleich `korrekturAntwort` für den Text); null, wenn nichts gewählt ist. */
+export function kaertchenAntwort(task, zustand) {
+  if (!task || !KAERTCHEN_TYPEN.has(task.type) || !zustand) return null;
+  return korrekturAntwort(task, kaertchenText(task, zustand));
+}
+
+/** Kennung des Zustands: ändert sich nur, wenn sich Aufgabe oder Auswahl ändern. */
+export function kaertchenKennung(task, zustand) {
+  return JSON.stringify([task?.id ?? null, zustand?.wahl ?? [], zustand?.paare ?? {}]);
+}
+
 const EINGABE_HINWEIS = {
   single_choice: "Einen Buchstaben eingeben, z. B. B",
   multiple_choice: "Buchstaben eingeben, z. B. A, C",

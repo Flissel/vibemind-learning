@@ -537,3 +537,77 @@ test("autoVerbindenFaellig: beide Reihenfolgen, einmal je Laden", () => {
   assert.equal(autoVerbindenFaellig({ mcpBereit: true, hinweisSichtbar: true, schonAutoVerbunden: true }), false);
   assert.equal(autoVerbindenFaellig(), false);
 });
+
+// ---- Begriffs-Kärtchen (Seitenleiste) ----------------------------------------------------------------
+import {
+  KAERTCHEN_TYPEN, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenText, kaertchenTippen,
+} from "./aufgabe.js";
+
+const OPT3 = [{ id: "o1", label: "x" }, { id: "o2", label: "y" }, { id: "o3", label: "z" }];
+const KT = (type) => ({ id: "t1", type, presentation: {}, options: OPT3 });
+const KMATCH = {
+  id: "t2", type: "matching", options: [],
+  presentation: { left: [{ id: "l1", label: "a" }, { id: "l2", label: "b" }], right: [{ id: "r1", label: "c" }, { id: "r2", label: "d" }] },
+};
+const tippe = (task, folge) => folge.reduce((zu, e) => kaertchenTippen(task, zu, e), kaertchenStart(task));
+
+test("KAERTCHEN_TYPEN: die vier Auswahl-Typen", () => {
+  assert.deepEqual([...KAERTCHEN_TYPEN].sort(), ["matching", "multiple_choice", "ordering", "single_choice"]);
+});
+
+test("kaertchenAntwort single: Tippen ersetzt", () => {
+  const t = KT("single_choice");
+  assert.deepEqual(kaertchenAntwort(t, tippe(t, ["B"])), { choice_id: "o2" });
+  assert.deepEqual(kaertchenAntwort(t, tippe(t, ["B", "C"])), { choice_id: "o3" });
+  assert.equal(kaertchenText(t, tippe(t, ["B", "C"])), "C");
+});
+
+test("kaertchenAntwort multiple: Tippen schaltet um", () => {
+  const t = KT("multiple_choice");
+  assert.deepEqual(kaertchenAntwort(t, tippe(t, ["A", "C", "A"])), { choice_ids: ["o3"] });
+  assert.equal(kaertchenText(t, tippe(t, ["C", "A"])), "A, C");
+});
+
+test("kaertchenAntwort ordering: Tipp-Reihenfolge, erneutes Tippen nimmt heraus", () => {
+  const t = KT("ordering");
+  assert.deepEqual(kaertchenAntwort(t, tippe(t, ["C", "A", "B"])), { order: ["o3", "o1", "o2"] });
+  assert.equal(kaertchenText(t, tippe(t, ["C", "A", "B"])), "C, A, B");
+  assert.equal(kaertchenText(t, tippe(t, ["C", "A", "C"])), "A");
+  const teil = tippe(t, ["C", "A"]);
+  assert.deepEqual(kaertchenAntwort(t, teil), korrekturAntwort(t, "C, A"));
+});
+
+test("kaertchenAntwort matching: Paare, zweites Tippen löscht", () => {
+  const z = kaertchenPaar(kaertchenPaar(kaertchenStart(KMATCH), "2", "A"), "1", "B");
+  assert.equal(kaertchenText(KMATCH, z), "1-B, 2-A");
+  assert.deepEqual(kaertchenAntwort(KMATCH, z), { pairs: { l1: "r2", l2: "r1" } });
+  assert.equal(kaertchenAntwort(KMATCH, kaertchenPaar(kaertchenStart(KMATCH), "1", "B")).pairs.l1, "r2");
+  const weg = kaertchenPaar(kaertchenPaar(kaertchenStart(KMATCH), "1", "B"), "1", "B");
+  assert.equal(kaertchenAntwort(KMATCH, weg), null);
+  const um = kaertchenPaar(kaertchenPaar(kaertchenStart(KMATCH), "1", "B"), "1", "A");
+  assert.equal(kaertchenText(KMATCH, um), "1-A");
+  assert.equal(kaertchenAntwort(KMATCH, kaertchenStart(KMATCH)), null);
+});
+
+test("kaertchenTippen und kaertchenPaar verändern den Zustand nicht", () => {
+  const t = KT("multiple_choice");
+  const z0 = kaertchenStart(t);
+  kaertchenTippen(t, z0, "A");
+  assert.deepEqual(z0, { wahl: [], paare: {} });
+  const m0 = kaertchenStart(KMATCH);
+  kaertchenPaar(m0, "1", "A");
+  assert.deepEqual(m0, { wahl: [], paare: {} });
+});
+
+test("kaertchenKennung ändert sich nur bei Zustandswechsel", () => {
+  const t = KT("multiple_choice");
+  assert.equal(kaertchenKennung(t, tippe(t, ["A"])), kaertchenKennung(t, tippe(t, ["A"])));
+  assert.notEqual(kaertchenKennung(t, tippe(t, ["A"])), kaertchenKennung(t, tippe(t, ["A", "B"])));
+  assert.notEqual(kaertchenKennung(KMATCH, kaertchenStart(KMATCH)), kaertchenKennung(KMATCH, kaertchenPaar(kaertchenStart(KMATCH), "1", "A")));
+});
+
+test("kaertchenStart: ohne Kärtchen-Typ null", () => {
+  assert.equal(kaertchenStart({ id: "n", type: "numeric", presentation: {} }), null);
+  assert.equal(kaertchenAntwort({ id: "n", type: "numeric", presentation: {} }, null), null);
+  assert.equal(kaertchenAntwort(null, null), null);
+});
