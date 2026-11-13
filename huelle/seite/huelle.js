@@ -1,7 +1,7 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
   abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
-  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen,
+  flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
@@ -560,6 +560,7 @@ function kaertchenGesperrt(task) {
 
 function kaertchenKnopf(etikett, label, gedrueckt, onclick, badge) {
   const knopf = el("button", { type: "button", class: "kaertchen-knopf", "aria-pressed": gedrueckt ? "true" : "false", onclick });
+  knopf.dataset.fokus = etikett;
   if (badge) knopf.append(el("span", { class: "kaertchen-nr", text: String(badge) }));
   knopf.append(setzeText(el("span"), `${etikett}) ${label}`, z.aufgabeMathe));
   return knopf;
@@ -598,13 +599,15 @@ function kaertchenAktualisieren() {
           setzeText(el("p", { class: "kaertchen-links" }), `${nr}) ${labelZu(links, id)}`, z.aufgabeMathe));
         const knoepfe = el("div", { class: "kaertchen-reihe" });
         for (const b of Object.keys(et.rechts)) {
-          knoepfe.append(el("button", {
+          const paarKnopf = el("button", {
             type: "button", class: "kaertchen-knopf", "aria-pressed": zu.paare[nr] === b ? "true" : "false", text: b,
             onclick: () => {
               z.kaertchen.zustand = kaertchenPaar(z.kaertchen.zustand, nr, b);
               kaertchenAktualisieren();
             },
-          }));
+          });
+          paarKnopf.dataset.fokus = `${nr}-${b}`;
+          knoepfe.append(paarKnopf);
         }
         zeile.append(knoepfe);
         teile.push(zeile);
@@ -622,12 +625,17 @@ function kaertchenAktualisieren() {
       }
       teile.push(reihe);
     }
-    teile.push(el("button", {
+    const abgebenKnopf = el("button", {
       type: "button", id: "kaertchen-abgeben", class: "haupt-knopf", text: TEXT.kaertchenAbgeben,
       disabled: gesperrt, onclick: () => void kaertchenAbgeben(),
-    }));
+    });
+    abgebenKnopf.dataset.fokus = "abgeben";
+    teile.push(abgebenKnopf);
+    // Jeder Tipp baut die Knöpfe neu: den fokussierten Knopf merken und danach wieder fokussieren.
+    const fokus = box.contains(document.activeElement) ? document.activeElement?.dataset?.fokus : null;
     box.replaceChildren(...teile);
     box.dataset.plan = plan;
+    fokusZiel(box.querySelectorAll("button"), fokus)?.focus();
   }
   // `sperren` setzt alle Knöpfe der Karte; hier gilt wieder der echte Stand.
   const abgeben = document.getElementById("kaertchen-abgeben");

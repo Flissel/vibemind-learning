@@ -627,3 +627,9 @@ export function abgabeNummerZulaessig(nummer, zustand) {
 export function autoVerbindenFaellig({ mcpBereit, hinweisSichtbar, schonAutoVerbunden } = {}) {
   return mcpBereit === true && hinweisSichtbar === true && schonAutoVerbunden !== true;
 }
+
+/** Nach dem Neubau der Kärtchen: der Knopf mit dem gemerkten `data-fokus`-Schlüssel, sonst null (Tastaturfokus bleibt). */
+export function fokusZiel(knoepfe, schluessel) {
+  if (!schluessel) return null;
+  return Array.from(knoepfe ?? []).find((k) => k?.dataset?.fokus === schluessel) ?? null;
+}

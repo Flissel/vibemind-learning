@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, formel, klartext, parseZahl } from "./aufgabe.js";
+import { abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, fokusZiel, formel, klartext, parseZahl } from "./aufgabe.js";
 
 test("single_choice: choice_id", () => {
   assert.deepEqual(antwortAus({ type: "single_choice" }, { auswahl: ["b"] }), { choice_id: "b" });
@@ -610,4 +610,18 @@ test("kaertchenStart: ohne Kärtchen-Typ null", () => {
   assert.equal(kaertchenStart({ id: "n", type: "numeric", presentation: {} }), null);
   assert.equal(kaertchenAntwort({ id: "n", type: "numeric", presentation: {} }, null), null);
   assert.equal(kaertchenAntwort(null, null), null);
+});
+
+test("fokusZiel: findet den Knopf mit demselben Schlüssel nach dem Neubau", () => {
+  const knoepfe = [{ dataset: { fokus: "A" } }, { dataset: { fokus: "B" } }, { dataset: { fokus: "1-B" } }];
+  assert.equal(fokusZiel(knoepfe, "B"), knoepfe[1]);
+  assert.equal(fokusZiel(knoepfe, "1-B"), knoepfe[2]);
+});
+
+test("fokusZiel: ohne Schlüssel oder ohne Treffer null", () => {
+  const knoepfe = [{ dataset: { fokus: "A" } }, { dataset: {} }, {}];
+  assert.equal(fokusZiel(knoepfe, "Z"), null);
+  assert.equal(fokusZiel(knoepfe, null), null);
+  assert.equal(fokusZiel(knoepfe, ""), null);
+  assert.equal(fokusZiel([], "A"), null);
 });
