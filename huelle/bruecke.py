@@ -134,6 +134,7 @@ ERKLAER_FRAGE = "Erklär mir das."
 # Flaeche zuerst (Abgeben, Falsch gelesen, Passt).
 KEINE_FLAECHENAUFGABE = "Diese Aufgabe beantworten Sie in der Seitenleiste."
 KEINE_KORREKTUR = "Bei dieser Aufgabe gibt es nichts Gelesenes zu korrigieren."
+KEINE_KAERTCHEN = "Diese Aufgabe hat keine Kärtchen."
 BEWERTUNG_WEG = "Die Bewertung ist gerade nicht erreichbar. Bitte geben Sie gleich noch einmal ab."
 NUR_UEBEN = "In der Hülle können Sie nur üben. Diese Sitzung lässt keine Vorbewertung zu."
 NICHT_BESTAETIGT = (
@@ -156,6 +157,8 @@ KARTE_NICHT_LESBAR = (
 # Ergebnisfeld, Rubrik-Typen den ganzen Aufgabenbereich. `code` bleibt in der Seitenleiste.
 DETERMINISTISCHE_TYPEN = frozenset({"single_choice", "multiple_choice", "matching", "ordering", "numeric", "fill_in"})
 BEREICHS_TYPEN = frozenset({"open", "case", "penecho_canvas"})
+# Typen, deren Antwort die Seitenleiste als Kärtchen anbietet (getippte Vorbewertung ohne Handschrift).
+KAERTCHEN_TYPEN = frozenset({"single_choice", "multiple_choice", "ordering", "matching"})
 _FLAECHEN_TYPEN = DETERMINISTISCHE_TYPEN | BEREICHS_TYPEN
 _BEWERTUNG_WEG_CODE = "session_grading_unavailable"
 
@@ -656,6 +659,7 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/abgeben", self._r_abgeben, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/ki-schritt", self._r_ki_schritt, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/korrektur", self._r_korrektur, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/waehlen", self._r_waehlen, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/passt", self._r_passt, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/stand", self._r_stand, methods=["GET"]),
             Route(f"{p}/sitzungen/{{sid}}/zusammenfassung.pdf", self._r_zusammenfassung, methods=["GET"]),
@@ -2483,6 +2487,16 @@ class Bruecke:
             self._listen_korrektur(actor, sid, body) if "nummer" in body else self._korrektur(actor, sid, body)),
             ablauf=True)
 
+    async def _r_waehlen(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        actor = request.state.actor_id
+
+        def getippt(body: dict[str, Any]) -> dict[str, Any]:
+            ziel = self._listen_getippt if "nummer" in body else self._getippt
+            return ziel(actor, sid, body, korrigiert_aus=None, typen=KAERTCHEN_TYPEN, meldung=KEINE_KAERTCHEN)
+
+        return await self._mit_body(request, getippt, ablauf=True)
+
     async def _r_passt(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
         actor = request.state.actor_id
@@ -2536,18 +2550,28 @@ class Bruecke:
         return self._vorbewerten(sid, sitzung, revision, task, nummer, payload)
 
     def _korrektur(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self._getippt(actor, sid_roh, body, korrigiert_aus=_vorbewertung_id_aus(body),
+                             typen=DETERMINISTISCHE_TYPEN, meldung=KEINE_KORREKTUR)
+
+    def _getippt(
+        self, actor: str, sid_roh: str, body: dict[str, Any], *, korrigiert_aus: str | None,
+        typen: frozenset[str], meldung: str,
+    ) -> dict[str, Any]:
+        """Getippte Vorbewertung: `/korrektur` (mit `korrigiert_aus`) und `/waehlen` (Kärtchen, ohne)."""
         revision = _revision_aus(body)
-        kennung = _vorbewertung_id_aus(body)
         answer = body.get("answer")
         if not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
         sid, sitzung, turn = self._sitzung(actor, sid_roh)
         self._nur_listenweg(sitzung)
         task, nummer = self._flaechenaufgabe(sid, sitzung, revision, turn)
-        if task.get("type") not in DETERMINISTISCHE_TYPEN:
-            # Rubrik-Typen haben nichts Gelesenes (Spec): nur „Passt“ und „Überarbeiten“.
-            raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
-        return self._vorbewerten(sid, sitzung, revision, task, nummer, {"answer": answer, "korrigiert_aus": kennung})
+        if task.get("type") not in typen:
+            # Korrektur: Rubrik-Typen haben nichts Gelesenes (Spec), nur „Passt“ und „Überarbeiten“.
+            raise _Antwort(400, {"meldung": meldung})
+        payload: dict[str, Any] = {"answer": answer}
+        if korrigiert_aus is not None:
+            payload["korrigiert_aus"] = korrigiert_aus
+        return self._vorbewerten(sid, sitzung, revision, task, nummer, payload)
 
     def _mit_ki_bewertung(
         self, sitzung: _Sitzung, sid: str, revision: int, payload: dict[str, Any]
@@ -2981,8 +3005,15 @@ class Bruecke:
 
     def _listen_korrektur(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """„Falsch gelesen“ im Listenkurs: wie `_korrektur` (synchron, kurz), mit `attempt_id` und Rechteck."""
+        return self._listen_getippt(actor, sid_roh, body, korrigiert_aus=_vorbewertung_id_aus(body),
+                                    typen=DETERMINISTISCHE_TYPEN, meldung=KEINE_KORREKTUR)
+
+    def _listen_getippt(
+        self, actor: str, sid_roh: str, body: dict[str, Any], *, korrigiert_aus: str | None,
+        typen: frozenset[str], meldung: str,
+    ) -> dict[str, Any]:
+        """Getippte Vorbewertung im Listenkurs (`/korrektur` und `/waehlen`), mit `attempt_id` und Rechteck."""
         nummer = self._listennummer(body)
-        kennung = _vorbewertung_id_aus(body)
         answer = body.get("answer")
         if not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
@@ -2995,14 +3026,17 @@ class Bruecke:
         if eintrag["status"] == "bestaetigt":
             self._schon_bestaetigt(sitzung, eintraege)
         task = eintrag["task"]
-        if task.get("type") not in DETERMINISTISCHE_TYPEN:
-            raise _Antwort(400, {"meldung": KEINE_KORREKTUR})
+        if task.get("type") not in typen:
+            raise _Antwort(400, {"meldung": meldung})
+        payload: dict[str, Any] = {"answer": answer, "attempt_id": eintrag["attempt_id"]}
+        if korrigiert_aus is not None:
+            payload["korrigiert_aus"] = korrigiert_aus
         rechteck = EINZEL_RECHTECK if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)[nummer - 1]
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_preview", "learning.task.preview", session_id=sid,
                 expected_revision=self._revision_von(turn), schreibend=True,
-                payload={"answer": answer, "korrigiert_aus": kennung, "attempt_id": eintrag["attempt_id"]},
+                payload=payload,
             )
         except LearningAbgelehnt as fehler:
             self._listen_abgelehnt(sitzung, fehler, bestaetigen=False)

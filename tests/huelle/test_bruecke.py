@@ -18,7 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from spaces.learning.huelle.bruecke import (
-    BEWERTUNG_WEG, FLAECHE_WEG, KEIN_KURS, KEINE_FLAECHENAUFGABE, KEINE_KORREKTUR, NICHT_ANGENOMMEN,
+    BEWERTUNG_WEG, FLAECHE_WEG, KEIN_KURS, KEINE_FLAECHENAUFGABE, KEINE_KAERTCHEN, KEINE_KORREKTUR, NICHT_ANGENOMMEN,
     NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, WIRD_GEPRUEFT, _BEWERTUNG_WEG_CODE, Bruecke,
     urteil_aus,
 )
@@ -2499,6 +2499,63 @@ def test_korrektur_im_listenkurs_mit_attempt_id() -> None:
                                  "attempt_id": ll.eintraege[1]["attempt_id"]}
         assert r.json()["urteil"] == "Richtig." and r.json()["stand"]["aufgaben"][1]["status"] == "rueckmeldung"
         assert penecho.karten_rechtecke[-1] == (2, anordnung([False] * 2)[1])
+    finally:
+        client.app.beenden()
+
+
+def test_waehlen_bucht_getippte_vorschau_ohne_korrigiert_aus() -> None:
+    lern, client, _, penecho = _flaechen_sitzung("single_choice")
+    lern.antworten["learning_task_preview"] = {
+        "session": turn(TASK_1, typ="single_choice", mode="training"),
+        "vorbewertung": _vor(quelle="getippt", gelesen=None, vid=VOR_ID_2),
+    }
+    r = client.post(f"/lernen/api/sitzungen/{SID}/waehlen", json={"revision": 1, "answer": {"choice_id": "o2"}})
+    assert r.status_code == 200, r.text
+    (kw,) = _aufrufe(lern, "learning_task_preview")
+    assert kw["payload"] == {"answer": {"choice_id": "o2"}}
+    assert kw["expected_revision"] == 1 and kw["schreibend"] is True
+    assert r.json()["vorbewertung"]["id"] == VOR_ID_2 and r.json()["urteil"] == "Richtig."
+    assert r.json()["flaeche"] is True and len(_karten(penecho)) == 1
+
+
+def test_listen_waehlen_mit_nummer() -> None:
+    ll = ListenLern(2, typ="single_choice")
+    client, _, _ = _listen_offen(ll)
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/waehlen", json={"nummer": 2, "answer": {"choice_id": "o1"}})
+        assert r.status_code == 200, r.text
+        (kw,) = ll.vorschauen()
+        assert kw["payload"] == {"answer": {"choice_id": "o1"}, "attempt_id": ll.eintraege[1]["attempt_id"]}
+        assert "korrigiert_aus" not in kw["payload"]
+        assert r.json()["urteil"] == "Richtig." and r.json()["stand"]["aufgaben"][1]["status"] == "rueckmeldung"
+    finally:
+        client.app.beenden()
+
+
+def test_waehlen_lehnt_rubrik_typ_ab() -> None:
+    lern, client, _, _ = _flaechen_sitzung("open", vor=_vor(gelesen=None, art="rubric"))
+    r = client.post(f"/lernen/api/sitzungen/{SID}/waehlen", json={"revision": 1, "answer": {"choice_id": "o1"}})
+    assert r.status_code == 400 and r.json()["meldung"] == KEINE_KAERTCHEN
+    assert "learning_task_preview" not in lern.tools()
+    for body in ({"revision": 1}, {"revision": 1, "answer": "x"}, {"answer": {"choice_id": "o1"}}):
+        assert client.post(f"/lernen/api/sitzungen/{SID}/waehlen", json=body).status_code == 400, body
+
+
+def test_waehlen_lehnt_numeric_ab() -> None:
+    lern, client, _, _ = _flaechen_sitzung("numeric")
+    r = client.post(f"/lernen/api/sitzungen/{SID}/waehlen", json={"revision": 1, "answer": {"value": 1}})
+    assert r.status_code == 400 and r.json()["meldung"] == KEINE_KAERTCHEN
+    assert "learning_task_preview" not in lern.tools()
+
+
+def test_listen_waehlen_bestaetigt_wird_abgelehnt() -> None:
+    ll = ListenLern(2, typ="single_choice")
+    ll.eintraege[0]["status"] = "bestaetigt"
+    client, _, _ = _listen_offen(ll)
+    try:
+        r = client.post(f"/lernen/api/sitzungen/{SID}/waehlen", json={"nummer": 1, "answer": {"choice_id": "o1"}})
+        assert r.status_code == 409 and r.json()["code"] == "schon_bestaetigt"
+        assert ll.vorschauen() == []
     finally:
         client.app.beenden()
 
