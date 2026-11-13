@@ -2890,6 +2890,29 @@ def test_zusammenfassung_zeigt_getippte_antworten(monkeypatch) -> None:
         client.app.beenden()
 
 
+def test_zusammenfassung_nennt_nicht_bearbeitete(monkeypatch) -> None:
+    # Abnahme 13.11. (F6): leer gebuchte Aufgaben hiessen „eingegeben“, die KI-Kursrueckmeldung lobte sie als Staerke.
+    from spaces.learning.huelle.kursrueckmeldung import rueckmeldungsdaten
+
+    gesehen = _zf_mitschneiden(monkeypatch)
+    ll = ListenLern(3)
+    ll.eintraege[0]["status"] = "bestaetigt"
+    ll.eintraege[0]["antwort"] = {}  # von „Kurs abgeben“ leer gebucht, nie bearbeitet
+    ll.eintraege[1]["status"] = "bestaetigt"
+    ll.eintraege[1]["vorbewertung"] = _vor(vid=_vid(2), lesbar=False, gelesen=None)  # unlesbar erneut abgegeben
+    client, _ = _zf_offen(ll)
+    try:
+        assert client.get(f"/lernen/api/sitzungen/{SID}/zusammenfassung.pdf").status_code == 200
+        (z,) = gesehen
+        assert [a.ergebnis for a in z.aufgaben] == ["nicht bearbeitet", "nicht bearbeitet", "offen"]
+        assert [a.kernaussage for a in z.aufgaben] == ["Nicht bearbeitet – 0 Punkte."] * 2 + ["–"]
+        daten = rueckmeldungsdaten(z.kurs, z.aufgaben, [])
+        assert [(a["ergebnis"], a["rueckmeldung"]) for a in daten["aufgaben"][:2]] == [
+            ("nicht bearbeitet", "Nicht bearbeitet – 0 Punkte.")] * 2
+    finally:
+        client.app.beenden()
+
+
 def test_zusammenfassung_begriffe_ohne_slug_dubletten(monkeypatch) -> None:
     # Abnahme A2 (Befund 6): `ablauf-x` und `ablauf_x` standen doppelt im PDF; die Seite fasst sie schon zusammen.
     gesehen = _zf_mitschneiden(monkeypatch)

@@ -13,8 +13,9 @@ from typing import Any
 import pypdf
 
 from spaces.learning.huelle.zusammenfassung import (
-    KERNAUSSAGE_ZEICHEN, AufgabeZeile, Kursrueckmeldung, Zusammenfassung, als_markdown, als_pdf, begriff_titel,
-    begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz, ohne_latex,
+    KERNAUSSAGE_ZEICHEN, NICHT_BEARBEITET, NICHT_BEARBEITET_RUECKMELDUNG, AufgabeZeile, Kursrueckmeldung,
+    Zusammenfassung, als_markdown, als_pdf, begriff_titel, begriffe_zusammenfassen, ergebnis_von, kernaussage,
+    kurs_kurz, nicht_bearbeitet, ohne_latex,
 )
 
 
@@ -212,6 +213,26 @@ def test_ergebnis_gebucht_ohne_vorbewertung() -> None:
     assert ergebnis_von("bestaetigt", None, zahl, {"value": 7}) == "7"
     assert ergebnis_von("bestaetigt", None, zahl, None) == "eingegeben"
     assert ergebnis_von("offen", None, zahl, None) == "offen"
+
+
+def test_nicht_bearbeitet() -> None:
+    # Abnahme 13.11. (F6): „Kurs abgeben“ bucht nie bearbeitete Aufgaben mit leerer Antwort. Sie hiessen
+    # „eingegeben“, und die KI-Kursrueckmeldung lobte sie. Eine wiederholt abgegebene unlesbare Aufnahme ebenso.
+    unlesbar = {"quelle": "handschrift", "lesbar": False, "gelesen_text": "kaum"}
+    assert nicht_bearbeitet("bestaetigt", None, {})
+    assert nicht_bearbeitet("bestaetigt", unlesbar, None)
+    assert not nicht_bearbeitet("offen", None, None)
+    assert not nicht_bearbeitet("offen", None, {})
+    assert not nicht_bearbeitet("offen", unlesbar, None)  # noch nicht gebucht: offen, nicht „nicht bearbeitet“
+    assert not nicht_bearbeitet("bestaetigt", None, {"value": 7})
+    assert not nicht_bearbeitet("bestaetigt", None, None)
+    assert not nicht_bearbeitet("bestaetigt", {"quelle": "getippt", "lesbar": True, "gelesen_text": None}, None)
+    assert not nicht_bearbeitet("bestaetigt", {"quelle": "handschrift", "gelesen_text": "7"}, None)  # ohne `lesbar`
+    zahl = {"type": "numeric", "options": [], "presentation": {}}
+    assert ergebnis_von("bestaetigt", None, zahl, {}) == NICHT_BEARBEITET == "nicht bearbeitet"
+    assert ergebnis_von("bestaetigt", unlesbar, zahl) == NICHT_BEARBEITET
+    assert ergebnis_von("offen", unlesbar, zahl) == "kaum"
+    assert NICHT_BEARBEITET_RUECKMELDUNG == "Nicht bearbeitet – 0 Punkte."
 
 
 def test_formeln_als_lesbarer_text() -> None:

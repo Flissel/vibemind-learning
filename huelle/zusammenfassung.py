@@ -143,13 +143,31 @@ def antwort_klartext(task: dict[str, Any] | None, antwort: object) -> str | None
     return None
 
 
+NICHT_BEARBEITET = "nicht bearbeitet"
+NICHT_BEARBEITET_RUECKMELDUNG = "Nicht bearbeitet – 0 Punkte."
+
+
+def nicht_bearbeitet(status: str, vorbewertung: dict[str, Any] | None, antwort: object) -> bool:
+    """Gebucht, ohne dass die Person etwas abgegeben hat: so bucht „Kurs abgeben“ eine nie bearbeitete Aufgabe
+    (leere Antwort, keine Vorbewertung) und eine erneut abgegebene unlesbare Aufnahme (neueste Vorbewertung
+    `lesbar: false`). Eine offene Aufgabe zaehlt nicht: sie kann noch bearbeitet werden."""
+    if status != "bestaetigt":
+        return False
+    if isinstance(vorbewertung, dict):
+        return vorbewertung.get("lesbar") is False
+    return isinstance(antwort, dict) and not antwort
+
+
 def ergebnis_von(status: str, vorbewertung: dict[str, Any] | None, task: dict[str, Any] | None = None,
                  antwort: object = None) -> str:
     """Das Gelesene der Vorbewertung oder die getippte Antwort als Klartext; sonst „eingetippt“, Handschrift
     ohne Gelesenes (Rubrik) „siehe Bild“, ohne Vorbewertung die gebuchte Antwort oder „eingegeben“/„offen“.
+    Leer gebucht (`nicht_bearbeitet`): „nicht bearbeitet“.
 
     `antwort` ist die gebuchte Antwort einer Aufgabe ohne Vorbewertung (Learning: Listeneintrag `antwort`).
     """
+    if nicht_bearbeitet(status, vorbewertung, antwort):
+        return NICHT_BEARBEITET
     if isinstance(vorbewertung, dict):
         gelesen = vorbewertung.get("gelesen_text")
         if isinstance(gelesen, str) and gelesen.strip():

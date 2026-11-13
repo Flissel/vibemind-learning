@@ -90,8 +90,8 @@ from .sperre import Sperre
 from .tafel import aufgabentext, leistentext
 from .uebergabe import ACTOR_MUSTER
 from .zusammenfassung import (
-    BILD_BUDGET_S, KI_AKTIONEN, AufgabeZeile, Kursrueckmeldung, Zusammenfassung, als_markdown, als_pdf,
-    begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz,
+    BILD_BUDGET_S, KI_AKTIONEN, NICHT_BEARBEITET_RUECKMELDUNG, AufgabeZeile, Kursrueckmeldung, Zusammenfassung,
+    als_markdown, als_pdf, begriffe_zusammenfassen, ergebnis_von, kernaussage, kurs_kurz, nicht_bearbeitet,
 )
 
 log = logging.getLogger(__name__)
@@ -1886,9 +1886,13 @@ class Bruecke:
             score = scores.get(e["nummer"])
             richtig = (score_urteil(score) == "richtig" if score is not None
                        else e["status"] == "bestaetigt" and isinstance(vor, dict) and urteil_aus(vor) == "Richtig.")
+            if nicht_bearbeitet(e["status"], vor, e.get("antwort")):
+                aussage = NICHT_BEARBEITET_RUECKMELDUNG  # die KI-Kursrueckmeldung darf sie nicht als Staerke lesen
+            else:
+                aussage = kernaussage(vor) if isinstance(vor, dict) else "–"
             zeilen.append(AufgabeZeile(
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
-                kernaussage(vor) if isinstance(vor, dict) else "–", bild,
+                aussage, bild,
                 self._ki_schritte_lesen(sitzung.sid, e["nummer"]), richtig,
             ))
         if sitzung.je_aufgabe and rueckmeldung is None and turn.get("state") == "completed":
