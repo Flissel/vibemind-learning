@@ -22,7 +22,7 @@ from spaces.learning.huelle.bruecke import (
     NICHT_BESTAETIGT, NICHT_ERREICHBAR, NUR_UEBEN, SCHON_ABGEGEBEN, WIRD_GEPRUEFT, _BEWERTUNG_WEG_CODE, Bruecke,
     urteil_aus,
 )
-from spaces.learning.huelle.anordnung import anordnung
+from spaces.learning.huelle.anordnung import EINZEL_RECHTECK, anordnung
 from spaces.learning.huelle.einstellung import einstellung_lesen
 from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog
 from spaces.learning.huelle.lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp, idempotenz_schluessel
@@ -109,6 +109,7 @@ class FakePenEcho:
         # (nummer, rechteck) je aufgabe_setzen; rechteck None = fester Bereich wie bisher.
         self.rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.vorlagen: list[str | None] = []  # vorlage je aufgabe_setzen
+        self.faelle: list[str | None] = []  # fall je aufgabe_setzen
         self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
         self.aufnahme_rechtecke: list[tuple[int, dict[str, int] | None]] = []  # je Schnappschuss
@@ -142,8 +143,9 @@ class FakePenEcho:
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
                        bilder: Any = (), rechteck: dict[str, int] | None = None, zeigen: bool = True,
-                       vorlage: str | None = None) -> None:
+                       vorlage: str | None = None, fall: str | None = None) -> None:
         self.vorlagen.append(vorlage)
+        self.faelle.append(fall)
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
         self.zeigen.append((nummer, zeigen))
         self.bilder.append(list(bilder))
@@ -4793,16 +4795,37 @@ def test_ki_schritt_gruppe_eigene_person() -> None:
         bruecke.beenden()
 
 
-@pytest.mark.parametrize("typ, vorlage, erwartet", [
-    ("case", "matrix", "matrix"), ("open", "onepager", "onepager"), ("penecho_canvas", "matrix", "matrix"),
-    ("single_choice", "matrix", None), ("case", "unbekannt", None), ("case", None, None),
+def _setzauftrag_bruecke(penecho: FakePenEcho) -> Bruecke:
+    http = httpx.Client(transport=httpx.MockTransport(_api_leer))
+    return Bruecke(E, FakeLern({}), penecho, Sperre(), http, None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("typ, vorlage, rechteck, erwartet", [
+    ("case", "matrix", EINZEL_RECHTECK, "matrix"), ("open", "onepager", EINZEL_RECHTECK, "onepager"),
+    ("penecho_canvas", "matrix", EINZEL_RECHTECK, "matrix"),
+    ("single_choice", "matrix", EINZEL_RECHTECK, None), ("case", "unbekannt", EINZEL_RECHTECK, None),
+    ("case", None, EINZEL_RECHTECK, None),
+    # Geteilte Boards (Rechteck None, Listenkurs, Gruppenraster): keine Vorlage, sonst frisst sie die 50 Texte.
+    ("case", "matrix", None, None), ("case", "matrix", {"x": 100, "y": 100, "w": 2000, "h": 900}, None),
 ])
-def test_setzauftrag_reicht_vorlage_nur_bei_bereichstypen(typ: str, vorlage: str | None, erwartet: str | None) -> None:
-    offen = turn(TASK_1, typ=typ, mode="training")
+def test_setzauftrag_reicht_vorlage_nur_bei_bereichstypen_auf_eigenem_canvas(
+        typ: str, vorlage: str | None, rechteck: dict[str, int] | None, erwartet: str | None) -> None:
+    task: dict[str, Any] = {"id": TASK_1, "type": typ, "prompt": "Frage", "options": [], "presentation": {}}
     if typ == "single_choice":
-        offen["task"]["options"] = [{"id": "o1", "label": "Eins"}, {"id": "o2", "label": "Zwei"}]
+        task["options"] = [{"id": "o1", "label": "Eins"}, {"id": "o2", "label": "Zwei"}]
     if vorlage is not None:
-        offen["task"].setdefault("presentation", {})["vorlage"] = vorlage
-    lern = FakeLern({"learning_course_overview": _ueberblick(offen), "learning_task_next": {"session": offen}})
-    _, _, penecho, _ = _offen(lern)
+        task["presentation"]["vorlage"] = vorlage
+    penecho = FakePenEcho()
+    _setzauftrag_bruecke(penecho)._setzauftrag(task, 1, rechteck)("pe-1")
     assert penecho.vorlagen == [erwartet]
+
+
+def test_setzauftrag_reicht_den_fall_getrennt_und_nur_wenn_gesetzt() -> None:
+    penecho = FakePenEcho()
+    b = _setzauftrag_bruecke(penecho)
+    task: dict[str, Any] = {"id": TASK_1, "type": "case", "prompt": "Frage", "options": [],
+                            "presentation": {"fall": "Muster GmbH"}}
+    b._setzauftrag(task, 1, EINZEL_RECHTECK)("pe-1")
+    b._setzauftrag({**task, "presentation": {}}, 1, EINZEL_RECHTECK)("pe-1")
+    assert penecho.faelle == ["Muster GmbH", None]
+    assert all("Fall" not in a[3] for a in penecho.aufrufe if a[0] == "aufgabe_setzen")

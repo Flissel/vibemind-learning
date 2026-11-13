@@ -69,8 +69,21 @@ def _beschriftet(etiketten: Mapping[str, str], eintraege: Sequence[Mapping[str, 
     return [f"{etikett}) {formel_oder_klartext(texte.get(eintrag_id) or '')}".rstrip() for etikett, eintrag_id in etiketten.items()]
 
 
-def aufgabentext(task: Mapping[str, object], nummer: int) -> str:
-    """„Aufgabe {nummer}: {prompt}“, bei Auswahl, Reihenfolge und Zuordnen gefolgt vom Etikettenblock."""
+def falltext(task: Mapping[str, object]) -> str:
+    """Der Fall der Aufgabe (`presentation.fall`) zeilenweise wie der Prompt bearbeitet; leer, wenn keiner gesetzt ist."""
+    praesentation = task.get("presentation")
+    fall = praesentation.get("fall") if isinstance(praesentation, dict) else None
+    if isinstance(fall, str) and fall.strip():
+        return "\n".join(_zeilen(fall))
+    return ""
+
+
+def aufgabentext(task: Mapping[str, object], nummer: int, *, mit_fall: bool = True) -> str:
+    """„Aufgabe {nummer}: {prompt}“, bei Auswahl, Reihenfolge und Zuordnen gefolgt vom Etikettenblock.
+
+    Der Fall (siehe `falltext`) folgt ungekuerzt als Block „Fall:“; `mit_fall=False` laesst ihn weg (das Board
+    setzt ihn selbst begrenzt, siehe `PenEchoMcp.aufgabe_setzen`).
+    """
     typ = str(task.get("type") or "")
     zeilen = _zeilen(task.get("prompt") or "")
     zeilen[0] = f"Aufgabe {nummer}: {zeilen[0]}"
@@ -86,9 +99,9 @@ def aufgabentext(task: Mapping[str, object], nummer: int) -> str:
             block = _beschriftet(etiketten.optionen, optionen)
         if block:
             zeilen += [""] + block
-    fall = (task.get("presentation") or {}).get("fall") if isinstance(task.get("presentation"), dict) else None
-    if isinstance(fall, str) and fall.strip():
-        zeilen += ["", "Fall:"] + _zeilen(fall)  # ungekuerzt: der Fall gehoert zur Aufgabe
+    fall = falltext(task) if mit_fall else ""
+    if fall:
+        zeilen += ["", "Fall:"] + fall.split("\n")
     return "\n".join(zeilen)
 
 

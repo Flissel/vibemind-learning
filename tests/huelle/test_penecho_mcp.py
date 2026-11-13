@@ -2259,3 +2259,62 @@ def test_vorlage_flaeche_voll_sendet_keine_weiteren_texte(zustand: Path) -> None
         "sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix")
     assert zaehler["n"] == 1  # nach der ersten Ablehnung keine weiteren Texte
     assert len(_ink(fake)) == 2  # Tinte und Rahmen kommen trotzdem
+
+
+# ---- Fall auf dem Board: begrenzt auf Text-Hoechstgrenze und Kapazitaet des Textfeldes ----------
+
+_FALL = ("Die Muster GmbH prüft den Einsatz neuer Werkzeuge in Einkauf, Vertrieb und Kundendienst und möchte "
+         "wissen, wo sich der Aufwand zuerst lohnt. ") * 10
+_MARKER = "(Den vollständigen Fall finden Sie in der Seitenleiste.)"
+
+
+def _board_text(fake: Fake) -> str:
+    (t,) = [a["arguments"]["text"] for a in fake.aufrufe("penecho_edit_canvas")
+            if a["arguments"]["action"] == "create_text" and a["arguments"]["requestId"].startswith("aufgabe-")]
+    return t
+
+
+def _zeilen_schaetzung(text: str, je_zeile: int) -> int:
+    return sum(max(1, -(-len(z) // je_zeile)) for z in text.split("\n"))
+
+
+@pytest.mark.parametrize("rechteck, prompt", [
+    (None, "Finden Sie Kandidaten."),
+    # Im grossen Rechteck des eigenen Canvas passt der Fall allein noch; mit langem Prompt nicht mehr (Hoechstlaenge 2000).
+    ({"x": 100, "y": 100, "w": 2000, "h": 1400}, "Wort " * 300),
+])
+def test_langer_fall_wird_auf_dem_board_gekuerzt(zustand: Path, rechteck: dict | None, prompt: str) -> None:
+    fake = FeldFake()
+    fall = _FALL[:1200]
+    kw = {} if rechteck is None else {"rechteck": rechteck}
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", prompt, 1, mit_arbeitsfeld=True, fall=fall, **kw)
+    text = _board_text(fake)
+    tf = felder(rechteck if rechteck is not None else bereich(1)).textfeld
+    assert len(text) <= 2000
+    assert _zeilen_schaetzung(text, 36 * tf["w"] // 400) <= tf["h"] // 27
+    assert text.startswith(f"Aufgabe 1: {prompt}\n\nFall:\n")
+    assert _MARKER in text and fall not in text
+    assert text.endswith("\n\nIhre Lösung schreiben Sie in das blau umrandete Feld.")
+    assert text.index(_MARKER) < text.index("Ihre Lösung")
+
+
+def test_kurzer_fall_bleibt_vollstaendig_ohne_hinweis_auf_die_seitenleiste(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Frage", 1, mit_arbeitsfeld=True, fall="Muster GmbH")
+    assert _board_text(fake) == ("Aufgabe 1: Frage\n\nFall:\nMuster GmbH\n\n"
+                                 "Ihre Lösung schreiben Sie in das blau umrandete Feld.")
+
+
+def test_ohne_fall_bleibt_der_text_wie_bisher(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Frage", 1, mit_arbeitsfeld=True)
+    assert _board_text(fake) == "Aufgabe 1: Frage\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."
+
+
+def test_fall_ohne_platz_entfaellt_ganz(zustand: Path) -> None:
+    fake = FeldFake()
+    lang = "Wort " * 380  # fuellt das Textfeld schon ohne Fall
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", lang, 1, mit_arbeitsfeld=True, fall="Muster GmbH")
+    text = _board_text(fake)
+    assert "Fall:" not in text and _MARKER not in text
+    assert text == f"Aufgabe 1: {lang}\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."

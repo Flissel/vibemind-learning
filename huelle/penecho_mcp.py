@@ -193,6 +193,44 @@ class Aufgabenbild(NamedTuple):
     seitenverhaeltnis: float
 
 
+_FALL_SEITENLEISTE = "(Den vollständigen Fall finden Sie in der Seitenleiste.)"
+
+
+def _mit_fall(kopf: str, fall: str | None, hinweis: str | None, textfeld: dict[str, int]) -> str:
+    """Boardtext: `kopf` (Aufgabe, Prompt, Etiketten), optional Block „Fall:“, optional Hinweiszeile.
+
+    Der Text bleibt unter `_TEXT_HOECHSTENS` und innerhalb der geschaetzten Kapazitaet des Textfeldes (Zeilen
+    `h // _ZEILEN_HOEHE`, Zeichen je Zeile `_ZEICHEN_JE_ZEILE * w // 400`, wie `kuerzen`). Nur der Fall wird
+    gekuerzt (mit Hinweis auf die Seitenleiste), bleibt kein Platz, entfaellt der Block. Ohne Fall entsteht
+    genau der bisherige Text.
+    """
+    schluss = f"\n\n{hinweis}" if hinweis else ""
+    if not fall:
+        return kopf + schluss
+    je_zeile = max(1, _ZEICHEN_JE_ZEILE * textfeld["w"] // 400)
+    max_zeilen = textfeld["h"] // _ZEILEN_HOEHE
+
+    def zeilen(t: str) -> int:
+        return sum(max(1, -(-len(z) // je_zeile)) for z in t.split("\n"))
+
+    def passt(t: str) -> bool:
+        return len(t) <= _TEXT_HOECHSTENS and zeilen(t) <= max_zeilen
+
+    def block(inhalt: str, kurz: bool) -> str:
+        return f"{kopf}\n\nFall:\n{inhalt}" + (f"\n{_FALL_SEITENLEISTE}" if kurz else "") + schluss
+
+    if passt(block(fall, False)):
+        return block(fall, False)
+    leer = block("", True)  # die leere Zeile fuer den Fall zaehlt einmal, wie eine nicht leere Fallzeile mindestens
+    zeichen = _TEXT_HOECHSTENS - len(leer)
+    freie_zeilen = max_zeilen - zeilen(leer) + 1
+    if zeichen >= 1 and freie_zeilen >= 1:
+        kurz = kuerzen(fall, zeichen=zeichen, zeilen=freie_zeilen, je_zeile=je_zeile)
+        if kurz.strip(" …") and passt(block(kurz, True)):
+            return block(kurz, True)
+    return kopf + schluss
+
+
 def bildfeld(nummer: int, *, unter_ergebnisfeld: bool, rechteck: dict[str, int] | None = None) -> dict[str, int]:
     """Platz der Aufgabenbilder rechts neben dem Text.
 
@@ -1010,7 +1048,7 @@ class PenEchoMcp:
     def aufgabe_setzen(
         self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
         mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (), rechteck: dict[str, int] | None = None,
-        zeigen: bool = True, vorlage: str | None = None,
+        zeigen: bool = True, vorlage: str | None = None, fall: str | None = None,
     ) -> None:
         """Aufgabe `nummer` in ihren Bereich: `bereich(nummer)` oder, im Listenkurs, `rechteck` (ohne Grenze 1..20).
 
@@ -1020,6 +1058,7 @@ class PenEchoMcp:
         Lernflaeche zum aktiven. Ist das Board dann nicht aktiv, entfaellt nur der Rahmen.
         `vorlage` ("matrix", "onepager"): nur mit Arbeitsfeld, dann steht die Vorlage als Text und Tinte im
         Arbeitsfeld (Texte vor der Tinte: PenEcho zaehlt Tinte als Hindernis fuer Text), sonst ignoriert.
+        `fall`: der Fall als Block nach dem Aufgabentext, auf Hoechstlaenge und Textfeld begrenzt (`_mit_fall`).
         """
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
         # Feste requestId: dieselbe Aufgabe am selben Platz wiederholt PenEcho nicht (Idempotenz).
@@ -1031,7 +1070,7 @@ class PenEchoMcp:
             "sessionId": session_id,
             "requestId": f"aufgabe-{aufgabe_id}-{nummer}"[:MAX_SCHLUESSEL],
             "action": "create_text",
-            "text": f"Aufgabe {nummer}: {text}" + (f"\n\n{hinweis}" if hinweis else ""),
+            "text": _mit_fall(f"Aufgabe {nummer}: {text}", fall, hinweis, f.textfeld),
             "region": region,
         }
         voll = False

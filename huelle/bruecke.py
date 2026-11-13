@@ -87,7 +87,7 @@ from .penecho_mcp import (
     PenEchoNichtErreichbar, PenEchoNichtSichtbar, PenEchoSitzungUnbekannt, aufgaben_titel, loesungsfeld,
 )
 from .sperre import Sperre
-from .tafel import aufgabentext, leistentext
+from .tafel import aufgabentext, falltext, leistentext
 from .uebergabe import ACTOR_MUSTER
 from .vorlage import VORLAGEN
 from .zusammenfassung import (
@@ -519,9 +519,10 @@ def _mit_verlauf(verlauf: list[tuple[str, str]], frage: str) -> str:
 def _tafeltext(task: dict[str, Any], nummer: int) -> str:
     """`tafel.aufgabentext` ohne den Kopf „Aufgabe {nummer}: “, den `aufgabe_setzen` selbst voranstellt.
 
-    So steht auf dem Board genau `aufgabentext(task, nummer)` und der Kopf nicht doppelt.
+    So steht auf dem Board genau `aufgabentext(task, nummer)` und der Kopf nicht doppelt. Der Fall fehlt hier:
+    `aufgabe_setzen` setzt ihn getrennt und auf das Textfeld begrenzt.
     """
-    return aufgabentext(task, nummer).removeprefix(f"Aufgabe {nummer}: ")
+    return aufgabentext(task, nummer, mit_fall=False).removeprefix(f"Aufgabe {nummer}: ")
 
 
 def _revision_aus(body: dict[str, Any]) -> int:
@@ -1509,8 +1510,12 @@ class Bruecke:
         art: dict[str, Any] = dict(_feldart(task))
         praesentation = task.get("presentation")
         vorlage = praesentation.get("vorlage") if isinstance(praesentation, dict) else None
-        if typ in BEREICHS_TYPEN and vorlage in VORLAGEN:
+        # Die Vorlage braucht 6 Texte: nur auf dem eigenen Canvas, geteilte Boards haben nur 50 Texte je Flaeche.
+        if typ in BEREICHS_TYPEN and vorlage in VORLAGEN and rechteck == EINZEL_RECHTECK:
             art["vorlage"] = vorlage
+        fall = falltext(task) if typ != "code" else ""
+        if fall:
+            art["fall"] = fall
         return lambda s: self._penecho.aufgabe_setzen(s, task["id"], text, nummer, bilder=bilder, **art, **lage)
 
     def _board_merken(self, sitzung: _Sitzung, board: str | None = None) -> None:
