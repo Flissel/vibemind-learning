@@ -483,6 +483,9 @@ class PenEchoMcp:
         self._dokumentdatei = self._merkdatei.with_name("dokumente.json")
         # Teil B: Flaechen-Kennung (canvasId des Tabs), an die die gemerkte Sitzung gebunden ist (Schluessel -> canvasId).
         self._tabdatei = self._merkdatei.with_name("tabs.json")
+        # Karten (present_widget) je artifactId: "<sessionId>\n<objectId>". Die Lernflaeche kennt eine artifactId nur
+        # in der Sitzung, in der die Karte entstand; eine neue Sitzung legt sonst eine zweite Karte an (F5, 13.11.).
+        self._kartendatei = self._merkdatei.with_name("karten.json")
 
     # ---- Verbindung -------------------------------------------------------
     def _identity(self) -> dict[str, Any]:
@@ -1250,7 +1253,35 @@ class PenEchoMcp:
             })
         self._werkzeug("penecho_edit_canvas", argumente)
 
+    def _alte_karte_entfernen(self, session_id: str, objekt: str) -> None:
+        """Entfernt eine frueher gesetzte Karte. Ist sie schon weg (von der Person entfernt, anderes Dokument), bleibt
+        es dabei; nur verlorene Sitzung/Flaeche gehen an den Aufrufer."""
+        try:
+            self._werkzeug("penecho_edit_canvas", {
+                "sessionId": session_id,
+                "requestId": f"weg-{uuid4().hex}",
+                "action": "delete",
+                "objectId": objekt[:MAX_SCHLUESSEL],
+                "baseRevision": self._revision(session_id),
+            })
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoNichtErreichbar as fehler:
+            log.info("Alte Karte nicht entfernt: %s", _typ(fehler))
+
     def _karte(self, session_id: str, artifact_id: str, titel: str, text: str) -> None:
+        """Karte `artifact_id` setzen oder ersetzen, nie verdoppeln (Abnahme 13.11., F5).
+
+        Die Lernflaeche kennt eine artifactId nur in der Sitzung, in der die Karte entstand (`session.artifacts`);
+        nach Neuladen oder Neustart legt dieselbe artifactId eine zweite Karte an. Darum merkt die Huelle je
+        artifactId Sitzung und objectId (`karten.json`): in einer anderen Sitzung geht die alte Karte vorher weg
+        (die neue nimmt ihren Platz). Meldet die Lernflaeche in derselben Sitzung trotzdem eine neue objectId, geht
+        die alte danach weg.
+        """
+        alte_sitzung, _, alt = (self._gemerkt(self._kartendatei).get(artifact_id) or "").partition("\n")
+        if alt and alte_sitzung != session_id:
+            self._alte_karte_entfernen(session_id, alt)
+            alt = ""
         # schema.js:675-677 penecho_present_widget: sessionId, artifactId, title + genau eines
         # aus html/architecture/sequence/workflow/scene/note
         # schema.js:703: requestId ist Pflicht und "nur fuer identische Argumente wiederverwenden";
@@ -1270,7 +1301,15 @@ class PenEchoMcp:
                 "blocks": [{"type": "markdown", "text": text}],
             },
         }
-        self._werkzeug("penecho_present_widget", argumente)
+        neu = self._struktur(self._werkzeug("penecho_present_widget", argumente)).get("objectId")
+        if not isinstance(neu, str) or not neu:
+            return
+        if alt and alt != neu:
+            self._alte_karte_entfernen(session_id, alt)
+        karten = self._gemerkt(self._kartendatei)
+        if karten.get(artifact_id) != f"{session_id}\n{neu}":
+            karten[artifact_id] = f"{session_id}\n{neu}"
+            self._merken(karten, self._kartendatei)
 
     def bericht_zeigen(
         self, session_id: str, sid: str, text: str, nummern: Sequence[int] = (), *,

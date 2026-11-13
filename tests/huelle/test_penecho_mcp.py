@@ -928,6 +928,87 @@ def test_bericht_zeigt_karte_und_schnappschuesse_mit_festen_kennungen(zustand: P
     assert len(fake.aufrufe("penecho_capture_canvas")) == 4
 
 
+class KartenFake(FeldFake):
+    """present_widget wie die Lernflaeche (canvas-documents.js `session.artifacts`): die artifactId kennt nur die
+    Sitzung, in der die Karte entstand; dieselbe artifactId in einer neuen Sitzung legt ein neues Widget an."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.widgets: dict[str, str] = {}             # objectId -> sessionId, die es anlegte
+        self.bekannt: dict[tuple[str, str], str] = {}  # (sessionId, artifactId) -> objectId
+        self.zaehler = 0
+
+    def _antwort(self, body: dict, sc: dict, fehler: bool = False) -> httpx.Response:
+        self.anfragen.append((body, httpx.Headers({"authorization": "Bearer " + TOKEN})))
+        res = {"isError": True, "structuredContent": sc, "content": []} if fehler else {"structuredContent": sc,
+                                                                                         "content": []}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": res})
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/call":
+            name, args = body["params"]["name"], body["params"]["arguments"]
+            if name == "penecho_present_widget":
+                schluessel = (args["sessionId"], args["artifactId"])
+                objekt = self.bekannt.get(schluessel)
+                if objekt is None or objekt not in self.widgets:
+                    self.zaehler += 1
+                    objekt = f"widget-{self.zaehler}"
+                self.bekannt[schluessel] = objekt
+                self.widgets[objekt] = args["sessionId"]
+                return self._antwort(body, {"artifactId": args["artifactId"], "objectId": objekt})
+            if name == "penecho_edit_canvas" and args.get("action") == "delete":
+                if self.widgets.pop(args["objectId"], None) is None:
+                    return self._antwort(body, {"code": "OBJECT_NOT_FOUND", "message": "m"}, fehler=True)
+                return self._antwort(body, {"applied": True})
+        return super().__call__(request)
+
+
+def _loeschungen(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] == "delete"]
+
+
+def test_bericht_in_neuer_sitzung_ersetzt_die_alte_karte(zustand: Path) -> None:
+    # Abnahme 13.11. (F5): nach dem Neuladen stand die Berichtskarte doppelt auf dem Kurs-Canvas.
+    fake = KartenFake()
+    c = _client(zustand, fake)
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K")
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K\n\nneu")  # dieselbe Sitzung: dieselbe Karte, nichts geloescht
+    assert fake.widgets == {"widget-1": "sess-1"} and _loeschungen(fake) == []
+    c.bericht_zeigen("sess-2", LERN_SID, "# Bericht: K")  # neue Sitzung (Seite neu geladen)
+    assert fake.widgets == {"widget-2": "sess-2"}
+    (weg,) = _loeschungen(fake)
+    assert weg["objectId"] == "widget-1" and weg["sessionId"] == "sess-2" and weg["baseRevision"] == 7
+    namen = [b["params"]["name"] for b, _ in fake.anfragen if b["method"] == "tools/call"]
+    assert namen.index("penecho_edit_canvas") < len(namen) - 1 - namen[::-1].index("penecho_present_widget")
+    # Ueberlebt einen Neustart der Huelle (neuer Client, gleicher Zustand).
+    _client(zustand, fake).bericht_zeigen("sess-3", LERN_SID, "# Bericht: K")
+    assert fake.widgets == {"widget-3": "sess-3"} and [w["objectId"] for w in _loeschungen(fake)] == [
+        "widget-1", "widget-2"]
+
+
+def test_bericht_gleiche_sitzung_aber_karte_vergessen_entfernt_die_alte(zustand: Path) -> None:
+    # Bindet die Lernflaeche nach dem Neuladen dieselbe sessionId neu, ohne ihre artifacts: dann entsteht trotzdem
+    # eine zweite Karte. Die gemeldete objectId verraet es; die alte geht danach weg.
+    fake = KartenFake()
+    c = _client(zustand, fake)
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K")
+    fake.bekannt.clear()
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K")
+    assert fake.widgets == {"widget-2": "sess-1"} and [w["objectId"] for w in _loeschungen(fake)] == ["widget-1"]
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K")  # jetzt wieder bekannt: kein weiteres Loeschen
+    assert fake.widgets == {"widget-2": "sess-1"} and len(_loeschungen(fake)) == 1
+
+
+def test_bericht_alte_karte_schon_weg_neue_kommt_trotzdem(zustand: Path) -> None:
+    fake = KartenFake()
+    c = _client(zustand, fake)
+    c.bericht_zeigen("sess-1", LERN_SID, "# Bericht: K")
+    fake.widgets.clear()  # die Person hat die Karte entfernt, oder das Dokument ist ein anderes
+    c.bericht_zeigen("sess-2", LERN_SID, "# Bericht: K")
+    assert fake.widgets == {"widget-2": "sess-2"} and len(_loeschungen(fake)) == 1
+
+
 def test_bericht_ohne_nummern_nur_karte(zustand: Path) -> None:
     fake = Fake()
     _client(zustand, fake).bericht_zeigen("sess-1", LERN_SID, "x")
