@@ -200,7 +200,11 @@ _WERKSTATT_AUFGABE_CONSULTING = (
     "1200 characters, the same wording in every task; never invent a real company or person. If no such source "
     "exists, set `fall` to null. For an open or case task that asks the learner to place use cases by benefit and "
     "effort, set `vorlage` to \"matrix\"; for a one-page recommendation set it to \"onepager\"; otherwise set "
-    "`vorlage` to null. If `wunsch` is given, change the previous version accordingly and keep everything else. If "
+    "`vorlage` to null. With a `vorlage`, set `vorlage_felder` to the field names the task and lesson use, exactly "
+    "as worded there and at most 40 characters each: for the matrix exactly four, in the order high benefit and low "
+    "effort, high benefit and high effort, low benefit and low effort, low benefit and high effort; for the onepager "
+    "the 3 to 6 parts the task asks for, in order, without numbers. Without a `vorlage`, set `vorlage_felder` to "
+    "null. If `wunsch` is given, change the previous version accordingly and keep everything else. If "
     "the input contains reviewer_feedback, fix every point. "
     # The lesson section (lesson_contains_tasks, lektion_kuendigt_an, claim_uncited).
     "The lesson section teaches every concept, rule and procedure the task needs in full sentences; it contains no "

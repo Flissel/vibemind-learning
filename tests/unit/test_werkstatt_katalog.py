@@ -1008,3 +1008,15 @@ def test_katalog_schreibt_fall_und_vorlage_in_presentation(tmp_path):
     assert mathe["fall"].scoring_config["presentation"] == {
         "fall": fall, "vorlage": "matrix", "math": True,
     }
+
+
+def test_katalog_schreibt_eigene_feldnamen_in_presentation(tmp_path):
+    factory = _factory(tmp_path)
+    felder = ["Quick Win", "großes Projekt", "kleine Verbesserung", "Zeitfresser"]
+    eintraege = [_eintrag("matrix", {**_offen("case"), "vorlage": "matrix", "vorlage_felder": felder})]
+
+    WerkstattKatalog(factory).projizieren(COURSE, 3, eintraege, None)
+
+    assert _items(factory, 3)["matrix"].scoring_config["presentation"] == {
+        "vorlage": "matrix", "vorlage_felder": felder,
+    }

@@ -285,4 +285,48 @@ def test_fall_laenger_als_1200_wird_abgelehnt() -> None:
 
 def test_alter_inhalt_ohne_fall_bleibt_lesbar() -> None:
     gelesen = inhalt_lesen(offen())
-    assert gelesen.fall is None and gelesen.vorlage is None
+    assert gelesen.fall is None and gelesen.vorlage is None and gelesen.vorlage_felder is None
+
+
+# --- Feldnamen der Vorlage ---------------------------------------------------------------
+
+_KURS_MATRIX = ["Quick Win", "großes Projekt", "kleine Verbesserung", "Zeitfresser"]
+
+
+def test_vorlage_felder_der_matrix_bleiben_erhalten() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Offen
+
+    inhalt = Offen(**offen(vorlage="matrix", vorlage_felder=_KURS_MATRIX))
+    assert inhalt.vorlage_felder == _KURS_MATRIX
+    assert inhalt_lesen(inhalt.model_dump()).vorlage_felder == _KURS_MATRIX
+
+
+def test_onepager_abschnitte_verlieren_nummer_und_raender() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Offen
+
+    inhalt = Offen(**offen(vorlage="onepager", vorlage_felder=[
+        "1. Ausgangslage", "2) Empfehlung", " Nutzen und Aufwand ", "Risiken", "Nächster Schritt"]))
+    assert inhalt.vorlage_felder == ["Ausgangslage", "Empfehlung", "Nutzen und Aufwand", "Risiken", "Nächster Schritt"]
+
+
+@pytest.mark.parametrize("vorlage, felder", [
+    ("matrix", ["a", "b", "c"]), ("matrix", ["a", "b", "c", "d", "e"]),
+    ("onepager", ["a", "b"]), ("onepager", list("abcdefg")), ("onepager", []),
+    ("matrix", ["a", "b", "c", "x" * 41]), ("matrix", ["a", "b", " ", "d"]),
+    (None, ["a", "b", "c", "d"]),
+])
+def test_unpassende_vorlage_felder_werden_still_verworfen(vorlage: str | None, felder: list[str]) -> None:
+    from spaces.learning.services.werkstatt.inhalt import Offen
+
+    inhalt = Offen(**offen(vorlage=vorlage, vorlage_felder=felder))
+    # Zierde wie die Vorlage selbst: die Aufgabe bleibt gueltig, die Flaeche druckt die Standardnamen.
+    assert inhalt.vorlage_felder is None and inhalt.vorlage == vorlage
+
+
+def test_vorlage_felder_an_quiz_werden_verworfen() -> None:
+    assert Quiz(**quiz(vorlage="matrix", vorlage_felder=_KURS_MATRIX)).vorlage_felder is None
+
+
+def test_geaenderte_vorlage_felder_sind_eine_textkorrektur() -> None:
+    alt = offen(vorlage="matrix")
+    assert fassungs_art(alt, {**alt, "vorlage_felder": _KURS_MATRIX}) == "textkorrektur"

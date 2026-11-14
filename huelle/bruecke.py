@@ -1517,6 +1517,10 @@ class Bruecke:
         # Die Vorlage braucht 6 Texte: nur auf dem eigenen Canvas, geteilte Boards haben nur 50 Texte je Flaeche.
         if typ in BEREICHS_TYPEN and vorlage in VORLAGEN and rechteck == EINZEL_RECHTECK:
             art["vorlage"] = vorlage
+            felder = praesentation.get("vorlage_felder") if isinstance(praesentation, dict) else None
+            # Nur eine Liste aus Texten; Anzahl und Laenge prueft `vorlagenplan` (sonst Standardnamen).
+            if isinstance(felder, list) and all(isinstance(t, str) for t in felder):
+                art["vorlage_felder"] = list(felder)
         fall = falltext(task) if typ != "code" else ""
         if fall:
             art["fall"] = fall

@@ -16,6 +16,7 @@ from spaces.learning.services.course_factory.schemas import (
     _StrictDraft,
 )
 from spaces.learning.services.adaptive_engine.darstellung import FALL_MAX
+from spaces.learning.services.adaptive_engine.darstellung import vorlage_felder as passende_felder
 
 Fach = Literal["terminal", "mathe", "consulting"]
 
@@ -44,6 +45,8 @@ class _AufgabeBasis(_StrictDraft):
     lektion: Lektionsabschnitt | None = None
     fall: str | None = Field(None, min_length=1, max_length=FALL_MAX)
     vorlage: Literal["matrix", "onepager"] | None = None
+    # Eigene Feldnamen der Vorlage (Matrix 4, Onepager 3-6); unpassende verwirft der Validator still.
+    vorlage_felder: list[str] | None = Field(None, max_length=20)
 
     @model_validator(mode="before")
     @classmethod
@@ -61,6 +64,8 @@ class _AufgabeBasis(_StrictDraft):
         # Die Vorlage ist Zierde: an einer Auswahl-Aufgabe wird sie still verworfen, die Aufgabe bleibt gueltig.
         if self.vorlage is not None and getattr(self, "kind", None) not in {"open", "case", "sketch"}:
             self.vorlage = None
+        # Ebenso die Feldnamen: ohne Vorlage oder in falscher Anzahl gelten die Standardnamen.
+        self.vorlage_felder = passende_felder(self.vorlage, self.vorlage_felder)
         return self
 
 

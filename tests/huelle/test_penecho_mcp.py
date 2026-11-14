@@ -2192,6 +2192,15 @@ def test_aufgabe_mit_vorlage_setzt_texte_vor_tinte(zustand: Path) -> None:
     assert aktionen[:2] == ["create_text", "show"]
 
 
+def test_aufgabe_mit_eigenen_feldnamen_druckt_diese(zustand: Path) -> None:
+    fake = FeldFake()
+    eigene = ["Quick Win", "großes Projekt", "kleine Verbesserung", "Zeitfresser"]
+    _client(zustand, fake).aufgabe_setzen(
+        "sess-1", "t1", "x", 3, mit_arbeitsfeld=True, vorlage="matrix", vorlage_felder=eigene)
+    edits = _vorlage_aufrufe(fake)
+    assert [e["text"] for e in edits[1:7]] == ["Nutzen ↑", "Aufwand →", *eigene]
+
+
 def test_vorlage_ink_wiederholung_behaelt_den_zusatz_bei_langer_id(zustand: Path) -> None:
     fake = FeldFake(revision=1)
     transport = _fehler_bei_ink(fake, "REVISION_CONFLICT")

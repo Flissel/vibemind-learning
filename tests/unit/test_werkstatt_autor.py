@@ -637,7 +637,17 @@ def test_consulting_autortext_steuert_die_lektionspruefungen(code: str) -> None:
 def test_consulting_autortext_sagt_null_statt_leer() -> None:
     text = _mathe_text("werkstatt_aufgabe_consulting")
     assert "set `fall` to null" in text and "set `vorlage` to null" in text
+    assert "set `vorlage_felder` to null" in text
     assert "leave `fall` empty" not in text and "leave it empty" not in text
+
+
+def test_consulting_autortext_verlangt_die_feldnamen_des_kurses() -> None:
+    text = _mathe_text("werkstatt_aufgabe_consulting")
+    assert "`vorlage_felder`" in text
+    # Reihenfolge wie die gedruckte Matrix: oben links, oben rechts, unten links, unten rechts.
+    assert ("high benefit and low effort, high benefit and high effort, low benefit and low effort, "
+            "low benefit and high effort") in text
+    assert "3 to 6" in text
 
 
 @pytest.mark.asyncio

@@ -1049,6 +1049,7 @@ class PenEchoMcp:
         self, session_id: str, aufgabe_id: str, text: str, nummer: int, *, mit_ergebnisfeld: bool = False,
         mit_arbeitsfeld: bool = False, bilder: Sequence[Aufgabenbild] = (), rechteck: dict[str, int] | None = None,
         zeigen: bool = True, vorlage: str | None = None, fall: str | None = None,
+        vorlage_felder: Sequence[str] | None = None,
     ) -> None:
         """Aufgabe `nummer` in ihren Bereich: `bereich(nummer)` oder, im Listenkurs, `rechteck` (ohne Grenze 1..20).
 
@@ -1058,6 +1059,7 @@ class PenEchoMcp:
         Lernflaeche zum aktiven. Ist das Board dann nicht aktiv, entfaellt nur der Rahmen.
         `vorlage` ("matrix", "onepager"): nur mit Arbeitsfeld, dann steht die Vorlage als Text und Tinte im
         Arbeitsfeld (Texte vor der Tinte: PenEcho zaehlt Tinte als Hindernis fuer Text), sonst ignoriert.
+        `vorlage_felder`: eigene Feldnamen der Aufgabe statt der Standardnamen (`vorlagenplan` prueft sie).
         `fall`: der Fall als Block nach dem Aufgabentext, auf Hoechstlaenge und Textfeld begrenzt (`_mit_fall`).
         """
         # schema.js:665 penecho_edit_canvas: action create_text braucht text, optional region (x/y).
@@ -1107,7 +1109,7 @@ class PenEchoMcp:
                                 bildfeld(nummer, unter_ergebnisfeld=mit_ergebnisfeld, rechteck=b),
                                 beschriften=not voll, belegung=belegung)
         if vorlage and mit_arbeitsfeld:
-            plan = vorlagenplan(vorlage, vorlagenfeld(f.arbeitsfeld, mit_bildern=bool(bilder)))
+            plan = vorlagenplan(vorlage, vorlagenfeld(f.arbeitsfeld, mit_bildern=bool(bilder)), felder=vorlage_felder)
             if plan is not None:
                 self._vorlage_setzen(session_id, aufgabe_id, nummer, plan, belegung, texte=not voll, zeigen=zeigen)
         feld = loesungsfeld(b, mit_ergebnisfeld=mit_ergebnisfeld, mit_arbeitsfeld=mit_arbeitsfeld)

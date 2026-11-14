@@ -109,6 +109,7 @@ class FakePenEcho:
         # (nummer, rechteck) je aufgabe_setzen; rechteck None = fester Bereich wie bisher.
         self.rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.vorlagen: list[str | None] = []  # vorlage je aufgabe_setzen
+        self.vorlage_felder: list[list[str] | None] = []  # vorlage_felder je aufgabe_setzen
         self.faelle: list[str | None] = []  # fall je aufgabe_setzen
         self.karten_rechtecke: list[tuple[int, dict[str, int] | None]] = []
         self.zeigen: list[tuple[int, bool]] = []  # (nummer, zeigen) je aufgabe_setzen
@@ -143,8 +144,10 @@ class FakePenEcho:
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
                        bilder: Any = (), rechteck: dict[str, int] | None = None, zeigen: bool = True,
-                       vorlage: str | None = None, fall: str | None = None) -> None:
+                       vorlage: str | None = None, fall: str | None = None,
+                       vorlage_felder: list[str] | None = None) -> None:
         self.vorlagen.append(vorlage)
+        self.vorlage_felder.append(vorlage_felder)
         self.faelle.append(fall)
         self.aufrufe.append(("aufgabe_setzen", session_id, aufgabe_id, text, nummer))
         self.zeigen.append((nummer, zeigen))
@@ -4875,6 +4878,26 @@ def test_setzauftrag_reicht_vorlage_nur_bei_bereichstypen_auf_eigenem_canvas(
     penecho = FakePenEcho()
     _setzauftrag_bruecke(penecho)._setzauftrag(task, 1, rechteck)("pe-1")
     assert penecho.vorlagen == [erwartet]
+
+
+_EIGENE_FELDER = ["Quick Win", "großes Projekt", "kleine Verbesserung", "Zeitfresser"]
+
+
+@pytest.mark.parametrize("presentation, rechteck, erwartet", [
+    ({"vorlage": "matrix", "vorlage_felder": _EIGENE_FELDER}, EINZEL_RECHTECK, _EIGENE_FELDER),
+    ({"vorlage": "matrix"}, EINZEL_RECHTECK, None),
+    ({"vorlage": "matrix", "vorlage_felder": "Quick Win"}, EINZEL_RECHTECK, None),
+    ({"vorlage": "matrix", "vorlage_felder": ["a", 2, "c", "d"]}, EINZEL_RECHTECK, None),
+    ({"vorlage_felder": _EIGENE_FELDER}, EINZEL_RECHTECK, None),
+    ({"vorlage": "matrix", "vorlage_felder": _EIGENE_FELDER}, None, None),
+])
+def test_setzauftrag_reicht_eigene_feldnamen_nur_mit_der_vorlage(
+        presentation: dict[str, Any], rechteck: dict[str, int] | None, erwartet: list[str] | None) -> None:
+    task: dict[str, Any] = {"id": TASK_1, "type": "case", "prompt": "Frage", "options": [],
+                            "presentation": presentation}
+    penecho = FakePenEcho()
+    _setzauftrag_bruecke(penecho)._setzauftrag(task, 1, rechteck)("pe-1")
+    assert penecho.vorlage_felder == [erwartet]
 
 
 def test_setzauftrag_reicht_den_fall_getrennt_und_nur_wenn_gesetzt() -> None:

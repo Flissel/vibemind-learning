@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from spaces.learning.huelle.vorlage import VORLAGEN, vorlagenfeld, vorlagenplan
 
 FELD = {"x": 600, "y": 180, "w": 1480, "h": 1240}
@@ -44,6 +46,35 @@ def test_onepager_hat_sechs_abschnitte() -> None:
     assert len(abstaende) == 1  # Zeilen gleicher Höhe
     assert len(plan.striche) == 5
     assert all(len(s) == 2 and s[0]["y"] == s[1]["y"] for s in plan.striche)
+
+
+_MATRIX = ["Quick Win", "großes Projekt", "kleine Verbesserung", "Zeitfresser"]
+
+
+def test_matrix_mit_eigenen_feldnamen_an_denselben_plaetzen() -> None:
+    standard, eigen = vorlagenplan("matrix", FELD), vorlagenplan("matrix", FELD, felder=_MATRIX)
+    assert standard is not None and eigen is not None
+    assert [t for t, _ in eigen.texte] == ["Nutzen ↑", "Aufwand →", *_MATRIX]
+    assert [r for _, r in eigen.texte] == [r for _, r in standard.texte]
+    assert eigen.striche == standard.striche
+
+
+def test_onepager_mit_fuenf_eigenen_abschnitten() -> None:
+    plan = vorlagenplan("onepager", FELD, felder=["Ausgangslage", "Empfehlung", "Nutzen", "Risiken", "Nächster Schritt"])
+    assert plan is not None
+    assert [t for t, _ in plan.texte] == [
+        "1. Ausgangslage", "2. Empfehlung", "3. Nutzen", "4. Risiken", "5. Nächster Schritt"]
+    assert all(_innen(r, FELD) for _, r in plan.texte)
+    assert len({b["y"] - a["y"] for (_, a), (_, b) in zip(plan.texte, plan.texte[1:])}) == 1
+    assert len(plan.striche) == 4
+
+
+@pytest.mark.parametrize("art, felder", [
+    ("matrix", _MATRIX[:3]), ("matrix", [*_MATRIX, "fünf"]), ("onepager", ["a", "b"]),
+    ("onepager", list("abcdefg")), ("matrix", ["a", "b", "c", "x" * 41]), ("matrix", ["a", "b", "", "d"]),
+])
+def test_unpassende_feldnamen_ergeben_die_standardvorlage(art: str, felder: list[str]) -> None:
+    assert vorlagenplan(art, FELD, felder=felder) == vorlagenplan(art, FELD)
 
 
 def test_unbekannte_vorlage_ergibt_none() -> None:

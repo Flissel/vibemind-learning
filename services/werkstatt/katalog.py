@@ -200,7 +200,8 @@ class WerkstattKatalog:
             }
             sichtbar = {
                 k: v for k, v in (("fall", getattr(inhalt, "fall", None)),
-                                  ("vorlage", getattr(inhalt, "vorlage", None))) if v is not None
+                                  ("vorlage", getattr(inhalt, "vorlage", None)),
+                                  ("vorlage_felder", getattr(inhalt, "vorlage_felder", None))) if v is not None
             }
             if sichtbar:
                 scoring_config["presentation"] = {**scoring_config["presentation"], **sichtbar}
