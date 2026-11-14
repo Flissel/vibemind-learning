@@ -11,10 +11,10 @@ import {
   mitFlaechenKennung, nachrichtAusFlaeche, neueFlaechenKennung, wiederholbar,
 } from "./flaeche.js";
 import {
-  entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_OHNE_AUFGABE, hinweisFuerAktiv, KURS_ABGEBEN_RUECKFRAGE,
-  kursAbgabeText,
-  kursAbgebenSichtbar, kursEndeLaden, LISTEN_MELDUNGEN, listenErgebnisAus, mussAbfragen, naechsteOffene, nummerAusDokument,
-  nummerZurNachricht, standAnnehmen, statusText, warteText, zusammenfassungSessionId,
+  entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_LAEDT, FLAECHE_OHNE_AUFGABE, hinweisFuerAktiv,
+  KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText,
+  kursAbgebenSichtbar, kursEndeLaden, LISTEN_MELDUNGEN, listenErgebnisAus, mitLadeHinweis, mussAbfragen, naechsteOffene,
+  nummerAusDokument, nummerZurNachricht, ohneLadeHinweis, standAnnehmen, statusText, warteText, zusammenfassungSessionId,
 } from "./liste.js";
 
 const API = "/lernen/api";
@@ -340,6 +340,15 @@ function listeZeigen() {
   leisteZeigen();
 }
 
+// Holt das Canvas der Aufgabe nach vorn. Der erste Besuch legt es an und dauert Sekunden (Abnahme 14.11.: 11-27 s
+// ohne Anzeige sah nach einer hängenden Fläche aus); dann steht so lange ein ruhiger Hinweis in der Leiste.
+function flaecheZeigen(sid, nummer) {
+  return mitLadeHinweis(() => api("POST", `/sitzungen/${sid}/zeigen`, { nummer }), {
+    an: () => { if (z.gewaehlt === nummer && z.hinweis === null) { z.hinweis = FLAECHE_LAEDT; leisteZeigen(); } },
+    aus: () => { if (z.hinweis !== ohneLadeHinweis(z.hinweis)) { z.hinweis = null; leisteZeigen(); } },
+  });
+}
+
 async function aufgabeWaehlen(nummer) {
   const t = z.turn;
   if (!t || !z.liste || !z.liste.aufgaben.some((a) => a.nummer === nummer)) return;
@@ -350,7 +359,7 @@ async function aufgabeWaehlen(nummer) {
   if (wechsel && z.phase === "aufgabe" && t.state === "active") { hilfeLeeren(); karteAufgabe(); }
   listeZeigen();
   const token = z.token;
-  const r = await api("POST", `/sitzungen/${t.session_id}/zeigen`, { nummer });
+  const r = await flaecheZeigen(t.session_id, nummer);
   if (r.ok && token === z.token) dokumenteUebernehmen(r.daten); // auch ein eben angelegtes Canvas
   if (!r.ok && z.turn === t && z.gewaehlt === nummer) {
     z.hinweis = listenMeldung(r.daten);
@@ -519,7 +528,7 @@ async function listenWeiter(bannerBehalten = false) {
   zeigen();
   // Die Brücke zeigt `aktuell`; ist eine andere Aufgabe gewählt, diese ins Bild holen.
   if (z.gewaehlt !== null && z.gewaehlt !== r.daten.aktuell && z.turn?.state === "active") {
-    void api("POST", `/sitzungen/${z.turn.session_id}/zeigen`, { nummer: z.gewaehlt })
+    void flaecheZeigen(z.turn.session_id, z.gewaehlt)
       .then((gezeigt) => { if (gezeigt.ok && token === z.token) dokumenteUebernehmen(gezeigt.daten); });
   }
   void speichern(false);

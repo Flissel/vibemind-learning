@@ -251,3 +251,48 @@ test("huelle.js: fertig abgegebener Kurs lädt die Endansicht über „weiter“
   const kopf = js.split("function listenkopfZeigen(")[1].split("\n}\n")[0];
   assert.ok(kopf.indexOf('$("kurs-abgeben").hidden') < kopf.indexOf("if (!an) return;"));
 });
+
+// Abnahme 14.11.: Der erste Besuch einer Aufgabe legt ihr Canvas an (live 11-27 s), und nichts zeigte das an.
+import { FLAECHE_LAEDT, mitLadeHinweis, ohneLadeHinweis } from "./liste.js";
+
+const warten = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test("mitLadeHinweis: schnelle Arbeit zeigt keinen Hinweis", async () => {
+  const rufe = [];
+  const r = await mitLadeHinweis(async () => "fertig", { an: () => rufe.push("an"), aus: () => rufe.push("aus"), verzugMs: 30 });
+  await warten(50);
+  assert.equal(r, "fertig");
+  assert.deepEqual(rufe, []);
+});
+
+test("mitLadeHinweis: langsame Arbeit zeigt den Hinweis nach dem Verzug und nimmt ihn am Ende zurück", async () => {
+  const rufe = [];
+  const r = await mitLadeHinweis(async () => { await warten(60); rufe.push("arbeit"); return 7; },
+    { an: () => rufe.push("an"), aus: () => rufe.push("aus"), verzugMs: 10 });
+  assert.equal(r, 7);
+  assert.deepEqual(rufe, ["an", "arbeit", "aus"]);
+});
+
+test("mitLadeHinweis: auch bei einem Fehler geht der Hinweis wieder weg", async () => {
+  const rufe = [];
+  await assert.rejects(mitLadeHinweis(async () => { await warten(40); throw new Error("weg"); },
+    { an: () => rufe.push("an"), aus: () => rufe.push("aus"), verzugMs: 5 }), /weg/);
+  assert.deepEqual(rufe, ["an", "aus"]);
+});
+
+test("ohneLadeHinweis: nimmt nur den Ladehinweis zurück", () => {
+  assert.equal(ohneLadeHinweis(FLAECHE_LAEDT), null);
+  assert.equal(ohneLadeHinweis("Anderer Hinweis"), "Anderer Hinweis");
+  assert.equal(ohneLadeHinweis(null), null);
+});
+
+test("huelle.js: Aufgabenwahl und Weiter zeigen über `flaecheZeigen` mit Ladehinweis (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  const zeigen = js.split("function flaecheZeigen(")[1].split("\n}\n")[0];
+  assert.match(zeigen, /mitLadeHinweis\(/);
+  assert.match(zeigen, /z\.gewaehlt === nummer && z\.hinweis === null/); // nie einen anderen Hinweis ueberschreiben
+  assert.match(zeigen, /ohneLadeHinweis\(z\.hinweis\)/);
+  const direkt = js.split("\n").filter((zeile) => zeile.includes("/zeigen`") && !zeile.includes("//"));
+  assert.equal(direkt.length, 1, "nur flaecheZeigen ruft /zeigen");
+});

@@ -122,6 +122,33 @@ export function hinweisFuerAktiv(hinweis, nummer) {
   return nummer !== null && hinweis === FLAECHE_OHNE_AUFGABE ? null : hinweis;
 }
 
+/** Hinweis, solange die Fläche einer Aufgabe geholt wird; der erste Besuch legt sie an und dauert einige Sekunden. */
+export const FLAECHE_LAEDT =
+  "Die Fläche für diese Aufgabe wird vorbereitet. Beim ersten Öffnen kann das einige Sekunden dauern.";
+
+/** So lange bleibt ein Wechsel still; schnelle Wechsel (unter einer Sekunde) zeigen keinen Hinweis. */
+export const LADE_VERZUG_MS = 700;
+
+/**
+ * Führt `arbeit()` aus. Dauert sie länger als `verzugMs`, wird einmal `an()` gerufen und am Ende, auch bei einem
+ * Fehler, `aus()`. Schnelle Arbeit ruft keines von beiden.
+ */
+export async function mitLadeHinweis(arbeit, { an, aus, verzugMs = LADE_VERZUG_MS }) {
+  let gezeigt = false;
+  const uhr = setTimeout(() => { gezeigt = true; an(); }, verzugMs);
+  try {
+    return await arbeit();
+  } finally {
+    clearTimeout(uhr);
+    if (gezeigt) aus();
+  }
+}
+
+/** Nimmt nur den Ladehinweis zurück; andere Hinweise bleiben. */
+export function ohneLadeHinweis(hinweis) {
+  return hinweis === FLAECHE_LAEDT ? null : hinweis;
+}
+
 /**
  * Aufgabennummer zu einer Nachricht der Fläche ({dokument, bereich}).
  * - Altes Modell (`jeAufgabe` nicht true): wie bisher das bekannte Dokument, sonst Bereich + 1.
