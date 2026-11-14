@@ -13,7 +13,7 @@ import pytest
 from spaces.learning.huelle.penecho_mcp import (
     BEREICHE, FLAECHE_GROESSE, Aufgabenbild, PenEchoAnfrageSchonBekannt, PenEchoMcp, PenEchoNichtErreichbar,
     PenEchoFlaecheVoll, PenEchoPlatzBelegt, PenEchoSitzungUnbekannt, arbeitsfeld, bereich, bildfeld, ergebnisfeld, rueckmeldungsfeld,
-    berichtsplatz, bildraster, felder, textfeld,
+    berichtsplatz, bildraster, fallfeld, felder, textfeld, zeile_mit_karte,
 )
 from spaces.learning.huelle.anordnung import anordnung, markenzeile, zeile
 from spaces.learning.huelle.vorlage import vorlagenfeld, vorlagenplan
@@ -2327,3 +2327,106 @@ def test_fall_ohne_platz_entfaellt_ganz(zustand: Path) -> None:
     text = _board_text(fake)
     assert "Fall:" not in text and _MARKER not in text
     assert text == f"Aufgabe 1: {lang}\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."
+
+
+# ---- Fall im eigenen Feld: langes Quiz (Abnahme 14.11.) -----------------------------------------------------------
+# Aufgabe und Antworten fuellten das Textfeld, der Fall entfiel ganz. Mit Ergebnisfeld und ohne Bilder ist rechts
+# unter dem Ergebnisfeld Platz; dort steht der Fall dann als eigener Text.
+
+_EINZEL = {"x": 100, "y": 100, "w": 2000, "h": 1400}
+_QUIZ = "Welche Aussage trifft zu? " + "A) Eine lange Antwortmoeglichkeit mit Begruendung und Zahlen. " * 22
+
+
+def _fall_texte(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")
+            if a["arguments"]["action"] == "create_text" and a["arguments"]["requestId"].startswith("fall-")]
+
+
+def test_fall_kommt_unter_das_ergebnisfeld_wenn_das_textfeld_voll_ist(zustand: Path) -> None:
+    fake = FeldFake()
+    fall = _FALL[:1100]
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", _QUIZ, 1, mit_ergebnisfeld=True, fall=fall, rechteck=_EINZEL)
+    assert _board_text(fake) == f"Aufgabe 1: {_QUIZ}\n\nIhr Ergebnis schreiben Sie in das blau umrandete Feld."
+    (eigen,) = _fall_texte(fake)
+    assert eigen["text"] == f"Fall:\n{fall}"
+    f = felder(_EINZEL)
+    platz, e = eigen["region"], f.ergebnisfeld
+    assert platz == fallfeld(_EINZEL)
+    # unter dem Ergebnisfeld samt Rahmen, rechts neben dem Text, ganz im Bereich, hoechstens so breit wie die Karte
+    assert platz["y"] >= e["y"] + e["h"] + 20 and platz["x"] >= f.textfeld["x"] + f.textfeld["w"]
+    assert platz["x"] + platz["w"] <= _EINZEL["x"] + _EINZEL["w"] and platz["y"] + platz["h"] <= _EINZEL["y"] + _EINZEL["h"]
+    assert platz["w"] <= 760
+    # Der Fall wird vor dem Rahmen gesetzt (PenEcho zaehlt Tinte als Hindernis fuer Text).
+    namen = [a["arguments"].get("action") for a in fake.aufrufe("penecho_edit_canvas")]
+    assert namen.index("create_text", namen.index("create_text") + 1) < namen.index("draw_ink")
+
+
+def test_fall_im_eigenen_feld_wird_gekuerzt_mit_hinweis(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", _QUIZ, 1, mit_ergebnisfeld=True, fall=_FALL * 3,
+                                          rechteck=_EINZEL)
+    (eigen,) = _fall_texte(fake)
+    platz = fallfeld(_EINZEL)
+    assert eigen["text"].startswith("Fall:\n") and eigen["text"].endswith(f"\n{_MARKER}")
+    assert len(eigen["text"]) <= 2000
+    assert _zeilen_schaetzung(eigen["text"], 36 * platz["w"] // 400) <= platz["h"] // 27
+
+
+def test_fall_bleibt_im_textfeld_wenn_er_dort_passt(zustand: Path) -> None:
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Frage", 1, mit_ergebnisfeld=True, fall="Muster GmbH",
+                                          rechteck=_EINZEL)
+    assert _board_text(fake) == ("Aufgabe 1: Frage\n\nFall:\nMuster GmbH\n\n"
+                                 "Ihr Ergebnis schreiben Sie in das blau umrandete Feld.")
+    assert _fall_texte(fake) == []
+
+
+def test_fall_ohne_eigenes_feld_bei_arbeitsfeld_oder_bildern(zustand: Path) -> None:
+    # Arbeitsfeld: der Platz rechts ist die Loesungsflaeche. Bilder: sie stehen unter dem Ergebnisfeld.
+    fake = FeldFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", _QUIZ, 1, mit_arbeitsfeld=True, fall=_FALL[:1100],
+                                          rechteck=_EINZEL)
+    assert _fall_texte(fake) == []
+    fake = FeldFake()
+    bild = Aufgabenbild(None, BILD_PNG, 1.0)
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", _QUIZ, 1, mit_ergebnisfeld=True, fall=_FALL[:1100],
+                                          rechteck=_EINZEL, bilder=[bild])
+    assert _fall_texte(fake) == []
+
+
+def test_fall_im_eigenen_feld_steht_schon_da(zustand: Path) -> None:
+    # Board nach Neustart wiederhergestellt: ein Text an der Ecke des Fallfelds wird nicht erneut gesendet.
+    fake = FeldFake()
+    objekte = [("text", "text-box-3", {**fallfeld(_EINZEL), "h": 300})]
+    PenEchoMcp(zustand, transport=_mit_belegung(fake, objekte)).aufgabe_setzen(
+        "sess-1", "t1", _QUIZ, 1, mit_ergebnisfeld=True, fall=_FALL[:1100], rechteck=_EINZEL)
+    assert _fall_texte(fake) == []
+
+
+# ---- Rueckmeldekarte im Bild (Abnahme 14.11.) ---------------------------------------------------------------------
+# Im eigenen Canvas ist der Bereich 2000 breit, die Zeile (2100) endete vor der Karte (x 2140 bis 2900).
+
+def test_karte_zeigen_rahmt_bereich_und_karte(zustand: Path) -> None:
+    fake = Fake()
+    PenEchoMcp(zustand, transport=httpx.MockTransport(fake)).karte_zeigen("sess-1", _EINZEL)
+    (zeigen,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas")]
+    karte = felder(_EINZEL).rueckmeldungsfeld
+    assert zeigen["action"] == "show"
+    assert zeigen["region"] == zeile_mit_karte(_EINZEL)
+    r = zeigen["region"]
+    assert (r["x"], r["y"], r["h"]) == (_EINZEL["x"], _EINZEL["y"], _EINZEL["h"])
+    assert r["x"] + r["w"] == karte["x"] + karte["w"]
+
+
+def test_zeile_mit_karte_im_alten_raster_wie_die_zeile(zustand: Path) -> None:
+    # Im 1300er-Raster deckt die Zeile die Karte schon ab: dort aendert sich nichts.
+    r = anordnung([False] * 3)[1]
+    assert zeile_mit_karte(r) == zeile(r)
+
+
+def test_aufgabe_aufnehmen_rahmt_platz_fuer_die_karte(zustand: Path) -> None:
+    # Nach der Abgabe kommt die Karte; die Ansicht hat dann schon Platz fuer sie.
+    fake = Fake()
+    PenEchoMcp(zustand, transport=httpx.MockTransport(fake)).aufgabe_aufnehmen("sess-1", _EINZEL, ergebnis=True)
+    (zeigen,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] == "show"]
+    assert zeigen["region"] == zeile_mit_karte(_EINZEL)

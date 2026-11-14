@@ -461,6 +461,10 @@ def test_korrektur_auf_canvas_der_aufgabe(tmp_path: Path) -> None:
         neu = penecho.aufrufe[vorher:]
         assert [a[1] for a in neu if a[0] == "rueckmeldung_zeigen"] == ["board-2"]
         assert penecho.karten_rechtecke[-1] == (2, EINZEL_RECHTECK)
+        # Die Person ist auf dieser Aufgabe: die Ansicht rahmt die neue Karte mit (Abnahme 14.11.).
+        namen = [a[0] for a in neu]
+        assert ("karte_zeigen", "board-2", EINZEL_RECHTECK) in neu
+        assert namen.index("karte_zeigen") > namen.index("rueckmeldung_zeigen")
         assert ("dokument_merken", "board-2") in neu
         assert SID not in _schluessel(penecho)
     finally:
@@ -640,14 +644,23 @@ def test_karte_kommt_mit_dem_canvas(tmp_path: Path) -> None:
     client, penecho, _ = _oeffnen(ll, tmp_path)
     try:
         assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-1", 1)]
+        # Abnahme 14.11.: die Karte liegt rechts neben dem 2000 breiten Bereich; nach dem Setzen rahmt die Ansicht
+        # Bereich und Karte (`karte_zeigen`), sonst war sie rechts abgeschnitten.
+        namen = [a[:3] for a in penecho.aufrufe]
+        assert namen.index(("karte_zeigen", "board-1", EINZEL_RECHTECK)) > \
+            [a[0] for a in penecho.aufrufe].index("rueckmeldung_zeigen")
+        vorher = len(penecho.aufrufe)
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
         assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-1", 1), ("board-2", 2)]
         assert penecho.karten_rechtecke == [(1, EINZEL_RECHTECK), (2, EINZEL_RECHTECK)]
-        # Auch ein vorhandenes Canvas bekommt die Karte wieder (sie ersetzt die vorige, steht also nie doppelt).
+        assert [a[0] for a in _flaechenaufrufe(penecho, vorher) if a[0] != "sitzung"][-2:] == \
+            ["rueckmeldung_zeigen", "karte_zeigen"]
+        # Auch ein vorhandenes Canvas bekommt die Karte wieder (sie ersetzt die vorige, steht also nie doppelt);
+        # die Ansicht rahmt dann gleich Bereich und Karte.
         vorher = len(penecho.aufrufe)
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
         neu = [a[0] for a in _flaechenaufrufe(penecho, vorher) if a[0] != "sitzung"]
-        assert neu == ["bereich_zeigen", "rueckmeldung_zeigen"]
+        assert neu == ["karte_zeigen", "rueckmeldung_zeigen"]
         assert [(k[1], k[3]) for k in _karten(penecho)][-1] == ("board-2", 2)
         assert SID not in _schluessel(penecho)
     finally:

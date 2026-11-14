@@ -485,6 +485,11 @@ def kartentext(vorbewertung: dict[str, Any]) -> str:
     return "\n\n".join(zeilen)
 
 
+def _offene_karte(eintrag: dict[str, Any] | None) -> bool:
+    """Hat der Listeneintrag eine Karte zu zeigen (offene Aufgabe mit Vorbewertung)?"""
+    return eintrag is not None and eintrag["status"] == "offen" and isinstance(eintrag.get("vorbewertung"), dict)
+
+
 def _kartenteile(vorbewertung: dict[str, Any]) -> tuple[str | None, str, str]:
     """(Gelesenes, Urteil, Text) der Rueckmeldungskarte; ohne Gelesenes, wenn nicht lesbar."""
     urteil = urteil_aus(vorbewertung)
@@ -2175,7 +2180,7 @@ class Bruecke:
         if sitzung.je_aufgabe:
             ok = self._still(lambda: self._einzel_setzen(sitzung, erste["task"], nummer, zeigen=True))
             if ok:
-                self._einzel_karte(sitzung, erste)  # wie `_listenaufgabe_setzen`: die Karte kommt mit
+                self._einzel_karte(sitzung, erste, zeigen=True)  # wie `_listenaufgabe_setzen`: die Karte kommt mit
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
             return nummer, ok, self._listenantwort(sitzung, eintraege, abgaben)
         rechteck = bereiche[nummer - 1]
@@ -2312,15 +2317,17 @@ class Bruecke:
         `merken`: nach dem Zeigen eines vorhandenen Canvas sein Dokument merken (wie `_board_merken` nach Weiter und
         Passt im alten Modell; ein neu angelegtes merkt `_einzel_setzen` schon).
         """
-        if self._ohne_canvas(sitzung, nummer):
+        neu = self._ohne_canvas(sitzung, nummer)
+        if neu:
             ok = self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
         else:
-            ok = self._auf_nummer_still(sitzung, task, nummer,
-                                        lambda s: self._penecho.bereich_zeigen(s, EINZEL_RECHTECK))
+            # Kommt eine Karte mit, rahmt die Ansicht gleich Bereich und Karte (Abnahme 14.11.).
+            zeigen = self._penecho.karte_zeigen if _offene_karte(eintrag) else self._penecho.bereich_zeigen
+            ok = self._auf_nummer_still(sitzung, task, nummer, lambda s: zeigen(s, EINZEL_RECHTECK))
             if ok and merken:
                 self._nummer_merken(sitzung, nummer)
         if ok and eintrag is not None:
-            self._einzel_karte(sitzung, eintrag)
+            self._einzel_karte(sitzung, eintrag, zeigen=neu)
         return ok
 
     def _auf_nummer_still(
@@ -2340,17 +2347,20 @@ class Bruecke:
         elif (board := sitzung.aufgaben_boards.get(nummer)) is not None:
             self._board_merken(sitzung, board)
 
-    def _einzel_karte(self, sitzung: _Sitzung, eintrag: dict[str, Any]) -> None:
+    def _einzel_karte(self, sitzung: _Sitzung, eintrag: dict[str, Any], *, zeigen: bool = False) -> None:
         """Karte einer offenen Vorbewertung auf das Canvas ihrer Aufgabe (wie `_listenaufgabe_setzen`); landet sie
-        nicht, steht ihr Text fuer die Leiste im Stand."""
-        vorbewertung = eintrag.get("vorbewertung")
-        if eintrag["status"] != "offen" or not isinstance(vorbewertung, dict):
+        nicht, steht ihr Text fuer die Leiste im Stand. `zeigen`: die Aufgabe ist gerade vorn, die Ansicht wurde aber
+        ohne Karte gerahmt (neues Canvas); dann danach Bereich und Karte rahmen (`karte_zeigen`)."""
+        if not _offene_karte(eintrag):
             return
+        vorbewertung = eintrag["vorbewertung"]
         task, nummer = eintrag["task"], eintrag["nummer"]
         gelesen, urteil, text = _kartenteile(vorbewertung)
         gelandet = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=EINZEL_RECHTECK))
         self._kartentext_merken((sitzung.sid, nummer), None if gelandet else leistentext(gelesen, urteil, text))
+        if gelandet and zeigen:
+            self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.karte_zeigen(s, EINZEL_RECHTECK))
 
     def _aufgabe_aufnehmen(self, sitzung: _Sitzung, task: dict[str, Any], nummer: int) -> bytes:
         """PNG der Abgabe vom Canvas der Aufgabe (`aufgabe_aufnehmen`, zeigt es dabei). Hat die Aufgabe noch kein
@@ -3058,6 +3068,9 @@ class Bruecke:
         gelesen, urteil, text = _kartenteile(vorbewertung)
         flaeche = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
+        if flaeche and sitzung.je_aufgabe:
+            # Die Person hat auf dieser Aufgabe getippt: die Ansicht rahmt die neue Karte mit (Abnahme 14.11.).
+            self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.karte_zeigen(s, rechteck))
         antwort: dict[str, Any] = {"vorbewertung": vorbewertung, "urteil": urteil, "turn": _turn(result),
                                    "flaeche": flaeche}
         if flaeche:

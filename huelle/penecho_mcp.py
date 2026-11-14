@@ -231,6 +231,53 @@ def _mit_fall(kopf: str, fall: str | None, hinweis: str | None, textfeld: dict[s
     return kopf + schluss
 
 
+def _fall_passt(kopf: str, fall: str, hinweis: str | None, textfeld: dict[str, int]) -> bool:
+    """Steht der ganze Fall ungekuerzt im Textfeld (`_mit_fall`)?"""
+    schluss = f"\n\n{hinweis}" if hinweis else ""
+    return _mit_fall(kopf, fall, hinweis, textfeld) == f"{kopf}\n\nFall:\n{fall}{schluss}"
+
+
+def fallfeld(b: dict[str, int]) -> dict[str, int]:
+    """Platz des Falls als eigener Text, wenn er nicht mehr ins Textfeld passt (langes Quiz, Abnahme 14.11.).
+
+    Nur bei Aufgaben mit Ergebnisfeld und ohne Bilder: dort ist der Platz unter dem Ergebnisfeld frei (sonst stehen
+    die Bilder da, siehe `bildfeld`). Rechts neben dem Text, hoechstens so breit wie die Rueckmeldekarte, damit die
+    Zeilen lesbar kurz bleiben; der Schnappschuss des Ergebnisfelds erfasst ihn nicht.
+    """
+    f = felder(b)
+    a, e = f.arbeitsfeld, f.ergebnisfeld
+    y = e["y"] + e["h"] + 2 * _BILD_LUECKE
+    return {"x": a["x"], "y": y, "w": min(a["w"], _RUECKMELDUNG_BREITE), "h": a["y"] + a["h"] - y}
+
+
+def _falltext(fall: str, platz: dict[str, int]) -> str:
+    """„Fall:“ und der Fall fuer `fallfeld`; zu lang: gekuerzt mit Hinweis auf die Seitenleiste (wie `_mit_fall`)."""
+    je_zeile = max(1, _ZEICHEN_JE_ZEILE * platz["w"] // 400)
+    max_zeilen = platz["h"] // _ZEILEN_HOEHE
+
+    def zeilen(t: str) -> int:
+        return sum(max(1, -(-len(z) // je_zeile)) for z in t.split("\n"))
+
+    ganz = f"Fall:\n{fall}"
+    if len(ganz) <= _TEXT_HOECHSTENS and zeilen(ganz) <= max_zeilen:
+        return ganz
+    schluss = f"\n{_FALL_SEITENLEISTE}"
+    kurz = kuerzen(fall, zeichen=_TEXT_HOECHSTENS - len("Fall:\n") - len(schluss),
+                   zeilen=max(1, max_zeilen - 1 - zeilen(_FALL_SEITENLEISTE)), je_zeile=je_zeile)
+    return f"Fall:\n{kurz}{schluss}"
+
+
+def zeile_mit_karte(b: dict[str, int]) -> dict[str, int]:
+    """Bereich `b` samt Rueckmeldekarte rechts daneben (Abnahme 14.11.).
+
+    Im 1300er-Raster ist das genau `zeile(b)`. Im eigenen Aufgaben-Canvas (2000 breit) endete die Zeile vor der Karte
+    (x 2140 bis 2900), die Karte war rechts abgeschnitten.
+    """
+    z, karte = zeile(b), felder(b).rueckmeldungsfeld
+    rechts = max(z["x"] + z["w"], karte["x"] + karte["w"])
+    return {**z, "w": rechts - z["x"]}
+
+
 def bildfeld(nummer: int, *, unter_ergebnisfeld: bool, rechteck: dict[str, int] | None = None) -> dict[str, int]:
     """Platz der Aufgabenbilder rechts neben dem Text.
 
@@ -1068,11 +1115,15 @@ class PenEchoMcp:
         f = felder(b)
         region = f.textfeld
         hinweis = _HINWEIS_ERGEBNIS if mit_ergebnisfeld else _HINWEIS_LOESUNG if mit_arbeitsfeld else None
+        kopf = f"Aufgabe {nummer}: {text}"
+        # Langes Quiz: passt der Fall nicht mehr ganz ins Textfeld, steht er unter dem Ergebnisfeld (`fallfeld`).
+        eigener_fall = fall if (fall and mit_ergebnisfeld and not bilder
+                                and not _fall_passt(kopf, fall, hinweis, f.textfeld)) else None
         argumente = {
             "sessionId": session_id,
             "requestId": f"aufgabe-{aufgabe_id}-{nummer}"[:MAX_SCHLUESSEL],
             "action": "create_text",
-            "text": _mit_fall(f"Aufgabe {nummer}: {text}", fall, hinweis, f.textfeld),
+            "text": _mit_fall(kopf, None if eigener_fall else fall, hinweis, f.textfeld),
             "region": region,
         }
         voll = False
@@ -1098,6 +1149,8 @@ class PenEchoMcp:
                 del argumente["region"]
                 argumente["requestId"] = f"aufgabe-{aufgabe_id}-{nummer}-frei"[:MAX_SCHLUESSEL]
                 objekt_id = self._struktur(self._werkzeug("penecho_edit_canvas", argumente)).get("objectId")
+        if eigener_fall and not voll:
+            self._fall_setzen(session_id, aufgabe_id, nummer, eigener_fall, fallfeld(b), belegung)
         # Vor dem Rahmen: draw_ink verlangt ein sichtbares Board (ACTIVE_CANVAS_REQUIRED).
         if zeigen:
             self._zeigen(session_id, objekt_id if rechteck is None else None)
@@ -1116,6 +1169,31 @@ class PenEchoMcp:
         if feld is not None:
             praefix = "ergebnis" if mit_ergebnisfeld else "arbeit"
             self._feld_zeichnen(session_id, aufgabe_id, nummer, feld, praefix, zeigen=zeigen)
+
+    def _fall_setzen(
+        self, session_id: str, aufgabe_id: str, nummer: int, fall: str, platz: dict[str, int],
+        belegung: Sequence[dict[str, Any]],
+    ) -> None:
+        """Fall als eigener Text in `platz` (vor dem Rahmen: Tinte waere ein Hindernis). Liegt dort schon ein Text
+        (Board nach Neustart wiederhergestellt), nicht erneut. Wie die Vorlage Zierde: Fehler ausser verlorener
+        Sitzung/Flaeche brechen die Aufgabe nicht ab, der Fall steht ja auch in der Seitenleiste."""
+        try:
+            if _an_ecke(belegung, platz, "text") is None:
+                self._werkzeug("penecho_edit_canvas", {
+                    "sessionId": session_id,
+                    "requestId": self._feld_id("fall", aufgabe_id, nummer),
+                    "action": "create_text",
+                    "text": _falltext(fall, platz),
+                    "region": platz,
+                })
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoPlatzBelegt:
+            log.info("Fall steht schon da")
+        except PenEchoFlaecheVoll:
+            log.warning("Fall nicht gesetzt: Flaeche voll")
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("Fall nicht gesetzt: %s", _typ(fehler))
 
     def _vorlage_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, plan: Vorlagenplan, belegung: Sequence[dict[str, Any]],
@@ -1573,6 +1651,10 @@ class PenEchoMcp:
         """
         self._zeigen(session_id, region=zeile(rechteck))
 
+    def karte_zeigen(self, session_id: str, rechteck: dict[str, int]) -> None:
+        """Wie `bereich_zeigen`, nur mit der Rueckmeldekarte rechts daneben im Bild (`zeile_mit_karte`)."""
+        self._zeigen(session_id, region=zeile_mit_karte(rechteck))
+
     def aufgabe_aufnehmen(self, session_id: str, rechteck: dict[str, int], *, ergebnis: bool,
                           warten_s: float = ZEIGEN_WARTEN_S) -> bytes:
         """PNG der Aufgabe auf ihrem eigenen Canvas: erst zeigen (Aufnahme braucht ein sichtbares Dokument),
@@ -1584,7 +1666,8 @@ class PenEchoMcp:
         ende = _jetzt() + warten_s
         while True:
             try:
-                self.bereich_zeigen(session_id, rechteck)
+                # Nach der Abgabe kommt die Karte: die Ansicht hat dann schon Platz fuer sie (Abnahme 14.11.).
+                self.karte_zeigen(session_id, rechteck)
                 if ergebnis:
                     return self.ergebnis_schnappschuss(session_id, 1, rechteck=rechteck)
                 return self.schnappschuss(session_id, 1, rechteck=rechteck)

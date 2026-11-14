@@ -167,6 +167,10 @@ class FakePenEcho:
         self.aufrufe.append(("bereich_zeigen", session_id, rechteck))
         self._pruefen("bereich_zeigen")
 
+    def karte_zeigen(self, session_id: str, rechteck: dict[str, int]) -> None:
+        self.aufrufe.append(("karte_zeigen", session_id, rechteck))
+        self._pruefen("karte_zeigen")
+
     def ergebnis_schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
         self.aufrufe.append(("ergebnis_schnappschuss", session_id, nummer))
         self.aufnahme_rechtecke.append((nummer, rechteck))
