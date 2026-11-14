@@ -340,8 +340,8 @@ function listeZeigen() {
   leisteZeigen();
 }
 
-// Holt das Canvas der Aufgabe nach vorn. Der erste Besuch legt es an und dauert Sekunden (Abnahme 14.11.: 11-27 s
-// ohne Anzeige sah nach einer hängenden Fläche aus); dann steht so lange ein ruhiger Hinweis in der Leiste.
+// Holt das Canvas der Aufgabe nach vorn. Dauert das länger (Abnahme 14.11.: vereinzelt 11-27 s, ohne Anzeige sah
+// das nach einer hängenden Fläche aus), steht so lange ein ruhiger Hinweis in der Leiste.
 function flaecheZeigen(sid, nummer) {
   return mitLadeHinweis(() => api("POST", `/sitzungen/${sid}/zeigen`, { nummer }), {
     an: () => { if (z.gewaehlt === nummer && z.hinweis === null) { z.hinweis = FLAECHE_LAEDT; leisteZeigen(); } },

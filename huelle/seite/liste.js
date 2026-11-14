@@ -122,9 +122,12 @@ export function hinweisFuerAktiv(hinweis, nummer) {
   return nummer !== null && hinweis === FLAECHE_OHNE_AUFGABE ? null : hinweis;
 }
 
-/** Hinweis, solange die Fläche einer Aufgabe geholt wird; der erste Besuch legt sie an und dauert einige Sekunden. */
+/**
+ * Hinweis, solange die Fläche einer Aufgabe geholt wird. Meist dauert das unter einer Sekunde; live gab es am 14.11.
+ * Wechsel von 11-27 s, deren Ursache offen ist (nicht der erste Besuch, nicht die Auto-KI).
+ */
 export const FLAECHE_LAEDT =
-  "Die Fläche für diese Aufgabe wird vorbereitet. Beim ersten Öffnen kann das einige Sekunden dauern.";
+  "Die Fläche für diese Aufgabe wird geholt. Das kann einige Sekunden dauern.";
 
 /** So lange bleibt ein Wechsel still; schnelle Wechsel (unter einer Sekunde) zeigen keinen Hinweis. */
 export const LADE_VERZUG_MS = 700;
