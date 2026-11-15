@@ -339,8 +339,11 @@ def test_exam_uses_frozen_blueprint_and_withholds_feedback_until_summary(
     assert turn.state == "completed"
     assert turn.summary is not None
     assert turn.summary.correct == 3
+    assert turn.summary.partial == 0
     assert turn.summary.score == 1
     assert len(turn.summary.results) == 3
+    # Das Urteil je Aufgabe kommt mit: wer zaehlt, rechnet die Grenzen nicht nach.
+    assert [r.state for r in turn.summary.results] == ["correct"] * 3
 
 
 def test_synthetic_learner_progresses_and_failure_schedules_remediation(

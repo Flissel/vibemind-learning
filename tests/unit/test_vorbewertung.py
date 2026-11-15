@@ -396,6 +396,49 @@ def test_ueberarbeiten_dann_bestaetigen_zaehlt_nur_letzte(tmp_path: Path) -> Non
     engine.dispose()
 
 
+def test_bestaetigen_bucht_den_besten_versuch(tmp_path: Path) -> None:
+    # Erst richtig, dann beim Ueberarbeiten verschlechtert: gebucht wird der bessere Versuch.
+    engine, factory, course_id, _ = _store(tmp_path, [_choice(1), _choice(2)])
+    leser = _Leser()
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, handschrift_leser=leser)
+    turn = _start(service, course_id)
+    leser._antworten = [_richtig(turn), _falsch(turn)]
+    erste = _vor(service, turn, handschrift_png=PNG)
+    zweite = _vor(service, turn, handschrift_png=PNG + b"2")
+    assert (erste.score, zweite.score) == (1.0, 0.0)
+
+    booked = _bestaetigen(service, turn, zweite.id)
+
+    assert booked.feedback.state == "correct"
+    with factory() as db:
+        evaluations = db.scalars(select(LearningEvaluation)).all()
+        assert [e.score for e in evaluations] == [1.0]
+        assert db.scalar(select(func.count(Misconception.id))) == 0
+        gebucht = db.scalars(select(LearningResponse)).one()
+        assert gebucht.id == db.get(LearningVorbewertung, erste.id).response_id
+    engine.dispose()
+
+
+def test_bester_versuch_nimmt_keine_ungepruefte_bewertung(tmp_path: Path) -> None:
+    # Eine nicht angenommene Rubrik-Bewertung (ein Mensch prueft noch) verdraengt die bestaetigte nicht.
+    engine, factory, course_id, _ = _store(tmp_path, [_rubric_item("open"), _rubric_item("open")])
+    rubrik = _Rubrik(score=1.0)
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=rubrik)
+    turn = _start(service, course_id)
+    rubrik.accepted = False
+    ungeprueft = _vor(service, turn, handschrift_png=PNG)
+    rubrik.accepted, rubrik.score = True, 0.5
+    bestaetigt = _vor(service, turn, handschrift_png=PNG + b"2")
+    assert ungeprueft.accepted is False and bestaetigt.accepted is True
+
+    _bestaetigen(service, turn, bestaetigt.id)
+
+    with factory() as db:
+        gebucht = db.scalars(select(LearningResponse)).one()
+        assert gebucht.id == db.get(LearningVorbewertung, bestaetigt.id).response_id
+    engine.dispose()
+
+
 # ---- Zusaetzliche Absicherungen -------------------------------------------------------
 
 

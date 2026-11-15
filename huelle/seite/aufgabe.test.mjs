@@ -662,3 +662,29 @@ test("huelle.js: Programmieraufgabe hat Ausfuehren, der Code geht nur an die Rou
   assert.match(lauf, /laufText\(r\.daten\)/);
   assert.match(js, /id: "ausfuehren"/);
 });
+test("kursErgebnis: zählt die Urteile der Engine, teilweise nur wenn vorhanden", async () => {
+  const { kursErgebnis } = await import("./aufgabe.js");
+  const s = (...states) => ({ results: states.map((state, i) => ({ ordinal: i + 1, score: 0.5, state })) });
+  assert.equal(kursErgebnis(s("correct", "correct", "partial", "incorrect")), "2 von 4 Aufgaben richtig, 1 teilweise.");
+  assert.equal(kursErgebnis(s("correct", "incorrect")), "1 von 2 Aufgaben richtig.");
+  assert.equal(kursErgebnis(s("correct")), "1 von 1 Aufgabe richtig.");
+});
+
+test("kursErgebnis: ohne Urteil der Engine gelten die alten Grenzen; ohne Ergebnisse null", async () => {
+  const { kursErgebnis } = await import("./aufgabe.js");
+  assert.equal(kursErgebnis({ results: [{ score: 1 }, { score: 0.7 }, { score: 0.2 }] }), "1 von 3 Aufgaben richtig, 1 teilweise.");
+  assert.equal(kursErgebnis({ results: [] }), null);
+  assert.equal(kursErgebnis(null), null);
+  assert.equal(kursErgebnis({ results: "x" }), null);
+});
+
+test("Kärtchen: die abgegebene Wahl bleibt je Sitzung und Aufgabe gemerkt (Listenkurs)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(js, /z\.kaertchenAbgegeben\.set\(`\$\{t\.session_id\}\|\$\{task\.id\}`, z\.kaertchen\.zustand\)/);
+  assert.match(js, /abgegeben \?\? kaertchenStart\(task\)/);
+  // Im Listenkurs wird die Wahl nach dem Abgeben nicht mehr verworfen.
+  const start = js.indexOf("async function kaertchenAbgeben()");
+  const listenteil = js.slice(start, js.indexOf("void speichern(false);", start));
+  assert.ok(listenteil.length > 0 && !listenteil.includes("z.kaertchen = null"));
+});

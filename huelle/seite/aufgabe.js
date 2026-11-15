@@ -652,3 +652,16 @@ export function laufText(daten) {
   if (daten.abgeschnitten === true) schluss += " Die Ausgabe wurde gekürzt.";
   return `${ausgabe || "(keine Ausgabe)"}\n\n— ${schluss}`;
 }
+// Kursende: „2 von 4 Aufgaben richtig, 1 teilweise.“ aus der Zusammenfassung der Sitzung. Das Urteil je Aufgabe
+// kommt von Learning (`state`); fehlt es (ältere Fassung), gelten die früheren Grenzen. Ohne Ergebnisse null.
+export function kursErgebnis(summary) {
+  const ergebnisse = Array.isArray(summary?.results) ? summary.results : [];
+  if (ergebnisse.length === 0) return null;
+  const urteil = (e) => (["correct", "partial", "incorrect"].includes(e?.state)
+    ? e.state
+    : e?.score >= 0.999 ? "correct" : e?.score >= 0.65 ? "partial" : "incorrect");
+  const richtig = ergebnisse.filter((e) => urteil(e) === "correct").length;
+  const teilweise = ergebnisse.filter((e) => urteil(e) === "partial").length;
+  const wort = ergebnisse.length === 1 ? "Aufgabe" : "Aufgaben";
+  return `${richtig} von ${ergebnisse.length} ${wort} richtig${teilweise ? `, ${teilweise} teilweise` : ""}.`;
+}

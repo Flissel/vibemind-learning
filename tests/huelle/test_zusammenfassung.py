@@ -148,7 +148,7 @@ def test_kernaussage_ganze_rueckmeldung() -> None:
         {"score": 0.5, "description": "Kriterium A", "feedback": "Erster Satz. Zweiter Satz."},
         {"score": 0.0, "description": "Kriterium B", "feedback": "Dritter Satz."}]}}
     k = kernaussage(vor)
-    assert k.startswith("Teilweise richtig. Kriterium A: Erster Satz. Zweiter Satz. Kriterium B: Dritter Satz. ")
+    assert k.startswith("Teilweise richtig. Es fehlt noch: – Kriterium A: Erster Satz. Zweiter Satz. – Kriterium B: Dritter Satz. ")
     assert k.endswith("noch einmal abgeben. Die KI auf der Fläche erklärt Ihnen gern den Weg.")
 
 
@@ -305,3 +305,12 @@ def test_zusammenfassung_zeigt_ki_schritte() -> None:
         "KI genutzt: –",
         "KI genutzt: Nächster Schritt ×2, Erklären, Prüfen, Übung, Zeichnen, Frage, Freie Anfrage, Abgabe",
     ]
+
+
+def test_versuche_zeile_in_textfassung() -> None:
+    from spaces.learning.huelle.zusammenfassung import AufgabeZeile
+
+    a = AufgabeZeile(2, "Frage", "Antwort", "Richtig. Gut gemacht.", None, (), True, versuche=3, erstes_urteil="incorrect")
+    assert a.versuche_zeile == "Versuche: 3, zuerst falsch"
+    assert AufgabeZeile(1, "F", "A", "–", None, (), True, versuche=2, erstes_urteil="correct").versuche_zeile == "Versuche: 2"
+    assert AufgabeZeile(1, "F", "A", "–", None).versuche_zeile == ""

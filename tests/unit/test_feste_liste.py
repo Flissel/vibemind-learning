@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -309,6 +309,37 @@ def test_aufgabenliste(tmp_path: Path) -> None:
     assert liste[2].vorbewertung is None
     assert liste[1].task.id == v2.item_id
     assert liste[1].task.expected_answer is None
+
+
+def test_aufgabenliste_zaehlt_versuche_und_zeigt_den_gebuchten(tmp_path: Path) -> None:
+    # Erst falsch, dann richtig, dann wieder falsch und so bestaetigt: es zaehlt der beste Versuch (der zweite),
+    # die Liste zeigt ihn, nennt drei Versuche und das Urteil des ersten.
+    factory, course_id = _store(tmp_path, [1, 2, 3])
+    uhr = iter(NOW + timedelta(seconds=n) for n in range(100))
+    service = AdaptiveSessionService(factory, clock=lambda: next(uhr))
+    turn = _start(service, course_id)
+    v1, _, _ = _versuche(factory, turn)
+
+    def vor(antwort: dict[str, object]):
+        return service.vorbewerten(VorbewertungCommand(
+            session_id=turn.session_id, actor_id=ACTOR, expected_session_revision=1,
+            attempt_id=v1.id, answer=antwort,
+        ))
+
+    vor({"choice_id": "wrong-1"})
+    beste = vor({"choice_id": "correct-1"})
+    letzte = vor({"choice_id": "wrong-1"})
+    offen = service.aufgabenliste(turn.session_id, actor_id=ACTOR)
+    assert offen[0].vorbewertung.id == letzte.id  # offen: die neueste
+    assert (offen[0].versuche, offen[0].erstes_urteil) == (3, "incorrect")
+    assert (offen[1].versuche, offen[1].erstes_urteil) == (0, None)
+
+    _bestaetigen(service, turn, v1, letzte)
+    liste = service.aufgabenliste(turn.session_id, actor_id=ACTOR)
+
+    assert liste[0].status == "bestaetigt"
+    assert liste[0].vorbewertung.id == beste.id and liste[0].vorbewertung.feedback.state == "correct"
+    assert (liste[0].versuche, liste[0].erstes_urteil) == (3, "incorrect")
 
 
 def test_aufgabenliste_liefert_die_getippte_antwort(tmp_path: Path) -> None:

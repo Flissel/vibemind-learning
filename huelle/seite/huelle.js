@@ -2,7 +2,7 @@
 import {
   abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
-  KAERTCHEN_TYPEN, etiketten, kursVorwahl, leistenKnoepfe, leistenZustand,
+  KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
@@ -101,6 +101,7 @@ const z = {
   mcpBereit: false, // PenEcho hat „MCP bereit“ gemeldet (egal ob vor oder nach dem Öffnen)
   mcpAutoVerbunden: false, // „Fläche verbinden“ wurde auf PenEchos Meldung schon einmal ausgelöst (höchstens einmal je Laden)
   kaertchen: null, // {taskId, zustand}: Auswahl der Begriffs-Kärtchen der gezeigten Aufgabe
+  kaertchenAbgegeben: new Map(), // "<Sitzung>|<Aufgabe>" -> abgegebene Auswahl; sie bleibt nach dem Abgeben sichtbar
   rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
 
@@ -582,7 +583,11 @@ function kaertchenAktualisieren() {
   const box = document.getElementById("kaertchen");
   const task = kaertchenAufgabe();
   if (!box || !task) return;
-  if (z.kaertchen?.taskId !== task.id) z.kaertchen = { taskId: task.id, zustand: kaertchenStart(task) };
+  if (z.kaertchen?.taskId !== task.id) {
+    // Eine schon abgegebene Auswahl kommt wieder (auch nach dem Wechsel zu einer anderen Aufgabe und zurück).
+    const abgegeben = z.kaertchenAbgegeben.get(`${z.turn?.session_id}|${task.id}`);
+    z.kaertchen = { taskId: task.id, zustand: abgegeben ?? kaertchenStart(task) };
+  }
   const zu = z.kaertchen.zustand;
   const gesperrt = kaertchenGesperrt(task);
   const plan = `${kaertchenKennung(task, zu)}|${gesperrt ? 1 : 0}|${z.busy ? 1 : 0}`;
@@ -674,7 +679,8 @@ async function kaertchenAbgeben() {
     dokumenteUebernehmen(r.daten);
     standAnwenden(r.daten.stand, nr);
     z.korrektur = null;
-    z.kaertchen = null;
+    // Die eigene Wahl bleibt stehen: man sieht, was man geantwortet hat, und ändert beim Überarbeiten nur das Nötige.
+    if (z.kaertchen) z.kaertchenAbgegeben.set(`${t.session_id}|${task.id}`, z.kaertchen.zustand);
     // Karte nicht auf der Fläche (z. B. kein Platz): die Brücke schickt die Rückmeldung als Text.
     z.hinweis = typeof r.daten.karte === "string" && r.daten.karte ? r.daten.karte : null;
     listeZeigen();
@@ -826,8 +832,10 @@ async function karteBewertung() {
     type: "button", text: "Noch einmal üben", hidden: z.gruppeId !== null, // die Gruppe hat keinen neuen Durchlauf
     onclick: () => { if (!z.busy) void kursOeffnen(kurs, "neu"); },
   });
+  const ergebnis = kursErgebnis(z.turn?.summary); // die klare Zahl am Kursende
   $("karte").replaceChildren(el("section", { class: "abschluss" },
     el("h2", { text: "Kurs abgeschlossen" }),
+    ergebnis ? el("p", { class: "ergebnis", text: ergebnis }) : null,
     el("p", { text: "Sie haben alle Aufgaben dieses Durchlaufs bearbeitet. Ihre Begriffe sehen Sie unten." }),
     el("div", { class: "knoepfe" }, nochmal)), el("section", { class: "bewertung" },
     el("h2", { text: "Wie fanden Sie diesen Kurs?" }),

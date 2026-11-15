@@ -4370,7 +4370,7 @@ def test_gruppen_abschluss_fest_in_der_eigenen_mappe_solo_unveraendert() -> None
         (karte,) = [a for a in penecho.aufrufe if a[0] == "schild_setzen"]
         _, board, kennung, text, platz = karte
         assert board == "pe-1" and kennung == f"abschluss-{SID_GA}" and gruppe.bericht_gezeigt
-        assert text == "Kurs abgeschlossen: Kurs B\n1 von 3 Aufgaben richtig."
+        assert text == "Kurs abgeschlossen: Kurs B\n1 von 3 Aufgaben richtig, 1 teilweise."
         raster = gruppen_raster([800] * 3)
         ursprung = mappen_ursprung(1, raster)
         assert platz == mappen_abschluss(ursprung)
@@ -4389,7 +4389,7 @@ def test_gruppen_abschluss_fest_in_der_eigenen_mappe_solo_unveraendert() -> None
 def test_abschluss_text_kurz_und_ohne_markdown() -> None:
     from spaces.learning.huelle.bericht import abschluss_text
 
-    assert abschluss_text("Kurs B", BERICHT) == "Kurs abgeschlossen: Kurs B\n1 von 3 Aufgaben richtig."
+    assert abschluss_text("Kurs B", BERICHT) == "Kurs abgeschlossen: Kurs B\n1 von 3 Aufgaben richtig, 1 teilweise."
     assert abschluss_text("Kurs  *B*\n", {"results": []}) == "Kurs abgeschlossen: Kurs *B*"
     lang = abschluss_text("Analysis " * 20, BERICHT)
     erste = lang.splitlines()[0]

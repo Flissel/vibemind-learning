@@ -66,7 +66,7 @@ from .anordnung import (
     EINZEL_RECHTECK, GruppenRaster, MappeVoll, ZuVieleAufgaben, anordnung, gruppen_raster, hoehen, mappen_abschluss,
     mappen_bereiche, mappen_kopf, mappen_ursprung, passt_in,
 )
-from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text, urteil as score_urteil
+from .bericht import abschluss_text, aufgaben as bericht_aufgaben, bericht_text, urteile as bericht_urteile
 from .einstellung import Einstellung, Kurs
 from .gruppe import (
     GRUPPE_UNGUELTIG, GRUPPE_VOLL, GRUPPE_WEG, KEIN_MITGLIED, AbgleichDienst, Gruppen, GruppeWeg, KeinMitglied,
@@ -444,6 +444,38 @@ def _kriterien_zeilen(feedback: dict[str, Any]) -> list[str]:
     return zeilen
 
 
+FEHLT_NOCH = "Es fehlt noch:"
+FEHLT_ZUR_VOLLEN_PUNKTZAHL = "Für die volle Punktzahl fehlt noch:"
+GUT_GELUNGEN = "Gut gelungen:"
+
+
+def _kriterien_bloecke(feedback: dict[str, Any], *, richtig: bool) -> list[str]:
+    """Die Kriterien der Rubrik als hoechstens zwei Bloecke: zuerst, was fehlt (mit Rueckmeldung), dann, was
+    gelungen ist (nur die Beschreibung). Ohne Quellenmarken; ohne Kriterien leer."""
+    fehlt, gelungen = [], []
+    for k in feedback.get("criteria") or []:
+        if not isinstance(k, dict):
+            continue
+        score, text, beschreibung = k.get("score"), k.get("feedback"), k.get("description")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        beschreibung = beschreibung.rstrip(" .:") if isinstance(beschreibung, str) else ""
+        if score >= 1:
+            if beschreibung:
+                gelungen.append(f"– {beschreibung}")
+            continue
+        text = _ohne_quellenmarken(text).strip() if isinstance(text, str) else ""
+        zeile = f"{beschreibung}: {text}" if beschreibung and text else beschreibung or text
+        if zeile:
+            fehlt.append(f"– {zeile}")
+    bloecke = []
+    if fehlt:
+        bloecke.append("\n".join([FEHLT_ZUR_VOLLEN_PUNKTZAHL if richtig else FEHLT_NOCH, *fehlt]))
+    if gelungen:
+        bloecke.append("\n".join([GUT_GELUNGEN, *gelungen]))
+    return bloecke
+
+
 # Learnings Urteil (`session_service._turn_feedback`: correct / partial / incorrect / needs_review)
 # auf die Karte; so sagt die Karte dasselbe wie der Turn nach „Passt“.
 _URTEIL_AUS_ZUSTAND = {
@@ -473,13 +505,40 @@ def urteil_aus(vorbewertung: dict[str, Any]) -> str:
     return urteil
 
 
-def kartentext(vorbewertung: dict[str, Any]) -> str:
-    """Rueckmeldung unter dem Urteil: Kriterien (Rubrik), sonst ein kurzer Satz je Urteil."""
+def _treffer_zeile(feedback: dict[str, Any], task: dict[str, Any] | None) -> str | None:
+    """„4 von 6 Zuordnungen stimmen.“ fuer Zuordnen und Ordnen mit Teilpunkten, ohne zu verraten, welche.
+
+    Die Zahl steckt nur bei Teilpunkten (`partial_match`) in der Punktzahl (Treffer / Anzahl); sonst None.
+    """
+    if not isinstance(task, dict) or "partial_match" not in (feedback.get("rationale_codes") or []):
+        return None
+    score = feedback.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return None
+    presentation = task.get("presentation")
+    if task.get("type") == "matching":
+        teile = presentation.get("left") if isinstance(presentation, dict) else None
+        wort = "Zuordnungen stimmen"
+    elif task.get("type") == "ordering":
+        teile, wort = task.get("options"), "Kärtchen stehen an der richtigen Stelle"
+    else:
+        return None
+    if not isinstance(teile, list) or not teile:
+        return None
+    return f"{round(score * len(teile))} von {len(teile)} {wort}."
+
+
+def kartentext(vorbewertung: dict[str, Any], task: dict[str, Any] | None = None) -> str:
+    """Rueckmeldung unter dem Urteil: zuerst, was fehlt (Rubrik-Kriterien oder Zahl der Treffer), dann das
+    Gelungene, am Ende ein kurzer Satz je Urteil. `task` (optional) erlaubt die Trefferzahl bei Kaertchen."""
     urteil = urteil_aus(vorbewertung)
     if urteil == "Nicht lesbar.":
         return KARTE_NICHT_LESBAR
     feedback = vorbewertung.get("feedback")
-    zeilen = _kriterien_zeilen(feedback) if isinstance(feedback, dict) else []
+    zeilen = _kriterien_bloecke(feedback, richtig=urteil == "Richtig.") if isinstance(feedback, dict) else []
+    treffer = _treffer_zeile(feedback, task) if isinstance(feedback, dict) and urteil != "Richtig." else None
+    if treffer:
+        zeilen.append(treffer)
     if urteil == "Richtig.":
         zeilen.append(KARTE_RICHTIG)
     elif urteil == "Wird noch geprüft.":
@@ -489,16 +548,27 @@ def kartentext(vorbewertung: dict[str, Any]) -> str:
     return "\n\n".join(zeilen)
 
 
+def _versuche_von(eintrag: dict[str, Any]) -> int:
+    """Zahl der Versuche aus Learnings Listeneintrag; fehlt sie (aeltere Fassung) oder ist sie ungueltig, 0."""
+    wert = eintrag.get("versuche")
+    return wert if isinstance(wert, int) and not isinstance(wert, bool) and wert >= 0 else 0
+
+
+def _erstes_urteil_von(eintrag: dict[str, Any]) -> str | None:
+    wert = eintrag.get("erstes_urteil")
+    return wert if isinstance(wert, str) and _ZUSTANDSNAME.fullmatch(wert) else None
+
+
 def _offene_karte(eintrag: dict[str, Any] | None) -> bool:
     """Hat der Listeneintrag eine Karte zu zeigen (offene Aufgabe mit Vorbewertung)?"""
     return eintrag is not None and eintrag["status"] == "offen" and isinstance(eintrag.get("vorbewertung"), dict)
 
 
-def _kartenteile(vorbewertung: dict[str, Any]) -> tuple[str | None, str, str]:
+def _kartenteile(vorbewertung: dict[str, Any], task: dict[str, Any] | None = None) -> tuple[str | None, str, str]:
     """(Gelesenes, Urteil, Text) der Rueckmeldungskarte; ohne Gelesenes, wenn nicht lesbar."""
     urteil = urteil_aus(vorbewertung)
     gelesen = vorbewertung.get("gelesen_text") if urteil != "Nicht lesbar." else None
-    text = kartentext(vorbewertung)
+    text = kartentext(vorbewertung, task)
     return (gelesen if isinstance(gelesen, str) else None), urteil, text
 
 
@@ -1749,7 +1819,7 @@ class Bruecke:
             begriffe = self._begriffe(sitzung) or []
             nummern = tuple(a.nummer for a in z.aufgaben)
             bilder = {n: png for n in nummern if (png := self._aufnahme_lesen(sitzung.sid, n)) is not None}
-            text = self._kurskarte_text(sitzung, summary, begriffe, z.rueckmeldung, folgt=ki_folgt)
+            text = self._kurskarte_text(sitzung, summary, begriffe, z.rueckmeldung, folgt=ki_folgt, aufgaben=z.aufgaben)
 
             def zeigen(s: str) -> None:
                 # Kurs-Canvas nach vorn; PenEcho setzt die Karte in diese Ansicht, die Bilder stehen rechts daneben.
@@ -1774,9 +1844,10 @@ class Bruecke:
 
     @staticmethod
     def _kurskarte_text(sitzung: _Sitzung, summary: dict[str, Any], begriffe: list[Any], k: Kursrueckmeldung | None,
-                        *, folgt: bool) -> str:
+                        *, folgt: bool, aufgaben: tuple[AufgabeZeile, ...] = ()) -> str:
         """Text der Berichtskarte: Bericht, Kursrueckmeldung und, solange die Flaechen-KI rechnet, der feste Hinweis."""
-        teile = [bericht_text(sitzung.kurs.titel, summary, begriffe)]
+        versuche = {a.nummer: (a.versuche, a.erstes_urteil) for a in aufgaben}
+        teile = [bericht_text(sitzung.kurs.titel, summary, begriffe, versuche)]
         if k is not None:
             teile.append(als_text(k))
         if folgt:
@@ -1808,7 +1879,7 @@ class Bruecke:
         else:
             log.info("Kursrueckmeldung ohne Flaechen-KI, es bleibt bei den Zahlen")
             k = aus_zahlen(z.aufgaben)
-        text = self._kurskarte_text(sitzung, summary, begriffe, k, folgt=False)
+        text = self._kurskarte_text(sitzung, summary, begriffe, k, folgt=False, aufgaben=z.aufgaben)
         self._flaechenspur.einreihen(
             f"{sitzung.sid}:kurskarte",
             functools.partial(self._im_hintergrund_kurskarte, sitzung, text, nummern, bilder),
@@ -1908,22 +1979,23 @@ class Bruecke:
             bereiche = self._bereiche(sitzung, eintraege)
             aufnahmen = self._aufnahmen(sitzung, bereiche) if bilder else [None] * len(eintraege)
         summary = turn.get("summary")
-        scores = dict(bericht_aufgaben(summary)) if isinstance(summary, dict) else {}  # wie der Bericht zaehlen
+        gebucht = dict(bericht_urteile(summary)) if isinstance(summary, dict) else {}  # wie der Bericht zaehlen
         zeilen = []
         for e, bild in zip(eintraege, aufnahmen):
             vor = e.get("vorbewertung")
             prompt = e["task"].get("prompt")
-            score = scores.get(e["nummer"])
-            richtig = (score_urteil(score) == "richtig" if score is not None
+            wort = gebucht.get(e["nummer"])
+            richtig = (wort == "richtig" if wort is not None
                        else e["status"] == "bestaetigt" and isinstance(vor, dict) and urteil_aus(vor) == "Richtig.")
             if nicht_bearbeitet(e["status"], vor, e.get("antwort")):
                 aussage = NICHT_BEARBEITET_RUECKMELDUNG  # die KI-Kursrueckmeldung darf sie nicht als Staerke lesen
             else:
-                aussage = kernaussage(vor) if isinstance(vor, dict) else "–"
+                aussage = kernaussage(vor, e["task"]) if isinstance(vor, dict) else "–"
             zeilen.append(AufgabeZeile(
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
                 aussage, bild,
                 self._ki_schritte_lesen(sitzung.sid, e["nummer"]), richtig,
+                versuche=_versuche_von(e), erstes_urteil=_erstes_urteil_von(e),
             ))
         if sitzung.je_aufgabe and rueckmeldung is None and turn.get("state") == "completed":
             rueckmeldung = aus_zahlen(zeilen)
@@ -2362,7 +2434,7 @@ class Bruecke:
             return
         vorbewertung = eintrag["vorbewertung"]
         task, nummer = eintrag["task"], eintrag["nummer"]
-        gelesen, urteil, text = _kartenteile(vorbewertung)
+        gelesen, urteil, text = _kartenteile(vorbewertung, task)
         gelandet = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=EINZEL_RECHTECK))
         self._kartentext_merken((sitzung.sid, nummer), None if gelandet else leistentext(gelesen, urteil, text))
@@ -2398,7 +2470,7 @@ class Bruecke:
             ok = self._flaeche_still(sitzung, auftrag or self._setzauftrag(task, nummer, rechteck, zeigen=zeigen))
             vorbewertung = eintrag.get("vorbewertung")
             if ok and eintrag["status"] == "offen" and isinstance(vorbewertung, dict):
-                gelesen, urteil, text = _kartenteile(vorbewertung)
+                gelesen, urteil, text = _kartenteile(vorbewertung, task)
                 gelandet = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
                     s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
                 self._kartentext_merken(
@@ -2664,7 +2736,7 @@ class Bruecke:
         vorbewertung = result.get("vorbewertung")
         if not isinstance(vorbewertung, dict) or not isinstance(vorbewertung.get("id"), str):
             raise LearningWeg("vorbewertung")
-        gelesen, urteil, text = _kartenteile(vorbewertung)
+        gelesen, urteil, text = _kartenteile(vorbewertung, task)
         flaeche = self._flaeche_still(sitzung, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text,
         ))
@@ -3011,7 +3083,7 @@ class Bruecke:
                     log.info("Rueckmeldung %d: Sitzung nicht mehr offen, entfaellt", nummer)
                     return
                 task, vorbewertung = karte
-                gelesen, urteil, text = _kartenteile(vorbewertung)
+                gelesen, urteil, text = _kartenteile(vorbewertung, task)
                 # Ein Canvas je Aufgabe: auf das Canvas der Aufgabe (`rechteck` ist dort EINZEL_RECHTECK).
                 if self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
                         s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck)):
@@ -3072,7 +3144,7 @@ class Bruecke:
             self._karten.pop(schluessel, None)
             self._kartentexte.pop(schluessel, None)
             self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
-        gelesen, urteil, text = _kartenteile(vorbewertung)
+        gelesen, urteil, text = _kartenteile(vorbewertung, task)
         flaeche = self._auf_nummer_still(sitzung, task, nummer, lambda s: self._penecho.rueckmeldung_zeigen(
             s, task["id"], nummer, gelesen=gelesen, urteil=urteil, text=text, rechteck=rechteck))
         if flaeche and sitzung.je_aufgabe:

@@ -144,7 +144,8 @@ def test_extern_rubrik_teilpunkte_score_ist_summe_durch_maximum(tmp_path: Path) 
     vor = _vor(service, turn, handschrift_png=PNG, externe_bewertung=extern)
 
     assert vor.score == pytest.approx(0.75)
-    assert vor.feedback is not None and vor.feedback.state == "partial"
+    # Ab 0,7 ist eine Rubrik-Antwort richtig (services/evaluation/urteil.py); das offene Kriterium bleibt sichtbar.
+    assert vor.feedback is not None and vor.feedback.state == "correct"
     engine.dispose()
 
 

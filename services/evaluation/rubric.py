@@ -20,6 +20,8 @@ from spaces.learning.services.evaluation.schemas import (
 )
 
 
+from spaces.learning.services.evaluation.urteil import urteil
+
 _CONFIDENCE_THRESHOLD = 0.65
 
 
@@ -57,11 +59,7 @@ def rubric_score(awarded_points: Sequence[float], rubric: Sequence[RubricCriteri
 
 def answer_outcome_code(score: float) -> str:
     """Names the outcome of an accepted rubric decision (same bands as the session feedback)."""
-    return (
-        "answer_correct" if score >= 0.999
-        else "answer_partial" if score >= 0.65
-        else "answer_incorrect"
-    )
+    return f"answer_{urteil(score, rubrik=True)}"
 
 
 class EvaluationRecorder(Protocol):

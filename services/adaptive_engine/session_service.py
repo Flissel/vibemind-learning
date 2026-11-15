@@ -49,6 +49,7 @@ from spaces.learning.services.evaluation.rubric import (
     rubric_contract_violation,
     rubric_score,
 )
+from spaces.learning.services.evaluation.urteil import urteil
 from spaces.learning.services.evaluation.schemas import (
     ChoiceOption,
     DeterministicItem,
@@ -72,7 +73,7 @@ _HANDSCHRIFT_RUBRIC_TYPES = frozenset({"open", "case", "penecho_canvas"})
 # Review reason when an unaccepted rubric decision carries no rationale code.
 _FALLBACK_REVIEW_REASON = "rubric_not_accepted"
 # From this best score an item counts as solved for selection (a sketch graded 0.97 must
-# not be re-served). Feedback bands in _feedback stay at 0.999 / 0.65.
+# not be re-served). The feedback bands live in services/evaluation/urteil.py.
 _SOLVED_SCORE = 0.9
 
 
@@ -295,9 +296,14 @@ class ListenEintrag(BaseModel):
     nummer: int = Field(ge=1)
     task: PublicTask
     status: Literal["offen", "bestaetigt"]
+    # Open task: the newest preview. Booked task: the preview that was booked (the best try).
     vorbewertung: Vorbewertung | None
     # The booked answer of a task answered without a preview (otherwise the preview tells it).
     antwort: dict[str, object] | None = None
+    # How many tries the task took (previews; a corrected reading is not a new try) and the
+    # verdict of the first graded one. Reports show both next to the result that counts.
+    versuche: int = Field(0, ge=0)
+    erstes_urteil: Literal["correct", "partial", "incorrect", "needs_review"] | None = None
 
 
 class AuditReceipt(BaseModel):
@@ -315,13 +321,18 @@ class ExamResult(BaseModel):
     ordinal: int
     item_id: str
     score: float
+    # The verdict by the bands of services/evaluation/urteil.py (rubric answers are correct from 0.7).
+    # None only when a turn written before this field is read back (canvas worker contract).
+    state: Literal["correct", "partial", "incorrect"] | None = None
 
 
 class SessionSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     attempted: int
+    # Counts by `state`: `correct` no longer includes partial answers; those are `partial`.
     correct: int
+    partial: int = 0
     score: float = Field(ge=0, le=1)
     results: tuple[ExamResult, ...]
 
@@ -545,9 +556,9 @@ class AdaptiveSessionService:
                 .order_by(LearningAttempt.ordinal)
             ).all()
             gebucht = {
-                attempt_id: answer
-                for attempt_id, answer in db.execute(
-                    select(LearningResponse.attempt_id, LearningResponse.answer)
+                attempt_id: (response_id, answer)
+                for attempt_id, response_id, answer in db.execute(
+                    select(LearningResponse.attempt_id, LearningResponse.id, LearningResponse.answer)
                     .join(LearningAttempt, LearningAttempt.id == LearningResponse.attempt_id)
                     .where(LearningAttempt.session_id == row.id)
                 ).all()
@@ -557,15 +568,18 @@ class AdaptiveSessionService:
                 item = db.get(AdaptiveItem, attempt.item_id)
                 if item is None:
                     raise LookupError("adaptive item is unavailable")
-                neueste = db.scalar(
+                alle = db.scalars(
                     select(LearningVorbewertung)
                     .where(LearningVorbewertung.attempt_id == attempt.id)
-                    .order_by(
-                        LearningVorbewertung.created_at.desc(), LearningVorbewertung.id.desc()
-                    )
-                    .limit(1)
+                    .order_by(LearningVorbewertung.created_at, LearningVorbewertung.id)
+                ).all()
+                gebuchte_id, gebuchte_antwort = gebucht.get(attempt.id, (None, None))
+                # Booked: show the preview that counts (the best try), not a later worse one.
+                neueste = next(
+                    (v for v in alle if gebuchte_id is not None and v.response_id == gebuchte_id),
+                    alle[-1] if alle else None,
                 )
-                gebuchte_antwort = gebucht.get(attempt.id)
+                bewertete = [v for v in alle if v.lesbar and v.response_id is not None]
                 eintraege.append(
                     ListenEintrag(
                         attempt_id=attempt.id,
@@ -578,6 +592,12 @@ class AdaptiveSessionService:
                         antwort=(
                             dict(gebuchte_antwort)
                             if neueste is None and isinstance(gebuchte_antwort, dict)
+                            else None
+                        ),
+                        versuche=sum(v.korrigiert_aus is None for v in alle),
+                        erstes_urteil=(
+                            self._feedback_aus(self._bewertung_aus(bewertete[0])).state
+                            if bewertete
                             else None
                         ),
                     )
@@ -790,7 +810,11 @@ class AdaptiveSessionService:
         vorbewertung_id: str,
         attempt_id: str | None = None,
     ) -> SessionTurn:
-        """Book exactly the stored preview ("Passt"): no new model call, the same ids."""
+        """Book a stored preview ("Passt"): no new model call, the ids of the booked preview.
+
+        Booked is the best accepted preview of the attempt (`_bester_versuch`), which is the
+        named one unless an earlier try scored higher.
+        """
         now = self._aware_now()
         with self._session_factory() as db, db.begin():
             row = self._active_session(db, str(UUID(session_id)), actor_id, lock=True)
@@ -818,8 +842,34 @@ class AdaptiveSessionService:
             item = db.get(AdaptiveItem, attempt.item_id)
             if item is None:
                 raise LookupError("adaptive item is unavailable")
+            stored = self._bester_versuch(db, stored)
             turn = self._book(db, row, attempt, item, self._bewertung_aus(stored), now)
         return self._with_readback(turn)
+
+    @staticmethod
+    def _bester_versuch(db: Session, gewaehlt: LearningVorbewertung) -> LearningVorbewertung:
+        """The best try of the attempt counts, not the last: an earlier accepted preview with a
+        strictly higher score is booked instead of the chosen one. A preview that was not
+        accepted (a person still reviews it) is never taken, and never replaced either."""
+        if not gewaehlt.accepted or gewaehlt.score is None:
+            return gewaehlt
+        beste = gewaehlt
+        kandidaten = db.scalars(
+            select(LearningVorbewertung).where(
+                LearningVorbewertung.attempt_id == gewaehlt.attempt_id,
+                LearningVorbewertung.lesbar.is_(True),
+                LearningVorbewertung.accepted.is_(True),
+            )
+        ).all()
+        for kandidat in kandidaten:
+            if (
+                kandidat.score is not None
+                and kandidat.response_id is not None
+                and kandidat.evaluation_id is not None
+                and kandidat.score > beste.score
+            ):
+                beste = kandidat
+        return beste
 
     def _active_session(
         self, db: Session, session_id: str, actor_id: str, *, lock: bool
@@ -1130,9 +1180,7 @@ class AdaptiveSessionService:
                 accepted=True,
                 rationale_codes=[
                     "human_review_confirmed" if decision == "confirm" else "human_review_override",
-                    "answer_correct" if final >= 0.999
-                    else "answer_partial" if final >= 0.65
-                    else "answer_incorrect",
+                    answer_outcome_code(final),
                 ],
                 evaluator_versions={"reviewer": reviewer_id, "decides": ai.id},
                 source_refs=list(ai.source_refs),
@@ -1855,19 +1903,20 @@ class AdaptiveSessionService:
             .order_by(LearningAttempt.ordinal)
         ).all()
         # A person's review ("manual") replaces the AI evaluation it decided on.
-        effective: dict[int, tuple[str, float, bool]] = {}
+        effective: dict[int, tuple[str, float, bool, bool]] = {}
         for ordinal, item_id, value, evaluator in values:
             manual = evaluator == "manual"
             if ordinal not in effective or (manual and not effective[ordinal][2]):
-                effective[ordinal] = (item_id, value, manual)
+                effective[ordinal] = (item_id, value, manual, evaluator != "deterministic")
         results = tuple(
-            ExamResult(ordinal=ordinal, item_id=item_id, score=value)
-            for ordinal, (item_id, value, _) in sorted(effective.items())
+            ExamResult(ordinal=ordinal, item_id=item_id, score=value, state=urteil(value, rubrik=rubrik))
+            for ordinal, (item_id, value, _, rubrik) in sorted(effective.items())
         )
         score = sum(item.score for item in results) / len(results) if results else 0
         return SessionSummary(
             attempted=len(results),
-            correct=sum(item.score >= 0.65 for item in results),
+            correct=sum(item.state == "correct" for item in results),
+            partial=sum(item.state == "partial" for item in results),
             score=score,
             results=results,
         )
@@ -2128,6 +2177,7 @@ class AdaptiveSessionService:
         criteria: tuple[CriterionFeedback, ...],
     ) -> TurnFeedback:
         return _turn_feedback(
+            rubrik=evaluation.evaluator_type != "deterministic",
             accepted=evaluation.accepted,
             score=evaluation.score,
             rationale_codes=tuple(evaluation.rationale_codes),
@@ -2139,6 +2189,7 @@ class AdaptiveSessionService:
     def _feedback_aus(bewertung: _Bewertung) -> TurnFeedback:
         """The feedback a preview shows: the same bands as a booked answer."""
         return _turn_feedback(
+            rubrik=bewertung.evaluator_type != "deterministic",
             accepted=bewertung.accepted,
             score=bewertung.score,
             rationale_codes=bewertung.rationale_codes,
@@ -2177,21 +2228,14 @@ class AdaptiveSessionService:
 
 def _turn_feedback(
     *,
+    rubrik: bool,
     accepted: bool,
     score: float,
     rationale_codes: tuple[str, ...],
     source_refs: tuple[str, ...],
     criteria: tuple[CriterionFeedback, ...],
 ) -> TurnFeedback:
-    state = (
-        "needs_review"
-        if not accepted
-        else "correct"
-        if score >= 0.999
-        else "partial"
-        if score >= 0.65
-        else "incorrect"
-    )
+    state = urteil(score, rubrik=rubrik) if accepted else "needs_review"
     return TurnFeedback(
         state=state,
         score=score,

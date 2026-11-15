@@ -58,6 +58,16 @@ class AufgabeZeile:
     bild: bytes | None
     ki_schritte: tuple[str, ...] = ()   # Aktionen der KI auf der Flaeche in der Reihenfolge des Auftretens
     richtig: bool = False               # nach Learnings Score (wie der Bericht), sonst nach dem Urteil der Karte
+    versuche: int = 0                   # Zahl der Versuche (Learnings Liste); es zaehlt der beste
+    erstes_urteil: str | None = None    # Learnings Zustand des ersten bewerteten Versuchs
+
+    @property
+    def versuche_zeile(self) -> str:
+        """„Versuche: 3, zuerst falsch“ fuer Textfassung und PDF; bei hoechstens einem Versuch leer."""
+        from .bericht import versuche_text
+
+        text = versuche_text(self.versuche, self.erstes_urteil, "richtig" if self.richtig else None)
+        return f"Versuche: {text.removesuffix(' Versuche').replace(' Versuche,', ',')}" if text else ""
 
 
 @dataclass(frozen=True)
@@ -180,11 +190,11 @@ def ergebnis_von(status: str, vorbewertung: dict[str, Any] | None, task: dict[st
     return "offen"
 
 
-def kernaussage(vorbewertung: dict[str, Any]) -> str:
+def kernaussage(vorbewertung: dict[str, Any], task: dict[str, Any] | None = None) -> str:
     """Urteil plus die ganze Rueckmeldung der Karte (alle Kriterien), hoechstens 900 Zeichen (sonst mit „…“)."""
     from .bruecke import kartentext, urteil_aus  # bruecke importiert dieses Modul
 
-    ganz = f"{urteil_aus(vorbewertung)} {_einzeilig(kartentext(vorbewertung))}".strip()
+    ganz = f"{urteil_aus(vorbewertung)} {_einzeilig(kartentext(vorbewertung, task))}".strip()
     if len(ganz) <= KERNAUSSAGE_ZEICHEN:
         return ganz
     return ganz[:KERNAUSSAGE_ZEICHEN - 1].rstrip() + "…"
@@ -356,6 +366,7 @@ def als_markdown(z: Zusammenfassung) -> str:
             f"Aufgabe: {_einzeilig(a.text)}",
             f"Ergebnis: {_einzeilig(a.ergebnis)}",
             f"Rückmeldung: {_einzeilig(a.kernaussage)}",
+            *([a.versuche_zeile] if a.versuche_zeile else []),
             ki_genutzt(a.ki_schritte),
             "",
         ]
@@ -451,6 +462,8 @@ def _aufgabenseite(a: AufgabeZeile) -> Figure:
     s.text(f"Aufgabe: {a.text}", max_zeilen=9)
     s.text(f"Ergebnis: {a.ergebnis}", max_zeilen=3)
     s.text(f"Rückmeldung: {a.kernaussage}", max_zeilen=12)
+    if a.versuche_zeile:
+        s.text(a.versuche_zeile)
     s.text(ki_genutzt(a.ki_schritte), max_zeilen=3)
     s.luft()
     unten = 0.06
