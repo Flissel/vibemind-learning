@@ -2177,6 +2177,8 @@ class ListenLern:
             "learning_task_preview": self._vorbewerten,
             "learning_task_confirm": self._bestaetigen,
             "learning_task_answer": self._beantworten,
+            # Programmieraufgaben fragen vor der Abgabe nach Testfaellen; diese Liste hat keine.
+            "learning_task_bewertungsdaten": {"art": "code", "sprache": None, "tests": []},
         })
 
     def turn(self) -> dict[str, Any]:

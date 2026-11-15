@@ -76,6 +76,7 @@ from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .kursabgabe import KursAbgabeStand, fall_fuer, unlesbar_text
 from .kursrueckmeldung import aus_antwort, aus_zahlen, als_text, rueckmeldungsdaten
+from ..services.evaluation.code_tests import TestErgebnis, Testfall, tests_laufen
 from .laeufer import Lauf, LaeuferNichtBereit, UngueltigerAuftrag
 from .laeufer import ausfuehren as code_ausfuehren
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
@@ -284,6 +285,7 @@ class _Sitzung:
     sid: str                        # Learning-Sitzung; zugleich Schluessel der Flaeche (Ruling L)
     actor: str                      # Kennung der Person, die sie geoeffnet hat; nur sie sieht sie
     aufgabe_id: str | None = None   # aktuelle Aufgabe laut letztem Turn
+    aufgabe_typ: str | None = None  # ihr Typ (fuer den Testlauf einer Programmieraufgabe beim Abgeben)
     nummer: int | None = None       # Flaechenbereich der aktuellen Aufgabe (Ruling B)
     auf_flaeche: bool = False       # aktuelle Aufgabe steht schon auf der Flaeche
     board: str | None = None        # PenEcho-Sitzung, mit der zuletzt ein Flaechenaufruf gelang
@@ -564,6 +566,26 @@ def _urteil_wort(vorbewertung: Any) -> str | None:
     feedback = vorbewertung.get("feedback") if isinstance(vorbewertung, dict) else None
     zustand = feedback.get("state") if isinstance(feedback, dict) else None
     return {"correct": "richtig", "partial": "teilweise", "incorrect": "falsch"}.get(zustand) if isinstance(zustand, str) else None
+
+
+def _testlauf_feld(testlauf: TestErgebnis | None) -> dict[str, Any]:
+    """Der Testlauf als eigenes Payload-Feld neben `answer`; ohne Testlauf nichts."""
+    return {} if testlauf is None else {"testlauf": testlauf.model_dump(mode="json")}
+
+
+def tests_zeile(testlauf: TestErgebnis) -> str:
+    """„3 von 5 Tests bestanden. Es fehlt: leere Liste, negative Zahlen.“ bzw. „Alle 5 Tests bestanden.“"""
+    if testlauf.alle_bestanden:
+        return "Der Test ist bestanden." if testlauf.gesamt == 1 else f"Alle {testlauf.gesamt} Tests bestanden."
+    kopf = f"{testlauf.bestanden} von {testlauf.gesamt} Tests bestanden."
+    return f"{kopf} Es fehlt: {', '.join(testlauf.fehlgeschlagen)}." if testlauf.fehlgeschlagen else kopf
+
+
+def mit_tests(text: str | None, testlauf: TestErgebnis | None) -> str | None:
+    """Die Rueckmeldung mit dem Testergebnis vorweg: zuerst, was fehlt."""
+    if testlauf is None:
+        return text
+    return tests_zeile(testlauf) + "\n\n" + text if text else tests_zeile(testlauf)
 
 
 def _offene_karte(eintrag: dict[str, Any] | None) -> bool:
@@ -1314,6 +1336,7 @@ class Bruecke:
         task = _task(turn)
         sitzung.liste = turn.get("ablauf") == "liste"
         sitzung.aufgabe_id = task["id"] if task else None
+        sitzung.aufgabe_typ = task.get("type") if task else None
         self._sitzungen[sid] = sitzung
         self._flaeche_binden(sitzung)
         self._zuletzt.setdefault(sitzung.lern_actor, sid)
@@ -1443,6 +1466,7 @@ class Bruecke:
             if ok:
                 ok = self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+        sitzung.aufgabe_typ = erste["task"].get("type")
         liste = {
             "stand": self._stand_aus(sitzung.sid, eintraege, abgaben),
             "aufgaben": [{"nummer": e["nummer"], "task": e["task"]} for e in eintraege],
@@ -1569,6 +1593,7 @@ class Bruecke:
         task = _task(turn)
         if task is None:
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = None, None, False
+            sitzung.aufgabe_typ = None
             if turn.get("state") == "completed":
                 self._ende_setzen(sitzung.actor, sitzung.kurs, sitzung.sid, sitzung.gruppe)
                 self._bericht(sitzung, turn, self._bericht_rechtecke(sitzung, turn))
@@ -1584,6 +1609,7 @@ class Bruecke:
             return nummer, True
         ok = self._flaeche_still(sitzung, self._setzauftrag(task, nummer))
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+        sitzung.aufgabe_typ = task.get("type")
         return nummer, ok
 
     def _setzauftrag(
@@ -1719,10 +1745,12 @@ class Bruecke:
         if neu != sitzung.aufgabe_id or nummer != sitzung.nummer:
             sitzung.auf_flaeche = False
         sitzung.aufgabe_id, sitzung.nummer = neu, nummer
+        sitzung.aufgabe_typ = task.get("type") if task else None
         return nummer
 
-    def _rueckmeldung(self, sitzung: _Sitzung, turn: dict[str, Any], aufgabe_id: str, nummer: int) -> tuple[str | None, bool]:
-        text = rueckmeldung_text(turn)
+    def _rueckmeldung(self, sitzung: _Sitzung, turn: dict[str, Any], aufgabe_id: str, nummer: int,
+                      testlauf: TestErgebnis | None = None) -> tuple[str | None, bool]:
+        text = mit_tests(rueckmeldung_text(turn), testlauf)
         if not text:
             return None, False
         titel = f"Rückmeldung zu Aufgabe {nummer}"
@@ -2121,6 +2149,7 @@ class Bruecke:
             # Alter Weg in einem Listenkurs: nichts aus `completed + 1` vormerken (die Liste setzt die Nummer).
             task = _task(turn)
             sitzung.aufgabe_id = task["id"] if task else None
+            sitzung.aufgabe_typ = task.get("type") if task else None
         else:
             self._vormerken(sitzung, turn)
         if _task(turn) is None:
@@ -2268,6 +2297,7 @@ class Bruecke:
             if ok:
                 self._einzel_karte(sitzung, erste, zeigen=True)  # wie `_listenaufgabe_setzen`: die Karte kommt mit
             sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+            sitzung.aufgabe_typ = erste["task"].get("type")
             return nummer, ok, self._listenantwort(sitzung, eintraege, abgaben)
         rechteck = bereiche[nummer - 1]
         auftrag = self._setzauftrag(erste["task"], nummer, rechteck)  # Bilder laden, bevor die Sperre greift
@@ -2277,6 +2307,7 @@ class Bruecke:
             if ok:
                 self._flaeche_still(sitzung, lambda s: self._penecho.bereich_zeigen(s, rechteck))
         sitzung.aufgabe_id, sitzung.nummer, sitzung.auf_flaeche = aufgabe_id, nummer, ok
+        sitzung.aufgabe_typ = erste["task"].get("type")
         for e in eintraege:
             if e is not erste:
                 self._flaechenspur.einreihen(
@@ -2518,15 +2549,17 @@ class Bruecke:
         revision, answer = body.get("revision"), body.get("answer")
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1 or not isinstance(answer, dict):
             raise _Antwort(400, {"meldung": UNGUELTIG})
-        sid, sitzung, _ = self._sitzung(actor, sid_roh)
+        sid, sitzung, offen = self._sitzung(actor, sid_roh)
         self._nur_listenweg(sitzung)
         beantwortet_id = sitzung.aufgabe_id or f"r{revision}"
         beantwortet_nr = sitzung.nummer
+        aufgabe = offen.get("task") if isinstance(offen, dict) else {"type": sitzung.aufgabe_typ}
+        answer, testlauf = self._code_testlauf(sitzung, sid, revision, aufgabe, answer)
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
                 expected_revision=revision,
-                payload={"answer": answer}, schreibend=True,
+                payload={"answer": answer, **_testlauf_feld(testlauf)}, schreibend=True,
             )
         except LearningAbgelehnt as fehler:
             self._stand_neu(sid, sitzung, fehler.code)
@@ -2537,7 +2570,7 @@ class Bruecke:
         if beantwortet_nr is None:
             progress = turn.get("progress")
             beantwortet_nr = max(int(progress.get("completed") or 1), 1) if isinstance(progress, dict) else 1
-        text, flaeche = self._rueckmeldung(sitzung, turn, beantwortet_id, beantwortet_nr)
+        text, flaeche = self._rueckmeldung(sitzung, turn, beantwortet_id, beantwortet_nr, testlauf)
         return {"rueckmeldung": text, "flaeche": flaeche, **self._gebucht(sitzung, turn)}
 
     def _gebucht(self, sitzung: _Sitzung, turn: dict[str, Any]) -> dict[str, Any]:
@@ -3201,6 +3234,7 @@ class Bruecke:
         """Im Listenkurs kommt die Nummer nur aus der Liste (`aktuell`), nie aus `completed + 1`."""
         task = _task(turn)
         sitzung.aufgabe_id = task["id"] if task else None
+        sitzung.aufgabe_typ = task.get("type") if task else None
         sitzung.nummer = aktuell if task else None
 
     def _nach_buchung(
@@ -3261,11 +3295,13 @@ class Bruecke:
         if eintrag["status"] == "bestaetigt":
             self._schon_bestaetigt(sitzung, eintraege)
         bereiche = [] if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)
+        answer, testlauf = self._code_testlauf(
+            sitzung, sid, self._revision_von(vorher), eintrag["task"], answer, attempt_id=eintrag["attempt_id"])
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
                 expected_revision=self._revision_von(vorher), schreibend=True,
-                payload={"answer": answer, "attempt_id": eintrag["attempt_id"]},
+                payload={"answer": answer, "attempt_id": eintrag["attempt_id"], **_testlauf_feld(testlauf)},
             )
         except LearningAbgelehnt as fehler:
             self._listen_abgelehnt(sitzung, fehler, bestaetigen=False)
@@ -3276,7 +3312,7 @@ class Bruecke:
             self._karten.pop(schluessel, None)
             self._kartentexte.pop(schluessel, None)
             self._kartenstand[schluessel] = self._kartenstand.get(schluessel, 0) + 1
-        text = rueckmeldung_text(turn)
+        text = mit_tests(rueckmeldung_text(turn), testlauf)
         flaeche = False
         if text:
             titel = f"Rückmeldung zu Aufgabe {nummer}"
@@ -3746,6 +3782,39 @@ class Bruecke:
         sid = request.path_params["sid"]
         actor = request.state.actor_id
         return await self._mit_body(request, lambda body: self._code_ausfuehren(actor, sid, body), ablauf=False)
+
+    def _code_testlauf(
+        self, sitzung: _Sitzung, sid: str, revision: int, task: Any, answer: dict[str, Any],
+        *, attempt_id: str | None = None,
+    ) -> tuple[dict[str, Any], TestErgebnis | None]:
+        """Programmieraufgabe: die verborgenen Testfaelle bei Learning holen und den abgegebenen Code im
+        Code-Laeufer dagegen laufen lassen. Liefert die Antwort ohne ein mitgeschicktes `testlauf` (das kaeme
+        aus dem Browser) und das Ergebnis; None, wenn die Aufgabe kein Code ist oder keine Tests hat.
+
+        Gibt Learning keine Testfaelle heraus (aeltere Fassung, Pruefung), wird ohne Testlauf abgegeben. Ist der
+        Laeufer nicht erreichbar, wird nicht abgegeben (503): sonst zaehlte die Abgabe still als nicht bestanden.
+        """
+        if not isinstance(task, dict) or task.get("type") != "code":
+            return answer, None
+        answer = {k: v for k, v in answer.items() if k != "testlauf"}
+        try:
+            daten = self._rufe(
+                sitzung.lern_actor, "learning_task_bewertungsdaten", "learning.task.grading_data", session_id=sid,
+                expected_revision=revision, payload={"attempt_id": attempt_id} if attempt_id else {},
+            )
+            tests = [Testfall.model_validate(t) for t in (daten or {}).get("tests") or []]
+            sprache = (daten or {}).get("sprache")
+        except (LearningAbgelehnt, LearningWeg, ValueError) as fehler:
+            log.warning("Keine Testfaelle fuer die Code-Aufgabe: %s", _typ(fehler))
+            return answer, None
+        if not tests:
+            return answer, None
+        try:
+            return answer, tests_laufen(sprache, answer.get("text"), tests, ausfuehren=self._laeufer)
+        except UngueltigerAuftrag:
+            raise _Antwort(400, {"code": "code_ungueltig", "meldung": CODE_UNGUELTIG}) from None
+        except LaeuferNichtBereit:
+            raise _Antwort(503, {"code": "laeufer_weg", "meldung": LAEUFER_WEG}) from None
 
     def _code_ausfuehren(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Code der Person einmal ausfuehren (nur in ihrer eigenen Sitzung). Gebucht oder bewertet wird nichts;

@@ -665,3 +665,11 @@ export function kursErgebnis(summary) {
   const wort = ergebnisse.length === 1 ? "Aufgabe" : "Aufgaben";
   return `${richtig} von ${ergebnisse.length} ${wort} richtig${teilweise ? `, ${teilweise} teilweise` : ""}.`;
 }
+
+// Programmieraufgabe aus der Werkstatt: ihre Sprache (dann ist die Sprachwahl fest, denn die Tests laufen in
+// dieser Sprache) und der Startcode für das leere Feld. Ohne Angabe oder mit unbekannter Sprache: freie Wahl.
+export function codeVorgabe(task) {
+  const p = task?.presentation;
+  const sprache = CODE_SPRACHEN.some((s) => s.wert === p?.sprache) ? p.sprache : null;
+  return { sprache, startcode: typeof p?.startcode === "string" ? p.startcode : "" };
+}

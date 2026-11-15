@@ -688,3 +688,22 @@ test("Kärtchen: die abgegebene Wahl bleibt je Sitzung und Aufgabe gemerkt (List
   const listenteil = js.slice(start, js.indexOf("void speichern(false);", start));
   assert.ok(listenteil.length > 0 && !listenteil.includes("z.kaertchen = null"));
 });
+
+test("codeVorgabe: Sprache und Startcode der Aufgabe, nur bekannte Sprachen", async () => {
+  const { codeVorgabe } = await import("./aufgabe.js");
+  assert.deepEqual(codeVorgabe({ type: "code", presentation: { sprache: "javascript", startcode: "// los\n" } }),
+    { sprache: "javascript", startcode: "// los\n" });
+  // Ältere Code-Aufgaben ohne Angabe: freie Sprachwahl, leeres Feld.
+  assert.deepEqual(codeVorgabe({ type: "code", presentation: {} }), { sprache: null, startcode: "" });
+  assert.deepEqual(codeVorgabe({ type: "code" }), { sprache: null, startcode: "" });
+  assert.deepEqual(codeVorgabe({ type: "code", presentation: { sprache: "bash", startcode: 7 } }), { sprache: null, startcode: "" });
+  assert.deepEqual(codeVorgabe(null), { sprache: null, startcode: "" });
+});
+
+test("Code-Karte: Sprache der Aufgabe ist fest, der Startcode steht im Feld", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(js, /const vorgabe = codeVorgabe\(task\);/);
+  assert.match(js, /sprache\.value = vorgabe\.sprache;\s+sprache\.disabled = true;/);
+  assert.match(js, /feld\.value = vorgabe\.startcode;/);
+});
