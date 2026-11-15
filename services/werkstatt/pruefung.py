@@ -27,6 +27,7 @@ from spaces.learning.services.werkstatt.graph import (
 )
 from spaces.learning.services.werkstatt.inhalt import (
     AufgabeInhalt,
+    Code,
     Fach,
     Fall,
     GraphAngabe,
@@ -39,6 +40,7 @@ from spaces.learning.services.werkstatt.inhalt import (
     Zahl,
     Zuordnung,
 )
+from spaces.learning.services.evaluation.code_tests import fingerabdruck
 from spaces.learning.services.werkstatt.nachrechnen import (
     ERLAUBTE_NAMEN,
     MAX_ZIFFERN,
@@ -91,6 +93,16 @@ _TEXTE = {
         + ", ".join(sorted(GRAPH_NAMEN - {"x"}, key=str.lower))
         + ", und der Graph muss zwischen y_min und y_max sichtbar sein."
     ),
+    "code_ungeprueft": (
+        "Die Musterlösung dieser Programmieraufgabe ist noch nicht gegen die Testfälle gelaufen "
+        "(oder Sprache, Musterlösung oder Testfälle haben sich seitdem geändert); "
+        "bitte den Testlauf starten (werkstatt_code_pruefen)."
+    ),
+    "code_musterloesung_falsch": (
+        "Die Musterlösung besteht nicht alle Testfälle; bitte Musterlösung oder Testfälle berichtigen "
+        "und den Testlauf erneut starten."
+    ),
+    "code_ohne_quelle": "Eine Programmieraufgabe braucht mindestens eine aufgelöste Quelle (citation_ids mit passendem Eintrag in zitate), sonst lässt sich die Abgabe nicht bewerten.",
     "graph_beziehung_falsch": (
         "Bei mindestens einem Paar passt der rechte Graph nicht zur angegebenen Beziehung, "
         "er ist also nicht die Ableitung des linken beziehungsweise nicht gleich; bitte Terme oder Paare berichtigen."
@@ -144,8 +156,10 @@ def _text_codes(inhalt: AufgabeInhalt, fach: Fach = "terminal") -> list[str]:
     codes: list[str] = []
     if any(_SCHLUESSEL_IM_TEXT.search(_ohne_code(t)) for t in texte):
         codes.append("quellenschluessel_im_text")
+    # A programming task may show code in its own languages.
+    erlaubt = _ERLAUBTE_SHELLS | ({"python", "javascript"} if isinstance(inhalt, Code) else set())
     if fach == "terminal" and any(
-        tag not in _ERLAUBTE_SHELLS for t in texte for tag in _codeblock_tags(t)
+        tag not in erlaubt for t in texte for tag in _codeblock_tags(t)
     ):
         codes.append("codeblock_ohne_shell")
     if _ANKUENDIGUNG.search(_ohne_code(body)):
@@ -157,7 +171,7 @@ def _befund(code: str) -> Befund:
     return {"code": code, "text": _TEXTE.get(code, "Die Prüfung hat ein Problem gefunden.")}
 
 
-def _als_aktivitaet(inhalt: Quiz | Offen | Fall | Skizze) -> ActivityDraft:
+def _als_aktivitaet(inhalt: Quiz | Offen | Fall | Skizze | Code) -> ActivityDraft:
     if isinstance(inhalt, Quiz):
         return ActivityDraft(
             activity_id="aufgabe", chapter_id="kapitel", type="quiz", concept_ids=inhalt.concept_ids,
@@ -211,7 +225,23 @@ def _aufgabe_codes(inhalt: AufgabeInhalt) -> list[str]:
         if not {z.citation_id for z in inhalt.zitate} & set(inhalt.citation_ids):
             codes.append("skizze_ohne_quelle")
         return codes
+    if isinstance(inhalt, Code):
+        codes = [i.code for i in activity_issues(_als_aktivitaet(inhalt))]
+        # The rubric evaluator refuses a request without a source reference (as for a sketch).
+        if not {z.citation_id for z in inhalt.zitate} & set(inhalt.citation_ids):
+            codes.append("code_ohne_quelle")
+        return codes + code_testlauf_codes(inhalt)
     return []
+
+
+def code_testlauf_codes(inhalt: Code) -> list[str]:
+    """Whether the reference solution is known to pass its test cases. Nothing is executed here
+    (the Werkstatt runs on a server without a code runner): the test run on the PC records its
+    result in ``testlauf``, bound to language, solution and tests by a fingerprint."""
+    lauf = inhalt.testlauf
+    if lauf is None or lauf.fingerabdruck != fingerabdruck(inhalt.sprache, inhalt.musterloesung, inhalt.tests):
+        return ["code_ungeprueft"]
+    return [] if lauf.bestanden else ["code_musterloesung_falsch"]
 
 
 def _zahl_codes(inhalt: Zahl) -> list[str]:

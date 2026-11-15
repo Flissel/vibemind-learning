@@ -502,3 +502,59 @@ def test_skizze_pruefung() -> None:
     # A cited id without a matching entry in zitate yields no source reference either.
     assert "skizze_ohne_quelle" in _aufgabe_codes(_skizze(zitate=[]))
     assert "skizze_ohne_quelle" in _aufgabe_codes(_skizze(citation_ids=["unbekannt"]))
+
+
+def _code(**over: Any) -> Any:
+    base: dict[str, Any] = {
+        "kind": "code", "prompt": "Geben Sie die Summe der Zahlen aus der Eingabe aus.", "concept_ids": ["k1"],
+        "citation_ids": [_FREMD_ID], "zitate": [_zitat("00000000-0000-4000-8000-0000000000b1")],
+        "sprache": "python", "musterloesung": "import sys\nprint(sum(map(int, sys.stdin.read().split())))",
+        "tests": [{"name": "drei Zahlen", "eingabe": "3 4 5", "erwartet": "12"},
+                  {"name": "leer", "eingabe": "", "erwartet": "0"}],
+        "expected_answer": "Liest die Zahlen und gibt ihre Summe aus.",
+        "rubric": [{"criterion_id": "r1", "description": "Summe stimmt", "points": 2}],
+    }
+    base.update(over)
+    return inhalt_lesen(base)
+
+
+def _lauf(inhalt: Any, **over: Any) -> dict[str, Any]:
+    from spaces.learning.services.evaluation.code_tests import fingerabdruck
+
+    return {"fingerabdruck": fingerabdruck(inhalt.sprache, inhalt.musterloesung, inhalt.tests),
+            "bestanden": True, "fehlgeschlagen": [], **over}
+
+
+def test_code_ist_gesperrt_bis_die_musterloesung_die_tests_besteht() -> None:
+    # Die Werkstatt fuehrt keinen Code aus: ohne Pruefmeldung vom PC ist die Aufgabe ungeprueft.
+    assert codes(aufgabe_pruefen(_code(), sources=SRC)) == ["code_ungeprueft"]
+    geprueft = _code(testlauf=_lauf(_code()))
+    assert codes(aufgabe_pruefen(geprueft, sources=SRC)) == []
+    gescheitert = _code(testlauf=_lauf(_code(), bestanden=False, fehlgeschlagen=["leer"]))
+    assert codes(aufgabe_pruefen(gescheitert, sources=SRC)) == ["code_musterloesung_falsch"]
+
+
+def test_code_pruefmeldung_gilt_nur_fuer_ihren_stand() -> None:
+    alt = _lauf(_code())
+    for geaendert in (
+        _code(testlauf=alt, musterloesung="print(0)"),
+        _code(testlauf=alt, sprache="javascript"),
+        _code(testlauf=alt, tests=[{"name": "drei Zahlen", "eingabe": "3 4 5", "erwartet": "13"},
+                                    {"name": "leer", "eingabe": "", "erwartet": "0"}]),
+    ):
+        assert codes(aufgabe_pruefen(geaendert, sources=SRC)) == ["code_ungeprueft"]
+    # Aufgabentext und Startcode gehoeren nicht zum geprueften Stand.
+    assert codes(aufgabe_pruefen(_code(testlauf=alt, startcode="# los", prompt="Summieren Sie die Eingabe."), sources=SRC)) == []
+
+
+def test_code_braucht_quelle_und_darf_python_bloecke_zeigen() -> None:
+    from spaces.learning.services.werkstatt.pruefung import _aufgabe_codes
+
+    assert "code_ohne_quelle" in _aufgabe_codes(_code(citation_ids=[]))
+    assert "code_ohne_quelle" in _aufgabe_codes(_code(zitate=[]))
+    # Terminal-Kurs: ein python-Block in einer Programmieraufgabe ist kein Befund, in einer anderen Aufgabe schon.
+    block = "Ergänzen Sie:\n```python\nprint(1)\n```"
+    geprueft = _code(prompt=block, testlauf=_lauf(_code()))
+    assert codes(aufgabe_pruefen(geprueft, sources=SRC, fach="terminal")) == []
+    ohne_sprache = _code(prompt="So:\n```\nprint(1)\n```", testlauf=_lauf(_code()))
+    assert "codeblock_ohne_shell" in codes(aufgabe_pruefen(ohne_sprache, sources=SRC, fach="terminal"))
