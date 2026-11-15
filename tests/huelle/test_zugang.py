@@ -86,6 +86,39 @@ def test_einstellung_lehnt_ungueltige_werte_ab(name: str, wert: str) -> None:
     assert wert not in str(fehler.value) or len(wert) < 8
 
 
+ZUGANG = "z" * 40
+
+
+def test_zugang_schluessel_ist_optional_und_trennt_sich_vom_dienstschluessel() -> None:
+    # Ohne eigene Zeile gilt wie bisher der Dienstschluessel.
+    assert einstellung_lesen(_env()).zugang_geheimnis == SCHLUESSEL
+    e = einstellung_lesen(_env(LEARNING_HUELLE_ZUGANG_SCHLUESSEL=f"  {ZUGANG}\r\n"))
+    assert e.zugang_geheimnis == ZUGANG
+    assert e.dienst_schluessel == SCHLUESSEL
+    assert ZUGANG not in repr(e)
+
+
+@pytest.mark.parametrize("wert", ["z" * 31, SCHLUESSEL])
+def test_zugang_schluessel_zu_kurz_oder_gleich_dem_dienstschluessel(wert: str) -> None:
+    with pytest.raises(RuntimeError) as fehler:
+        einstellung_lesen(_env(LEARNING_HUELLE_ZUGANG_SCHLUESSEL=wert))
+    assert "LEARNING_HUELLE_ZUGANG_SCHLUESSEL" in str(fehler.value)
+    assert wert not in str(fehler.value)
+
+
+def test_link_nutzt_den_zugang_schluessel(monkeypatch: pytest.MonkeyPatch) -> None:
+    from spaces.learning.claw import werkzeuge
+
+    for name, wert in _env(LEARNING_HUELLE_ZUGANG_SCHLUESSEL=ZUGANG).items():
+        monkeypatch.setenv(name, wert)
+    gesendet: list[str] = []
+    monkeypatch.setattr(werkzeuge, "_telegram_senden", lambda text: gesendet.append(text) or True)
+    assert link.main() == 0
+    token = gesendet[0].rsplit("/lernen/zugang/", 1)[1].strip()
+    assert token_gueltig(ZUGANG, token)
+    assert not token_gueltig(SCHLUESSEL, token)
+
+
 def test_link_sendet_und_gibt_nichts_aus(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     from spaces.learning.claw import werkzeuge
 

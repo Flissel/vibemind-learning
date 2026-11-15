@@ -28,6 +28,10 @@ PENECHO_MCP_URL = "LEARNING_HUELLE_PENECHO_MCP_URL"
 MCP_URL = "LEARNING_HUELLE_MCP_URL"
 API_URL = "LEARNING_HUELLE_API_URL"
 SCHLUESSEL = "LEARNHOUSE_LEARNING_SERVICE_KEY"
+# Optional: eigener Schluessel nur fuer Zugangslink und Zugangscookie. Mit ihm lassen sich alle ausgegebenen
+# Zugangslinks auf einmal ungueltig machen (neuen Wert setzen), ohne den Dienstschluessel zu wechseln, den auch
+# LearnHouse und die Learning-API kennen. Leer = der Dienstschluessel gilt wie bisher.
+ZUGANG_SCHLUESSEL = "LEARNING_HUELLE_ZUGANG_SCHLUESSEL"
 ACTOR = "LEARNING_HUELLE_ACTOR"
 KURSE = "LEARNING_HUELLE_KURSE"
 # Zweite Herkunft nur fuer PenEcho (Ruling J): PenEcho-Widgets laufen mit der Herkunft, die PenEcho
@@ -83,6 +87,12 @@ class Einstellung:
     ki_gleichzeitig: int = KI_GLEICHZEITIG_VORGABE
     lernflaeche_url: str = LERNFLAECHE_URL_VORGABE
     bewertung_schluessel: str = field(default="", repr=False)
+    zugang_schluessel: str = field(default="", repr=False)
+
+    @property
+    def zugang_geheimnis(self) -> str:
+        """Schluessel fuer Zugangslink und Zugangscookie: der eigene, sonst der Dienstschluessel."""
+        return self.zugang_schluessel or self.dienst_schluessel
 
     @property
     def gruppen_aktiv(self) -> bool:
@@ -197,6 +207,16 @@ def _bewertung_schluessel(env: Mapping[str, str]) -> str:
     return wert
 
 
+def _zugang_schluessel(env: Mapping[str, str], dienst_schluessel: str) -> str:
+    """Leer oder mindestens MIN_SCHLUESSEL Zeichen und ein anderer Wert als der Dienstschluessel."""
+    wert = (env.get(ZUGANG_SCHLUESSEL) or "").strip()
+    if wert and len(wert) < MIN_SCHLUESSEL:
+        raise RuntimeError(f"{ZUGANG_SCHLUESSEL} ist zu kurz")
+    if wert and wert == dienst_schluessel:
+        raise RuntimeError(f"{ZUGANG_SCHLUESSEL} braucht einen anderen Wert als {SCHLUESSEL}")
+    return wert
+
+
 def _ki_gleichzeitig(env: Mapping[str, str]) -> int:
     """Ganze Zahl >= 1; leer, ungueltig oder <= 0 ergibt die Vorgabe (geloggt wird nur die Art des Fehlers)."""
     roh = (env.get(KI_GLEICHZEITIG) or "").strip()
@@ -258,4 +278,5 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         ki_gleichzeitig=_ki_gleichzeitig(env),
         lernflaeche_url=_http_basis(env, LERNFLAECHE_URL) or LERNFLAECHE_URL_VORGABE,
         bewertung_schluessel=_bewertung_schluessel(env),
+        zugang_schluessel=_zugang_schluessel(env, schluessel),
     )

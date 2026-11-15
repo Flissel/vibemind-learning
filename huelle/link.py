@@ -13,7 +13,7 @@ def main() -> int:
     from ..claw.werkzeuge import _telegram_senden
 
     e = einstellung_lesen()
-    link = f"{e.basis}/lernen/zugang/{token_erzeugen(e.dienst_schluessel)}"
+    link = f"{e.basis}/lernen/zugang/{token_erzeugen(e.zugang_geheimnis)}"
     ok = _telegram_senden(f"Ihr Zugang zum Lernen:\n{link}")
     print("gesendet" if ok else "nicht gesendet")
     return 0 if ok else 1

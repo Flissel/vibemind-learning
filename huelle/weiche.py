@@ -155,7 +155,7 @@ class _Tor:
             if actor is not None:
                 return actor, True
         eintrag = jar.get(COOKIE)
-        if eintrag is not None and token_gueltig(self._e.dienst_schluessel, eintrag.value):
+        if eintrag is not None and token_gueltig(self._e.zugang_geheimnis, eintrag.value):
             return self._e.actor_id, False
         return None
 
@@ -201,10 +201,10 @@ class Weiche(_Tor):
         return origin is not None and origin.decode("latin-1").lower() in self._herkuenfte
 
     async def _zugang(self, send: Send, token: str) -> None:
-        if not token_gueltig(self._e.dienst_schluessel, token):
+        if not token_gueltig(self._e.zugang_geheimnis, token):
             await _text(send, 403, ABGELAUFEN)
             return
-        wert = token_erzeugen(self._e.dienst_schluessel)
+        wert = token_erzeugen(self._e.zugang_geheimnis)
         # Geteiltes Geraet: eine gemerkte Person endet hier, sonst gewaenne ihr Cookie still weiter.
         await self._cookie_setzen(send, [_cookie(PERSON_COOKIE, "", 0),
                                          _cookie(COOKIE, wert, GUELTIG_SEKUNDEN)], _ZUGANG_HTML)

@@ -11,7 +11,7 @@ from spaces.learning.huelle.gruppe import GRUPPE_WEG
 from spaces.learning.huelle.katalog import KEIN_ZUGANG_MEHR, KeinZugang, UebersichtWeg
 from spaces.learning.huelle.person import PERSON_COOKIE, person_aus_cookie, person_cookie
 from spaces.learning.huelle.weiche import ABGELAUFEN, FlaechenWeiche, Weiche
-from spaces.learning.huelle.zugang import COOKIE, token_erzeugen
+from spaces.learning.huelle.zugang import COOKIE, token_erzeugen, token_gueltig
 
 SCHLUESSEL = "k" * 40
 HOST = "lernen.example.test"
@@ -252,6 +252,58 @@ def test_oeffentliche_penecho_datei_roher_pfad_exakt_geht_durch() -> None:
         gesendet = _anfrage(flaeche, "/widget-renderer.js", host=FLAECHE_HOST, raw_path=roh)
         assert _start(gesendet)["status"] == 200, roh
         assert aufrufe == ["durch"]
+
+
+# ---- Eigener Schluessel fuer Zugangslink und Zugangscookie ------------------------------------------
+
+ZUGANG = "z" * 40
+E_Z = einstellung_lesen({
+    "LEARNING_HUELLE_BASIS": f"https://{HOST}",
+    "LEARNING_HUELLE_FLAECHE_BASIS": f"https://{FLAECHE_HOST}",
+    "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+    "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
+    "LEARNING_HUELLE_ZUGANG_SCHLUESSEL": ZUGANG,
+    "LEARNING_HUELLE_ACTOR": "lh-1-test",
+    "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "11111111-1111-4111-8111-111111111111", "titel": "T"}]),
+    "LEARNING_HUELLE_LEARNHOUSE_URL": "http://learnhouse.test",
+})
+
+
+def _weichen_z() -> tuple[Weiche, FlaechenWeiche, list[str]]:
+    aufrufe: list[str] = []
+    seiten = Weiche(E_Z, Aufzeichner("seite", aufrufe), Aufzeichner("api", aufrufe))
+    return seiten, FlaechenWeiche(E_Z, Aufzeichner("durch", aufrufe)), aufrufe
+
+
+def test_zugangslink_gilt_nur_mit_dem_zugang_schluessel() -> None:
+    seiten, _, _ = _weichen_z()
+    # Ein Link aus der Zeit vor dem eigenen Schluessel (Dienstschluessel) ist ungueltig.
+    alt = _anfrage(seiten, f"/lernen/zugang/{token_erzeugen(SCHLUESSEL)}")
+    assert _start(alt)["status"] == 403
+    assert all(k != b"set-cookie" for k, _ in _start(alt)["headers"])
+    neu = _start(_anfrage(seiten, f"/lernen/zugang/{token_erzeugen(ZUGANG)}"))
+    assert neu["status"] == 200
+    wert = dict(neu["headers"])[b"set-cookie"].decode().partition("=")[2].split(";", 1)[0]
+    assert token_gueltig(ZUGANG, wert) and not token_gueltig(SCHLUESSEL, wert)
+
+
+def test_zugangscookie_gilt_nur_mit_dem_zugang_schluessel() -> None:
+    seiten, flaeche, aufrufe = _weichen_z()
+    alt, neu = token_erzeugen(SCHLUESSEL), token_erzeugen(ZUGANG)
+    assert _start(_anfrage(seiten, "/lernen/", cookie=alt))["status"] == 403
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie=alt))["status"] == 403
+    assert aufrufe == []
+    assert _start(_anfrage(seiten, "/lernen/", cookie=neu))["status"] == 200
+    assert _start(_anfrage(flaeche, "/", host=FLAECHE_HOST, cookie=neu))["status"] == 200
+    assert aufrufe == ["seite", "durch"]
+
+
+def test_personen_cookie_bleibt_beim_dienstschluessel() -> None:
+    # Uebergabe und Personen-Cookie kommen aus LearnHouse und haengen weiter am gemeinsamen Dienstschluessel.
+    seiten, _, aufrufe = _weichen_z()
+    person = f"{PERSON_COOKIE}={person_cookie(SCHLUESSEL, 'lh-1-person-a')}"
+    assert _start(_anfrage(seiten, "/lernen/", cookie_kopf=person))["status"] == 200
+    assert aufrufe == ["seite"]
 
 
 # ---- Uebergabe aus LearnHouse und Personen-Cookie (Teil B) -----------------------------------------
