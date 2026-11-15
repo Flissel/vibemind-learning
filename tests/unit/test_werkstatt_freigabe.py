@@ -392,3 +392,46 @@ def test_neu_ausliefern_ist_wirkungslos_wenn_sich_etwas_aendert(tmp_path):
         s, COURSE, autor="kursleitung-a", learnhouse_revision=1, neu_ausliefern=True
     )
     assert r["nichts_zu_veroeffentlichen"] is False and "neu_ausliefern" not in r["vergleich"]
+
+
+def _code(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "kind": "code", "prompt": "Geben Sie die Summe der Zahlen aus der Eingabe aus.", "concept_ids": ["k1"],
+        "sprache": "python", "musterloesung": "import sys\nprint(sum(map(int, sys.stdin.read().split())))",
+        "tests": [{"name": "drei Zahlen", "eingabe": "3 4 5", "erwartet": "12"}],
+        "expected_answer": "Liest die Zahlen und gibt ihre Summe aus.",
+        "rubric": [{"criterion_id": "r1", "description": "Summe stimmt", "points": 2}],
+        "lektion": {"title": "Summen", "concept_ids": ["k1"], "body": "Eine Summe addiert alle Zahlen einer Liste."},
+    }
+    base.update(over)
+    return base
+
+
+def _code_lauf(**over: Any) -> dict[str, Any]:
+    from spaces.learning.services.evaluation.code_tests import Testfall, fingerabdruck
+
+    c = _code()
+    return {"fingerabdruck": fingerabdruck(c["sprache"], c["musterloesung"], [Testfall(**t) for t in c["tests"]]),
+            "bestanden": True, "fehlgeschlagen": [], **over}
+
+
+def test_ungepruefte_programmieraufgabe_sperrt_auch_ohne_gespeicherten_befund(tmp_path):
+    # Eine zurueckgeholte Fassung traegt keine Befunde: die Freigabe rechnet die Sperre aus dem Inhalt neu.
+    s = _store(tmp_path)
+    t1 = _aufgabe(s, _code(), findings=[])
+    r = _vorbereiten(s)
+    assert r["blockiert"] is True
+    b = _befund(r, "aufgabe_mit_befunden")
+    assert len(b) == 1 and b[0]["task_id"] == t1 and "Testlauf" in b[0]["text"]
+
+
+def test_gepruefte_programmieraufgabe_ist_freigebbar_gescheiterte_nicht(tmp_path):
+    s = _store(tmp_path)
+    _aufgabe(s, _code(testlauf=_code_lauf()), findings=[])
+    assert _vorbereiten(s)["blockiert"] is False
+
+    (tmp_path / "b").mkdir()
+    s2 = _store(tmp_path / "b")
+    _aufgabe(s2, _code(testlauf=_code_lauf(bestanden=False, fehlgeschlagen=["drei Zahlen"])), findings=[])
+    r = _vorbereiten(s2)
+    assert r["blockiert"] is True and "Musterlösung besteht nicht" in _befund(r, "aufgabe_mit_befunden")[0]["text"]

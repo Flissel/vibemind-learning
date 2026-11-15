@@ -72,9 +72,35 @@ Entfernen: `wsl --unregister vibemind-code`.
 `tests/huelle/test_laeufer.py` und `tests/huelle/test_code_ausfuehren.py`. Die echten Läufe (Abschottung, Grenzen)
 laufen nur mit `LAEUFER_LIVE=1` und eingerichteter Distro.
 
+## Programmieraufgaben mit Testfällen
+
+Die Werkstatt kennt den Aufgabentyp `code`: Sprache (Python oder JavaScript), optionaler Startcode, Musterlösung,
+bis zu zehn Testfälle und eine Rubrik. Ein Testfall hat einen Namen, eine Eingabe (stdin) und die erwartete Ausgabe
+(stdout). Verglichen wird nach vereinheitlichten Zeilenenden, ohne Leerraum am Zeilenende und am Textende
+(`services/evaluation/code_tests.py`).
+
+Code läuft nur am PC. Daraus folgen zwei Wege:
+
+| Wann | Wer führt aus | Was passiert |
+|---|---|---|
+| Anlegen | Learning-Claw (`werkstatt_code_pruefen`) | Die Musterlösung läuft gegen die Testfälle. Das Ergebnis steht als `testlauf` im Inhalt der Fassung, gebunden an Sprache, Musterlösung und Tests (Fingerabdruck). |
+| Abgeben | Hülle (`bruecke._code_testlauf`) | Die Hülle holt die Testfälle bei Learning (`learning_task_bewertungsdaten`, `art: "code"`), lässt den abgegebenen Code laufen und schickt das Ergebnis als Feld `testlauf` neben `answer`. |
+
+Regeln:
+
+- Ohne passenden, bestandenen `testlauf` hat die Aufgabe den Befund `code_ungeprueft` oder
+  `code_musterloesung_falsch` und ist für die Freigabe gesperrt. Die Freigabe berechnet das aus dem Inhalt neu.
+- Das Autorenmodell kann keinen `testlauf` setzen; ein behaupteter wird verworfen.
+- Lernende sehen Sprache und Startcode, nie die Testfälle oder die Musterlösung.
+- Ein `testlauf` im Antwortfeld zählt nicht (das Feld kommt aus dem Browser). Es gilt nur das Feld, das die Hülle setzt.
+- Bestehen nicht alle Tests oder fehlt der Testlauf, bleibt die Punktzahl knapp unter der Grenze für „richtig“.
+- Die Rückmeldung beginnt mit den Tests und nennt die Namen der gescheiterten.
+- Ist der Läufer beim Abgeben nicht erreichbar, wird nicht abgegeben (503).
+- Ältere `code`-Aufgaben ohne Testfälle verhalten sich wie bisher.
+
 ## Offen
 
-- Bewertung durch Ausführen: Tests je Aufgabe, deren Ergebnis in die Bewertung eingeht. Heute bewertet weiter die
-  Rubrik den Text.
-- Die Sprache steht noch nicht an der Aufgabe; die Person wählt sie selbst.
-- Im Prüfungsmodus ist die Ausführung nicht gesondert geregelt (die Hülle startet bisher nur Übungen).
+- Erlaubnisse je Lauf (Pakete, Diagramme, weitere Hilfsfunktionen) mit Rückfrage an die Person.
+- Im Prüfungsmodus ist die Ausführung nicht gesondert geregelt (die Hülle startet bisher nur Übungen); Learning gibt
+  dort keine Testfälle heraus.
+- `code`-Aufgaben haben keine Vorbewertung: die Abgabe wird sofort gebucht, es gibt keinen zweiten Versuch.
