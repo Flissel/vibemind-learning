@@ -753,15 +753,28 @@ def test_the_lesson_author_keeps_tasks_out_of_the_lesson_text() -> None:
     assert ROLE_CONTRACTS["lesson_author"][1] >= "lesson-prompt-v5"
 
 
-def test_werkstatt_aufgabe_prompt_v2_verbietet_schluessel_im_text() -> None:
+def test_werkstatt_aufgabe_prompt_verbietet_schluessel_im_text() -> None:
     from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
 
     assert ROLE_CONTRACTS["werkstatt_aufgabe"] == (
-        "werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"
+        "werkstatt", "werkstatt-aufgabe-prompt-v3", "werkstatt-aufgabe-v1"
     )
     text = ROLE_PROMPTS["werkstatt_aufgabe"]
     for teil in ("powershell, cmd or bash", "never write source keys", "at least one source key", "never announces"):
         assert teil in text
+
+
+def test_werkstatt_rollen_steuern_programmieraufgaben() -> None:
+    # Autor: Programm liest stdin und schreibt stdout, Tests mit Namen, nie eine eigene Pruefmeldung.
+    for rolle in ("werkstatt_aufgabe", "werkstatt_aufgabe_mathe", "werkstatt_aufgabe_consulting"):
+        text = ROLE_PROMPTS[rolle]
+        for teil in ("For kind code", "standard input", "standard output", "`tests` are 3 to 8 cases",
+                     "Always leave `testlauf` null", "python or javascript"):
+            assert teil in text, (rolle, teil)
+    # Pruefer: kann nichts ausfuehren und meldet deshalb keinen fehlenden Testlauf.
+    for rolle in ("werkstatt_pruefer", "werkstatt_pruefer_mathe", "werkstatt_pruefer_consulting"):
+        assert "you cannot run the program" in ROLE_PROMPTS[rolle], rolle
+        assert "do not report a missing `testlauf`" in ROLE_PROMPTS[rolle], rolle
 
 
 def test_learning_tutor_always_addresses_the_learner_with_sie() -> None:

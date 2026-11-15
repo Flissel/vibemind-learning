@@ -61,22 +61,22 @@ ROLE_CONTRACTS = {
     ),
     "handschrift_leser": ("reading", "handschrift-lesen-v1", "handschrift-gelesen-v1"),
     "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
-    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"),
-    "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v1", "werkstatt-pruefer-v1"),
+    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v3", "werkstatt-aufgabe-v1"),
+    "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v2", "werkstatt-pruefer-v1"),
     # Same output schemas as the terminal roles; only the instructions differ (course `fach`).
     "werkstatt_grobentwurf_mathe": (
         "werkstatt", "werkstatt-grobentwurf-mathe-prompt-v1", "werkstatt-grobentwurf-v1"
     ),
-    "werkstatt_aufgabe_mathe": ("werkstatt", "werkstatt-aufgabe-mathe-prompt-v1", "werkstatt-aufgabe-v1"),
-    "werkstatt_pruefer_mathe": ("werkstatt", "werkstatt-pruefer-mathe-prompt-v1", "werkstatt-pruefer-v1"),
+    "werkstatt_aufgabe_mathe": ("werkstatt", "werkstatt-aufgabe-mathe-prompt-v2", "werkstatt-aufgabe-v1"),
+    "werkstatt_pruefer_mathe": ("werkstatt", "werkstatt-pruefer-mathe-prompt-v2", "werkstatt-pruefer-v1"),
     "werkstatt_grobentwurf_consulting": (
         "werkstatt", "werkstatt-grobentwurf-consulting-prompt-v1", "werkstatt-grobentwurf-v1"
     ),
     "werkstatt_aufgabe_consulting": (
-        "werkstatt", "werkstatt-aufgabe-consulting-prompt-v1", "werkstatt-aufgabe-v1"
+        "werkstatt", "werkstatt-aufgabe-consulting-prompt-v2", "werkstatt-aufgabe-v1"
     ),
     "werkstatt_pruefer_consulting": (
-        "werkstatt", "werkstatt-pruefer-consulting-prompt-v1", "werkstatt-pruefer-v1"
+        "werkstatt", "werkstatt-pruefer-consulting-prompt-v2", "werkstatt-pruefer-v1"
     ),
 }
 # Every name and command these texts allow is pinned against the checks' own lists in
@@ -226,17 +226,36 @@ _WERKSTATT_PRUEFER_CONSULTING = (
     "is unsolvable from the lesson and the case, a second correct answer in a quiz, ordering or matching. Do not "
     "rewrite. Each issue: a short code and one German sentence."
 )
+# Programming tasks (kind "code"), for every fach: appended to the author and reviewer prompts.
+_WERKSTATT_CODE = (
+    " For kind code: the task asks for one complete program in `sprache` (python or javascript) that reads its "
+    "input from standard input and writes only the result to standard output; the prompt states the input and "
+    "output format exactly and shows one example. Only the standard library (Python) or Node.js built-ins, no "
+    "packages, no files, no network. `musterloesung` is a complete, working program. `tests` are 3 to 8 cases, "
+    "each with a short German `name` that says what the case checks (for example \"leere Eingabe\"), the exact "
+    "`eingabe` and the exact `erwartet` output of the reference solution; they cover the normal case and every "
+    "edge case the prompt names. `startcode` is optional starting code and never a solution. `expected_answer` "
+    "describes in sentences what a correct program does. `rubric` grades what the tests cannot decide (for "
+    "example readable names, a comment on the approach). Always leave `testlauf` null. Program code in the "
+    "prompt and the lesson stands in fenced blocks tagged python or javascript."
+)
+_WERKSTATT_CODE_PRUEFER = (
+    " For kind code you cannot run the program: do not judge whether `musterloesung` passes `tests` (a test run "
+    "does that) and do not report a missing `testlauf`. Report only a prompt that does not state the input and "
+    "output format, a test case whose expected output contradicts the prompt, or a rubric criterion the tests "
+    "already decide."
+)
 ROLE_PROMPTS = {
     "handschrift_leser": "Read what the learner handwrote on the image and report it as JSON; do not solve, check or correct the task. The input names the task type, the task text and the labels printed on the canvas (etiketten). Report only labels from etiketten, never option ids or option texts. Put the reading in roh by task type: single_choice and multiple_choice {\"auswahl\": [labels]}; ordering {\"reihenfolge\": [labels in the written order]}; matching {\"paare\": {left label: right label}}; numeric {\"wert\": the number exactly as written, as a string}; fill_in {\"text\": the text as written}. In anzeige give a short German rendering of what you read (at most 200 characters, for example \"x = -1,5\" or \"B\"). If you are unsure, the writing is ambiguous, crossed out, empty or does not fit the task type, set lesbar to false and leave roh empty instead of guessing. Never invent a value that is not on the image.",
     "werkstatt_grobentwurf_mathe": _WERKSTATT_GROBENTWURF_MATHE,
-    "werkstatt_aufgabe_mathe": _WERKSTATT_AUFGABE_MATHE,
-    "werkstatt_pruefer_mathe": _WERKSTATT_PRUEFER_MATHE,
+    "werkstatt_aufgabe_mathe": _WERKSTATT_AUFGABE_MATHE + _WERKSTATT_CODE,
+    "werkstatt_pruefer_mathe": _WERKSTATT_PRUEFER_MATHE + _WERKSTATT_CODE_PRUEFER,
     "werkstatt_grobentwurf_consulting": _WERKSTATT_GROBENTWURF_CONSULTING,
-    "werkstatt_aufgabe_consulting": _WERKSTATT_AUFGABE_CONSULTING,
-    "werkstatt_pruefer_consulting": _WERKSTATT_PRUEFER_CONSULTING,
+    "werkstatt_aufgabe_consulting": _WERKSTATT_AUFGABE_CONSULTING + _WERKSTATT_CODE,
+    "werkstatt_pruefer_consulting": _WERKSTATT_PRUEFER_CONSULTING + _WERKSTATT_CODE_PRUEFER,
     "werkstatt_grobentwurf": "Plan a course as chapters with a short list of tasks (one line each: what the learner must do). No lessons, no answers. Tasks make the learner apply and decide, never recall a URL or quote an English message verbatim. Use the default task kind for every task. German, address 'Sie'. Use only facts from the supplied sources; if the input contains reviewer_feedback, address every point.",
-    "werkstatt_aufgabe": "Write exactly one task of the given kind from its summary, and the lesson section the learner needs to solve it. The lesson section teaches every fact the task requires in full sentences, shows every command verbatim in a fenced code block with a language tag, cites claims by source key (S1, S2, …) and contains no tasks, options or answers. The expected answer must follow the lesson and never contradict it. If `wunsch` is given, change the previous version accordingly and keep everything else. German, 'Sie'. Only facts from the cited sources. Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of each claim of the lesson section; never write source keys or \"(S…)\" into the body, the prompt or any answer text. Every claim of the lesson section has at least one source key. Code fences use exactly one of the language tags powershell, cmd or bash. The lesson section never announces what it, the chapter or the tasks will do (no \"In diesem Abschnitt lernen Sie …\"); it states the facts directly.",
-    "werkstatt_pruefer": "Check one task and its lesson section against the cited source excerpts. Report only problems: a claim the sources do not support, an expected answer that contradicts the lesson, a task that is unsolvable from the lesson. Do not rewrite. Each issue: a short code and one German sentence.",
+    "werkstatt_aufgabe": "Write exactly one task of the given kind from its summary, and the lesson section the learner needs to solve it. The lesson section teaches every fact the task requires in full sentences, shows every command verbatim in a fenced code block with a language tag, cites claims by source key (S1, S2, …) and contains no tasks, options or answers. The expected answer must follow the lesson and never contradict it. If `wunsch` is given, change the previous version accordingly and keep everything else. German, 'Sie'. Only facts from the cited sources. Put source keys (S1, S2, …) only into `citation_ids` of the task and into `citation_ids` of each claim of the lesson section; never write source keys or \"(S…)\" into the body, the prompt or any answer text. Every claim of the lesson section has at least one source key. Code fences use exactly one of the language tags powershell, cmd or bash. The lesson section never announces what it, the chapter or the tasks will do (no \"In diesem Abschnitt lernen Sie …\"); it states the facts directly." + _WERKSTATT_CODE,
+    "werkstatt_pruefer": "Check one task and its lesson section against the cited source excerpts. Report only problems: a claim the sources do not support, an expected answer that contradicts the lesson, a task that is unsolvable from the lesson. Do not rewrite. Each issue: a short code and one German sentence." + _WERKSTATT_CODE_PRUEFER,
     "sequence_explainer": "Explain the passage the learner marked (task.selection) in plain German, as a patient tutor, using only facts stated in the supplied sources; name the source keys you used in source_refs. If a short piece of general knowledge beyond the sources genuinely helps, put it in extra and set extra_is_outside_course to true; otherwise leave extra empty. If an image is given it shows the marked place. Never reveal expected answers of tasks.",
     "architect": "Design a source-grounded curriculum structure for the stated audience and outcome. Plan as few chapters as the material needs: at most one chapter per 150 words of source text and at least three. Put alternative ways of doing the same step (for example one per operating system or shell) into one chapter, keep the regular path first and put troubleshooting at the end. If the input contains reviewer_feedback, address every point of it.",
     "concept_mapper": "Map concepts, prerequisites, dependencies, and chapter coverage from the proposed structure. Name every concept with short lowercase slugs (for example akku-laden), never free text.",

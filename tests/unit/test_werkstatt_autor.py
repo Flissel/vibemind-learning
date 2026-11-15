@@ -362,7 +362,8 @@ async def test_pruefung_laeuft_neben_der_event_loop(monkeypatch) -> None:
 
 # Mathe roles (Task 6): own role texts for `fach == "mathe"`, terminal texts byte-identical.
 
-# sha256 of the three terminal role texts as they were before the mathe roles (28.10.).
+# sha256 of the three terminal role texts as they were before the mathe roles (28.10.). Author and reviewer
+# texts carry the shared instructions for programming tasks at the end (15.11.); the part before is unchanged.
 _TERMINAL_TEXT_SHA256 = {
     "werkstatt_grobentwurf": "9d32489556d92a95087a97a6ce1fdfe4c788e61dae3aeb547135b1891afc4bff",
     "werkstatt_aufgabe": "04397d992124034a18f7bfe4c97992bdbbdca1cc74e215f084f0c2c67cae89ed",
@@ -370,9 +371,21 @@ _TERMINAL_TEXT_SHA256 = {
 }
 _TERMINAL_VERTRAEGE = {
     "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
-    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v2", "werkstatt-aufgabe-v1"),
-    "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v1", "werkstatt-pruefer-v1"),
+    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v3", "werkstatt-aufgabe-v1"),
+    "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v2", "werkstatt-pruefer-v1"),
 }
+# Prompt version per role and fach: the code instructions raised author and reviewer by one.
+_FACH_VERSION = {"werkstatt_grobentwurf": "v1", "werkstatt_aufgabe": "v2", "werkstatt_pruefer": "v2"}
+
+
+def _ohne_code_teil(role: str, text: str) -> str:
+    """The role text without the shared instructions for programming tasks."""
+    from spaces.learning.services.course_factory.model_gateway import _WERKSTATT_CODE, _WERKSTATT_CODE_PRUEFER
+
+    for teil in (_WERKSTATT_CODE, _WERKSTATT_CODE_PRUEFER):
+        if role != "werkstatt_grobentwurf" and text.endswith(teil):
+            return text[: -len(teil)]
+    return text
 _MATHE_KURS = {"course_id": "c1", "title": "Kurvendiskussion", "audience": "Oberstufe", "fach": "mathe"}
 
 
@@ -388,8 +401,11 @@ def test_terminal_rollentexte_sind_byte_gleich() -> None:
     from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
 
     for role, sha in _TERMINAL_TEXT_SHA256.items():
-        assert hashlib.sha256(ROLE_PROMPTS[role].encode("utf-8")).hexdigest() == sha, role
+        assert hashlib.sha256(_ohne_code_teil(role, ROLE_PROMPTS[role]).encode("utf-8")).hexdigest() == sha, role
         assert ROLE_CONTRACTS[role] == _TERMINAL_VERTRAEGE[role], role
+    # Autor und Pruefer tragen die Anweisungen fuer Programmieraufgaben, der Grobentwurf nicht.
+    assert "For kind code" in ROLE_PROMPTS["werkstatt_aufgabe"] and "For kind code" in ROLE_PROMPTS["werkstatt_pruefer"]
+    assert "For kind code" not in ROLE_PROMPTS["werkstatt_grobentwurf"]
 
 
 def test_mathe_rollen_haben_eigene_prompt_version_und_dasselbe_schema() -> None:
@@ -398,7 +414,7 @@ def test_mathe_rollen_haben_eigene_prompt_version_und_dasselbe_schema() -> None:
     for basis, (stage, _prompt, schema) in _TERMINAL_VERTRAEGE.items():
         mathe = f"{basis}_mathe"
         name = basis.replace("_", "-")
-        assert ROLE_CONTRACTS[mathe] == (stage, f"{name}-mathe-prompt-v1", schema), mathe
+        assert ROLE_CONTRACTS[mathe] == (stage, f"{name}-mathe-prompt-{_FACH_VERSION[basis]}", schema), mathe
         assert ROLE_PROMPTS[mathe] and ROLE_PROMPTS[mathe] != ROLE_PROMPTS[basis]
 
 
@@ -408,7 +424,7 @@ async def test_mathe_kurs_nutzt_mathe_rollen() -> None:
     await _ausformulieren(fake, kurs=_MATHE_KURS)
     assert fake.calls == ["werkstatt_aufgabe_mathe", "werkstatt_pruefer_mathe"]
     assert [i.prompt_version for i in fake.invocations] == [
-        "werkstatt-aufgabe-mathe-prompt-v1", "werkstatt-pruefer-mathe-prompt-v1",
+        "werkstatt-aufgabe-mathe-prompt-v2", "werkstatt-pruefer-mathe-prompt-v2",
     ]
 
 
@@ -598,7 +614,7 @@ def test_consulting_rollen_haben_eigene_prompt_version_und_dasselbe_schema() -> 
     for basis, (stage, _prompt, schema) in _TERMINAL_VERTRAEGE.items():
         rolle = f"{basis}_consulting"
         name = basis.replace("_", "-")
-        assert ROLE_CONTRACTS[rolle] == (stage, f"{name}-consulting-prompt-v1", schema), rolle
+        assert ROLE_CONTRACTS[rolle] == (stage, f"{name}-consulting-prompt-{_FACH_VERSION[basis]}", schema), rolle
         assert ROLE_PROMPTS[rolle] and ROLE_PROMPTS[rolle] != ROLE_PROMPTS[basis]
 
 
@@ -656,7 +672,7 @@ async def test_consulting_kurs_nutzt_consulting_rollen() -> None:
     await _ausformulieren(fake, kurs={**_MATHE_KURS, "fach": "consulting"})
     assert fake.calls == ["werkstatt_aufgabe_consulting", "werkstatt_pruefer_consulting"]
     assert [i.prompt_version for i in fake.invocations] == [
-        "werkstatt-aufgabe-consulting-prompt-v1", "werkstatt-pruefer-consulting-prompt-v1",
+        "werkstatt-aufgabe-consulting-prompt-v2", "werkstatt-pruefer-consulting-prompt-v2",
     ]
 
 
