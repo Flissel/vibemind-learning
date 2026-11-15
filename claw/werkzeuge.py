@@ -825,7 +825,7 @@ def werkstatt_kurs_neu(
     fach: str = "terminal",
 ) -> dict[str, Any]:
     """Legt einen Werkstatt-Kurs an und startet den Grobentwurf aus den Quellen
-    (`standard_typ`: quiz, open, case, cloze, ordering, matching, number oder sketch; `fach`:
+    (`standard_typ`: quiz, open, case, cloze, ordering, matching, number, sketch oder code; `fach`:
     "terminal" ist die Vorgabe, "mathe" fuer Mathe-Kurse, "consulting" fuer
     AI-Consulting-Kurse; der Fall gehoert als Quelle mit der Ueberschrift "Fall ..." dazu). Gibt `auftrag_id`
     zurueck. Auftraege laufen im Hintergrund; mit werkstatt_auftrag nachsehen.
@@ -949,6 +949,59 @@ def werkstatt_vorschau(task_id: str, fassung: int | None = None) -> dict[str, An
     """Zeigt die Lernenden-Vorschau einer Fassung (ohne `fassung` die neueste)."""
     suffix = "" if fassung is None else f"?fassung={int(fassung)}"
     return _ws_get(f"/aufgaben/{_seg(task_id)}/vorschau{suffix}")
+
+
+def _code_laeufer() -> Callable[[str, str, str], Any]:
+    """The local code runner (sandboxed, on this PC). Imported late: only this tool needs it."""
+    from ..huelle.laeufer import ausfuehren
+
+    return ausfuehren
+
+
+def werkstatt_code_pruefen(task_id: str) -> dict[str, Any]:
+    """Laesst die Musterloesung einer Programmieraufgabe (Typ code) auf diesem Rechner abgeschottet gegen
+    ihre Testfaelle laufen und traegt das Ergebnis an der Aufgabe ein (neue Fassung). Erst danach ist die
+    Aufgabe nicht mehr „ungeprueft“. Gibt `bestanden`, die Zahl der Tests und die Namen der gescheiterten
+    zurueck. Nach jeder Aenderung an Sprache, Musterloesung oder Testfaellen erneut aufrufen.
+    """
+    from ..huelle.laeufer import LaeuferNichtBereit, UngueltigerAuftrag
+    from ..services.evaluation.code_tests import Testfall, fingerabdruck, tests_laufen
+
+    gelesen = werkstatt_fassungen(task_id)
+    if not gelesen.get("ok"):
+        return gelesen
+    fassungen = (gelesen.get("daten") or {}).get("fassungen") or []
+    if not fassungen:
+        return {"ok": False, "fehler": "Die Aufgabe hat noch keine Fassung"}
+    neueste = fassungen[-1]
+    inhalt = neueste.get("content") or {}
+    if inhalt.get("kind") != "code":
+        return {"ok": False, "fehler": "Das ist keine Programmieraufgabe (Typ code)"}
+    try:
+        tests = [Testfall.model_validate(t) for t in inhalt["tests"]]
+        sprache, loesung = str(inhalt["sprache"]), str(inhalt["musterloesung"])
+        ergebnis = tests_laufen(sprache, loesung, tests, ausfuehren=_code_laeufer())
+    except LaeuferNichtBereit:
+        return {"ok": False, "fehler": "Die Code-Ausführung ist auf diesem Rechner nicht erreichbar"}
+    except UngueltigerAuftrag:
+        return {"ok": False, "fehler": "Die Musterlösung lässt sich nicht ausführen (Sprache oder Länge)"}
+    except (KeyError, ValueError):
+        return {"ok": False, "fehler": "Der Inhalt der Aufgabe ist unvollständig"}
+    grund = f"Testlauf der Musterlösung: {ergebnis.bestanden} von {ergebnis.gesamt} Tests bestanden"
+    if ergebnis.fehlgeschlagen:
+        grund += f" (gescheitert: {', '.join(ergebnis.fehlgeschlagen)})"
+    lauf = {
+        "fingerabdruck": fingerabdruck(sprache, loesung, tests),
+        "bestanden": ergebnis.alle_bestanden,
+        "fehlgeschlagen": list(ergebnis.fehlgeschlagen),
+    }
+    geaendert = werkstatt_aufgabe_aendern(task_id, neueste.get("number"), {"testlauf": lauf}, grund)
+    if not geaendert.get("ok"):
+        return geaendert
+    return {"ok": True, "daten": {
+        "bestanden": ergebnis.alle_bestanden, "tests": ergebnis.gesamt,
+        "fehlgeschlagen": list(ergebnis.fehlgeschlagen), "fassung": (geaendert.get("daten") or {}).get("number"),
+    }}
 
 
 def werkstatt_auftrag(auftrag_id: str) -> dict[str, Any]:

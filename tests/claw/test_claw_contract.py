@@ -51,6 +51,7 @@ SPEC_TOOLS = {
     "werkstatt_zurueckholen",
     "werkstatt_vorschau",
     "werkstatt_auftrag",
+    "werkstatt_code_pruefen",
     "werkstatt_freigabe_anzeigen",
 }
 

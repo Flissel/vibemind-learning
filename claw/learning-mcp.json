@@ -41,6 +41,7 @@
     "mcp__learning__werkstatt_zurueckholen",
     "mcp__learning__werkstatt_vorschau",
     "mcp__learning__werkstatt_auftrag",
+    "mcp__learning__werkstatt_code_pruefen",
     "mcp__learning__werkstatt_freigabe_anzeigen"
   ]
 }

@@ -111,6 +111,8 @@ WERKZEUGE = (
     werkzeuge.werkstatt_zurueckholen,
     werkzeuge.werkstatt_vorschau,
     werkzeuge.werkstatt_auftrag,
+    # Programmieraufgaben: die Musterloesung laeuft hier am PC im abgeschotteten Code-Laeufer.
+    werkzeuge.werkstatt_code_pruefen,
     # Freigabe der Werkstatt: nur anzeigen. Freigeben (werkzeuge.werkstatt_freigeben) ruft
     # allein die Freigabeseite nach dem Klick der Inhaberin, nie das Modell.
     werkzeuge.werkstatt_freigabe_anzeigen,

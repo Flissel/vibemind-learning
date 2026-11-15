@@ -179,6 +179,8 @@ def test_kein_werkstatt_werkzeug_veroeffentlicht(fake: Fake) -> None:
     names = [
         f.__name__ for f in server.WERKZEUGE
         if f.__name__.startswith("werkstatt_") and f is not werkzeuge.werkstatt_freigabe_anzeigen
+        # `werkstatt_code_pruefen` runs code locally; it has its own tests below.
+        and f is not werkzeuge.werkstatt_code_pruefen
     ]
     assert len(names) == 13
     assert not any("veroeffentlich" in n or "freigeb" in n or "publish" in n for n in names)
@@ -215,3 +217,84 @@ def test_konflikt_kommt_als_fehler_mit_neuester_zurueck(fake: Fake) -> None:
     assert result["ok"] is False
     assert "geaendert" in result["fehler"]
     assert result["neueste"] == neueste
+
+
+# ---- Programmieraufgaben: Musterloesung am PC gegen die Testfaelle laufen lassen -------------------
+
+_CODE = {
+    "kind": "code", "prompt": "Summe ausgeben.", "concept_ids": ["k1"], "sprache": "python", "startcode": "",
+    "musterloesung": "import sys\nprint(sum(map(int, sys.stdin.read().split())))",
+    "tests": [{"name": "drei Zahlen", "eingabe": "3 4 5", "erwartet": "12"},
+              {"name": "leer", "eingabe": "", "erwartet": "0"}],
+    "expected_answer": "Summe.", "rubric": [{"criterion_id": "r1", "description": "Summe stimmt", "points": 1}],
+}
+
+
+class _Lauf:
+    def __init__(self, stdout: str, exit_code: int | None = 0, zeit_ueberschritten: bool = False) -> None:
+        self.stdout, self.exit_code, self.zeit_ueberschritten = stdout, exit_code, zeit_ueberschritten
+
+
+def _mit_fassung(fake: Fake, content: dict[str, Any]) -> None:
+    def antwort(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"fassungen": [{"number": 1, "content": {}}, {"number": 2, "content": content}]})
+        return httpx.Response(200, json={"number": 3, "findings": []})
+
+    fake.answer = antwort
+
+
+def test_code_pruefen_meldet_bestanden_und_setzt_die_pruefmeldung(fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    from spaces.learning.services.evaluation.code_tests import Testfall, fingerabdruck
+
+    _mit_fassung(fake, _CODE)
+    aufrufe: list[tuple[str, str, str]] = []
+
+    def laeufer(sprache: str, quelltext: str, eingabe: str) -> _Lauf:
+        aufrufe.append((sprache, quelltext, eingabe))
+        return _Lauf("12\n" if eingabe else "0\n")
+
+    monkeypatch.setattr(werkzeuge, "_code_laeufer", lambda: laeufer)
+    result = werkzeuge.werkstatt_code_pruefen(TASK)
+
+    assert result == {"ok": True, "daten": {"bestanden": True, "tests": 2, "fehlgeschlagen": [], "fassung": 3}}
+    assert aufrufe == [("python", _CODE["musterloesung"], "3 4 5"), ("python", _CODE["musterloesung"], "")]
+    _check(fake, "PATCH", f"/aufgaben/{TASK}", write=True)
+    erwartet = fingerabdruck("python", _CODE["musterloesung"], [Testfall(**t) for t in _CODE["tests"]])
+    assert fake.body() == {
+        "based_on": 2,
+        "felder": {"testlauf": {"fingerabdruck": erwartet, "bestanden": True, "fehlgeschlagen": []}},
+        "reason": "Testlauf der Musterlösung: 2 von 2 Tests bestanden",
+    }
+
+
+def test_code_pruefen_nennt_die_gescheiterten_tests(fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mit_fassung(fake, _CODE)
+    monkeypatch.setattr(werkzeuge, "_code_laeufer", lambda: lambda s, q, e: _Lauf("12\n" if e else "7\n"))
+    result = werkzeuge.werkstatt_code_pruefen(TASK)
+    assert result["daten"] == {"bestanden": False, "tests": 2, "fehlgeschlagen": ["leer"], "fassung": 3}
+    assert fake.body()["felder"]["testlauf"]["bestanden"] is False
+    assert fake.body()["felder"]["testlauf"]["fehlgeschlagen"] == ["leer"]
+    assert fake.body()["reason"] == "Testlauf der Musterlösung: 1 von 2 Tests bestanden (gescheitert: leer)"
+
+
+def test_code_pruefen_nur_fuer_programmieraufgaben(fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mit_fassung(fake, {"kind": "open", "prompt": "x"})
+    monkeypatch.setattr(werkzeuge, "_code_laeufer", lambda: pytest.fail("darf nicht laufen"))
+    result = werkzeuge.werkstatt_code_pruefen(TASK)
+    assert result["ok"] is False and "Programmieraufgabe" in result["fehler"]
+    assert [r.method for r in fake.requests] == ["GET"]
+
+
+def test_code_pruefen_ohne_laeufer_aendert_nichts(fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    from spaces.learning.huelle.laeufer import LaeuferNichtBereit
+
+    _mit_fassung(fake, _CODE)
+
+    def weg(sprache: str, quelltext: str, eingabe: str) -> _Lauf:
+        raise LaeuferNichtBereit("wsl fehlt")
+
+    monkeypatch.setattr(werkzeuge, "_code_laeufer", lambda: weg)
+    result = werkzeuge.werkstatt_code_pruefen(TASK)
+    assert result["ok"] is False and "Code-Ausführung" in result["fehler"] and "wsl" not in result["fehler"]
+    assert [r.method for r in fake.requests] == ["GET"]
