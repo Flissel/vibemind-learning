@@ -691,3 +691,29 @@ def test_notiz_gehoert_zur_aufgabe_des_versuchs(tmp_path: Path) -> None:
     assert gespeichert[0]["anchor"] == {"art": "aufgabe", "aufgabe": dritte["task"]["id"]}
     assert "Frage 3" in gespeichert[0]["selection"]
     engine.dispose()
+
+
+def test_answer_nimmt_einen_testlauf_als_eigenes_feld(tmp_path: Path) -> None:
+    # Programmieraufgaben: die Huelle schickt den Testlauf neben `answer`; ein unstimmiger wird abgewiesen.
+    engine, dispatcher, course_id, _ = _liste_dispatcher(tmp_path)
+    turn = _liste_starten(dispatcher, course_id)
+    aufgaben = _task_list(dispatcher, turn["session_id"])["result"]["aufgaben"]
+
+    def antworten(attempt_id: str, testlauf: dict[str, object]) -> dict[str, object]:
+        return _call(
+            dispatcher,
+            "learning_task_answer",
+            _event(
+                "learning.task.answer",
+                session_id=turn["session_id"],
+                expected_revision=turn["session_revision"],
+                idempotency_key=f"answer-{uuid4()}",
+                payload={"answer": {"choice_id": "a"}, "attempt_id": attempt_id, "testlauf": testlauf},
+            ),
+        )
+
+    unstimmig = antworten(aufgaben[0]["attempt_id"], {"bestanden": 5, "gesamt": 1, "fehlgeschlagen": []})
+    assert unstimmig["state"] == "rejected", unstimmig
+    stimmig = antworten(aufgaben[0]["attempt_id"], {"bestanden": 1, "gesamt": 1, "fehlgeschlagen": []})
+    assert stimmig["state"] == "completed", stimmig
+    engine.dispose()

@@ -291,6 +291,8 @@ class AdaptiveSessionGateway:
                 expected_session_revision=revision,
                 answer=answer,
                 attempt_id=attempt_id,
+                # Code tasks: the test run of the Hülle (a payload field of its own, not part of `answer`).
+                testlauf=request.event.payload.get("testlauf"),
             )
         )
         if answered is not None:

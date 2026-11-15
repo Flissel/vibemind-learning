@@ -116,12 +116,13 @@ def test_bewertungsdaten_zuordnung_etiketten_ohne_loesung(tmp_path: Path) -> Non
 
 
 def test_bewertungsdaten_nur_fuer_typen_mit_vorschau(tmp_path: Path) -> None:
-    # Was die Vorbewertung ablehnt (code), bekommt auch keine Bewertungsdaten: die Huelle fragt dann keine KI.
+    # Code hat keine Vorbewertung. Die Huelle bekommt dafuer nur, was der Code-Laeufer braucht (Sprache, Tests),
+    # aber weder Musterloesung noch Kriterien: damit laesst sich keine KI nach einer Bewertung fragen.
     engine, factory, course_id, _ = _store(tmp_path, [_rubric_item("code")])
     service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
     turn = _start(service, course_id)
-    with pytest.raises(ValueError, match="no grading data"):
-        _daten(service, turn)
+    daten = _daten(service, turn)
+    assert daten.art == "code" and daten.musterloesung is None and daten.kriterien == [] and daten.tests == []
     engine.dispose()
 
     (tmp_path / "p").mkdir()

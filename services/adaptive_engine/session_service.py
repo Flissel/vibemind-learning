@@ -49,7 +49,8 @@ from spaces.learning.services.evaluation.rubric import (
     rubric_contract_violation,
     rubric_score,
 )
-from spaces.learning.services.evaluation.urteil import urteil
+from spaces.learning.services.evaluation.code_tests import TestErgebnis, Testfall
+from spaces.learning.services.evaluation.urteil import RICHTIG_AB_RUBRIK, urteil
 from spaces.learning.services.evaluation.schemas import (
     ChoiceOption,
     DeterministicItem,
@@ -75,6 +76,8 @@ _FALLBACK_REVIEW_REASON = "rubric_not_accepted"
 # From this best score an item counts as solved for selection (a sketch graded 0.97 must
 # not be re-served). The feedback bands live in services/evaluation/urteil.py.
 _SOLVED_SCORE = 0.9
+# A code answer whose test cases did not all pass stays just below "correct".
+_TESTS_DECKEL = RICHTIG_AB_RUBRIK - 0.01
 
 
 class SessionRubricBoundary(Protocol):
@@ -114,6 +117,9 @@ class AnswerCommand(_Command):
     answer: dict[str, object]
     # Required in list sessions, where it addresses the attempt instead of the revision.
     attempt_id: str | None = None
+    # Code tasks with test cases: how the submitted program did in the code runner. Set by the
+    # trusted caller (the Hülle), never taken from `answer`, which the browser controls.
+    testlauf: TestErgebnis | None = None
 
     @field_validator("session_id")
     @classmethod
@@ -277,7 +283,7 @@ class Bewertungsdaten(BaseModel):
 
     attempt_id: str
     item_type: str
-    art: Literal["rubric", "deterministic"]
+    art: Literal["rubric", "deterministic", "code"]
     aufgabe: dict[str, object]
     # Rubric tasks: the model solution and the criteria. Fixed solutions stay in Learning.
     musterloesung: str | None = None
@@ -285,6 +291,9 @@ class Bewertungsdaten(BaseModel):
     # Fixed solutions: what the handwriting reader gets, the format of its `roh` reading and
     # the label table (label -> shown text). No ids, no solution: Learning maps and compares.
     antwortformat: dict[str, object] = Field(default_factory=dict)
+    # Code tasks: the language and the hidden test cases, for the code runner at the Hülle.
+    sprache: str | None = None
+    tests: list[Testfall] = Field(default_factory=list)
 
 
 class ListenEintrag(BaseModel):
@@ -616,9 +625,41 @@ class AdaptiveSessionService:
             attempt, item = self._open_attempt(
                 db, row, command.expected_session_revision, command.attempt_id
             )
-            bewertung = self._bewerten(item, command.answer)
+            tests = self._code_tests(item)
+            antwort = command.answer
+            bestanden = True
+            if tests:
+                # Only the command field counts; a `testlauf` inside the answer is dropped.
+                lauf = command.testlauf
+                gilt = lauf is not None and lauf.gesamt == len(tests)
+                antwort = {k: v for k, v in command.answer.items() if k != "testlauf"}
+                antwort["testlauf"] = lauf.model_dump(mode="json") if gilt else {"gelaufen": False}
+                bestanden = gilt and lauf.alle_bestanden
+            bewertung = self._bewerten(item, antwort)
+            if not bestanden:
+                bewertung = self._tests_deckel(bewertung)
             turn = self._book(db, row, attempt, item, bewertung, now)
         return self._with_readback(turn)
+
+    @staticmethod
+    def _code_tests(item: AdaptiveItem) -> list[Testfall]:
+        """The hidden test cases of a code item; none for other types and for older code items."""
+        if item.item_type != "code":
+            return []
+        roh = item.scoring_config.get("tests")
+        return [Testfall.model_validate(t) for t in roh] if isinstance(roh, list) else []
+
+    @staticmethod
+    def _tests_deckel(bewertung: _Bewertung) -> _Bewertung:
+        """Not every test passed (or none ran): the answer can be partial at best."""
+        codes = tuple(
+            "answer_partial" if c == "answer_correct" else c for c in bewertung.rationale_codes
+        )
+        return replace(
+            bewertung,
+            score=min(bewertung.score, _TESTS_DECKEL),
+            rationale_codes=(*codes, "tests_nicht_bestanden"),
+        )
 
     def bewertungsdaten(
         self,
@@ -638,6 +679,18 @@ class AdaptiveSessionService:
             attempt, item = self._open_attempt(db, row, expected_session_revision, attempt_id)
             # The same types as the handwriting preview (`_vorschau_rubrik`): what it refuses
             # (e.g. code) gets no grading data, so no AI is asked for it.
+            if item.item_type == "code":
+                # No model solution and no rubric: the Hülle only runs the test cases.
+                darstellung = self._presentation(item)
+                sprache = darstellung.get("sprache")
+                return Bewertungsdaten(
+                    attempt_id=attempt.id,
+                    item_type=item.item_type,
+                    art="code",
+                    aufgabe=self._public_task(item, row.id).model_dump(mode="json"),
+                    sprache=sprache if isinstance(sprache, str) else None,
+                    tests=self._code_tests(item),
+                )
             if item.item_type in _DETERMINISTIC_TYPES:
                 art: Literal["rubric", "deterministic"] = "deterministic"
             elif item.item_type in _HANDSCHRIFT_RUBRIC_TYPES:
@@ -2163,6 +2216,8 @@ class AdaptiveSessionService:
             "fill_in": frozenset({"template", "shell", "image", "width", "height", "rect", "more"}),
             "numeric": frozenset({"unit"}),
             "penecho_canvas": frozenset({"canvas_href"}),
+            # The language and the starting code; the test cases (`scoring_config.tests`) never travel.
+            "code": frozenset({"sprache", "startcode"}),
         }
         # `math`: the Werkstatt switches formula typesetting on for math courses, any type.
         allowed = allowed_by_type.get(item.item_type, frozenset()) | {"math"}
