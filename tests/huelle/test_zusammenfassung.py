@@ -314,3 +314,8 @@ def test_versuche_zeile_in_textfassung() -> None:
     assert a.versuche_zeile == "Versuche: 3, zuerst falsch"
     assert AufgabeZeile(1, "F", "A", "–", None, (), True, versuche=2, erstes_urteil="correct").versuche_zeile == "Versuche: 2"
     assert AufgabeZeile(1, "F", "A", "–", None).versuche_zeile == ""
+    # Abnahme 15.11.: blieb es falsch, steht kein „zuerst falsch“ daneben.
+    falsch = AufgabeZeile(3, "F", "A", "–", None, (), False, versuche=5, erstes_urteil="incorrect", urteil="falsch")
+    assert falsch.versuche_zeile == "Versuche: 5"
+    besser = AufgabeZeile(3, "F", "A", "–", None, (), False, versuche=2, erstes_urteil="incorrect", urteil="teilweise")
+    assert besser.versuche_zeile == "Versuche: 2, zuerst falsch"

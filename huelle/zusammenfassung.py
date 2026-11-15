@@ -60,13 +60,14 @@ class AufgabeZeile:
     richtig: bool = False               # nach Learnings Score (wie der Bericht), sonst nach dem Urteil der Karte
     versuche: int = 0                   # Zahl der Versuche (Learnings Liste); es zaehlt der beste
     erstes_urteil: str | None = None    # Learnings Zustand des ersten bewerteten Versuchs
+    urteil: str | None = None           # „richtig“ | „teilweise“ | „falsch“ des Versuchs, der zaehlt (falls gebucht)
 
     @property
     def versuche_zeile(self) -> str:
         """„Versuche: 3, zuerst falsch“ fuer Textfassung und PDF; bei hoechstens einem Versuch leer."""
         from .bericht import versuche_text
 
-        text = versuche_text(self.versuche, self.erstes_urteil, "richtig" if self.richtig else None)
+        text = versuche_text(self.versuche, self.erstes_urteil, self.urteil or ("richtig" if self.richtig else None))
         return f"Versuche: {text.removesuffix(' Versuche').replace(' Versuche,', ',')}" if text else ""
 
 

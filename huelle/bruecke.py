@@ -559,6 +559,13 @@ def _erstes_urteil_von(eintrag: dict[str, Any]) -> str | None:
     return wert if isinstance(wert, str) and _ZUSTANDSNAME.fullmatch(wert) else None
 
 
+def _urteil_wort(vorbewertung: Any) -> str | None:
+    """„richtig“ | „teilweise“ | „falsch“ aus dem Zustand der gezeigten Vorbewertung; sonst None."""
+    feedback = vorbewertung.get("feedback") if isinstance(vorbewertung, dict) else None
+    zustand = feedback.get("state") if isinstance(feedback, dict) else None
+    return {"correct": "richtig", "partial": "teilweise", "incorrect": "falsch"}.get(zustand) if isinstance(zustand, str) else None
+
+
 def _offene_karte(eintrag: dict[str, Any] | None) -> bool:
     """Hat der Listeneintrag eine Karte zu zeigen (offene Aufgabe mit Vorbewertung)?"""
     return eintrag is not None and eintrag["status"] == "offen" and isinstance(eintrag.get("vorbewertung"), dict)
@@ -1995,7 +2002,7 @@ class Bruecke:
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
                 aussage, bild,
                 self._ki_schritte_lesen(sitzung.sid, e["nummer"]), richtig,
-                versuche=_versuche_von(e), erstes_urteil=_erstes_urteil_von(e),
+                versuche=_versuche_von(e), erstes_urteil=_erstes_urteil_von(e), urteil=wort or _urteil_wort(vor),
             ))
         if sitzung.je_aufgabe and rueckmeldung is None and turn.get("state") == "completed":
             rueckmeldung = aus_zahlen(zeilen)
