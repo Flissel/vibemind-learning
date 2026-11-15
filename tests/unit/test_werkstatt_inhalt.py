@@ -330,3 +330,58 @@ def test_vorlage_felder_an_quiz_werden_verworfen() -> None:
 def test_geaenderte_vorlage_felder_sind_eine_textkorrektur() -> None:
     alt = offen(vorlage="matrix")
     assert fassungs_art(alt, {**alt, "vorlage_felder": _KURS_MATRIX}) == "textkorrektur"
+
+
+def code(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "kind": "code", "prompt": "Lesen Sie Zahlen aus der Eingabe und geben Sie ihre Summe aus.",
+        "concept_ids": ["k1"], "sprache": "python", "startcode": "import sys\n",
+        "musterloesung": "import sys\nprint(sum(int(x) for x in sys.stdin.read().split()))\n",
+        "tests": [
+            {"name": "drei Zahlen", "eingabe": "3 4 5\n", "erwartet": "12"},
+            {"name": "leere Eingabe", "eingabe": "", "erwartet": "0"},
+        ],
+        "expected_answer": "Liest alle Zahlen und gibt die Summe aus; die leere Eingabe ergibt 0.",
+        "rubric": [{"criterion_id": "r1", "description": "Summe stimmt", "points": 2}],
+    }
+    base.update(over)
+    return base
+
+
+def test_code_aufgabe_gueltig_und_grenzen() -> None:
+    from spaces.learning.services.werkstatt.inhalt import Code
+
+    inhalt = inhalt_lesen(code())
+    assert isinstance(inhalt, Code) and inhalt.testlauf is None and inhalt.sprache == "python"
+    assert isinstance(inhalt_lesen(code(sprache="javascript", startcode="")), Code)
+    for falsch in (
+        code(sprache="bash"),
+        code(tests=[]),
+        code(tests=[{"name": f"t{i}", "eingabe": "", "erwartet": "0"} for i in range(11)]),
+        code(tests=[{"name": "gleich", "eingabe": "", "erwartet": "0"}, {"name": "gleich", "eingabe": "1", "erwartet": "1"}]),
+        code(musterloesung=""),
+        code(rubric=[]),
+        code(expected_answer=""),
+    ):
+        with pytest.raises(ValidationError):
+            inhalt_lesen(falsch)
+
+
+def test_grobentwurf_kennt_code() -> None:
+    entwurf = {
+        "schema_version": "werkstatt-grobentwurf-v1", "title": "T", "audience": "A",
+        "default_kind": "code", "chapters": [{"title": "K1", "tasks": [{"summary": "s"}]}],
+    }
+    assert Grobentwurf.model_validate(entwurf).default_kind == "code"
+
+
+def test_fassungs_art_code() -> None:
+    tests = code()["tests"]
+    assert fassungs_art(code(), code(musterloesung="print(0)")) == "neu"
+    assert fassungs_art(code(), code(sprache="javascript")) == "neu"
+    assert fassungs_art(code(), code(tests=[tests[0], {**tests[1], "erwartet": "1"}])) == "neu"
+    assert fassungs_art(code(), code(tests=list(reversed(tests)))) == "textkorrektur"
+    assert fassungs_art(code(), code(startcode="# anders")) == "textkorrektur"
+    # Die Pruefmeldung aendert die Loesung nicht.
+    lauf = {"fingerabdruck": "a" * 64, "bestanden": True, "fehlgeschlagen": []}
+    assert fassungs_art(code(), code(testlauf=lauf)) == "textkorrektur"

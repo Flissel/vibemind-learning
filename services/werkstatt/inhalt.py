@@ -16,6 +16,7 @@ from spaces.learning.services.course_factory.schemas import (
     _StrictDraft,
 )
 from spaces.learning.services.adaptive_engine.darstellung import FALL_MAX
+from spaces.learning.services.evaluation.code_tests import MAX_TESTS, Testfall
 from spaces.learning.services.adaptive_engine.darstellung import vorlage_felder as passende_felder
 
 Fach = Literal["terminal", "mathe", "consulting"]
@@ -189,8 +190,39 @@ class Skizze(_AufgabeBasis):
     rubric: list[RubricCriterion] = Field(min_length=3, max_length=5)
 
 
+class Testlauf(_StrictDraft):
+    """The reference solution was run against the test cases: for which state (fingerprint over
+    language, solution and tests) and with what result. Set by the test run on the PC, never by
+    the author model."""
+
+    fingerabdruck: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bestanden: bool
+    fehlgeschlagen: list[str] = Field(default_factory=list, max_length=MAX_TESTS)
+
+
+class Code(_AufgabeBasis):
+    """A programming task: the program reads stdin and writes stdout. Released as the engine
+    type ``code``; the test cases run in the local code runner, the rubric grades the rest."""
+
+    kind: Literal["code"]
+    sprache: Literal["python", "javascript"]
+    startcode: str = Field("", max_length=20_000)
+    musterloesung: str = Field(min_length=1, max_length=20_000)
+    tests: list[Testfall] = Field(min_length=1, max_length=MAX_TESTS)
+    expected_answer: str = Field(min_length=1, max_length=50_000)
+    rubric: list[RubricCriterion] = Field(min_length=1, max_length=100)
+    testlauf: Testlauf | None = None
+
+    @model_validator(mode="after")
+    def _testnamen_eindeutig(self) -> Code:
+        namen = [t.name for t in self.tests]
+        if len(set(namen)) != len(namen):
+            raise ValueError("Testnamen muessen eindeutig sein")
+        return self
+
+
 AufgabeInhalt = Annotated[
-    Quiz | Offen | Fall | Luecke | Reihenfolge | Zuordnung | Zahl | Skizze,
+    Quiz | Offen | Fall | Luecke | Reihenfolge | Zuordnung | Zahl | Skizze | Code,
     Field(discriminator="kind"),
 ]
 
@@ -210,7 +242,7 @@ class Grobentwurf(_StrictDraft):
     schema_version: Literal["werkstatt-grobentwurf-v1"]
     title: str = Field(min_length=1, max_length=500)
     audience: str = Field(min_length=1, max_length=1_000)
-    default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number", "sketch"]
+    default_kind: Literal["quiz", "open", "case", "cloze", "ordering", "matching", "number", "sketch", "code"]
     chapters: list[GrobKapitel] = Field(min_length=1, max_length=500)
 
 
@@ -260,6 +292,11 @@ def _loesung(inhalt: BaseModel) -> object:
     if isinstance(inhalt, Skizze):
         rubrik = sorted((r.criterion_id, r.description, r.points) for r in inhalt.rubric)
         return (inhalt.expected_answer, rubrik)
+    if isinstance(inhalt, Code):
+        # Without `testlauf` (it reports on the solution) and `startcode` (only shown).
+        rubrik = sorted((r.criterion_id, r.description, r.points) for r in inhalt.rubric)
+        tests = sorted((t.name, t.eingabe, t.erwartet) for t in inhalt.tests)
+        return (inhalt.sprache, inhalt.musterloesung, tests, inhalt.expected_answer, rubrik)
     raise TypeError(type(inhalt).__name__)
 
 
