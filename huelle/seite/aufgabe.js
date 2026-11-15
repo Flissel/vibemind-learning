@@ -633,3 +633,22 @@ export function fokusZiel(knoepfe, schluessel) {
   if (!schluessel) return null;
   return Array.from(knoepfe ?? []).find((k) => k?.dataset?.fokus === schluessel) ?? null;
 }
+
+// ---- Code-Ausführung ------------------------------------------------------------------------------
+/** Sprachen des Code-Läufers (huelle/laeufer). */
+export const CODE_SPRACHEN = [{ wert: "python", text: "Python" }, { wert: "javascript", text: "JavaScript" }];
+
+/** Text für das Ausgabefeld aus der Antwort von `/ausfuehren`: Ausgabe, Fehlerausgabe, eine Abschlusszeile. */
+export function laufText(daten) {
+  if (!daten || typeof daten.stdout !== "string" || typeof daten.stderr !== "string") {
+    return "Das Ergebnis ließ sich nicht lesen.";
+  }
+  const ausgabe = [daten.stdout, daten.stderr].filter((t) => t.trim()).map((t) => t.replace(/\n+$/, "")).join("\n");
+  const ms = Number.isFinite(daten.dauer_ms) ? `${daten.dauer_ms} ms` : "";
+  let schluss;
+  if (daten.zeit_ueberschritten === true) schluss = "Abgebrochen: Das Programm lief länger als erlaubt.";
+  else if (daten.exit === 0) schluss = `Fertig (${ms})`;
+  else schluss = `Beendet mit Fehler (Code ${daten.exit}, ${ms})`;
+  if (daten.abgeschnitten === true) schluss += " Die Ausgabe wurde gekürzt.";
+  return `${ausgabe || "(keine Ausgabe)"}\n\n— ${schluss}`;
+}

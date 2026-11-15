@@ -625,3 +625,40 @@ test("fokusZiel: ohne Schlüssel oder ohne Treffer null", () => {
   assert.equal(fokusZiel(knoepfe, ""), null);
   assert.equal(fokusZiel([], "A"), null);
 });
+
+// Code-Ausfuehrung (15.11.): Programmieraufgaben laufen lokal im Code-Laeufer; die Seite zeigt nur das Ergebnis.
+import { CODE_SPRACHEN, laufText } from "./aufgabe.js";
+
+test("laufText: Ausgabe, Fehlerausgabe und Abschlusszeile", () => {
+  assert.equal(laufText({ exit: 0, stdout: "42\n", stderr: "", zeit_ueberschritten: false, abgeschnitten: false, dauer_ms: 17 }),
+    "42\n\n— Fertig (17 ms)");
+  assert.equal(laufText({ exit: 1, stdout: "", stderr: "ZeroDivisionError\n", zeit_ueberschritten: false, abgeschnitten: false, dauer_ms: 20 }),
+    "ZeroDivisionError\n\n— Beendet mit Fehler (Code 1, 20 ms)");
+  assert.equal(laufText({ exit: 0, stdout: "", stderr: "", zeit_ueberschritten: false, abgeschnitten: false, dauer_ms: 5 }),
+    "(keine Ausgabe)\n\n— Fertig (5 ms)");
+});
+
+test("laufText: Zeitueberschreitung und gekuerzte Ausgabe stehen in Worten da", () => {
+  assert.match(laufText({ exit: null, stdout: "a\n", stderr: "", zeit_ueberschritten: true, abgeschnitten: false, dauer_ms: 5000 }),
+    /^a\n\n— Abgebrochen: Das Programm lief länger als erlaubt\.$/);
+  assert.match(laufText({ exit: 0, stdout: "x", stderr: "", zeit_ueberschritten: false, abgeschnitten: true, dauer_ms: 9 }),
+    /Die Ausgabe wurde gekürzt\./);
+});
+
+test("laufText: unbrauchbare Antwort ergibt einen ruhigen Satz", () => {
+  assert.equal(laufText(null), "Das Ergebnis ließ sich nicht lesen.");
+  assert.equal(laufText({ stdout: 5 }), "Das Ergebnis ließ sich nicht lesen.");
+});
+
+test("CODE_SPRACHEN: genau die Sprachen des Laeufers", () => {
+  assert.deepEqual(CODE_SPRACHEN.map((s) => s.wert), ["python", "javascript"]);
+});
+
+test("huelle.js: Programmieraufgabe hat Ausfuehren, der Code geht nur an die Route der Sitzung (Quelltext)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  const lauf = js.split("async function codeAusfuehren(")[1].split("\n}\n")[0];
+  assert.match(lauf, /api\("POST", `\/sitzungen\/\$\{[^}]+\}\/ausfuehren`, \{ sprache, quelltext \}\)/);
+  assert.match(lauf, /laufText\(r\.daten\)/);
+  assert.match(js, /id: "ausfuehren"/);
+});

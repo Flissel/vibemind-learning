@@ -76,6 +76,8 @@ from .hintergrund import Spur
 from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, UebersichtWeg
 from .kursabgabe import KursAbgabeStand, fall_fuer, unlesbar_text
 from .kursrueckmeldung import aus_antwort, aus_zahlen, als_text, rueckmeldungsdaten
+from .laeufer import Lauf, LaeuferNichtBereit, UngueltigerAuftrag
+from .laeufer import ausfuehren as code_ausfuehren
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
 from .lernflaeche_bewertung import KiBewerter
 from .medien import MEDIEN_NAME, MEDIEN_ROUTE
@@ -118,6 +120,8 @@ _RUECKMELDUNG = {
     "incorrect": "Noch nicht richtig. Lassen Sie sich den Lösungsweg jetzt auf der Fläche von der KI erklären.",
     "needs_review": WIRD_GEPRUEFT,
 }
+CODE_UNGUELTIG = "Dieser Code lässt sich nicht ausführen. Möglich sind Python und JavaScript bis 50.000 Zeichen."
+LAEUFER_WEG = "Die Code-Ausführung ist gerade nicht erreichbar. Bitte versuchen Sie es gleich noch einmal."
 KEIN_HINWEIS = "Kein Hinweis verfügbar."
 KEIN_HINWEIS_PRUEFUNG = "Im Prüfungsmodus gibt es keine Hinweise."
 SMILEY_UNBEKANNT = "Bitte wählen Sie eines der drei Gesichter."
@@ -579,6 +583,8 @@ class Bruecke:
         self._e = einstellung
         # KI-Tutor Teil 2: Bewertung durch die KI der Lernflaeche; ohne (aktiven) Bewerter bewertet der Server.
         self._bewerter = bewerter
+        # Code der Lernenden laeuft abgeschottet in der WSL-Distro `vibemind-code` (huelle/laeufer).
+        self._laeufer: Callable[..., Lauf] = code_ausfuehren
         self._lern = lern
         self._penecho = penecho
         self._sperre = sperre
@@ -671,6 +677,7 @@ class Bruecke:
             Route(f"{p}/sitzungen/{{sid}}/zeigen", self._r_zeigen, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/erklaeren", self._r_erklaeren, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/hinweis", self._r_hinweis, methods=["POST"]),
+            Route(f"{p}/sitzungen/{{sid}}/ausfuehren", self._r_code_ausfuehren, methods=["POST"]),
             Route(f"{p}/sitzungen/{{sid}}/kurs-abgeben", self._r_kurs_abgeben, methods=["POST"]),
             Route(f"{p}/notizen", self._r_notizen, methods=["GET"]),
             Route(f"{p}/medien/{{name}}", self._r_medien, methods=["GET"]),
@@ -3655,6 +3662,25 @@ class Bruecke:
         antwort = _ohne_quellenmarken(tutor["answer"])
         sitzung.tutor = (sitzung.tutor + [(frage, antwort)])[-TUTOR_VERLAUF:]
         return {"answer": antwort}
+
+    async def _r_code_ausfuehren(self, request: Request) -> JSONResponse:
+        sid = request.path_params["sid"]
+        actor = request.state.actor_id
+        return await self._mit_body(request, lambda body: self._code_ausfuehren(actor, sid, body), ablauf=False)
+
+    def _code_ausfuehren(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Code der Person einmal ausfuehren (nur in ihrer eigenen Sitzung). Gebucht oder bewertet wird nichts;
+        Fehler im Code und Zeitueberschreitung sind normale Ergebnisse."""
+        self._sitzung(actor, sid_roh)
+        try:
+            ergebnis = self._laeufer(body.get("sprache"), body.get("quelltext"), body.get("eingabe", ""))
+        except UngueltigerAuftrag:
+            raise _Antwort(400, {"code": "code_ungueltig", "meldung": CODE_UNGUELTIG}) from None
+        except LaeuferNichtBereit:
+            raise _Antwort(503, {"code": "laeufer_weg", "meldung": LAEUFER_WEG}) from None
+        return {"exit": ergebnis.exit_code, "stdout": ergebnis.stdout, "stderr": ergebnis.stderr,
+                "zeit_ueberschritten": ergebnis.zeit_ueberschritten, "abgeschnitten": ergebnis.abgeschnitten,
+                "dauer_ms": ergebnis.dauer_ms}
 
     async def _r_hinweis(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]

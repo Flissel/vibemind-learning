@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText,
+  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
@@ -28,6 +28,8 @@ const VERBINDEN_MS = 1500; // nach dem Laden der Gruppenfläche: so lange warten
 
 // Feste Texte (Plan, global.md).
 const TEXT = {
+  codeLauf: "„Ausführen“ startet den Inhalt des Feldes als Programm. Das zählt nicht als Abgabe.",
+  codeLaeuft: "Das Programm läuft …",
   nichtErreichbar: "Learning ist gerade nicht erreichbar. Ihre Fläche bleibt erhalten.",
   schonAbgegeben: "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.",
   keinKurs: "Dieser Kurs hat noch keine freigegebenen Aufgaben.",
@@ -718,10 +720,19 @@ function karteAufgabe() {
     return;
   }
   const feld = el("textarea", { name: "antwort", required: true, placeholder: "Lösung und Begründung eingeben" });
+  // Code-Ausführung: der Inhalt des Feldes läuft als Programm im Code-Läufer; gebucht wird dabei nichts.
+  const sprache = el("select", { id: "code-sprache", "aria-label": "Programmiersprache" },
+    ...CODE_SPRACHEN.map((s) => el("option", { value: s.wert, text: s.text })));
+  const ausgabe = el("pre", { id: "code-ausgabe", class: "code-ausgabe", role: "status", hidden: true });
+  const starten = el("button", { type: "button", id: "ausfuehren", text: "Ausführen",
+    onclick: () => void codeAusfuehren(sprache.value, feld.value, starten, ausgabe) });
   const form = el("form", { novalidate: false },
     setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
     fallBlock(task, math),
     el("div", {}, feld, el("p", { class: "hinweistext", text: TEXT.rechnen })),
+    el("div", { class: "code-lauf" }, sprache, starten),
+    el("p", { class: "hinweistext", text: TEXT.codeLauf }),
+    ausgabe,
     sperre,
     el("div", { class: "knoepfe" },
       el("button", { type: "submit", class: "haupt-knopf", id: "abgeben", text: "Abgeben" }),
@@ -732,6 +743,18 @@ function karteAufgabe() {
     if (antwort) void antwortSenden(antwort);
   });
   $("karte").replaceChildren(form);
+}
+
+// Führt den Inhalt des Antwortfeldes einmal aus (Route `/ausfuehren`, läuft abgeschottet auf dem PC der Kursleitung).
+async function codeAusfuehren(sprache, quelltext, knopf, ausgabe) {
+  const t = z.turn;
+  if (!t || !quelltext.trim()) return;
+  knopf.disabled = true;
+  ausgabe.hidden = false;
+  ausgabe.textContent = TEXT.codeLaeuft;
+  const r = await api("POST", `/sitzungen/${t.session_id}/ausfuehren`, { sprache, quelltext });
+  ausgabe.textContent = r.ok ? laufText(r.daten) : (r.daten?.meldung ?? TEXT.nichtErreichbar);
+  knopf.disabled = false;
 }
 
 function absaetze(text) {
