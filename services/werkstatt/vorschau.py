@@ -14,6 +14,7 @@ from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
 from spaces.learning.services.werkstatt.graph import graphen_zeichnen
 from spaces.learning.services.werkstatt.inhalt import (
+    Code,
     Fall,
     GraphAngabe,
     Luecke,
@@ -117,6 +118,22 @@ def _zuordnung_mit_graphen(inhalt: Zuordnung) -> tuple[str, str, list[dict[str, 
     return text, loesung, bilder
 
 
+_SPRACHE = {"python": "Python", "javascript": "JavaScript"}
+
+
+def _testlauf_stand(inhalt: Code) -> str:
+    """Where the reference solution stands: unchecked, passed, or which test cases fail."""
+    from spaces.learning.services.werkstatt.pruefung import code_testlauf_codes  # pruefung imports heavy checks
+
+    codes = code_testlauf_codes(inhalt)
+    if "code_ungeprueft" in codes:
+        return "noch nicht gelaufen"
+    if codes:
+        namen = ", ".join(inhalt.testlauf.fehlgeschlagen) if inhalt.testlauf else ""
+        return f"nicht bestanden ({namen})" if namen else "nicht bestanden"
+    return "bestanden"
+
+
 def vorschau(content: dict[str, Any]) -> dict[str, Any]:
     inhalt = inhalt_lesen(content)
     bild: str | None = None
@@ -159,6 +176,17 @@ def vorschau(content: dict[str, Any]) -> dict[str, Any]:
         loesung = f"Musterskizze: {inhalt.expected_answer}\nKriterien: " + "; ".join(
             f"{r.description} ({r.points})" for r in inhalt.rubric
         )
+    elif isinstance(inhalt, Code):
+        text = "\n".join([inhalt.prompt, "", f"Sprache: {_SPRACHE[inhalt.sprache]}",
+                          *(["", "Startcode:", inhalt.startcode] if inhalt.startcode.strip() else [])])
+        tests = "\n".join(
+            f"- {t.name}: Eingabe {t.eingabe!r} -> erwartet {t.erwartet!r}" for t in inhalt.tests
+        )
+        loesung = "\n".join([
+            "Musterlösung:", inhalt.musterloesung, "", "Testfälle:", tests, "",
+            f"Testlauf: {_testlauf_stand(inhalt)}",
+            "Kriterien: " + "; ".join(f"{r.description} ({r.points})" for r in inhalt.rubric),
+        ])
     else:  # pragma: no cover - the union is closed
         raise TypeError(type(inhalt).__name__)
     lektion = f"{inhalt.lektion.title}\n\n{inhalt.lektion.body}" if inhalt.lektion else None

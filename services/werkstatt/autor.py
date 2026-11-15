@@ -18,7 +18,7 @@ from spaces.learning.services.course_factory.model_gateway import (
 )
 from spaces.learning.services.course_factory.verification import SourceSnapshot
 from spaces.learning.services.werkstatt.belege import nur_ueberschrift
-from spaces.learning.services.werkstatt.inhalt import AufgabeInhalt, Fach, Grobentwurf, fach_aus
+from spaces.learning.services.werkstatt.inhalt import AufgabeInhalt, Code, Fach, Grobentwurf, fach_aus
 from spaces.learning.services.werkstatt.pruefung import (
     Befund,
     aufgabe_pruefen,
@@ -113,6 +113,14 @@ async def grobentwurf_erzeugen(
     return result.output
 
 
+def _ohne_testlauf(inhalt: AufgabeInhalt) -> AufgabeInhalt:
+    """The author model cannot run code: a `testlauf` it claims is dropped. Only the test run
+    on the PC sets it (by changing the task)."""
+    if isinstance(inhalt, Code) and inhalt.testlauf is not None:
+        return inhalt.model_copy(update={"testlauf": None})
+    return inhalt
+
+
 async def _autor(
     gateway: ModelGateway, correlation_id: str, payload: dict[str, object], fach: Fach
 ) -> AufgabeInhalt:
@@ -154,12 +162,16 @@ async def aufgabe_ausformulieren(
         await _autor(gateway, correlation_id, payload, fach), source_refs, course_id=course_id
     )
     # In a thread: a number task's check runs a child process (up to its time limit).
+    inhalt = _ohne_testlauf(inhalt)
     befunde = await asyncio.to_thread(aufgabe_pruefen, inhalt, sources=sources, fach=fach)
-    if befunde:
-        reparatur = {**payload, "reviewer_feedback": [b["text"] for b in befunde]}
+    # `code_ungeprueft` is no fault of the text: the test run on the PC lifts it, not a rewrite.
+    reparierbar = [b for b in befunde if b["code"] != "code_ungeprueft"]
+    if reparierbar:
+        reparatur = {**payload, "reviewer_feedback": [b["text"] for b in reparierbar]}
         inhalt, zitate = quellen_aufloesen(
             await _autor(gateway, correlation_id, reparatur, fach), source_refs, course_id=course_id
         )
+        inhalt = _ohne_testlauf(inhalt)
         befunde = await asyncio.to_thread(aufgabe_pruefen, inhalt, sources=sources, fach=fach)
     if inhalt.kind != kind:
         befunde.append(

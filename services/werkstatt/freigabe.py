@@ -25,8 +25,8 @@ from spaces.learning.services.course_factory.quality_gate import (
 )
 from spaces.learning.services.course_factory.schemas import CourseDraft
 from spaces.learning.services.werkstatt.formeltext import klartext
-from spaces.learning.services.werkstatt.inhalt import Fall, Offen, Quiz, _loesung, inhalt_lesen
-from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion
+from spaces.learning.services.werkstatt.inhalt import Code, Fall, Offen, Quiz, _loesung, inhalt_lesen
+from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion, _befund, code_testlauf_codes
 from spaces.learning.services.werkstatt.store import WerkstattStore
 
 logger = logging.getLogger(__name__)
@@ -298,6 +298,11 @@ def freigabe_vorbereiten(
         if fehlt is not None:
             befunde.append(fehlt)
         blockierend = [f for f in neueste["findings"] if f.get("code") not in _NICHT_BLOCKIEREND]
+        if isinstance(inhalt, Code):
+            # Recomputed from the content: a version brought back carries no stored findings, and
+            # an unchecked reference solution must never be released.
+            bekannt = {f.get("code") for f in blockierend}
+            blockierend += [_befund(c) for c in code_testlauf_codes(inhalt) if c not in bekannt]
         if blockierend:
             texte = " ".join(str(f.get("text") or f.get("code", "")) for f in blockierend)
             befunde.append({
@@ -305,7 +310,7 @@ def freigabe_vorbereiten(
                 "text": f"Die Aufgabe „{a['summary']}“ hat offene Befunde: {texte}",
             })
         punkte = None
-        if isinstance(inhalt, (Quiz, Offen, Fall)):
+        if isinstance(inhalt, (Quiz, Offen, Fall, Code)):
             rubrik = _als_aktivitaet(inhalt).rubric
             punkte = sum(c.points for c in rubrik) if rubrik else None
         sichten.append(

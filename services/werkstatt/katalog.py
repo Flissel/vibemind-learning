@@ -49,6 +49,7 @@ from spaces.learning.services.werkstatt.belege import belege_auswaehlen
 from spaces.learning.services.werkstatt.graph import GraphFehler, graphen_zeichnen
 from spaces.learning.services.werkstatt.inhalt import (
     AufgabeInhalt,
+    Code,
     Fall,
     GraphAngabe,
     Luecke,
@@ -337,6 +338,18 @@ def _item_felder(
         return (
             "penecho_canvas", {"text": inhalt.expected_answer}, {"prompt": inhalt.prompt},
             _scaled([c.model_dump(mode="json") for c in inhalt.rubric]),
+        )
+    if isinstance(inhalt, Code):
+        # The test cases stay outside `presentation`: learners never get them (`_public_task`);
+        # the Hülle fetches them server to server and runs them in the local code runner.
+        return (
+            "code", {"text": inhalt.musterloesung},
+            {
+                "prompt": inhalt.prompt,
+                "presentation": {"sprache": inhalt.sprache, "startcode": inhalt.startcode},
+                "tests": [t.model_dump(mode="json") for t in inhalt.tests],
+            },
+            _scaled([c.model_dump(mode="json") for c in inhalt.rubric]) or [dict(_FALLBACK_CRITERION)],
         )
     if isinstance(inhalt, Zahl):
         darstellung = {"unit": inhalt.label} if inhalt.label else {}
