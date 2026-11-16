@@ -658,7 +658,8 @@ test("huelle.js: Programmieraufgabe hat Ausfuehren, der Code geht nur an die Rou
   const { readFileSync } = await import("node:fs");
   const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
   const lauf = js.split("async function codeAusfuehren(")[1].split("\n}\n")[0];
-  assert.match(lauf, /api\("POST", `\/sitzungen\/\$\{[^}]+\}\/ausfuehren`, \{ sprache, quelltext \}\)/);
+  assert.match(lauf, /const auftrag = \{ sprache, quelltext, erlaubt \};/);
+  assert.match(lauf, /api\("POST", `\/sitzungen\/\$\{[^}]+\}\/ausfuehren`, auftrag\)/);
   assert.match(lauf, /laufText\(r\.daten\)/);
   assert.match(js, /id: "ausfuehren"/);
 });
@@ -706,4 +707,94 @@ test("Code-Karte: Sprache der Aufgabe ist fest, der Startcode steht im Feld", as
   assert.match(js, /const vorgabe = codeVorgabe\(task\);/);
   assert.match(js, /sprache\.value = vorgabe\.sprache;\s+sprache\.disabled = true;/);
   assert.match(js, /feld\.value = vorgabe\.startcode;/);
+});
+
+// ---- Erlaubnisse für Programmieraufgaben ------------------------------------------------------------
+const CODE_TASK = (erlaubnisse) => ({ type: "code", presentation: { sprache: "python", erlaubnisse } });
+
+test("codeObergrenze: nur bekannte Erlaubnisse der Aufgabe, in fester Reihenfolge", async () => {
+  const { codeObergrenze } = await import("./aufgabe.js");
+  assert.deepEqual(codeObergrenze(CODE_TASK(["daten", "pakete", "netz", 7])), ["pakete", "daten"]);
+  assert.deepEqual(codeObergrenze(CODE_TASK(undefined)), []);
+  assert.deepEqual(codeObergrenze({ type: "code" }), []);
+  assert.deepEqual(codeObergrenze(null), []);
+});
+
+test("codeWuensche: erkennt Pakete, Diagramm und Übungsdaten, aber nur innerhalb der Obergrenze", async () => {
+  const { codeWuensche } = await import("./aufgabe.js");
+  const alle = ["pakete", "diagramm", "lange_laufzeit", "daten"];
+  const code = "import numpy as np\nfrom matplotlib import pyplot as plt\nplt.savefig('ausgabe/k.png')\nopen('daten/u.csv')";
+  assert.deepEqual(codeWuensche(code, "python", alle), ["pakete", "diagramm", "daten"]);
+  assert.deepEqual(codeWuensche(code, "python", ["pakete"]), ["pakete"]);
+  assert.deepEqual(codeWuensche(code, "python", []), []);
+  assert.deepEqual(codeWuensche("print(1)", "python", alle), []);
+  // Kein Import: das Wort allein (Kommentar, Zeichenkette) ist kein Wunsch nach Paketen.
+  assert.deepEqual(codeWuensche("# numpy waere schoen\nprint('matplotlib')", "python", alle), []);
+  assert.deepEqual(codeWuensche("  import matplotlib.pyplot as plt", "python", alle), ["pakete"]);
+  // Pakete gibt es nur fuer Python; eine laengere Laufzeit laesst sich am Text nicht erkennen.
+  assert.deepEqual(codeWuensche("import numpy", "javascript", alle), []);
+  assert.deepEqual(codeWuensche("while True: pass", "python", alle), []);
+});
+
+test("erlaubnisStand: was schon für die Aufgabe erlaubt ist und wonach noch gefragt werden muss", async () => {
+  const { erlaubnisStand } = await import("./aufgabe.js");
+  assert.deepEqual(erlaubnisStand(["pakete", "diagramm"], ["pakete"]), { erlaubt: ["pakete"], offen: ["diagramm"] });
+  assert.deepEqual(erlaubnisStand(["pakete"], ["pakete", "daten"]), { erlaubt: ["pakete"], offen: [] });
+  assert.deepEqual(erlaubnisStand([], ["pakete"]), { erlaubt: [], offen: [] });
+  assert.deepEqual(erlaubnisStand(["daten"], undefined), { erlaubt: [], offen: ["daten"] });
+});
+
+test("erlaubnisFrage: ein Satz, der sagt, was der Code möchte", async () => {
+  const { erlaubnisFrage } = await import("./aufgabe.js");
+  assert.equal(erlaubnisFrage(["pakete"]), "Dieser Code möchte Pakete laden (numpy, matplotlib).");
+  assert.equal(erlaubnisFrage(["pakete", "diagramm"]),
+    "Dieser Code möchte Pakete laden (numpy, matplotlib) und ein Diagramm ausgeben.");
+  assert.equal(erlaubnisFrage(["pakete", "diagramm", "daten"]),
+    "Dieser Code möchte Pakete laden (numpy, matplotlib), ein Diagramm ausgeben und Übungsdaten lesen.");
+  assert.equal(erlaubnisFrage(["lange_laufzeit"]), "Dieser Code möchte länger laufen (bis 20 Sekunden).");
+});
+
+test("laengerAnbieten: nach abgelaufener Zeit, wenn die Aufgabe es zulässt und es noch nicht galt", async () => {
+  const { laengerAnbieten } = await import("./aufgabe.js");
+  const ab = { zeit_ueberschritten: true, erlaubt: [] };
+  assert.equal(laengerAnbieten(ab, ["lange_laufzeit"]), true);
+  assert.equal(laengerAnbieten(ab, ["pakete"]), false);
+  assert.equal(laengerAnbieten({ zeit_ueberschritten: true, erlaubt: ["lange_laufzeit"] }, ["lange_laufzeit"]), false);
+  assert.equal(laengerAnbieten({ zeit_ueberschritten: false, erlaubt: [] }, ["lange_laufzeit"]), false);
+  assert.equal(laengerAnbieten(null, ["lange_laufzeit"]), false);
+});
+
+test("laufBilder: nur brauchbare PNG-Einträge bleiben", async () => {
+  const { laufBilder } = await import("./aufgabe.js");
+  const gut = { name: "kurve.png", png_base64: "iVBORw0KGgo=" };
+  assert.deepEqual(laufBilder({ bilder: [gut, { name: "x.png" }, { name: 5, png_base64: "a" }, null, { name: "b.png", png_base64: "<script>" }] }),
+    [{ name: "kurve.png", base64: "iVBORw0KGgo=" }]);
+  assert.deepEqual(laufBilder({}), []);
+  assert.deepEqual(laufBilder(null), []);
+});
+
+test("laufText: fehlendes Paket ohne Erlaubnis bekommt einen Hinweis", async () => {
+  const { laufText } = await import("./aufgabe.js");
+  const daten = { exit: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'numpy'", dauer_ms: 20, erlaubt: [] };
+  assert.match(laufText(daten), /Für numpy und matplotlib braucht dieser Code die Erlaubnis „Pakete“\./);
+  assert.doesNotMatch(laufText({ ...daten, erlaubt: ["pakete"] }), /Erlaubnis/);
+  assert.doesNotMatch(laufText({ ...daten, stderr: "ModuleNotFoundError: No module named 'pandas'" }), /Erlaubnis/);
+});
+
+test("Code-Karte: Rückfrage vor dem Lauf und vor der Abgabe, Bilder als Objekt-Adressen", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  // Ausführen und Abgeben klären die Erlaubnis über dieselbe Funktion.
+  assert.match(js, /const erlaubt = await codeErlaubnis\(task, sprache, quelltext, frage, zusaetzlich\);/);
+  assert.match(js, /codeErlaubnis\(task, sprache\.value, feld\.value, frage\)\.then\(\(erlaubt\) => antwortSenden\(antwort, erlaubt\)\)/);
+  for (const knopf of ["erlaubnis-einmal", "erlaubnis-aufgabe", "erlaubnis-nein", "laenger-laufen"]) {
+    assert.ok(js.includes(`id: "${knopf}"`), knopf);
+  }
+  // „Ablehnen“ gibt nur weiter, was für die Aufgabe schon erlaubt war.
+  assert.match(js, /fertig\(\[\.\.\.\(antwort === "nein" \? erlaubt : wuensche\), \.\.\.fest\]\);/);
+  // Nur „Für diese Aufgabe erlauben“ merkt sich die Zustimmung.
+  assert.match(js, /if \(antwort === "aufgabe"\) \{\s+z\.codeErlaubt\.set\(/);
+  // Bilder: keine data:-Adressen (die Seite erlaubt nur 'self' und blob:).
+  assert.ok(js.includes("URL.createObjectURL(new Blob([roh], { type: \"image/png\" }))"));
+  assert.ok(!js.includes("data:image"));
 });

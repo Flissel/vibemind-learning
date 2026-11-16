@@ -650,6 +650,11 @@ export function laufText(daten) {
   else if (daten.exit === 0) schluss = `Fertig (${ms})`;
   else schluss = `Beendet mit Fehler (Code ${daten.exit}, ${ms})`;
   if (daten.abgeschnitten === true) schluss += " Die Ausgabe wurde gekürzt.";
+  // Ohne die Erlaubnis „Pakete“ sind numpy und matplotlib im Lauf nicht vorhanden.
+  const ohnePakete = !(Array.isArray(daten.erlaubt) && daten.erlaubt.includes("pakete"));
+  if (ohnePakete && /ModuleNotFoundError: No module named '(?:numpy|matplotlib)/.test(daten.stderr)) {
+    schluss += " Für numpy und matplotlib braucht dieser Code die Erlaubnis „Pakete“.";
+  }
   return `${ausgabe || "(keine Ausgabe)"}\n\n— ${schluss}`;
 }
 // Kursende: „2 von 4 Aufgaben richtig, 1 teilweise.“ aus der Zusammenfassung der Sitzung. Das Urteil je Aufgabe
@@ -672,4 +677,64 @@ export function codeVorgabe(task) {
   const p = task?.presentation;
   const sprache = CODE_SPRACHEN.some((s) => s.wert === p?.sprache) ? p.sprache : null;
   return { sprache, startcode: typeof p?.startcode === "string" ? p.startcode : "" };
+}
+
+// ---- Erlaubnisse für Programmieraufgaben -------------------------------------------------------------
+// Ein Lauf darf zunächst nur rechnen und Text ausgeben. Die Aufgabe nennt, was höchstens erlaubt werden kann
+// (`presentation.erlaubnisse`); die Person stimmt vor dem Lauf zu. Durchgesetzt wird beides in der Brücke und im
+// Code-Läufer, nicht hier.
+export const CODE_ERLAUBNISSE = ["pakete", "diagramm", "lange_laufzeit", "daten"];
+const ERLAUBNIS_WORT = {
+  pakete: "Pakete laden (numpy, matplotlib)",
+  diagramm: "ein Diagramm ausgeben",
+  lange_laufzeit: "länger laufen (bis 20 Sekunden)",
+  daten: "Übungsdaten lesen",
+};
+
+/** Was die Aufgabe höchstens zulässt: nur bekannte Erlaubnisse, in fester Reihenfolge. */
+export function codeObergrenze(task) {
+  const roh = task?.presentation?.erlaubnisse;
+  return Array.isArray(roh) ? CODE_ERLAUBNISSE.filter((e) => roh.includes(e)) : [];
+}
+
+/**
+ * Was der Code dem Text nach braucht, innerhalb der Obergrenze. Pakete: ein Import von numpy oder matplotlib
+ * (nur Python). Diagramm und Übungsdaten: der Ordnername `ausgabe/` bzw. `daten/`. Eine längere Laufzeit lässt sich
+ * am Text nicht erkennen; sie wird nach abgelaufener Zeit angeboten (`laengerAnbieten`).
+ */
+export function codeWuensche(quelltext, sprache, obergrenze) {
+  const text = String(quelltext ?? "");
+  const erkannt = {
+    pakete: sprache === "python" && /^[ \t]*(?:import|from)[ \t]+(?:numpy|matplotlib)\b/m.test(text),
+    diagramm: /\bausgabe\//.test(text) || /\bsavefig\s*\(/.test(text),
+    daten: /\bdaten\//.test(text),
+  };
+  return CODE_ERLAUBNISSE.filter((e) => erkannt[e] === true && obergrenze.includes(e));
+}
+
+/** `erlaubt`: Wünsche, die für diese Aufgabe schon gemerkt sind; `offen`: wonach noch gefragt werden muss. */
+export function erlaubnisStand(wuensche, gemerkt) {
+  const schon = Array.isArray(gemerkt) ? gemerkt : [];
+  return { erlaubt: wuensche.filter((e) => schon.includes(e)), offen: wuensche.filter((e) => !schon.includes(e)) };
+}
+
+/** „Dieser Code möchte Pakete laden (numpy, matplotlib) und ein Diagramm ausgeben.“ */
+export function erlaubnisFrage(wuensche) {
+  const teile = wuensche.map((e) => ERLAUBNIS_WORT[e]).filter(Boolean);
+  const liste = teile.length > 1 ? `${teile.slice(0, -1).join(", ")} und ${teile.at(-1)}` : teile[0] ?? "";
+  return `Dieser Code möchte ${liste}.`;
+}
+
+/** Die Zeit lief ab, die Aufgabe ließe mehr zu, und die längere Laufzeit galt bei diesem Lauf noch nicht. */
+export function laengerAnbieten(daten, obergrenze) {
+  return daten?.zeit_ueberschritten === true && obergrenze.includes("lange_laufzeit")
+    && !(Array.isArray(daten.erlaubt) && daten.erlaubt.includes("lange_laufzeit"));
+}
+
+/** Die Bilder eines Laufs (Name und Base64 des PNG); nur Einträge mit Namen und sauberem Base64. */
+export function laufBilder(daten) {
+  const roh = Array.isArray(daten?.bilder) ? daten.bilder : [];
+  return roh
+    .filter((b) => typeof b?.name === "string" && typeof b?.png_base64 === "string" && /^[A-Za-z0-9+/]+=*$/.test(b.png_base64))
+    .map((b) => ({ name: b.name, base64: b.png_base64 }));
 }

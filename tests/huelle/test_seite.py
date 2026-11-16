@@ -56,7 +56,8 @@ def test_seite_hat_csp_und_keine_adressen() -> None:
         assert "script-src 'self';" in csp and "font-src 'self';" in csp
         assert "jsdelivr" not in csp and "https://cdn" not in csp
         assert "style-src 'self' 'unsafe-inline'" in csp
-        assert "connect-src 'self'" in csp and "img-src 'self'" in csp
+        assert "connect-src 'self'" in csp and "img-src 'self' blob:" in csp  # blob: fuer Diagramme eines Code-Laufs
+        assert "data:" not in csp
         assert f"frame-src https://{HOST}:8443 http://127.0.0.1:8151" in csp and "frame-src 'self'" not in csp
         assert "frame-ancestors 'none'" in csp and "default-src 'none'" in csp
         assert "unsafe-eval" not in csp and "script-src 'unsafe-inline'" not in csp

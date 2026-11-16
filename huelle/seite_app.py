@@ -51,7 +51,8 @@ def seiten_csp(flaechen_herkuenfte: Iterable[str]) -> bytes:
         "form-action 'self'",
         "frame-ancestors 'none'",
         "connect-src 'self'",
-        "img-src 'self'",
+        # blob: fuer die Diagramme eines Code-Laufs (die Seite baut sie selbst aus der Antwort der Bruecke).
+        "img-src 'self' blob:",
         "frame-src " + " ".join(flaechen_herkuenfte),
     ]).encode()
 

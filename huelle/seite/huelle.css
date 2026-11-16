@@ -161,5 +161,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 #kaertchen-abgeben:disabled { opacity: .45; }
 
 /* Code-Ausführung bei Programmieraufgaben */
+.karte .code-frage { margin: .5rem 0; padding: .5rem .6rem; border-left: 3px solid #b7791f; background: #fff8e6; }
+.karte .code-frage p { margin: 0 0 .4rem; }
+.karte .code-bilder img { display: block; max-width: 100%; height: auto; margin: .5rem 0; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff; }
 .karte .code-lauf { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .5rem 0; }
 .karte .code-ausgabe { margin: .5rem 0; padding: .5rem .6rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #f6f5f1; font-family: ui-monospace, Consolas, monospace; font-size: .85rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; }

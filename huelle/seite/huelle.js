@@ -1,6 +1,7 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, codeVorgabe, eingabeHinweis, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
+  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, codeObergrenze, codeVorgabe, codeWuensche, eingabeHinweis,
+  erlaubnisFrage, erlaubnisStand, laengerAnbieten, laufBilder, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenZustand,
   meldungFuer,
@@ -30,6 +31,11 @@ const VERBINDEN_MS = 1500; // nach dem Laden der Gruppenfläche: so lange warten
 const TEXT = {
   codeLauf: "„Ausführen“ startet den Inhalt des Feldes als Programm. Das zählt nicht als Abgabe.",
   codeLaeuft: "Das Programm läuft …",
+  erlaubnisEinmal: "Einmal erlauben",
+  erlaubnisAufgabe: "Für diese Aufgabe erlauben",
+  erlaubnisNein: "Ablehnen",
+  zeitAbgelaufen: "Das Programm lief länger als 5 Sekunden. Diese Aufgabe lässt bis zu 20 Sekunden zu.",
+  laengerLaufen: "Mit längerer Laufzeit neu starten",
   nichtErreichbar: "Learning ist gerade nicht erreichbar. Ihre Fläche bleibt erhalten.",
   schonAbgegeben: "Diese Aufgabe wurde schon abgegeben. Ich lade den aktuellen Stand.",
   keinKurs: "Dieser Kurs hat noch keine freigegebenen Aufgaben.",
@@ -102,6 +108,7 @@ const z = {
   mcpAutoVerbunden: false, // „Fläche verbinden“ wurde auf PenEchos Meldung schon einmal ausgelöst (höchstens einmal je Laden)
   kaertchen: null, // {taskId, zustand}: Auswahl der Begriffs-Kärtchen der gezeigten Aufgabe
   kaertchenAbgegeben: new Map(), // "<Sitzung>|<Aufgabe>" -> abgegebene Auswahl; sie bleibt nach dem Abgeben sichtbar
+  codeErlaubt: new Map(), // "<Sitzung>|<Aufgabe>" -> Erlaubnisse, denen die Person „für diese Aufgabe“ zugestimmt hat
   rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
 
@@ -483,7 +490,7 @@ async function listenKorrektur() {
 }
 
 // Antwort aus der Seitenleiste (Typ `code`) für die gewählte Aufgabe; danach Rückmeldung, kein Auto-Weiter.
-async function listenAntworten(antwort) {
+async function listenAntworten(antwort, erlaubt = []) {
   const t = z.turn;
   const nummer = z.gewaehlt;
   if (!t || nummer === null || z.busy) return;
@@ -491,7 +498,8 @@ async function listenAntworten(antwort) {
   banner("");
   const token = z.token;
   const nr = neueAnfrage();
-  const r = await api("POST", `/sitzungen/${t.session_id}/antwort`, { nummer, answer: antwort });
+  const r = await api("POST", `/sitzungen/${t.session_id}/antwort`,
+    { nummer, answer: antwort, ...(erlaubt.length > 0 ? { erlaubt } : {}) });
   if (token !== z.token) return;
   sperren(false);
   if (!r.ok) { banner(listenMeldung(r.daten)); listenFehler(r, nr); return; }
@@ -737,15 +745,20 @@ function karteAufgabe() {
   }
   if (vorgabe.startcode) feld.value = vorgabe.startcode;
   const ausgabe = el("pre", { id: "code-ausgabe", class: "code-ausgabe", role: "status", hidden: true });
+  // Rückfrage vor einem Lauf, der mehr als die Grundstufe braucht, und die Bilder eines Laufs.
+  const frage = el("div", { id: "code-frage", class: "code-frage", role: "group", "aria-label": "Erlaubnis", hidden: true });
+  const bilder = el("div", { id: "code-bilder", class: "code-bilder", hidden: true });
   const starten = el("button", { type: "button", id: "ausfuehren", text: "Ausführen",
-    onclick: () => void codeAusfuehren(sprache.value, feld.value, starten, ausgabe) });
+    onclick: () => void codeAusfuehren(task, sprache.value, feld.value, { knopf: starten, ausgabe, frage, bilder }) });
   const form = el("form", { novalidate: false },
     setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
     fallBlock(task, math),
     el("div", {}, feld, el("p", { class: "hinweistext", text: TEXT.rechnen })),
     el("div", { class: "code-lauf" }, sprache, starten),
     el("p", { class: "hinweistext", text: TEXT.codeLauf }),
+    frage,
     ausgabe,
+    bilder,
     sperre,
     el("div", { class: "knoepfe" },
       el("button", { type: "submit", class: "haupt-knopf", id: "abgeben", text: "Abgeben" }),
@@ -753,21 +766,80 @@ function karteAufgabe() {
   form.addEventListener("submit", (ereignis) => {
     ereignis.preventDefault();
     const antwort = antwortAus(task, { text: feld.value });
-    if (antwort) void antwortSenden(antwort);
+    if (!antwort) return;
+    // Die Tests laufen mit dem, was die Person für diesen Code erlaubt; dieselbe Rückfrage wie bei „Ausführen“.
+    void codeErlaubnis(task, sprache.value, feld.value, frage).then((erlaubt) => antwortSenden(antwort, erlaubt));
   });
   $("karte").replaceChildren(form);
 }
 
 // Führt den Inhalt des Antwortfeldes einmal aus (Route `/ausfuehren`, läuft abgeschottet auf dem PC der Kursleitung).
-async function codeAusfuehren(sprache, quelltext, knopf, ausgabe) {
+async function codeAusfuehren(task, sprache, quelltext, teile, zusaetzlich = []) {
   const t = z.turn;
   if (!t || !quelltext.trim()) return;
+  const { knopf, ausgabe, frage, bilder } = teile;
+  const erlaubt = await codeErlaubnis(task, sprache, quelltext, frage, zusaetzlich);
   knopf.disabled = true;
   ausgabe.hidden = false;
   ausgabe.textContent = TEXT.codeLaeuft;
-  const r = await api("POST", `/sitzungen/${t.session_id}/ausfuehren`, { sprache, quelltext });
+  for (const bild of bilder.querySelectorAll("img")) URL.revokeObjectURL(bild.src);
+  bilder.replaceChildren();
+  bilder.hidden = true;
+  const auftrag = { sprache, quelltext, erlaubt };
+  if (z.liste && z.gewaehlt !== null) auftrag.nummer = z.gewaehlt;
+  const r = await api("POST", `/sitzungen/${t.session_id}/ausfuehren`, auftrag);
   ausgabe.textContent = r.ok ? laufText(r.daten) : (r.daten?.meldung ?? TEXT.nichtErreichbar);
+  if (r.ok) {
+    const gezeigt = laufBilder(r.daten).map((b) => {
+      const roh = Uint8Array.from(atob(b.base64), (zeichen) => zeichen.charCodeAt(0));
+      return el("img", { src: URL.createObjectURL(new Blob([roh], { type: "image/png" })), alt: `Diagramm ${b.name}` });
+    });
+    if (gezeigt.length > 0) {
+      bilder.replaceChildren(...gezeigt);
+      bilder.hidden = false;
+    }
+    if (laengerAnbieten(r.daten, codeObergrenze(task))) {
+      // Der Klick ist die Zustimmung für diesen einen Lauf.
+      frage.replaceChildren(
+        el("p", { text: TEXT.zeitAbgelaufen }),
+        el("div", { class: "knoepfe" }, el("button", {
+          type: "button", id: "laenger-laufen", text: TEXT.laengerLaufen,
+          onclick: () => { frage.hidden = true; void codeAusfuehren(task, sprache, quelltext, teile, ["lange_laufzeit"]); },
+        })));
+      frage.hidden = false;
+    }
+  }
   knopf.disabled = false;
+}
+
+// Klärt vor einem Lauf oder einer Abgabe, was der Code über die Grundstufe hinaus darf: was er dem Text nach braucht
+// (innerhalb der Obergrenze der Aufgabe) und wozu die Person zustimmt. `zusaetzlich` gilt als schon zugestimmt.
+// Liefert die Erlaubnisse für diesen einen Lauf; durchgesetzt werden sie in der Brücke und im Code-Läufer.
+function codeErlaubnis(task, sprache, quelltext, frage, zusaetzlich = []) {
+  const obergrenze = codeObergrenze(task);
+  const fest = zusaetzlich.filter((e) => obergrenze.includes(e));
+  const wuensche = codeWuensche(quelltext, sprache, obergrenze).filter((e) => !fest.includes(e));
+  const schluessel = `${z.turn?.session_id}|${task.id}`;
+  const { erlaubt, offen } = erlaubnisStand(wuensche, z.codeErlaubt.get(schluessel));
+  if (offen.length === 0) return Promise.resolve([...erlaubt, ...fest]);
+  return new Promise((fertig) => {
+    const wahl = (antwort) => () => {
+      frage.hidden = true;
+      frage.replaceChildren();
+      if (antwort === "aufgabe") {
+        z.codeErlaubt.set(schluessel, [...new Set([...(z.codeErlaubt.get(schluessel) ?? []), ...wuensche])]);
+      }
+      fertig([...(antwort === "nein" ? erlaubt : wuensche), ...fest]);
+    };
+    frage.replaceChildren(
+      el("p", { text: erlaubnisFrage(offen) }),
+      el("div", { class: "knoepfe" },
+        el("button", { type: "button", id: "erlaubnis-einmal", text: TEXT.erlaubnisEinmal, onclick: wahl("einmal") }),
+        el("button", { type: "button", id: "erlaubnis-aufgabe", text: TEXT.erlaubnisAufgabe, onclick: wahl("aufgabe") }),
+        el("button", { type: "button", id: "erlaubnis-nein", text: TEXT.erlaubnisNein, onclick: wahl("nein") })));
+    frage.hidden = false;
+    frage.querySelector("button")?.focus();
+  });
 }
 
 function absaetze(text) {
@@ -1073,12 +1145,13 @@ async function kursOeffnen(kurs, aktion = "oeffnen", rahmenNeu = true) {
   void notizenLaden();
 }
 
-async function antwortSenden(antwort) {
-  if (z.liste) { await listenAntworten(antwort); return; }
+async function antwortSenden(antwort, erlaubt = []) {
+  if (z.liste) { await listenAntworten(antwort, erlaubt); return; }
   const t = z.turn;
   sperren(true);
   banner("");
-  const r = await api("POST", `/sitzungen/${t.session_id}/antwort`, { revision: t.session_revision, answer: antwort });
+  const r = await api("POST", `/sitzungen/${t.session_id}/antwort`,
+    { revision: t.session_revision, answer: antwort, ...(erlaubt.length > 0 ? { erlaubt } : {}) });
   if (!r.ok) { sperren(false); fehlerBehandeln(r); return; }
   rueckmeldungZeigen(r.daten);
 }

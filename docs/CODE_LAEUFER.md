@@ -98,9 +98,43 @@ Regeln:
 - Ist der Läufer beim Abgeben nicht erreichbar, wird nicht abgegeben (503).
 - Ältere `code`-Aufgaben ohne Testfälle verhalten sich wie bisher.
 
+## Erlaubnisse
+
+Ein Lauf darf zunächst nur rechnen und Text ausgeben. Vier Erlaubnisse öffnen einzelne Dinge; das Netz bleibt
+immer zu.
+
+| Kennung | Öffnet | Durchsetzung |
+|---|---|---|
+| `pakete` | `numpy`, `matplotlib` (Python) | Ohne sie liegt im Lauf ein leeres tmpfs über dem Paketordner von Python. |
+| `diagramm` | bis zu 3 PNG-Bilder (je höchstens 1,5 MB) aus dem Ordner `ausgabe` | `aufseher.py` läuft in der Sandbox, startet das Programm und reicht danach geprüfte Bilder über einen eigenen Kanal hinaus; `lauf.py` und der Host prüfen sie erneut. |
+| `lange_laufzeit` | 20 statt 5 Sekunden | Host und `lauf.py` lehnen `zeit_s > 5` ohne sie ab. |
+| `daten` | Textdateien der Aufgabe unter `daten/`, nur lesend | Die Dateien kommen mit dem Auftrag und werden je Lauf angelegt (höchstens 5, zusammen 200.000 Zeichen). |
+
+Wer was festlegt:
+
+- **Obergrenze je Aufgabe:** `erlaubnisse` (und `dateien`) stehen an der Werkstatt-Aufgabe und werden mit ihr
+  freigegeben. Lernende sehen die Erlaubnisse und die Dateinamen (`presentation`), nicht die Dateiinhalte.
+- **Zustimmung der Person:** Die Seite erkennt am Code, was er braucht (Import von `numpy`/`matplotlib`, die
+  Ordnernamen `ausgabe/` und `daten/`), und fragt vor dem Lauf und vor der Abgabe: einmal erlauben, für diese
+  Aufgabe erlauben, ablehnen. Läuft die Zeit ab, bietet sie die längere Laufzeit an.
+- **Was gilt:** die Zustimmung, geschnitten mit der Obergrenze. Die Brücke liest Obergrenze und Dateien bei
+  Learning (`learning_task_bewertungsdaten`), nie aus dem Body. Die Antwort von `/ausfuehren` nennt in `erlaubt`,
+  was galt, und trägt die Bilder in `bilder`.
+- **Musterlösung:** `werkstatt_code_pruefen` lässt sie mit der ganzen Obergrenze laufen. Der Fingerabdruck des
+  Testlaufs schließt Erlaubnisse und Dateien ein, sobald es welche gibt.
+
+Die Rückfrage an die Person macht sichtbar, was ihr Code tut. Den Schutz liefern die Obergrenze und die
+Abschottung: der Code läuft auf dem PC der Kursleitung, nicht auf dem Gerät der Person.
+
+Gemessen am 16.11.2026: `import numpy` 0,1 s, ein Diagramm 0,4–0,7 s, beides innerhalb der 512 MB je Lauf.
+
+Die Seite zeigt Diagramme als `blob:`-Adressen; ihre Richtlinie erlaubt dafür `img-src 'self' blob:`.
+
 ## Offen
 
-- Erlaubnisse je Lauf (Pakete, Diagramme, weitere Hilfsfunktionen) mit Rückfrage an die Person.
+- Bild-KI als Hilfsfunktion (ein Bild dauert rund zwei Minuten und passt nicht in einen Lauf).
+- Weitere Pakete; Pakete für JavaScript.
+- Tests vergleichen nur die Textausgabe; Diagramme sieht die bewertende KI nicht.
 - Im Prüfungsmodus ist die Ausführung nicht gesondert geregelt (die Hülle startet bisher nur Übungen); Learning gibt
   dort keine Testfälle heraus.
 - `code`-Aufgaben haben keine Vorbewertung: die Abgabe wird sofort gebucht, es gibt keinen zweiten Versuch.
