@@ -1,7 +1,7 @@
 # Richtet die WSL2-Distro `vibemind-code` fuer den Code-Laeufer ein oder zieht sie nach. Braucht keine Adminrechte.
 # Beruehrt weder `.wslconfig` noch andere Distros; es gibt kein `wsl --shutdown`.
 #
-#   pwsh -File einrichten.ps1            # anlegen (falls noetig) und lauf.py einspielen
+#   pwsh -File einrichten.ps1            # anlegen (falls noetig), Pakete und lauf.py/aufseher.py einspielen
 #   pwsh -File einrichten.ps1 -Neu       # Distro verwerfen und frisch aufbauen
 param([switch]$Neu)
 
@@ -39,6 +39,8 @@ In-Distro @'
 set -e
 apk update -q
 apk add -q python3 nodejs bubblewrap
+# Nur mit der Erlaubnis `pakete` sichtbar: ohne sie verdeckt lauf.py den Paketordner von Python.
+apk add -q py3-numpy py3-matplotlib
 # Eigene Benutzer-ID: alle WSL-Distros teilen einen Kernel, die Prozessgrenze (RLIMIT_NPROC) zaehlt je ID ueber
 # alle Distros. Mit der ueblichen 1000 zaehlten die Prozesse der Ubuntu-Distro mit (bwrap: EAGAIN).
 if [ "$(id -u laeufer 2>/dev/null)" != "61234" ]; then
@@ -60,10 +62,12 @@ EOF
 mkdir -p /usr/local/lib/vibemind
 '@
 
-# lauf.py einspielen (gehoert root, fuer `laeufer` nur lesbar).
-$quelle = Join-Path $PSScriptRoot 'lauf.py'
-(Get-Content $quelle -Raw) | & wsl.exe -d $Distro -u root --cd / -- sh -c "tr -d '\r' > /usr/local/lib/vibemind/lauf.py && chmod 644 /usr/local/lib/vibemind/lauf.py && chown root:root /usr/local/lib/vibemind/lauf.py"
-if ($LASTEXITCODE -ne 0) { throw 'lauf.py nicht eingespielt' }
+# lauf.py und aufseher.py einspielen (gehoeren root, fuer `laeufer` nur lesbar).
+foreach ($name in 'lauf.py', 'aufseher.py') {
+    $quelle = Join-Path $PSScriptRoot $name
+    (Get-Content $quelle -Raw) | & wsl.exe -d $Distro -u root --cd / -- sh -c "tr -d '\r' > /usr/local/lib/vibemind/$name && chmod 644 /usr/local/lib/vibemind/$name && chown root:root /usr/local/lib/vibemind/$name"
+    if ($LASTEXITCODE -ne 0) { throw "$name nicht eingespielt" }
+}
 
 & wsl.exe --terminate $Distro | Out-Null   # wsl.conf gilt erst nach dem Neustart dieser einen Distro
 
@@ -73,4 +77,13 @@ $ergebnis = $probe | & wsl.exe -d $Distro -u laeufer --cd / -- python3 /usr/loca
 if ($ergebnis.exit -ne 0 -or $ergebnis.stdout -notmatch '^kein netz\s+False ') { throw "Probe fehlgeschlagen: $($ergebnis | ConvertTo-Json -Compress)" }
 $mounts = (& wsl.exe -d $Distro -u laeufer --cd / -- sh -c "grep -c drvfs /proc/mounts; ls /mnt/c 2>/dev/null | wc -l") -join ' '
 if ($mounts -ne '0 0') { throw "Windows-Laufwerke sichtbar: $mounts" }
+# Probe der Erlaubnisse: ohne `pakete` kein numpy, mit `pakete` und `diagramm` ein Bild.
+function Lauf-Probe { param([hashtable]$Auftrag)
+    ($Auftrag | ConvertTo-Json -Compress -Depth 5) | & wsl.exe -d $Distro -u laeufer --cd / -- python3 /usr/local/lib/vibemind/lauf.py | ConvertFrom-Json
+}
+$ohne = Lauf-Probe @{ sprache = 'python'; quelltext = 'import numpy'; eingabe = ''; zeit_s = 5 }
+if ($ohne.exit -eq 0 -or $ohne.stderr -notmatch 'ModuleNotFoundError') { throw 'Pakete sind ohne Erlaubnis sichtbar' }
+$bild = Lauf-Probe @{ sprache = 'python'; eingabe = ''; zeit_s = 5; erlaubnisse = @('pakete', 'diagramm')
+    quelltext = "import matplotlib.pyplot as plt`nplt.plot([1, 2, 3])`nplt.savefig('ausgabe/probe.png', dpi=50)`nprint('ok')" }
+if ($bild.exit -ne 0 -or @($bild.bilder).Count -ne 1) { throw "Diagramm-Probe fehlgeschlagen: $($bild.stderr)" }
 "Code-Laeufer bereit: $Distro (" + ((& wsl.exe -d $Distro -u laeufer --cd / -- sh -c 'python3 --version; node --version') -join ', ') + ')'
