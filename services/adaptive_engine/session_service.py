@@ -49,7 +49,7 @@ from spaces.learning.services.evaluation.rubric import (
     rubric_contract_violation,
     rubric_score,
 )
-from spaces.learning.services.evaluation.code_tests import TestErgebnis, Testfall
+from spaces.learning.services.evaluation.code_tests import ERLAUBNISSE, Datei, TestErgebnis, Testfall
 from spaces.learning.services.evaluation.urteil import RICHTIG_AB_RUBRIK, urteil
 from spaces.learning.services.evaluation.schemas import (
     ChoiceOption,
@@ -291,9 +291,12 @@ class Bewertungsdaten(BaseModel):
     # Fixed solutions: what the handwriting reader gets, the format of its `roh` reading and
     # the label table (label -> shown text). No ids, no solution: Learning maps and compares.
     antwortformat: dict[str, object] = Field(default_factory=dict)
-    # Code tasks: the language and the hidden test cases, for the code runner at the Hülle.
+    # Code tasks: the language and the hidden test cases, for the code runner at the Hülle; what the
+    # learner's program may be allowed (upper bound) and the exercise files with their contents.
     sprache: str | None = None
     tests: list[Testfall] = Field(default_factory=list)
+    erlaubnisse: list[str] = Field(default_factory=list)
+    dateien: list[Datei] = Field(default_factory=list)
 
 
 class ListenEintrag(BaseModel):
@@ -650,6 +653,18 @@ class AdaptiveSessionService:
         return [Testfall.model_validate(t) for t in roh] if isinstance(roh, list) else []
 
     @staticmethod
+    def _code_erlaubnisse(darstellung: dict[str, object]) -> list[str]:
+        """The task's upper bound of permissions, known ones only and in their fixed order."""
+        roh = darstellung.get("erlaubnisse")
+        gesetzt = set(roh) if isinstance(roh, list) and all(isinstance(e, str) for e in roh) else set()
+        return [e for e in ERLAUBNISSE if e in gesetzt]
+
+    @staticmethod
+    def _code_dateien(item: AdaptiveItem) -> list[Datei]:
+        roh = item.scoring_config.get("dateien")
+        return [Datei.model_validate(d) for d in roh] if isinstance(roh, list) else []
+
+    @staticmethod
     def _tests_deckel(bewertung: _Bewertung) -> _Bewertung:
         """Not every test passed (or none ran): the answer can be partial at best."""
         codes = tuple(
@@ -690,6 +705,8 @@ class AdaptiveSessionService:
                     aufgabe=self._public_task(item, row.id).model_dump(mode="json"),
                     sprache=sprache if isinstance(sprache, str) else None,
                     tests=self._code_tests(item),
+                    erlaubnisse=self._code_erlaubnisse(darstellung),
+                    dateien=self._code_dateien(item),
                 )
             if item.item_type in _DETERMINISTIC_TYPES:
                 art: Literal["rubric", "deterministic"] = "deterministic"
@@ -2216,8 +2233,9 @@ class AdaptiveSessionService:
             "fill_in": frozenset({"template", "shell", "image", "width", "height", "rect", "more"}),
             "numeric": frozenset({"unit"}),
             "penecho_canvas": frozenset({"canvas_href"}),
-            # The language and the starting code; the test cases (`scoring_config.tests`) never travel.
-            "code": frozenset({"sprache", "startcode"}),
+            # The language, the starting code, what the program may be allowed and the names of the
+            # exercise files; test cases and file contents (`scoring_config`) never travel.
+            "code": frozenset({"sprache", "startcode", "erlaubnisse", "dateien"}),
         }
         # `math`: the Werkstatt switches formula typesetting on for math courses, any type.
         allowed = allowed_by_type.get(item.item_type, frozenset()) | {"math"}

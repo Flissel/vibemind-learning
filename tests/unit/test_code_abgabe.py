@@ -123,3 +123,28 @@ def test_code_aufgabe_ohne_tests_bleibt_wie_bisher(tmp_path: Path) -> None:
     assert nach.feedback.state == "correct"
     assert rubrik.calls[0][0].response == {"text": "print(12)"}
     engine.dispose()
+
+
+def test_erlaubnisse_und_dateinamen_sind_sichtbar_die_inhalte_gehen_nur_an_die_huelle(tmp_path: Path) -> None:
+    spec = _code_item()
+    config = dict(spec["scoring_config"])  # type: ignore[arg-type]
+    config["presentation"] = {"sprache": "python", "startcode": "", "erlaubnisse": ["pakete", "daten"],
+                              "dateien": ["umsatz.csv"], "tests": "darf nie durch"}
+    config["dateien"] = [{"name": "umsatz.csv", "inhalt": "geheim;1\n"}]
+    engine, factory, course_id, _ = _store(tmp_path, [{**spec, "scoring_config": config}] * 2)
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
+    turn = _start(service, course_id)
+    assert turn.task.presentation == {"sprache": "python", "startcode": "", "erlaubnisse": ["pakete", "daten"],
+                                      "dateien": ["umsatz.csv"]}
+    assert "geheim" not in turn.model_dump_json()
+    daten = service.bewertungsdaten(turn.session_id, ACTOR, turn.session_revision)
+    assert daten.erlaubnisse == ["pakete", "daten"]
+    assert [d.model_dump() for d in daten.dateien] == [{"name": "umsatz.csv", "inhalt": "geheim;1\n"}]
+    engine.dispose()
+
+
+def test_bewertungsdaten_ohne_erlaubnisse_bleiben_leer(tmp_path: Path) -> None:
+    engine, _, service, _, turn = _dienst(tmp_path)
+    daten = service.bewertungsdaten(turn.session_id, ACTOR, turn.session_revision)
+    assert daten.erlaubnisse == [] and daten.dateien == []
+    engine.dispose()
