@@ -558,3 +558,19 @@ def test_code_braucht_quelle_und_darf_python_bloecke_zeigen() -> None:
     assert codes(aufgabe_pruefen(geprueft, sources=SRC, fach="terminal")) == []
     ohne_sprache = _code(prompt="So:\n```\nprint(1)\n```", testlauf=_lauf(_code()))
     assert "codeblock_ohne_shell" in codes(aufgabe_pruefen(ohne_sprache, sources=SRC, fach="terminal"))
+
+
+def test_testlauf_allein_laesst_die_befunde_des_pruefers_stehen() -> None:
+    # Abnahme 16.11.: der Testlauf der Musterloesung loeschte still einen inhaltlichen Befund des Pruefer-Modells,
+    # weil das Aendern einer Aufgabe ohne das Pruefer-Modell neu prueft.
+    from spaces.learning.services.werkstatt.pruefung import pruefer_befunde_behalten
+
+    vorher = [{"code": "code_ungeprueft", "text": "u"}, {"code": "pruefer_schwellenwert_unbelegt", "text": "p"},
+              {"code": "address_mixed", "text": "a"}]
+    neu = [{"code": "address_mixed", "text": "a"}]
+    behalten = pruefer_befunde_behalten({"testlauf": {}}, vorher, neu)
+    assert [b["code"] for b in behalten] == ["address_mixed", "pruefer_schwellenwert_unbelegt"]
+    # Jede inhaltliche Aenderung prueft wie bisher neu: der Pruefer hat diesen Stand nicht gesehen.
+    assert pruefer_befunde_behalten({"testlauf": {}, "prompt": "x"}, vorher, neu) == neu
+    assert pruefer_befunde_behalten({"prompt": "x"}, vorher, neu) == neu
+    assert pruefer_befunde_behalten({"testlauf": {}}, [], neu) == neu

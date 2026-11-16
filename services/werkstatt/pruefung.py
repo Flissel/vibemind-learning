@@ -4,6 +4,7 @@ quality gate, applied to a single task, each finding with a sentence for the cha
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict
 from uuid import NAMESPACE_URL, uuid5
 
@@ -232,6 +233,22 @@ def _aufgabe_codes(inhalt: AufgabeInhalt) -> list[str]:
             codes.append("code_ohne_quelle")
         return codes + code_testlauf_codes(inhalt)
     return []
+
+
+def pruefer_befunde_behalten(
+    felder: Mapping[str, object], vorherige: Sequence[Mapping[str, Any]], neue: list[Befund]
+) -> list[Befund]:
+    """Changing a task re-checks it without the reviewer model, which drops the reviewer's findings
+    (`pruefer_*`): right for a change of content, which the reviewer has not seen. A change of
+    `testlauf` alone leaves the content as the reviewer saw it, so its findings stay."""
+    if set(felder) != {"testlauf"}:
+        return neue
+    behalten = [
+        {"code": str(b.get("code")), "text": str(b.get("text") or "")}
+        for b in vorherige
+        if str(b.get("code", "")).startswith("pruefer_")
+    ]
+    return neue + behalten
 
 
 def code_testlauf_codes(inhalt: Code) -> list[str]:

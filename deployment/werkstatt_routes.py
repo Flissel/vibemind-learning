@@ -52,7 +52,11 @@ from spaces.learning.services.werkstatt.freigabe import (
 from spaces.learning.services.werkstatt.inhalt import Fach, fach_aus, fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
-from spaces.learning.services.werkstatt.pruefung import aufgabe_pruefen, quellen_aufloesen
+from spaces.learning.services.werkstatt.pruefung import (
+    aufgabe_pruefen,
+    pruefer_befunde_behalten,
+    quellen_aufloesen,
+)
 from spaces.learning.services.werkstatt.store import WerkstattKonflikt, WerkstattStore
 from spaces.learning.services.werkstatt.uebernahme import (
     EntwurfNichtLesbar,
@@ -442,7 +446,11 @@ def aufgabe_aendern(
     try:
         return store.fassung_anlegen(
             task_id, content=neu, based_on=body.based_on, author_ref=autor, reason=body.reason,
-            art=fassungs_art(alt, neu), findings=list(aufgabe_pruefen(inhalt, sources=katalog.snapshots, fach=_fach(kurs))),
+            art=fassungs_art(alt, neu),
+            findings=pruefer_befunde_behalten(
+                body.felder, (neueste or {}).get("findings") or [],
+                list(aufgabe_pruefen(inhalt, sources=katalog.snapshots, fach=_fach(kurs))),
+            ),
         )
     except WerkstattKonflikt as konflikt:
         return _konflikt(context, konflikt.neueste)
