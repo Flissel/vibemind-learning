@@ -757,7 +757,7 @@ def test_werkstatt_aufgabe_prompt_verbietet_schluessel_im_text() -> None:
     from spaces.learning.services.course_factory.model_gateway import ROLE_CONTRACTS, ROLE_PROMPTS
 
     assert ROLE_CONTRACTS["werkstatt_aufgabe"] == (
-        "werkstatt", "werkstatt-aufgabe-prompt-v3", "werkstatt-aufgabe-v1"
+        "werkstatt", "werkstatt-aufgabe-prompt-v4", "werkstatt-aufgabe-v1"
     )
     text = ROLE_PROMPTS["werkstatt_aufgabe"]
     for teil in ("powershell, cmd or bash", "never write source keys", "at least one source key", "never announces"):
@@ -769,7 +769,8 @@ def test_werkstatt_rollen_steuern_programmieraufgaben() -> None:
     for rolle in ("werkstatt_aufgabe", "werkstatt_aufgabe_mathe", "werkstatt_aufgabe_consulting"):
         text = ROLE_PROMPTS[rolle]
         for teil in ("For kind code", "standard input", "standard output", "`tests` are 3 to 8 cases",
-                     "Always leave `testlauf` null", "python or javascript"):
+                     "Always leave `testlauf` null", "python or javascript",
+                     "`erlaubnisse` lists only what a correct solution needs", "folder ausgabe", "folder daten"):
             assert teil in text, (rolle, teil)
     # Pruefer: kann nichts ausfuehren und meldet deshalb keinen fehlenden Testlauf.
     for rolle in ("werkstatt_pruefer", "werkstatt_pruefer_mathe", "werkstatt_pruefer_consulting"):

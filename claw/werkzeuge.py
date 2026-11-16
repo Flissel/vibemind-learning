@@ -965,7 +965,9 @@ def werkstatt_code_pruefen(task_id: str) -> dict[str, Any]:
     zurueck. Nach jeder Aenderung an Sprache, Musterloesung oder Testfaellen erneut aufrufen.
     """
     from ..huelle.laeufer import LaeuferNichtBereit, UngueltigerAuftrag
-    from ..services.evaluation.code_tests import Testfall, fingerabdruck, tests_laufen
+    import functools
+
+    from ..services.evaluation.code_tests import ERLAUBNISSE, Datei, Testfall, fingerabdruck, tests_laufen
 
     gelesen = werkstatt_fassungen(task_id)
     if not gelesen.get("ok"):
@@ -980,7 +982,16 @@ def werkstatt_code_pruefen(task_id: str) -> dict[str, Any]:
     try:
         tests = [Testfall.model_validate(t) for t in inhalt["tests"]]
         sprache, loesung = str(inhalt["sprache"]), str(inhalt["musterloesung"])
-        ergebnis = tests_laufen(sprache, loesung, tests, ausfuehren=_code_laeufer())
+        # The reference solution runs with the task's whole upper bound of permissions.
+        erlaubnisse = tuple(e for e in ERLAUBNISSE if e in (inhalt.get("erlaubnisse") or []))
+        dateien = [Datei.model_validate(d) for d in inhalt.get("dateien") or []]
+        laeufer = _code_laeufer()
+        if erlaubnisse:
+            laeufer = functools.partial(
+                laeufer, erlaubnisse=erlaubnisse, dateien=tuple((d.name, d.inhalt) for d in dateien),
+                zeit_s=20 if "lange_laufzeit" in erlaubnisse else 5,
+            )
+        ergebnis = tests_laufen(sprache, loesung, tests, ausfuehren=laeufer)
     except LaeuferNichtBereit:
         return {"ok": False, "fehler": "Die Code-Ausführung ist auf diesem Rechner nicht erreichbar"}
     except UngueltigerAuftrag:
@@ -991,7 +1002,7 @@ def werkstatt_code_pruefen(task_id: str) -> dict[str, Any]:
     if ergebnis.fehlgeschlagen:
         grund += f" (gescheitert: {', '.join(ergebnis.fehlgeschlagen)})"
     lauf = {
-        "fingerabdruck": fingerabdruck(sprache, loesung, tests),
+        "fingerabdruck": fingerabdruck(sprache, loesung, tests, erlaubnisse=erlaubnisse, dateien=dateien),
         "bestanden": ergebnis.alle_bestanden,
         "fehlgeschlagen": list(ergebnis.fehlgeschlagen),
     }

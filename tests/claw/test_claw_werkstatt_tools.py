@@ -298,3 +298,28 @@ def test_code_pruefen_ohne_laeufer_aendert_nichts(fake: Fake, monkeypatch: pytes
     result = werkzeuge.werkstatt_code_pruefen(TASK)
     assert result["ok"] is False and "Code-Ausführung" in result["fehler"] and "wsl" not in result["fehler"]
     assert [r.method for r in fake.requests] == ["GET"]
+
+
+def test_code_pruefen_laesst_die_musterloesung_mit_der_obergrenze_der_aufgabe_laufen(
+    fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spaces.learning.services.evaluation.code_tests import Datei, Testfall, fingerabdruck
+
+    inhalt = {**_CODE, "erlaubnisse": ["pakete", "lange_laufzeit", "daten"],
+              "dateien": [{"name": "umsatz.csv", "inhalt": "1;2\n"}]}
+    _mit_fassung(fake, inhalt)
+    aufrufe: list[dict[str, Any]] = []
+
+    def laeufer(sprache: str, quelltext: str, eingabe: str, **kw: Any) -> _Lauf:
+        aufrufe.append(kw)
+        return _Lauf("12\n" if eingabe else "0\n")
+
+    monkeypatch.setattr(werkzeuge, "_code_laeufer", lambda: laeufer)
+    result = werkzeuge.werkstatt_code_pruefen(TASK)
+
+    assert result["daten"]["bestanden"] is True
+    assert aufrufe == [{"erlaubnisse": ("pakete", "lange_laufzeit", "daten"),
+                        "dateien": (("umsatz.csv", "1;2\n"),), "zeit_s": 20}] * 2
+    erwartet = fingerabdruck("python", _CODE["musterloesung"], [Testfall(**t) for t in _CODE["tests"]],
+                             erlaubnisse=inhalt["erlaubnisse"], dateien=[Datei(name="umsatz.csv", inhalt="1;2\n")])
+    assert fake.body()["felder"]["testlauf"]["fingerabdruck"] == erwartet

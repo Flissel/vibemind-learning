@@ -61,19 +61,19 @@ ROLE_CONTRACTS = {
     ),
     "handschrift_leser": ("reading", "handschrift-lesen-v1", "handschrift-gelesen-v1"),
     "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
-    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v3", "werkstatt-aufgabe-v1"),
+    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v4", "werkstatt-aufgabe-v1"),
     "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v2", "werkstatt-pruefer-v1"),
     # Same output schemas as the terminal roles; only the instructions differ (course `fach`).
     "werkstatt_grobentwurf_mathe": (
         "werkstatt", "werkstatt-grobentwurf-mathe-prompt-v1", "werkstatt-grobentwurf-v1"
     ),
-    "werkstatt_aufgabe_mathe": ("werkstatt", "werkstatt-aufgabe-mathe-prompt-v2", "werkstatt-aufgabe-v1"),
+    "werkstatt_aufgabe_mathe": ("werkstatt", "werkstatt-aufgabe-mathe-prompt-v3", "werkstatt-aufgabe-v1"),
     "werkstatt_pruefer_mathe": ("werkstatt", "werkstatt-pruefer-mathe-prompt-v2", "werkstatt-pruefer-v1"),
     "werkstatt_grobentwurf_consulting": (
         "werkstatt", "werkstatt-grobentwurf-consulting-prompt-v1", "werkstatt-grobentwurf-v1"
     ),
     "werkstatt_aufgabe_consulting": (
-        "werkstatt", "werkstatt-aufgabe-consulting-prompt-v2", "werkstatt-aufgabe-v1"
+        "werkstatt", "werkstatt-aufgabe-consulting-prompt-v3", "werkstatt-aufgabe-v1"
     ),
     "werkstatt_pruefer_consulting": (
         "werkstatt", "werkstatt-pruefer-consulting-prompt-v2", "werkstatt-pruefer-v1"
@@ -237,7 +237,15 @@ _WERKSTATT_CODE = (
     "edge case the prompt names. `startcode` is optional starting code and never a solution. `expected_answer` "
     "describes in sentences what a correct program does. `rubric` grades what the tests cannot decide (for "
     "example readable names, a comment on the approach). Always leave `testlauf` null. Program code in the "
-    "prompt and the lesson stands in fenced blocks tagged python or javascript."
+    "prompt and the lesson stands in fenced blocks tagged python or javascript. "
+    # Permissions: the upper bound the owner releases; the learner is asked before each run.
+    "`erlaubnisse` lists only what a correct solution needs and is empty for most tasks: \"pakete\" (Python "
+    "only: numpy and matplotlib may be imported), \"diagramm\" (the program saves up to three PNG pictures into "
+    "the folder ausgabe, for example plt.savefig(\"ausgabe/kurve.png\"); the tests still compare only the text "
+    "output), \"lange_laufzeit\" (the program may run up to 20 instead of 5 seconds), \"daten\" (the program "
+    "reads the files of `dateien` from the folder daten, for example open(\"daten/umsatz.csv\")). `dateien` are "
+    "at most five small text files with `name` and `inhalt`, only together with \"daten\"; the prompt names "
+    "every file and describes its columns."
 )
 _WERKSTATT_CODE_PRUEFER = (
     " For kind code you cannot run the program: do not judge whether `musterloesung` passes `tests` (a test run "

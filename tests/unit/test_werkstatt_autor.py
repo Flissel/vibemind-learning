@@ -371,11 +371,11 @@ _TERMINAL_TEXT_SHA256 = {
 }
 _TERMINAL_VERTRAEGE = {
     "werkstatt_grobentwurf": ("werkstatt", "werkstatt-grobentwurf-prompt-v1", "werkstatt-grobentwurf-v1"),
-    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v3", "werkstatt-aufgabe-v1"),
+    "werkstatt_aufgabe": ("werkstatt", "werkstatt-aufgabe-prompt-v4", "werkstatt-aufgabe-v1"),
     "werkstatt_pruefer": ("werkstatt", "werkstatt-pruefer-prompt-v2", "werkstatt-pruefer-v1"),
 }
 # Prompt version per role and fach: the code instructions raised author and reviewer by one.
-_FACH_VERSION = {"werkstatt_grobentwurf": "v1", "werkstatt_aufgabe": "v2", "werkstatt_pruefer": "v2"}
+_FACH_VERSION = {"werkstatt_grobentwurf": "v1", "werkstatt_aufgabe": "v3", "werkstatt_pruefer": "v2"}
 
 
 def _ohne_code_teil(role: str, text: str) -> str:
@@ -424,7 +424,7 @@ async def test_mathe_kurs_nutzt_mathe_rollen() -> None:
     await _ausformulieren(fake, kurs=_MATHE_KURS)
     assert fake.calls == ["werkstatt_aufgabe_mathe", "werkstatt_pruefer_mathe"]
     assert [i.prompt_version for i in fake.invocations] == [
-        "werkstatt-aufgabe-mathe-prompt-v2", "werkstatt-pruefer-mathe-prompt-v2",
+        "werkstatt-aufgabe-mathe-prompt-v3", "werkstatt-pruefer-mathe-prompt-v2",
     ]
 
 
@@ -672,7 +672,7 @@ async def test_consulting_kurs_nutzt_consulting_rollen() -> None:
     await _ausformulieren(fake, kurs={**_MATHE_KURS, "fach": "consulting"})
     assert fake.calls == ["werkstatt_aufgabe_consulting", "werkstatt_pruefer_consulting"]
     assert [i.prompt_version for i in fake.invocations] == [
-        "werkstatt-aufgabe-consulting-prompt-v2", "werkstatt-pruefer-consulting-prompt-v2",
+        "werkstatt-aufgabe-consulting-prompt-v3", "werkstatt-pruefer-consulting-prompt-v2",
     ]
 
 
