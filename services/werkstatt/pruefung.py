@@ -256,7 +256,9 @@ def code_testlauf_codes(inhalt: Code) -> list[str]:
     (the Werkstatt runs on a server without a code runner): the test run on the PC records its
     result in ``testlauf``, bound to language, solution and tests by a fingerprint."""
     lauf = inhalt.testlauf
-    if lauf is None or lauf.fingerabdruck != fingerabdruck(inhalt.sprache, inhalt.musterloesung, inhalt.tests):
+    erwartet = fingerabdruck(inhalt.sprache, inhalt.musterloesung, inhalt.tests,
+                             erlaubnisse=inhalt.erlaubnisse, dateien=inhalt.dateien)
+    if lauf is None or lauf.fingerabdruck != erwartet:
         return ["code_ungeprueft"]
     return [] if lauf.bestanden else ["code_musterloesung_falsch"]
 

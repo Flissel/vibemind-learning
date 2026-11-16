@@ -342,13 +342,21 @@ def _item_felder(
     if isinstance(inhalt, Code):
         # The test cases stay outside `presentation`: learners never get them (`_public_task`);
         # the Hülle fetches them server to server and runs them in the local code runner.
+        darstellung: dict[str, Any] = {"sprache": inhalt.sprache, "startcode": inhalt.startcode}
+        config: dict[str, Any] = {
+            "prompt": inhalt.prompt,
+            "presentation": darstellung,
+            "tests": [t.model_dump(mode="json") for t in inhalt.tests],
+        }
+        if inhalt.erlaubnisse:
+            # Learners see what their program may ask for, and the names of the exercise files.
+            darstellung["erlaubnisse"] = list(inhalt.erlaubnisse)
+        if inhalt.dateien:
+            darstellung["dateien"] = [d.name for d in inhalt.dateien]
+            config["dateien"] = [d.model_dump(mode="json") for d in inhalt.dateien]
         return (
             "code", {"text": inhalt.musterloesung},
-            {
-                "prompt": inhalt.prompt,
-                "presentation": {"sprache": inhalt.sprache, "startcode": inhalt.startcode},
-                "tests": [t.model_dump(mode="json") for t in inhalt.tests],
-            },
+            config,
             _scaled([c.model_dump(mode="json") for c in inhalt.rubric]) or [dict(_FALLBACK_CRITERION)],
         )
     if isinstance(inhalt, Zahl):

@@ -10,11 +10,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Sequence
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_TESTS = 10
+# What a run may do beyond the base level (compute, print); the code runner enforces it, the network stays closed.
+Erlaubnis = Literal["pakete", "diagramm", "lange_laufzeit", "daten"]
+ERLAUBNISSE: tuple[str, ...] = ("pakete", "diagramm", "lange_laufzeit", "daten")
+MAX_DATEIEN = 5
+MAX_DATEIEN_ZEICHEN = 200_000
 
 
 class Testfall(BaseModel):
@@ -24,6 +29,15 @@ class Testfall(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     eingabe: str = Field("", max_length=4_000)
     erwartet: str = Field(max_length=4_000)
+
+
+class Datei(BaseModel):
+    """A small text file of a task (exercise data); the run sees it read-only under `daten/`."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,59}$")
+    inhalt: str = Field(max_length=100_000)
 
 
 class TestErgebnis(BaseModel):
@@ -57,10 +71,18 @@ def gleich(ausgabe: str, erwartet: str) -> bool:
     return _normal(ausgabe) == _normal(erwartet)
 
 
-def fingerabdruck(sprache: str, musterloesung: str, tests: Sequence[Testfall]) -> str:
-    """What a test run of the reference solution vouches for; the order of the tests is free."""
+def fingerabdruck(
+    sprache: str, musterloesung: str, tests: Sequence[Testfall], *,
+    erlaubnisse: Sequence[str] = (), dateien: Sequence[Datei] = (),
+) -> str:
+    """What a test run of the reference solution vouches for; the order of tests, permissions and
+    files is free. Permissions and files only enter when there are any, so tasks without them keep
+    the fingerprint they had before permissions existed."""
     faelle = sorted((t.name, t.eingabe, t.erwartet) for t in tests)
-    roh = json.dumps([sprache, musterloesung, faelle], ensure_ascii=False, separators=(",", ":"))
+    teile: list[object] = [sprache, musterloesung, faelle]
+    if erlaubnisse or dateien:
+        teile += [sorted(erlaubnisse), sorted((d.name, d.inhalt) for d in dateien)]
+    roh = json.dumps(teile, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(roh.encode("utf-8")).hexdigest()
 
 

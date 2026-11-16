@@ -95,3 +95,30 @@ def test_testfall_grenzen() -> None:
         Testfall(name="x" * 81, eingabe="", erwartet="1")
     with pytest.raises(ValidationError):
         Testfall(name="x", eingabe="e" * 4001, erwartet="1")
+
+
+def test_fingerabdruck_schliesst_erlaubnisse_und_dateien_ein_aber_nur_wenn_es_welche_gibt() -> None:
+    from spaces.learning.services.evaluation.code_tests import Datei
+
+    ohne = fingerabdruck("python", "print(1)", [T1, T2])
+    # Aufgaben ohne Erlaubnisse behalten ihren bisherigen Fingerabdruck (ihr Testlauf bleibt gueltig).
+    assert ohne == fingerabdruck("python", "print(1)", [T1, T2], erlaubnisse=(), dateien=())
+    mit = fingerabdruck("python", "print(1)", [T1, T2], erlaubnisse=("pakete", "daten"),
+                        dateien=[Datei(name="a.csv", inhalt="1;2")])
+    assert mit != ohne
+    assert mit == fingerabdruck("python", "print(1)", [T1, T2], erlaubnisse=("daten", "pakete"),
+                                dateien=[Datei(name="a.csv", inhalt="1;2")])
+    assert mit != fingerabdruck("python", "print(1)", [T1, T2], erlaubnisse=("pakete", "daten"),
+                                dateien=[Datei(name="a.csv", inhalt="1;3")])
+    assert mit != fingerabdruck("python", "print(1)", [T1, T2], erlaubnisse=("pakete",))
+
+
+def test_datei_grenzen() -> None:
+    from spaces.learning.services.evaluation.code_tests import Datei
+
+    assert Datei(name="umsatz_2026.csv", inhalt="a;b").name == "umsatz_2026.csv"
+    for name in ("", "../a.csv", "a/b.csv", ".versteckt", "x" * 61, "a b.csv"):
+        with pytest.raises(ValidationError):
+            Datei(name=name, inhalt="1")
+    with pytest.raises(ValidationError):
+        Datei(name="a.csv", inhalt="x" * 100_001)

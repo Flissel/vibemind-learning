@@ -62,3 +62,53 @@ def test_autor_verwirft_eine_behauptete_pruefmeldung() -> None:
     quiz = inhalt_lesen({"kind": "quiz", "prompt": "?", "concept_ids": ["k1"], "correct_option_ids": ["a"],
                          "options": [{"option_id": "a", "text": "A"}, {"option_id": "b", "text": "B"}]})
     assert _ohne_testlauf(quiz) is quiz
+
+
+def test_erlaubnisse_und_dateien_an_der_aufgabe() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    inhalt = inhalt_lesen(code(erlaubnisse=["pakete", "diagramm", "daten"],
+                               dateien=[{"name": "umsatz.csv", "inhalt": "monat;umsatz\n1;100\n"}]))
+    assert inhalt.erlaubnisse == ["pakete", "diagramm", "daten"] and inhalt.dateien[0].name == "umsatz.csv"
+    assert inhalt_lesen(code()).erlaubnisse == [] and inhalt_lesen(code()).dateien == []
+    for falsch in (
+        code(erlaubnisse=["netz"]),
+        code(erlaubnisse=["pakete", "pakete"]),
+        code(dateien=[{"name": "a.csv", "inhalt": "1"}]),                        # Dateien nur mit "daten"
+        code(erlaubnisse=["daten"], dateien=[{"name": "a.csv", "inhalt": "1"}, {"name": "a.csv", "inhalt": "2"}]),
+        code(erlaubnisse=["daten"], dateien=[{"name": f"d{i}.csv", "inhalt": "1"} for i in range(6)]),
+        code(erlaubnisse=["daten"], dateien=[{"name": f"d{i}.csv", "inhalt": "x" * 90_000} for i in range(3)]),
+    ):
+        with pytest.raises(ValidationError):
+            inhalt_lesen(falsch)
+
+
+def test_item_zeigt_erlaubnisse_und_dateinamen_die_inhalte_bleiben_verborgen() -> None:
+    inhalt = inhalt_lesen(code(erlaubnisse=["pakete", "daten"],
+                               dateien=[{"name": "umsatz.csv", "inhalt": "geheim;1\n"}]))
+    _, _, config, _ = _item_felder("item-1", inhalt)
+    assert config["presentation"] == {"sprache": "python", "startcode": "import sys\n",
+                                      "erlaubnisse": ["pakete", "daten"], "dateien": ["umsatz.csv"]}
+    assert config["dateien"] == [{"name": "umsatz.csv", "inhalt": "geheim;1\n"}]
+    assert "geheim" not in str(config["presentation"])
+    # Ohne Erlaubnisse bleibt die Darstellung wie bisher.
+    _, _, ohne, _ = _item_felder("item-1", inhalt_lesen(code()))
+    assert ohne["presentation"] == {"sprache": "python", "startcode": "import sys\n"} and "dateien" not in ohne
+
+
+def test_pruefmeldung_gilt_nur_fuer_dieselben_erlaubnisse_und_dateien() -> None:
+    from spaces.learning.services.werkstatt.pruefung import code_testlauf_codes
+
+    ohne = inhalt_lesen(code(testlauf=_lauf()))
+    assert code_testlauf_codes(ohne) == []
+    # Dieselbe Pruefmeldung, aber die Aufgabe darf jetzt Pakete laden: der Lauf gilt nicht mehr.
+    assert code_testlauf_codes(inhalt_lesen(code(testlauf=_lauf(), erlaubnisse=["pakete"]))) == ["code_ungeprueft"]
+
+
+def test_vorschau_nennt_erlaubnisse_und_dateien() -> None:
+    v = vorschau(code(erlaubnisse=["pakete", "diagramm"]))
+    assert "Der Code darf: Pakete (numpy, matplotlib), Diagramm ausgeben" in v["text"]
+    mit = vorschau(code(erlaubnisse=["daten"], dateien=[{"name": "umsatz.csv", "inhalt": "1;2"}]))
+    assert "Übungsdaten lesen (umsatz.csv)" in mit["text"]
+    assert "Der Code darf" not in vorschau(code())["text"]

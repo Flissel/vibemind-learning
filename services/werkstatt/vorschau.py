@@ -119,6 +119,22 @@ def _zuordnung_mit_graphen(inhalt: Zuordnung) -> tuple[str, str, list[dict[str, 
 
 
 _SPRACHE = {"python": "Python", "javascript": "JavaScript"}
+_ERLAUBNIS = {
+    "pakete": "Pakete (numpy, matplotlib)", "diagramm": "Diagramm ausgeben",
+    "lange_laufzeit": "länger laufen (bis 20 Sekunden)", "daten": "Übungsdaten lesen",
+}
+
+
+def _erlaubnis_zeile(inhalt: Code) -> str:
+    """What the learner's program may be allowed, in the fixed order of the permissions."""
+    teile = []
+    for kennung, wort in _ERLAUBNIS.items():
+        if kennung not in inhalt.erlaubnisse:
+            continue
+        if kennung == "daten" and inhalt.dateien:
+            wort += f" ({', '.join(d.name for d in inhalt.dateien)})"
+        teile.append(wort)
+    return "Der Code darf: " + ", ".join(teile)
 
 
 def _testlauf_stand(inhalt: Code) -> str:
@@ -178,6 +194,7 @@ def vorschau(content: dict[str, Any]) -> dict[str, Any]:
         )
     elif isinstance(inhalt, Code):
         text = "\n".join([inhalt.prompt, "", f"Sprache: {_SPRACHE[inhalt.sprache]}",
+                          *([_erlaubnis_zeile(inhalt)] if inhalt.erlaubnisse else []),
                           *(["", "Startcode:", inhalt.startcode] if inhalt.startcode.strip() else [])])
         tests = "\n".join(
             f"- {t.name}: Eingabe {t.eingabe!r} -> erwartet {t.erwartet!r}" for t in inhalt.tests

@@ -16,7 +16,14 @@ from spaces.learning.services.course_factory.schemas import (
     _StrictDraft,
 )
 from spaces.learning.services.adaptive_engine.darstellung import FALL_MAX
-from spaces.learning.services.evaluation.code_tests import MAX_TESTS, Testfall
+from spaces.learning.services.evaluation.code_tests import (
+    MAX_DATEIEN,
+    MAX_DATEIEN_ZEICHEN,
+    MAX_TESTS,
+    Datei,
+    Erlaubnis,
+    Testfall,
+)
 from spaces.learning.services.adaptive_engine.darstellung import vorlage_felder as passende_felder
 
 Fach = Literal["terminal", "mathe", "consulting"]
@@ -212,12 +219,24 @@ class Code(_AufgabeBasis):
     expected_answer: str = Field(min_length=1, max_length=50_000)
     rubric: list[RubricCriterion] = Field(min_length=1, max_length=100)
     testlauf: Testlauf | None = None
+    # The upper bound of what the learner's program may be allowed (the learner still has to agree per run):
+    # packages, picture output, a longer run, reading `dateien`. Empty: compute and print only.
+    erlaubnisse: list[Erlaubnis] = Field(default_factory=list, max_length=4)
+    dateien: list[Datei] = Field(default_factory=list, max_length=MAX_DATEIEN)
 
     @model_validator(mode="after")
     def _testnamen_eindeutig(self) -> Code:
         namen = [t.name for t in self.tests]
         if len(set(namen)) != len(namen):
             raise ValueError("Testnamen muessen eindeutig sein")
+        if len(set(self.erlaubnisse)) != len(self.erlaubnisse):
+            raise ValueError("erlaubnisse muessen eindeutig sein")
+        if self.dateien and "daten" not in self.erlaubnisse:
+            raise ValueError("dateien brauchen die Erlaubnis daten")
+        if len({d.name for d in self.dateien}) != len(self.dateien):
+            raise ValueError("Dateinamen muessen eindeutig sein")
+        if sum(len(d.inhalt) for d in self.dateien) > MAX_DATEIEN_ZEICHEN:
+            raise ValueError("dateien sind zusammen zu gross")
         return self
 
 
@@ -296,7 +315,10 @@ def _loesung(inhalt: BaseModel) -> object:
         # Without `testlauf` (it reports on the solution) and `startcode` (only shown).
         rubrik = sorted((r.criterion_id, r.description, r.points) for r in inhalt.rubric)
         tests = sorted((t.name, t.eingabe, t.erwartet) for t in inhalt.tests)
-        return (inhalt.sprache, inhalt.musterloesung, tests, inhalt.expected_answer, rubrik)
+        basis = (inhalt.sprache, inhalt.musterloesung, tests, inhalt.expected_answer, rubrik)
+        if not inhalt.erlaubnisse and not inhalt.dateien:
+            return basis  # unchanged for tasks without permissions: released ones keep their solution hash
+        return (*basis, sorted(inhalt.erlaubnisse), sorted((d.name, d.inhalt) for d in inhalt.dateien))
     raise TypeError(type(inhalt).__name__)
 
 
