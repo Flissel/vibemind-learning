@@ -77,6 +77,7 @@ from .katalog import KEIN_ZUGANG_MEHR, UEBERSICHT_WEG, Katalog, KeinZugang, Uebe
 from .kursabgabe import KursAbgabeStand, fall_fuer, unlesbar_text
 from .kursrueckmeldung import aus_antwort, aus_zahlen, als_text, rueckmeldungsdaten
 from ..services.evaluation.code_tests import TestErgebnis, Testfall, tests_laufen
+from .laeufer import ERLAUBNISSE as LAEUFER_ERLAUBNISSE
 from .laeufer import Lauf, LaeuferNichtBereit, UngueltigerAuftrag
 from .laeufer import ausfuehren as code_ausfuehren
 from .lern_mcp import LearningAbgelehnt, LearningWeg, LernMcp
@@ -566,6 +567,27 @@ def _urteil_wort(vorbewertung: Any) -> str | None:
     feedback = vorbewertung.get("feedback") if isinstance(vorbewertung, dict) else None
     zustand = feedback.get("state") if isinstance(feedback, dict) else None
     return {"correct": "richtig", "partial": "teilweise", "incorrect": "falsch"}.get(zustand) if isinstance(zustand, str) else None
+
+
+def _laeufer_rahmen(daten: dict[str, Any] | None, erlaubt: Any) -> dict[str, Any]:
+    """Argumente fuer den Code-Laeufer: erlaubt ist, was die Person will UND die Aufgabe hoechstens zulaesst.
+
+    `daten` kommen von Learning (Obergrenze `erlaubnisse`, `dateien`), `erlaubt` aus dem Browser. Ohne Schnittmenge
+    leer: dann laeuft die Grundstufe mit genau dem bisherigen Aufruf."""
+    gewollt = {e for e in erlaubt if isinstance(e, str)} if isinstance(erlaubt, list) else set()
+    grenze = (daten or {}).get("erlaubnisse")
+    grenze = {e for e in grenze if isinstance(e, str)} if isinstance(grenze, list) else set()
+    erlaubnisse = tuple(e for e in LAEUFER_ERLAUBNISSE if e in gewollt and e in grenze)
+    if not erlaubnisse:
+        return {}
+    dateien: tuple[tuple[str, str], ...] = ()
+    if "daten" in erlaubnisse:
+        roh = (daten or {}).get("dateien")
+        dateien = tuple(
+            (d["name"], d["inhalt"]) for d in (roh if isinstance(roh, list) else [])
+            if isinstance(d, dict) and isinstance(d.get("name"), str) and isinstance(d.get("inhalt"), str)
+        )
+    return {"erlaubnisse": erlaubnisse, "dateien": dateien, "zeit_s": 20 if "lange_laufzeit" in erlaubnisse else 5}
 
 
 def _testlauf_feld(testlauf: TestErgebnis | None) -> dict[str, Any]:
@@ -2554,7 +2576,7 @@ class Bruecke:
         beantwortet_id = sitzung.aufgabe_id or f"r{revision}"
         beantwortet_nr = sitzung.nummer
         aufgabe = offen.get("task") if isinstance(offen, dict) else {"type": sitzung.aufgabe_typ}
-        answer, testlauf = self._code_testlauf(sitzung, sid, revision, aufgabe, answer)
+        answer, testlauf = self._code_testlauf(sitzung, sid, revision, aufgabe, answer, erlaubt=body.get("erlaubt"))
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
@@ -3296,7 +3318,8 @@ class Bruecke:
             self._schon_bestaetigt(sitzung, eintraege)
         bereiche = [] if sitzung.je_aufgabe else self._bereiche(sitzung, eintraege)
         answer, testlauf = self._code_testlauf(
-            sitzung, sid, self._revision_von(vorher), eintrag["task"], answer, attempt_id=eintrag["attempt_id"])
+            sitzung, sid, self._revision_von(vorher), eintrag["task"], answer, attempt_id=eintrag["attempt_id"],
+            erlaubt=body.get("erlaubt"))
         try:
             result = self._rufe(
                 sitzung.lern_actor, "learning_task_answer", "learning.task.answer", session_id=sid,
@@ -3785,7 +3808,7 @@ class Bruecke:
 
     def _code_testlauf(
         self, sitzung: _Sitzung, sid: str, revision: int, task: Any, answer: dict[str, Any],
-        *, attempt_id: str | None = None,
+        *, attempt_id: str | None = None, erlaubt: Any = None,
     ) -> tuple[dict[str, Any], TestErgebnis | None]:
         """Programmieraufgabe: die verborgenen Testfaelle bei Learning holen und den abgegebenen Code im
         Code-Laeufer dagegen laufen lassen. Liefert die Antwort ohne ein mitgeschicktes `testlauf` (das kaeme
@@ -3793,42 +3816,79 @@ class Bruecke:
 
         Gibt Learning keine Testfaelle heraus (aeltere Fassung, Pruefung), wird ohne Testlauf abgegeben. Ist der
         Laeufer nicht erreichbar, wird nicht abgegeben (503): sonst zaehlte die Abgabe still als nicht bestanden.
+        `erlaubt`: wozu die Person fuer diese Aufgabe zugestimmt hat; die Tests laufen mit dem Teil davon, den die
+        Aufgabe hoechstens zulaesst.
         """
         if not isinstance(task, dict) or task.get("type") != "code":
             return answer, None
         answer = {k: v for k, v in answer.items() if k != "testlauf"}
+        daten = self._code_daten(sitzung, sid, revision, attempt_id)
         try:
-            daten = self._rufe(
-                sitzung.lern_actor, "learning_task_bewertungsdaten", "learning.task.grading_data", session_id=sid,
-                expected_revision=revision, payload={"attempt_id": attempt_id} if attempt_id else {},
-            )
             tests = [Testfall.model_validate(t) for t in (daten or {}).get("tests") or []]
-            sprache = (daten or {}).get("sprache")
-        except (LearningAbgelehnt, LearningWeg, ValueError) as fehler:
-            log.warning("Keine Testfaelle fuer die Code-Aufgabe: %s", _typ(fehler))
+        except ValueError as fehler:
+            log.warning("Testfaelle der Code-Aufgabe unlesbar: %s", _typ(fehler))
             return answer, None
         if not tests:
             return answer, None
+        rahmen = _laeufer_rahmen(daten, erlaubt)
+        laeufer = functools.partial(self._laeufer, **rahmen) if rahmen else self._laeufer
         try:
-            return answer, tests_laufen(sprache, answer.get("text"), tests, ausfuehren=self._laeufer)
+            return answer, tests_laufen((daten or {}).get("sprache"), answer.get("text"), tests, ausfuehren=laeufer)
         except UngueltigerAuftrag:
             raise _Antwort(400, {"code": "code_ungueltig", "meldung": CODE_UNGUELTIG}) from None
         except LaeuferNichtBereit:
             raise _Antwort(503, {"code": "laeufer_weg", "meldung": LAEUFER_WEG}) from None
 
+    def _code_daten(self, sitzung: _Sitzung, sid: str, revision: Any, attempt_id: str | None) -> dict[str, Any] | None:
+        """Was Learning der Huelle zur offenen Code-Aufgabe gibt (Testfaelle, Obergrenze der Erlaubnisse,
+        Uebungsdaten); None, wenn es nichts herausgibt (aeltere Fassung, Pruefung, keine Code-Aufgabe)."""
+        try:
+            daten = self._rufe(
+                sitzung.lern_actor, "learning_task_bewertungsdaten", "learning.task.grading_data", session_id=sid,
+                expected_revision=revision, payload={"attempt_id": attempt_id} if attempt_id else {},
+            )
+        except (LearningAbgelehnt, LearningWeg) as fehler:
+            log.warning("Keine Daten zur Code-Aufgabe: %s", _typ(fehler))
+            return None
+        return daten if isinstance(daten, dict) else None
+
     def _code_ausfuehren(self, actor: str, sid_roh: str, body: dict[str, Any]) -> dict[str, Any]:
         """Code der Person einmal ausfuehren (nur in ihrer eigenen Sitzung). Gebucht oder bewertet wird nichts;
-        Fehler im Code und Zeitueberschreitung sind normale Ergebnisse."""
-        self._sitzung(actor, sid_roh)
+        Fehler im Code und Zeitueberschreitung sind normale Ergebnisse.
+
+        `erlaubt` (optional): wozu die Person fuer diesen Lauf zugestimmt hat. Es gilt nur der Teil, den die
+        Aufgabe hoechstens zulaesst; die Obergrenze und die Uebungsdaten kommen von Learning, nie aus dem Body.
+        Ohne Zustimmung wird Learning nicht gefragt und es laeuft die Grundstufe."""
+        sid, sitzung, _ = self._sitzung(actor, sid_roh)
+        rahmen: dict[str, Any] = {}
+        erlaubt = body.get("erlaubt")
+        if isinstance(erlaubt, list) and erlaubt:
+            try:
+                if sitzung.liste and "nummer" in body:
+                    stand, eintraege = self._liste_lesen(sitzung)
+                    eintrag = self._eintrag_zu(eintraege, self._listennummer(body))
+                    daten = self._code_daten(sitzung, sid, self._revision_von(stand), eintrag["attempt_id"])
+                else:
+                    stand = _turn(self._rufe(sitzung.lern_actor, "learning_task_next", "learning.task.next",
+                                             session_id=sid))
+                    daten = self._code_daten(sitzung, sid, stand.get("session_revision"), None)
+            except (LearningAbgelehnt, LearningWeg) as fehler:
+                log.warning("Stand fuer die Erlaubnisse nicht lesbar: %s", _typ(fehler))
+                daten = None
+            rahmen = _laeufer_rahmen(daten, erlaubt)
         try:
-            ergebnis = self._laeufer(body.get("sprache"), body.get("quelltext"), body.get("eingabe", ""))
+            ergebnis = self._laeufer(body.get("sprache"), body.get("quelltext"), body.get("eingabe", ""), **rahmen)
         except UngueltigerAuftrag:
             raise _Antwort(400, {"code": "code_ungueltig", "meldung": CODE_UNGUELTIG}) from None
         except LaeuferNichtBereit:
             raise _Antwort(503, {"code": "laeufer_weg", "meldung": LAEUFER_WEG}) from None
         return {"exit": ergebnis.exit_code, "stdout": ergebnis.stdout, "stderr": ergebnis.stderr,
                 "zeit_ueberschritten": ergebnis.zeit_ueberschritten, "abgeschnitten": ergebnis.abgeschnitten,
-                "dauer_ms": ergebnis.dauer_ms}
+                "dauer_ms": ergebnis.dauer_ms,
+                # Was fuer diesen Lauf wirklich galt, und die Bilder (nur mit `diagramm`).
+                "erlaubt": list(rahmen.get("erlaubnisse", ())),
+                "bilder": [{"name": b.name, "png_base64": base64.b64encode(b.png).decode("ascii")}
+                           for b in ergebnis.bilder]}
 
     async def _r_hinweis(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]

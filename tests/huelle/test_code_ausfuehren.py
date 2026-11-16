@@ -35,7 +35,7 @@ def test_ausfuehren_gibt_das_ergebnis_des_laeufers_zurueck() -> None:
     r = client.post(PFAD, json={"sprache": "python", "quelltext": "print(6*7)", "eingabe": "a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"exit": 0, "stdout": "42\n", "stderr": "", "zeit_ueberschritten": False,
-                        "abgeschnitten": False, "dauer_ms": 17}
+                        "abgeschnitten": False, "dauer_ms": 17, "erlaubt": [], "bilder": []}
     assert laeufer.aufrufe == [("python", "print(6*7)", "a")]
     assert r.headers["cache-control"] == "no-store"
 
