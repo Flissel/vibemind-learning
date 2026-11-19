@@ -116,8 +116,10 @@ def _abfragen(http: httpx.Client, params: dict[str, str], breite: int) -> list[D
 
 
 def suchen(http: httpx.Client, suchwort: str, *, anzahl: int = 20) -> list[Datei]:
-    """Dateien zum Suchwort in der Reihenfolge der Suche; ob sie brauchbar sind, entscheidet der Aufrufer."""
-    return _abfragen(http, {"generator": "search", "gsrsearch": suchwort, "gsrnamespace": "6",
+    """Bilder und Zeichnungen zum Suchwort in der Reihenfolge der Suche; ob sie brauchbar sind, entscheidet
+    der Aufrufer. Ohne den Zusatz `filetype:` liefert Commons vor allem PDF-Dateien und Videos."""
+    return _abfragen(http, {"generator": "search", "gsrsearch": f"{suchwort} filetype:bitmap|drawing",
+                            "gsrnamespace": "6",
                             "gsrlimit": str(max(1, min(anzahl, 50)))}, BREITEN[0])
 
 

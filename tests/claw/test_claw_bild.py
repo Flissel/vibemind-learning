@@ -99,7 +99,9 @@ def test_suche_nennt_nur_bilder_mit_freier_lizenz(netz: tuple[Commons, Learning]
     assert treffer[1]["urheber"] == "unbekannt"
     assert out["daten"]["aussortiert"] == 3
     anfrage = c.anfragen[0]
-    assert anfrage.url.params["gsrsearch"] == "chromosom" and anfrage.url.params["gsrnamespace"] == "6"
+    # Nur Bilder und Zeichnungen: ohne den Zusatz liefert Commons vor allem PDF-Dateien und Videos.
+    assert anfrage.url.params["gsrsearch"] == "chromosom filetype:bitmap|drawing"
+    assert anfrage.url.params["gsrnamespace"] == "6"
     # Wikimedia verlangt Namen und Kontakt des Abrufers.
     assert KONTAKT in anfrage.headers["User-Agent"]
 
