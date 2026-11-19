@@ -33,8 +33,12 @@ das nicht.
   `LEARNING_COMMONS_KONTAKT` (Webadresse oder E-Mail-Adresse des Betreibers). Ohne sie fragt der Claw Commons
   nicht.
 - **Datei:** `/lernsequenz-medien/bild-<16 Hex-Zeichen des SHA-256>.png|jpg`. Verkleinert auf 1000 px Breite,
-  bei mehr als 580.000 Bytes auf 700 und dann 500 px. SVG liefert Commons als PNG. Abgerufen wird nur von
-  `upload.wikimedia.org`.
+  bei mehr als 580.000 Bytes auf 700 und dann 500 px. SVG liefert Commons als PNG. Abgerufen wird nur von den
+  Bildrechnern von Wikimedia (`upload.wikimedia.org`, `thumb.wikimedia.org`).
+- **Suche:** auf Bilder und Zeichnungen beschränkt (`filetype:bitmap|drawing`); ohne den Zusatz liefert Commons
+  zu vielen Suchwörtern vor allem PDF-Dateien und Videos.
+- **Skizzen brauchen eine Quelle:** Eine Aufgabe vom Typ `sketch` lässt sich nur freigeben, wenn sie eine Quelle
+  des Kurses zitiert (`skizze_ohne_quelle`). Offene Aufgaben mit Bild gehen auch ohne.
 - **Inhalt:** `bild` an `open`, `case` und `sketch` mit `image`, `width`, `height`, `titel`, `urheber`,
   `lizenz`, `lizenz_url`, `quelle_url`.
 - **Katalog und Engine:** `presentation.image`, `width`, `height` und `bildquelle`; die Engine lässt diese
