@@ -44,7 +44,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from . import commons, freigabe_eingang
+from . import commons, freigabe_eingang, zeichner
 from .freigabe import WERKSTATT, FreigabeAbgelehnt, FreigabeStore, handy_basis
 from .pruefung_seite import PREFIX as PRUEFUNG_PREFIX
 from .pruefung_seite import PruefungStore
@@ -931,11 +931,12 @@ def werkstatt_aufgabe_aendern(
 ) -> dict[str, Any]:
     """Aendert Felder einer Aufgabe und legt eine neue Fassung mit Begruendung `grund` an.
     `basis` ist die Nummer der neuesten Fassung; bei Abweichung kommt ein Konflikt mit `neueste`.
-    Ein Bild setzt oder entfernt nur `werkstatt_bild_setzen`.
+    Ein Bild setzt oder entfernt nur `werkstatt_bild_setzen`, ein Diagramm nur `werkstatt_diagramm_setzen`.
     """
     if "bild" in felder:
-        return {"ok": False, "fehler": "Ein Bild setzt nur werkstatt_bild_setzen: Lizenz und Urheber "
-                                       "kommen von Wikimedia Commons, nicht aus dem Chat."}
+        return {"ok": False, "fehler": "Ein Bild setzt nur werkstatt_bild_setzen (Lizenz und Urheber kommen von "
+                                       "Wikimedia Commons, nicht aus dem Chat), ein Diagramm nur "
+                                       "werkstatt_diagramm_setzen."}
     return _bild_patch(task_id, basis, felder, grund)
 
 
@@ -1152,6 +1153,93 @@ def werkstatt_bild_setzen(task_id: str, datei: str | None) -> dict[str, Any]:
         }}
 
     return _commons(arbeit)
+
+
+# --- Diagramm an der Aufgabe (Graphviz auf diesem Rechner) --------------------
+
+def _zeichnen() -> Callable[[str, str], bytes]:
+    return zeichner.rendern  # der echte Weg; Tests setzen hier ein nachgestelltes Graphviz ein
+
+
+def _liste_fehler(fehler: Exception) -> str:
+    """Der erste Fehler einer abgelehnten Liste als Satz, ohne den Vorspann von pydantic."""
+    erste = (getattr(fehler, "errors", lambda: [])() or [{}])[0]
+    ort = ".".join(str(t) for t in erste.get("loc", ()))
+    text = str(erste.get("msg", fehler)).removeprefix("Value error, ")
+    return f"Das Diagramm ist so nicht zulässig ({ort}): {text}" if ort else f"Das Diagramm ist so nicht zulässig: {text}"
+
+
+def werkstatt_diagramm_setzen(
+    task_id: str, titel: str, knoten: list[dict[str, Any]], kanten: list[dict[str, Any]] | None = None,
+    richtung: str = "oben-unten", gruppen: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Zeichnet ein Diagramm aus Kaesten und Pfeilen und setzt es als Bild an eine offene Aufgabe, einen
+    Fall oder eine Skizze (neue Fassung; ein vorhandenes Bild wird ersetzt).
+    `titel`: was das Diagramm zeigt. `knoten`: bis 30 Kaesten `{"id": "pro", "text": "Prophase"}`; `id` klein
+    geschrieben ohne Leerzeichen, `text` bis 80 Zeichen. Mit `"leer": true` erscheint der Kasten mit einer
+    Nummer statt seines Textes, damit Lernende ihn benennen. `kanten`: bis 60 Pfeile
+    `{"von": "pro", "nach": "meta", "text": "optional"}`. `richtung`: `oben-unten` oder `links-rechts`.
+    `gruppen`: optional `{"titel": "Kernteilung", "knoten": ["pro", "meta"]}`, ein Kasten in hoechstens einer.
+    Zurueck kommen `fassung`, `bild`, `quelle` und `html`: der Pfad einer eigenstaendigen HTML-Seite mit dem
+    Diagramm als SVG (taugt als HTML-Konzept). Lernende sehen das Diagramm erst nach der Freigabe; danach
+    `werkstatt_vorschau` zeigen. Wegnehmen: `werkstatt_bild_setzen(task_id, None)`.
+    """
+    from pydantic import ValidationError
+
+    from ..services.werkstatt.aufgabenbild import EIGEN
+    from ..services.werkstatt.diagramm import Diagramm, dot_text
+
+    titel = " ".join(str(titel).split())[:300]
+    if not titel:
+        return {"ok": False, "fehler": "Das Diagramm braucht einen Titel"}
+    try:
+        diagramm = Diagramm.model_validate(
+            {"richtung": richtung, "knoten": knoten, "kanten": kanten or [], "gruppen": gruppen or []})
+    except ValidationError as fehler:
+        return {"ok": False, "fehler": _liste_fehler(fehler)}
+    gelesen = werkstatt_fassungen(task_id)
+    if not gelesen.get("ok"):
+        return gelesen
+    fassungen = (gelesen.get("daten") or {}).get("fassungen") or []
+    if not fassungen:
+        return {"ok": False, "fehler": "Die Aufgabe hat noch keine Fassung"}
+    neueste = fassungen[-1]
+    if (neueste.get("content") or {}).get("kind") not in _BILD_ARTEN:
+        return {"ok": False, "fehler": "Ein Diagramm tragen nur offene Aufgaben, Fälle und Skizzen"}
+    dot = dot_text(diagramm)
+    zeichnen = _zeichnen()
+    try:
+        daten = zeichnen(dot, "png")
+        masse = zeichner.png_masse(daten)
+        if masse is None or masse[0] > zeichner.MAX_BREITE or len(daten) > zeichner.MAX_BYTES:
+            return {"ok": False, "fehler": "Das Diagramm ist als Bild zu groß; bitte weniger Kästen oder kürzere Texte"}
+        svg = zeichnen(dot, "svg")
+        zeichner.html_seite(titel, svg)  # prueft das SVG, bevor irgendetwas geschrieben wird
+    except zeichner.ZeichnerFehler as fehler:
+        return {"ok": False, "fehler": str(fehler)}
+    name = f"bild-{hashlib.sha256(daten).hexdigest()[:16]}.png"
+    abgelegt = _run(lambda client: client.put_bytes(
+        f"/lernsequenz-medien/{name}", daten, roles=ROLE_AUTHOR, content_type="image/png"))
+    if not abgelegt.get("ok"):
+        return abgelegt
+    bild = {
+        "image": f"/lernsequenz-medien/{name}", "width": masse[0], "height": masse[1], "titel": titel,
+        "herkunft": "diagramm", "diagramm": diagramm.model_dump(mode="json"),
+    }
+    geaendert = _bild_patch(
+        task_id, neueste.get("number"), {"bild": bild},
+        f"Diagramm: {titel} ({len(diagramm.knoten)} Kästen, {len(diagramm.kanten)} Pfeile)")
+    if not geaendert.get("ok"):
+        return geaendert
+    try:
+        seite: str | None = str(zeichner.html_ablegen(titel, svg))
+    except OSError:
+        logger.warning("HTML-Seite zum Diagramm konnte nicht abgelegt werden", exc_info=True)
+        seite = None
+    return {"ok": True, "daten": {
+        "fassung": (geaendert.get("daten") or {}).get("number"), "bild": name,
+        "quelle": f"Diagramm: {titel}, {EIGEN}", "html": seite,
+    }}
 
 
 def werkstatt_auftrag(auftrag_id: str) -> dict[str, Any]:

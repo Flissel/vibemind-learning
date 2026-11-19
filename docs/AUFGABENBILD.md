@@ -46,9 +46,32 @@ das nicht.
 - **Bilder werden nicht bearbeitet.** Eingetragene Namen bleiben im Bild; für „Benennen“ braucht es eine Fassung
   ohne Namen.
 
+## Diagramm statt Bild
+
+Für Abläufe und Aufbau zeichnet der Learning-Claw selbst (`werkstatt_diagramm_setzen`). Das Diagramm steht an
+derselben Stelle wie ein Bild von Commons und ersetzt es; weggenommen wird es mit `werkstatt_bild_setzen(…, None)`.
+
+| Schritt | Was geschieht |
+|---|---|
+| Liste | Der Claw übergibt einen Titel, bis zu 30 Kästen, bis zu 60 Pfeile, die Richtung und optional Gruppen. |
+| Text für Graphviz | `services/werkstatt/diagramm.py` baut daraus den Graphviz-Text. Kennungen, Attribute und Aussehen stehen im Code; Text aus dem Chat erscheint nur als Beschriftung in Anführungszeichen. |
+| Zeichnen | `claw/zeichner.py` ruft Graphviz (`dot`) auf dem Rechner des Claw auf, höchstens 10 Sekunden, Text über die Eingabe. |
+| Ablegen | Das PNG (höchstens 1000 px breit und 580.000 Bytes) geht in den Medienordner, die Liste steht als `bild.diagramm` an der Fassung. |
+| HTML-Seite | Dieselbe Zeichnung als SVG in einer einzelnen HTML-Datei ohne Skript und ohne nachgeladene Dateien, im Ordner `diagramme` neben `learning.env` (oder `LEARNING_DIAGRAMM_ORDNER`). Das Werkzeug nennt den Pfad. |
+
+- **Leere Kästen:** Ein Kasten mit `"leer": true` zeigt eine Nummer statt seines Textes. Der Text bleibt in der
+  Liste an der Fassung und geht nicht zu den Lernenden; im Katalog steht nur Bild, Titel und `eigen: true`.
+- **Warum kein freier Graphviz-Text:** Graphviz kann über Attribute lokale Dateien in ein Bild einbinden. Der Claw
+  liefert deshalb nur die Liste.
+- **Quellenzeile:** „Diagramm: <Titel>, eigene Darstellung“, ohne Link und ohne Lizenz.
+- **Niemand prüft den Inhalt.** Ob Reihenfolge und Beschriftung fachlich stimmen, sieht nur die Inhaberin in der
+  Vorschau.
+- **Voraussetzung:** Graphviz ist auf dem Rechner des Claw installiert; ohne meldet das Werkzeug das.
+
 ## Offen
 
 - Ob die Bewertung zuverlässig erkennt, dass ein handgeschriebener Name am richtigen Teil steht, ist nicht
   gemessen.
 - Die Quellenangabe steht auf der Karte, nicht im PDF-Bericht.
-- Gerenderte Diagramme (Mermaid) und Bild-KI für Beschreiben-Aufgaben sind eigene Stufen.
+- Die HTML-Seite eines Diagramms gelangt nicht von selbst nach Rowboat; die Inhaberin übernimmt die Datei.
+- Andere Diagrammarten (Zeitachsen, Sequenzen, Kurven) und Bild-KI für Beschreiben-Aufgaben sind eigene Stufen.

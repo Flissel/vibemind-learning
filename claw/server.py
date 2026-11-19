@@ -42,6 +42,8 @@ _ENV_KEYS = (
     "LEARNING_CLAW_MCP_PORT",
     # Bildsuche bei Wikimedia Commons (optional): Kontaktangabe des Betreibers fuer den Abrufer.
     "LEARNING_COMMONS_KONTAKT",
+    # Diagramme (optional): Ordner fuer die HTML-Seiten; ohne Angabe `diagramme` neben dieser Datei.
+    "LEARNING_DIAGRAMM_ORDNER",
     # Handy-Freigabe (optional): https-Basis hinter `tailscale serve` und das Telegram-Skript.
     "LEARNING_CLAW_FREIGABE_BASIS",
     "LEARNING_CLAW_TELEGRAM_SKRIPT",
@@ -118,6 +120,7 @@ WERKZEUGE = (
     # Bild an der Aufgabe: Suche bei Wikimedia Commons; Titel, Urheber und Lizenz kommen von dort.
     werkzeuge.werkstatt_bild_suchen,
     werkzeuge.werkstatt_bild_setzen,
+    werkzeuge.werkstatt_diagramm_setzen,
     # Freigabe der Werkstatt: nur anzeigen. Freigeben (werkzeuge.werkstatt_freigeben) ruft
     # allein die Freigabeseite nach dem Klick der Inhaberin, nie das Modell.
     werkzeuge.werkstatt_freigabe_anzeigen,

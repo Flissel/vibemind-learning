@@ -553,12 +553,17 @@ const COMMONS_DATEI = /^https:\/\/commons\.wikimedia\.org\/wiki\/File:[^\s]+$/;
 
 /**
  * Die Quellenangabe zum Bild einer Aufgabe (`presentation.bildquelle`): `text` für die Karte, `href` nur für
- * eine Dateiseite bei Wikimedia Commons. Null ohne Bild oder ohne vollständige Angabe.
+ * eine Dateiseite bei Wikimedia Commons. Ein eigenes Diagramm (`eigen: true`) nennt nur seinen Titel.
+ * Null ohne Bild oder ohne vollständige Angabe.
  */
 export function bildquelleAus(task) {
   const p = task?.presentation;
   const q = p?.bildquelle;
   if (typeof p?.image !== "string" || !q) return null;
+  if (q.eigen === true) {
+    const titel = typeof q.titel === "string" ? q.titel.trim() : "";
+    return titel ? { text: `Diagramm: ${titel}, eigene Darstellung`, href: null } : null;
+  }
   const teile = [q.titel, q.urheber, q.lizenz];
   if (!teile.every((t) => typeof t === "string" && t.trim())) return null;
   const href = typeof q.quelle_url === "string" && COMMONS_DATEI.test(q.quelle_url) ? q.quelle_url : null;

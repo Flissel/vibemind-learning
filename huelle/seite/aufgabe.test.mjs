@@ -875,6 +875,19 @@ test("bildquelleAus: Quellenangabe zum Bild der Aufgabe, Link nur zu Wikimedia C
   assert.equal(bildquelleAus(null), null);
 });
 
+test("bildquelleAus: ein eigenes Diagramm nennt Titel und „eigene Darstellung“, ohne Link", async () => {
+  const { bildquelleAus } = await import("./aufgabe.js");
+  const task = (bildquelle) => ({ type: "open", presentation: { image: "/lernen/api/medien/bild-0123456789abcdef.png", bildquelle } });
+  assert.deepEqual(bildquelleAus(task({ titel: "Ablauf der Mitose", eigen: true })), {
+    text: "Diagramm: Ablauf der Mitose, eigene Darstellung", href: null,
+  });
+  // Auch mit einer untergeschobenen Adresse entsteht kein Link.
+  assert.equal(bildquelleAus(task({ titel: "X", eigen: true, quelle_url: "https://commons.wikimedia.org/wiki/File:X.png" })).href, null);
+  // Ohne Titel keine Zeile; „eigen“ muss genau true sein, sonst gilt die Regel für fremde Bilder.
+  assert.equal(bildquelleAus(task({ titel: " ", eigen: true })), null);
+  assert.equal(bildquelleAus(task({ titel: "X", eigen: "ja" })), null);
+});
+
 test("Aufgabenkarte: die Quellenangabe steht bei der Aufgabe, der Link öffnet außerhalb der Seite", async () => {
   const { readFileSync } = await import("node:fs");
   const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
