@@ -40,6 +40,8 @@ _ENV_KEYS = (
     "LEARNING_CLAW_MCP_URL",
     "LEARNING_CLAW_MCP_HOST",
     "LEARNING_CLAW_MCP_PORT",
+    # Bildsuche bei Wikimedia Commons (optional): Kontaktangabe des Betreibers fuer den Abrufer.
+    "LEARNING_COMMONS_KONTAKT",
     # Handy-Freigabe (optional): https-Basis hinter `tailscale serve` und das Telegram-Skript.
     "LEARNING_CLAW_FREIGABE_BASIS",
     "LEARNING_CLAW_TELEGRAM_SKRIPT",

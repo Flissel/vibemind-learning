@@ -216,6 +216,8 @@ def test_aufgabe_aendern_setzt_kein_bild(netz: tuple[Commons, Learning]) -> None
 def test_werkzeuge_sind_angemeldet() -> None:
     namen = {f.__name__ for f in server.WERKZEUGE}
     assert {"werkstatt_bild_suchen", "werkstatt_bild_setzen"} <= namen
+    # Der Dienst uebernimmt aus seiner Einstellungsdatei nur genannte Schluessel.
+    assert commons.KONTAKT_ENV in server._ENV_KEYS
 
 
 # ---- Bausteine ---------------------------------------------------------------------------------------------
