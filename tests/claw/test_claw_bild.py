@@ -201,6 +201,20 @@ def test_setzen_nimmt_bei_zu_grossem_bild_eine_kleinere_fassung(
     assert bild["image"].endswith(".jpg") and (bild["width"], bild["height"]) == (700, 525)
 
 
+def test_setzen_holt_auch_vom_zweiten_bildrechner_von_wikimedia(netz: tuple[Commons, Learning]) -> None:
+    # Echter Befund 19.11.: SVG-Verkleinerungen kommen von thumb.wikimedia.org, nicht von upload.wikimedia.org.
+    c, lern = netz
+    adresse = "https://thumb.wikimedia.org/wikipedia/commons/thumb/3/3c/Diploid.svg/960px-Diploid.svg.png"
+    c.bilder[adresse] = PNG
+    c.seiten = [seite("Diploid.svg", "Public domain", thumb=adresse, lizenz_url=None)]
+    assert werkzeuge.werkstatt_bild_setzen(TASK, "File:Diploid.svg")["ok"] is True
+    # Aehnlich klingende fremde Rechner bleiben draussen.
+    for fremd in ("https://thumb.wikimedia.org.example.org/x.png", "https://evilthumb.wikimedia.org/x.png",
+                  "http://thumb.wikimedia.org/x.png"):
+        c.seiten = [seite("Diploid.svg", "Public domain", thumb=fremd, lizenz_url=None)]
+        assert werkzeuge.werkstatt_bild_setzen(TASK, "File:Diploid.svg")["ok"] is False, fremd
+
+
 def test_setzen_ohne_datei_nimmt_das_bild_weg(netz: tuple[Commons, Learning]) -> None:
     c, lern = netz
     out = werkzeuge.werkstatt_bild_setzen(TASK, None)

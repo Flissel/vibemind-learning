@@ -16,7 +16,8 @@ import httpx
 
 KONTAKT_ENV = "LEARNING_COMMONS_KONTAKT"
 API = "https://commons.wikimedia.org/w/api.php"
-_BILD_HOST = "upload.wikimedia.org"
+# Die Bildrechner von Wikimedia; Verkleinerungen von SVG kommen von thumb.wikimedia.org.
+_BILD_HOSTS = frozenset({"upload.wikimedia.org", "thumb.wikimedia.org"})
 BREITEN = (1000, 700, 500)  # px; die naechstkleinere, wenn die Datei zu gross ist
 # PenEcho nimmt ein Bild als Data-URL bis 800.000 Bytes an; Base64 braucht vier Drittel.
 MAX_BYTES = 580_000
@@ -136,12 +137,12 @@ def ist_bild(d: Datei) -> bool:
 def laden(http: httpx.Client, d: Datei) -> tuple[bytes, str] | None:
     """Die verkleinerte Fassung holen: `(Bytes, Endung)`; None, wenn sie zu gross oder kein PNG/JPEG ist.
 
-    Abgerufen wird nur von upload.wikimedia.org."""
+    Abgerufen wird nur von den Bildrechnern von Wikimedia (`_BILD_HOSTS`)."""
     try:
         adresse = httpx.URL(d.bild_url)
     except (httpx.InvalidURL, TypeError) as fehler:
         raise CommonsFehler("Die Bildadresse von Wikimedia Commons ist ungültig") from fehler
-    if adresse.scheme != "https" or adresse.host != _BILD_HOST:
+    if adresse.scheme != "https" or adresse.host not in _BILD_HOSTS:
         raise CommonsFehler("Die Bildadresse gehört nicht zu Wikimedia Commons")
     try:
         antwort = http.get(adresse)
