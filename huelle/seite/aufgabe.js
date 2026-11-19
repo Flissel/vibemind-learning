@@ -697,6 +697,22 @@ export function codeObergrenze(task) {
   return Array.isArray(roh) ? CODE_ERLAUBNISSE.filter((e) => roh.includes(e)) : [];
 }
 
+/** Was der Kurs ohne Rückfrage erlaubt (`presentation.ohne_frage`), nie mehr als die Obergrenze der Aufgabe. */
+export function codeOhneFrage(task) {
+  const roh = task?.presentation?.ohne_frage;
+  return Array.isArray(roh) ? codeObergrenze(task).filter((e) => roh.includes(e)) : [];
+}
+
+function aufzaehlung(erlaubnisse) {
+  const teile = erlaubnisse.map((e) => ERLAUBNIS_WORT[e]).filter(Boolean);
+  return teile.length > 1 ? `${teile.slice(0, -1).join(", ")} und ${teile.at(-1)}` : teile[0] ?? "";
+}
+
+/** „In diesem Kurs darf Ihr Code ohne Rückfrage: Pakete laden (numpy, matplotlib).“; leer, wenn nichts gilt. */
+export function ohneFrageHinweis(ohneFrage) {
+  return ohneFrage.length > 0 ? `In diesem Kurs darf Ihr Code ohne Rückfrage: ${aufzaehlung(ohneFrage)}.` : "";
+}
+
 /**
  * Was der Code dem Text nach braucht, innerhalb der Obergrenze. Pakete: ein Import von numpy oder matplotlib
  * (nur Python). Diagramm und Übungsdaten: der Ordnername `ausgabe/` bzw. `daten/`. Eine längere Laufzeit lässt sich
@@ -720,9 +736,7 @@ export function erlaubnisStand(wuensche, gemerkt) {
 
 /** „Dieser Code möchte Pakete laden (numpy, matplotlib) und ein Diagramm ausgeben.“ */
 export function erlaubnisFrage(wuensche) {
-  const teile = wuensche.map((e) => ERLAUBNIS_WORT[e]).filter(Boolean);
-  const liste = teile.length > 1 ? `${teile.slice(0, -1).join(", ")} und ${teile.at(-1)}` : teile[0] ?? "";
-  return `Dieser Code möchte ${liste}.`;
+  return `Dieser Code möchte ${aufzaehlung(wuensche)}.`;
 }
 
 /** Die Zeit lief ab, die Aufgabe ließe mehr zu, und die längere Laufzeit galt bei diesem Lauf noch nicht. */

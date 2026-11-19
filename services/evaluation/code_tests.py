@@ -18,6 +18,15 @@ MAX_TESTS = 10
 # What a run may do beyond the base level (compute, print); the code runner enforces it, the network stays closed.
 Erlaubnis = Literal["pakete", "diagramm", "lange_laufzeit", "daten"]
 ERLAUBNISSE: tuple[str, ...] = ("pakete", "diagramm", "lange_laufzeit", "daten")
+# The course owner's rule per permission. "mit_frage" (the learner is asked before the run) is the default
+# and never stored; "ohne_frage" grants what a task provides without asking, "nie" removes it from the course.
+Regel = Literal["ohne_frage", "mit_frage", "nie"]
+REGEL_WORT: dict[str, str] = {"ohne_frage": "ohne Frage", "mit_frage": "mit Frage", "nie": "nie"}
+# The same words the learner's page uses in its question ("Dieser Code möchte …").
+ERLAUBNIS_WORT: dict[str, str] = {
+    "pakete": "Pakete laden (numpy, matplotlib)", "diagramm": "ein Diagramm ausgeben",
+    "lange_laufzeit": "länger laufen (bis 20 Sekunden)", "daten": "Übungsdaten lesen",
+}
 MAX_DATEIEN = 5
 MAX_DATEIEN_ZEICHEN = 200_000
 
@@ -59,6 +68,15 @@ class TestErgebnis(BaseModel):
     @property
     def alle_bestanden(self) -> bool:
         return self.gesamt > 0 and self.bestanden == self.gesamt
+
+
+def regeln_lesen(roh: Any) -> dict[str, str]:
+    """The course rules that differ from the default, known permissions only and in their fixed order.
+
+    Anything unknown is dropped: a stale or foreign entry must never open something."""
+    if not isinstance(roh, dict):
+        return {}
+    return {e: roh[e] for e in ERLAUBNISSE if roh.get(e) in ("ohne_frage", "nie")}
 
 
 def _normal(text: str) -> str:

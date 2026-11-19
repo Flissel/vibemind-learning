@@ -120,6 +120,7 @@ class WerkstattKatalog:
         vorher_eintraege: list[dict[str, Any]] | None = None,
         *,
         fach: str = "terminal",
+        code_regeln: dict[str, str] | None = None,
     ) -> dict[str, int]:
         """Write the catalog of ``course_revision`` and carry learner state over.
 
@@ -128,7 +129,8 @@ class WerkstattKatalog:
         ``vorher_revision``'s catalog was projected from; without it nothing carries over.
         Idempotent: a revision that already has a catalog is not written again, and learner
         state is only copied where the new concept has none yet. ``fach="mathe"`` switches on
-        formula typesetting (``presentation.math``) on every item; other courses get no key."""
+        formula typesetting (``presentation.math``) on every item; other courses get no key.
+        ``code_regeln``: the course's rule list for programming tasks as shown at this release."""
         inhalte = [(e, inhalt_lesen(e["content"])) for e in eintraege]
         # Graphs are drawn before the transaction (child processes take about a second each run).
         # Fail closed: a graph that cannot be drawn and stored raises, nothing of this revision is
@@ -151,7 +153,7 @@ class WerkstattKatalog:
             if vorhanden is None:
                 items, konzepte = self._katalog_schreiben(
                     session, course_id, course_revision, inhalte, vorher_revision,
-                    mathe=fach == "mathe", graph_bilder=graph_bilder,
+                    mathe=fach == "mathe", graph_bilder=graph_bilder, code_regeln=code_regeln,
                 )
             uebernommen = 0
             if vorher_revision is not None and vorher_eintraege is not None:
@@ -167,6 +169,7 @@ class WerkstattKatalog:
         self, session: Session, course_id: str, course_revision: int,
         inhalte: list[tuple[dict[str, Any], AufgabeInhalt]], vorher_revision: int | None,
         *, mathe: bool = False, graph_bilder: dict[int, list[dict[str, Any]]] | None = None,
+        code_regeln: dict[str, str] | None = None,
     ) -> tuple[int, int]:
         titel_vorher: dict[str, str] = {}
         if vorher_revision is not None:
@@ -192,7 +195,7 @@ class WerkstattKatalog:
             # The grader gets every source; only the learner's view and the hints are filtered.
             cited = belege_auswaehlen(alle)
             item_type, erwartet, config, rubrik = _item_felder(
-                item_id, inhalt, (graph_bilder or {}).get(i), mathe=mathe
+                item_id, inhalt, (graph_bilder or {}).get(i), mathe=mathe, code_regeln=code_regeln
             )
             scoring_config: dict[str, Any] = {
                 "source_refs": alle, "anzeige_refs": cited,
@@ -299,11 +302,11 @@ class WerkstattKatalog:
 
 def _item_felder(
     item_id: str, inhalt: AufgabeInhalt, graph_bilder: list[dict[str, Any]] | None = None,
-    *, mathe: bool = False,
+    *, mathe: bool = False, code_regeln: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """``(item_type, expected_answer, scoring_config, rubric)`` for one released task.
     ``graph_bilder``: the drawn graphs of a matching task, if already made; ``mathe``: the
-    task belongs to a math course."""
+    task belongs to a math course; ``code_regeln``: the course's rules for programming tasks."""
     if isinstance(inhalt, Quiz):
         optionen = [{"id": o.option_id, "label": o.text} for o in inhalt.options]
         optionen = gemischt(optionen)
@@ -348,9 +351,16 @@ def _item_felder(
             "presentation": darstellung,
             "tests": [t.model_dump(mode="json") for t in inhalt.tests],
         }
-        if inhalt.erlaubnisse:
+        # The course rules narrow the task's upper bound ("nie"; the release blocks such a task
+        # anyway) and name what needs no question; they never widen it.
+        regeln = code_regeln or {}
+        erlaubnisse = [e for e in inhalt.erlaubnisse if regeln.get(e) != "nie"]
+        if erlaubnisse:
             # Learners see what their program may ask for, and the names of the exercise files.
-            darstellung["erlaubnisse"] = list(inhalt.erlaubnisse)
+            darstellung["erlaubnisse"] = erlaubnisse
+        ohne_frage = [e for e in erlaubnisse if regeln.get(e) == "ohne_frage"]
+        if ohne_frage:
+            darstellung["ohne_frage"] = ohne_frage
         if inhalt.dateien:
             darstellung["dateien"] = [d.name for d in inhalt.dateien]
             config["dateien"] = [d.model_dump(mode="json") for d in inhalt.dateien]

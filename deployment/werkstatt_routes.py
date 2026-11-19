@@ -49,6 +49,7 @@ from spaces.learning.services.werkstatt.freigabe import (
     freigabe_vorbereiten,
     katalog_nachholen,
 )
+from spaces.learning.services.evaluation.code_tests import Erlaubnis, Regel
 from spaces.learning.services.werkstatt.inhalt import Fach, fach_aus, fassungs_art, inhalt_lesen
 from spaces.learning.services.werkstatt.katalog import WerkstattKatalog
 from spaces.learning.services.werkstatt.models import WerkstattAufgabe
@@ -144,6 +145,8 @@ class KursAendern(_Body):
     title: str | None = Field(default=None, min_length=1, max_length=300)
     default_kind: Kind | None = None
     reihenfolge: list[str] | None = Field(default=None, max_length=2_000)
+    # Replaces the whole rule list for programming tasks; effective with the next release.
+    code_regeln: dict[Erlaubnis, Regel] | None = None
 
 
 class AufgabeAnlegen(_Body):
@@ -357,7 +360,8 @@ def kurs_aendern(course_id: str, body: KursAendern, context: Context, autor: Aut
                 _UNPROCESSABLE, "reihenfolge_unvollstaendig",
                 "Die Reihenfolge muss alle Aufgaben des Kurses genau einmal nennen",
             ) from error
-    store.kurs_aendern(course_id, title=body.title, default_kind=body.default_kind)
+    store.kurs_aendern(
+        course_id, title=body.title, default_kind=body.default_kind, code_regeln=body.code_regeln)
     return _kurs(course_id)
 
 

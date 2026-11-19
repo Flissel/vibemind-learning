@@ -122,6 +122,18 @@ Wer was festlegt:
   was galt, und trägt die Bilder in `bilder`.
 - **Musterlösung:** `werkstatt_code_pruefen` lässt sie mit der ganzen Obergrenze laufen. Der Fingerabdruck des
   Testlaufs schließt Erlaubnisse und Dateien ein, sobald es welche gibt.
+- **Regelliste je Kurs:** Die Inhaberin legt je Erlaubnis eine Stufe fest (`code_regeln` am Werkstatt-Kurs,
+  gesetzt über `werkstatt_kurs_aendern`). Ohne Eintrag gilt „mit Frage“.
+
+| Stufe | Wirkung |
+|---|---|
+| `ohne_frage` | Was die Aufgabe vorsieht, gilt bei jedem Lauf ohne Rückfrage (`presentation.ohne_frage`). Die Karte nennt es in einer Zeile. |
+| `mit_frage` | Die Person wird vor dem Lauf gefragt (Grundzustand, wird nicht gespeichert). |
+| `nie` | Die Erlaubnis gibt es im Kurs nicht. Eine Aufgabe, die sie vorsieht, sperrt die Freigabe (`code_erlaubnis_verboten`), statt still unlösbar zu werden. |
+
+Die Regeln heben nie an, was eine Aufgabe vorsieht. Sie gelten erst mit einer Freigabe: Eine geänderte Liste ist
+für sich ein Freigabe-Vorschlag (`vergleich.code_regeln_vorher`), die Freigabeseite nennt jede geänderte Stufe,
+und ausgeliefert wird der Stand, der dort gezeigt wurde (`vergleich.code_regeln`), nicht ein späterer.
 
 Die Rückfrage an die Person macht sichtbar, was ihr Code tut. Den Schutz liefern die Obergrenze und die
 Abschottung: der Code läuft auf dem PC der Kursleitung, nicht auf dem Gerät der Person.

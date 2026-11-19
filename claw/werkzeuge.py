@@ -865,9 +865,17 @@ def werkstatt_kurs_aendern(
     titel: str | None = None,
     standard_typ: str | None = None,
     reihenfolge: list[str] | None = None,
+    code_regeln: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aendert Titel, Standard-Aufgabentyp oder Reihenfolge der Aufgaben (alle task_ids genau
     einmal) eines Werkstatt-Kurses.
+
+    `code_regeln` legt fest, was Programme der Lernenden in diesem Kurs duerfen: je Erlaubnis
+    (`pakete`, `diagramm`, `lange_laufzeit`, `daten`) eine Stufe `ohne_frage`, `mit_frage` oder `nie`.
+    Die Angabe ersetzt die ganze Liste; was fehlt, steht auf `mit_frage`. Die Regeln heben nie an,
+    was eine Aufgabe vorsieht, und das Netz bleibt immer zu. Sie gelten fuer Lernende erst nach der
+    naechsten Freigabe durch die Inhaberin (`werkstatt_freigabe_anzeigen`); nie behaupten, sie
+    gaelten schon.
     """
     body: dict[str, Any] = {}
     if titel is not None:
@@ -876,6 +884,8 @@ def werkstatt_kurs_aendern(
         body["default_kind"] = standard_typ
     if reihenfolge is not None:
         body["reihenfolge"] = list(reihenfolge)
+    if code_regeln is not None:
+        body["code_regeln"] = dict(code_regeln)
     if not body:
         return {"ok": False, "fehler": "Mindestens eine Aenderung angeben"}
     return _ws_patch(f"/kurse/{_seg(course_id)}", body)

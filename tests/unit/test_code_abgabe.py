@@ -148,3 +148,15 @@ def test_bewertungsdaten_ohne_erlaubnisse_bleiben_leer(tmp_path: Path) -> None:
     daten = service.bewertungsdaten(turn.session_id, ACTOR, turn.session_revision)
     assert daten.erlaubnisse == [] and daten.dateien == []
     engine.dispose()
+
+
+def test_was_ohne_frage_gilt_erreicht_die_lernenden(tmp_path: Path) -> None:
+    spec = _code_item()
+    config = dict(spec["scoring_config"])  # type: ignore[arg-type]
+    config["presentation"] = {"sprache": "python", "startcode": "", "erlaubnisse": ["pakete", "daten"],
+                              "ohne_frage": ["pakete"]}
+    engine, factory, course_id, _ = _store(tmp_path, [{**spec, "scoring_config": config}] * 2)
+    service = AdaptiveSessionService(factory, clock=lambda: NOW, rubric_evaluator=_Rubrik())
+    turn = _start(service, course_id)
+    assert turn.task.presentation["ohne_frage"] == ["pakete"]
+    engine.dispose()

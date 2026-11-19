@@ -323,3 +323,14 @@ def test_code_pruefen_laesst_die_musterloesung_mit_der_obergrenze_der_aufgabe_la
     erwartet = fingerabdruck("python", _CODE["musterloesung"], [Testfall(**t) for t in _CODE["tests"]],
                              erlaubnisse=inhalt["erlaubnisse"], dateien=[Datei(name="umsatz.csv", inhalt="1;2\n")])
     assert fake.body()["felder"]["testlauf"]["fingerabdruck"] == erwartet
+
+
+def test_kurs_aendern_code_regeln(fake: Fake) -> None:
+    werkzeuge.werkstatt_kurs_aendern(COURSE, code_regeln={"pakete": "ohne_frage", "daten": "nie"})
+    _check(fake, "PATCH", f"/kurse/{COURSE}", write=True)
+    assert fake.body() == {"code_regeln": {"pakete": "ohne_frage", "daten": "nie"}}
+    # Eine leere Liste ist eine Aenderung (zurueck auf "mit Frage"), kein fehlender Auftrag.
+    werkzeuge.werkstatt_kurs_aendern(COURSE, code_regeln={})
+    assert fake.body() == {"code_regeln": {}}
+    doc = werkzeuge.werkstatt_kurs_aendern.__doc__ or ""
+    assert "ohne_frage" in doc and "nie" in doc and "Freigabe" in doc

@@ -24,6 +24,7 @@ from spaces.learning.services.course_factory.quality_gate import (
     uses_informal_address,
 )
 from spaces.learning.services.course_factory.schemas import CourseDraft
+from spaces.learning.services.evaluation.code_tests import ERLAUBNIS_WORT, regeln_lesen
 from spaces.learning.services.werkstatt.formeltext import klartext
 from spaces.learning.services.werkstatt.inhalt import Code, Fall, Offen, Quiz, _loesung, inhalt_lesen
 from spaces.learning.services.werkstatt.pruefung import _TEXTE, _als_aktivitaet, _als_lektion, _befund, code_testlauf_codes
@@ -37,6 +38,9 @@ _NICHT_BLOCKIEREND = frozenset({"rubric_scale_inconsistent", "lesson_body_thin"}
 # In the Werkstatt only a mixed form of address holds a release back; the other course-wide
 # rules are hints (the factory's own gate is unchanged).
 _KURS_SPERREN = frozenset({"address_mixed"})
+
+# The comparison keys that mean a task changed.
+_AENDERUNGEN = ("neu", "geaendert", "textkorrektur", "geloescht")
 
 
 def _kurs_text(code: str, subject: str, sichten: list[AktivitaetsSicht]) -> str:
@@ -255,6 +259,7 @@ def freigabe_vorbereiten(
     carries `neu_ausliefern`, so the unchanged state is written again (new presentation only).
     It has no effect when anything changed, and findings still block."""
     kurs = store.kurs(course_id)
+    regeln = regeln_lesen(kurs.get("code_regeln"))
     aufgaben = {a["task_id"]: a for a in store.aufgaben_alle(course_id)}
     ersten = {
         task_id: f
@@ -303,6 +308,15 @@ def freigabe_vorbereiten(
             # an unchecked reference solution must never be released.
             bekannt = {f.get("code") for f in blockierend}
             blockierend += [_befund(c) for c in code_testlauf_codes(inhalt) if c not in bekannt]
+            verboten = [e for e in inhalt.erlaubnisse if regeln.get(e) == "nie"]
+            if verboten:
+                # The reference solution ran with these; without them the task may be unsolvable.
+                blockierend.append({
+                    "code": "code_erlaubnis_verboten",
+                    "text": "Die Aufgabe sieht vor, was die Regeln dieses Kurses nie erlauben ("
+                            + ", ".join(ERLAUBNIS_WORT[e] for e in verboten)
+                            + "); bitte die Aufgabe oder die Kursregel ändern.",
+                })
         if blockierend:
             texte = " ".join(str(f.get("text") or f.get("code", "")) for f in blockierend)
             befunde.append({
@@ -352,8 +366,15 @@ def freigabe_vorbereiten(
         vergleich["zusammengefuehrt"] = _zusammengefuehrt(
             entwurf, aufgaben, jetzt | {o["key"] for o in vergleich["offline"]}, befunde
         )
+    # The rule list for programming tasks travels with the release: what is shown here is what
+    # gets delivered, and a changed list alone is something to release.
+    regeln_vorher = regeln_lesen((letzte or {}).get("vergleich", {}).get("code_regeln"))
+    if regeln:
+        vergleich["code_regeln"] = regeln
+    if regeln != regeln_vorher:
+        vergleich["code_regeln_vorher"] = regeln_vorher
     blockiert = any(b["blockierend"] for b in befunde)
-    nichts = not any(vergleich[k] for k in ("neu", "geaendert", "textkorrektur", "geloescht"))
+    nichts = not any(vergleich.get(k) for k in _AENDERUNGEN) and "code_regeln_vorher" not in vergleich
     if nichts and neu_ausliefern:
         vergleich["neu_ausliefern"] = True
         nichts = False
@@ -382,7 +403,7 @@ class _Katalog(Protocol):
     def projizieren(
         self, course_id: str, course_revision: int, eintraege: list[dict[str, Any]],
         vorher_revision: int | None, vorher_eintraege: list[dict[str, Any]] | None = None,
-        *, fach: str = "terminal",
+        *, fach: str = "terminal", code_regeln: dict[str, str] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -482,9 +503,11 @@ def _katalog_projizieren(
         )
         vorher = _mit_inhalt(store, passend["manifest"]) if passend else _uebernommen(store, course_id)
     fach = "mathe" if _ist_mathe(store, course_id) else "terminal"
+    # The rules as shown at this release, not the course's current ones.
+    regeln = regeln_lesen(freigabe["vergleich"].get("code_regeln"))
     return katalog.projizieren(
         course_id, revision, _mit_inhalt(store, freigabe["manifest"]), vorher_revision,
-        vorher_eintraege=vorher, fach=fach,
+        vorher_eintraege=vorher, fach=fach, **({"code_regeln": regeln} if regeln else {}),
     )
 
 
@@ -538,8 +561,9 @@ async def freigabe_ausfuehren(
     if any(b.get("blockierend") for b in freigabe["befunde"]):
         raise ValueError("freigabe_blockiert")
     vergleich = freigabe["vergleich"]
-    if not vergleich.get("neu_ausliefern") and not any(
-        vergleich.get(k) for k in ("neu", "geaendert", "textkorrektur", "geloescht")
+    if (
+        not vergleich.get("neu_ausliefern") and "code_regeln_vorher" not in vergleich
+        and not any(vergleich.get(k) for k in _AENDERUNGEN)
     ):
         raise ValueError("nichts_zu_veroeffentlichen")
     mathe = _ist_mathe(store, freigabe["course_id"])

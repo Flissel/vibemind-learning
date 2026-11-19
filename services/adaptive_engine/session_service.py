@@ -2233,9 +2233,10 @@ class AdaptiveSessionService:
             "fill_in": frozenset({"template", "shell", "image", "width", "height", "rect", "more"}),
             "numeric": frozenset({"unit"}),
             "penecho_canvas": frozenset({"canvas_href"}),
-            # The language, the starting code, what the program may be allowed and the names of the
-            # exercise files; test cases and file contents (`scoring_config`) never travel.
-            "code": frozenset({"sprache", "startcode", "erlaubnisse", "dateien"}),
+            # The language, the starting code, what the program may be allowed (and which of it the
+            # course grants without asking) and the names of the exercise files; test cases and file
+            # contents (`scoring_config`) never travel.
+            "code": frozenset({"sprache", "startcode", "erlaubnisse", "ohne_frage", "dateien"}),
         }
         # `math`: the Werkstatt switches formula typesetting on for math courses, any type.
         allowed = allowed_by_type.get(item.item_type, frozenset()) | {"math"}

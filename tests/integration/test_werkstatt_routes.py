@@ -904,3 +904,17 @@ def test_freigabe_neu_ausliefern_per_body(env: Env, learnhouse: _FakeLearnHouse)
     body = antwort.json()
     assert body["nichts_zu_veroeffentlichen"] is False
     assert body["vergleich"]["neu_ausliefern"] is True
+
+
+def test_kurs_aendern_code_regeln(env: Env) -> None:
+    env.kurs()
+    url = f"/api/v1/werkstatt/kurse/{env.course_id}"
+    assert env.client.get(url, headers=env.h()).json()["code_regeln"] == {}
+    response = env.client.patch(
+        url, headers=env.h(), json={"code_regeln": {"pakete": "ohne_frage", "daten": "nie", "diagramm": "mit_frage"}})
+    assert response.status_code == 200, response.text
+    assert response.json()["code_regeln"] == {"pakete": "ohne_frage", "daten": "nie"}
+    # Unbekannte Erlaubnis oder Stufe: abgelehnt (ungueltige Eingaben meldet diese API mit 400), nichts geaendert.
+    for falsch in ({"netz": "ohne_frage"}, {"pakete": "immer"}):
+        assert env.client.patch(url, headers=env.h(), json={"code_regeln": falsch}).status_code == 400
+    assert env.client.get(url, headers=env.h()).json()["code_regeln"] == {"pakete": "ohne_frage", "daten": "nie"}

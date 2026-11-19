@@ -798,3 +798,30 @@ test("Code-Karte: Rückfrage vor dem Lauf und vor der Abgabe, Bilder als Objekt-
   assert.ok(js.includes("URL.createObjectURL(new Blob([roh], { type: \"image/png\" }))"));
   assert.ok(!js.includes("data:image"));
 });
+
+test("codeOhneFrage: was der Kurs ohne Rückfrage erlaubt, nur innerhalb der Obergrenze der Aufgabe", async () => {
+  const { codeOhneFrage } = await import("./aufgabe.js");
+  const task = (erlaubnisse, ohne_frage) => ({ type: "code", presentation: { erlaubnisse, ohne_frage } });
+  assert.deepEqual(codeOhneFrage(task(["pakete", "diagramm"], ["diagramm", "pakete"])), ["pakete", "diagramm"]);
+  // Was die Aufgabe nicht vorsieht, gilt nie, auch wenn es in der Liste steht.
+  assert.deepEqual(codeOhneFrage(task(["pakete"], ["pakete", "daten", "netz"])), ["pakete"]);
+  assert.deepEqual(codeOhneFrage(task(["pakete"], undefined)), []);
+  assert.deepEqual(codeOhneFrage(task(["pakete"], "pakete")), []);
+  assert.deepEqual(codeOhneFrage(null), []);
+});
+
+test("ohneFrageHinweis: ein Satz, der sagt, was in diesem Kurs ohne Rückfrage gilt", async () => {
+  const { ohneFrageHinweis } = await import("./aufgabe.js");
+  assert.equal(ohneFrageHinweis(["pakete", "diagramm"]),
+    "In diesem Kurs darf Ihr Code ohne Rückfrage: Pakete laden (numpy, matplotlib) und ein Diagramm ausgeben.");
+  assert.equal(ohneFrageHinweis(["daten"]), "In diesem Kurs darf Ihr Code ohne Rückfrage: Übungsdaten lesen.");
+  assert.equal(ohneFrageHinweis([]), "");
+});
+
+test("Code-Karte: was der Kurs ohne Rückfrage erlaubt, gilt bei jedem Lauf und steht als Hinweis da", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  // Ohne Frage Erlaubtes zählt wie schon zugestimmt; nach dem Rest wird weiter gefragt.
+  assert.match(js, /const fest = \[\.\.\.new Set\(\[\.\.\.zusaetzlich, \.\.\.codeOhneFrage\(task\)\]\)\]\.filter\(\(e\) => obergrenze\.includes\(e\)\);/);
+  assert.match(js, /ohneFrageHinweis\(codeOhneFrage\(task\)\)/);
+});

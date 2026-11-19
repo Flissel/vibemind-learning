@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from spaces.learning.services.db.models import utc_now
+from spaces.learning.services.evaluation.code_tests import regeln_lesen
 from spaces.learning.services.werkstatt.models import (
     WerkstattAuftrag,
     WerkstattAufgabe,
@@ -60,7 +61,7 @@ def _kurs_dict(k: WerkstattKurs) -> dict[str, Any]:
         "course_id": k.course_id, "title": k.title, "audience": k.audience,
         "default_kind": k.default_kind, "outcomes": list(k.outcomes),
         "source_provenance": list(k.source_provenance), "owner_ref": k.owner_ref,
-        "fach": k.fach,
+        "fach": k.fach, "code_regeln": regeln_lesen(k.code_regeln),
         "created_at": _iso(k.created_at), "updated_at": _iso(k.updated_at),
     }
 
@@ -131,12 +132,17 @@ class WerkstattStore:
             return result
 
     def kurs_aendern(
-        self, course_id: str, *, title: str | None = None, default_kind: str | None = None
+        self, course_id: str, *, title: str | None = None, default_kind: str | None = None,
+        code_regeln: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """`code_regeln` replaces the whole rule list (only what differs from "mit_frage" is kept); it
+        reaches learners with the next release, not before."""
         with self._sessions.begin() as session:
             kurs = session.get(WerkstattKurs, course_id)
             if kurs is None:
                 raise LookupError("kurs_unbekannt")
+            if code_regeln is not None:
+                kurs.code_regeln = regeln_lesen(code_regeln)
             if title is not None:
                 kurs.title = title
             if default_kind is not None:

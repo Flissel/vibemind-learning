@@ -187,6 +187,24 @@ def _offline_abschnitt(vergleich: dict[str, Any]) -> list[str]:
     return teile
 
 
+def _regeln_abschnitt(vergleich: dict[str, Any]) -> list[str]:
+    """Was sich an den Regeln fuer Programmieraufgaben aendert (nur bei `code_regeln_vorher`)."""
+    if "code_regeln_vorher" not in vergleich:
+        return []
+    from ..services.evaluation.code_tests import ERLAUBNIS_WORT, ERLAUBNISSE, REGEL_WORT, regeln_lesen
+    neu, vorher = regeln_lesen(vergleich.get("code_regeln")), regeln_lesen(vergleich.get("code_regeln_vorher"))
+    teile = ["<h3>Regeln für Programmieraufgaben</h3><ul>"]
+    for erlaubnis in ERLAUBNISSE:
+        jetzt, bisher = neu.get(erlaubnis, "mit_frage"), vorher.get(erlaubnis, "mit_frage")
+        if jetzt != bisher:
+            teile.append(
+                f"<li>{html.escape(ERLAUBNIS_WORT[erlaubnis])}: {REGEL_WORT[jetzt]} "
+                f"(bisher: {REGEL_WORT[bisher]})</li>"
+            )
+    teile.append("</ul>")
+    return teile
+
+
 def _werkstatt_inhalt(inhalt: dict[str, Any]) -> str:
     teile = [
         f"<h2>{html.escape(str(inhalt.get('titel') or 'Ohne Titel'))}</h2>",
@@ -205,6 +223,7 @@ def _werkstatt_inhalt(inhalt: dict[str, Any]) -> str:
             )
         teile.append("</ul>")
     teile.extend(_offline_abschnitt(vergleich))
+    teile.extend(_regeln_abschnitt(vergleich))
     teile.append(f"<p>Unverändert: {int(vergleich.get('unveraendert') or 0)}</p>")
     befunde = inhalt.get("befunde") or []
     if befunde:

@@ -29,6 +29,8 @@ class WerkstattKurs(Base):
     source_provenance: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
     owner_ref: Mapped[str] = mapped_column(String(128), nullable=False)
     fach: Mapped[str] = mapped_column(String(20), nullable=False, default="terminal", server_default="terminal")
+    # Per permission of a programming task: "ohne_frage" or "nie"; a missing key means "mit_frage".
+    code_regeln: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

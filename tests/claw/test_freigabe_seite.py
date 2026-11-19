@@ -429,3 +429,41 @@ def test_werkstatt_seite_neu_ausliefern_zeigt_satz_und_knopf(uhr) -> None:
     assert "Am Inhalt hat sich nichts geändert" in page.text
     assert "neu ausgeliefert" in page.text
     assert '<button type="submit"' in page.text
+
+
+def test_werkstatt_seite_zeigt_geaenderte_regeln_fuer_programmieraufgaben(uhr) -> None:
+    secret = werkzeuge._freigaben.merken(
+        "f-4", 6, 7,
+        {
+            "art": "werkstatt", "course_id": "kurs-1", "titel": "Kurs", "nummer": 6,
+            "learnhouse_revision": 7, "blockiert": False, "nichts_zu_veroeffentlichen": False,
+            "vergleich": {"neu": [], "geaendert": [], "textkorrektur": [], "geloescht": [], "unveraendert": 3,
+                          "code_regeln": {"pakete": "ohne_frage", "daten": "nie"},
+                          "code_regeln_vorher": {"daten": "ohne_frage"}},
+            "befunde": [],
+        },
+        art="werkstatt",
+    ).geheimnis
+    page = _call("GET", f"/freigabe/{secret}")
+    assert page.status_code == 200
+    assert "Regeln für Programmieraufgaben" in page.text
+    assert "Pakete laden (numpy, matplotlib): ohne Frage (bisher: mit Frage)" in page.text
+    assert "Übungsdaten lesen: nie (bisher: ohne Frage)" in page.text
+    # Was gleich bleibt, steht nicht in der Liste.
+    assert "ein Diagramm ausgeben" not in page.text
+    assert '<button type="submit"' in page.text
+
+
+def test_werkstatt_seite_ohne_regelaenderung_nennt_keine_regeln(uhr) -> None:
+    secret = werkzeuge._freigaben.merken(
+        "f-5", 7, 7,
+        {
+            "art": "werkstatt", "course_id": "kurs-1", "titel": "Kurs", "nummer": 7,
+            "learnhouse_revision": 7, "blockiert": False, "nichts_zu_veroeffentlichen": False,
+            "vergleich": {"neu": [], "geaendert": [], "textkorrektur": [], "geloescht": [], "unveraendert": 3,
+                          "neu_ausliefern": True, "code_regeln": {"pakete": "ohne_frage"}},
+            "befunde": [],
+        },
+        art="werkstatt",
+    ).geheimnis
+    assert "Regeln für Programmieraufgaben" not in _call("GET", f"/freigabe/{secret}").text

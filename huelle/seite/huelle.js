@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, codeObergrenze, codeVorgabe, codeWuensche, eingabeHinweis,
+  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, codeObergrenze, codeOhneFrage, codeVorgabe, codeWuensche, eingabeHinweis, ohneFrageHinweis,
   erlaubnisFrage, erlaubnisStand, laengerAnbieten, laufBilder, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenZustand,
@@ -756,6 +756,8 @@ function karteAufgabe() {
     el("div", {}, feld, el("p", { class: "hinweistext", text: TEXT.rechnen })),
     el("div", { class: "code-lauf" }, sprache, starten),
     el("p", { class: "hinweistext", text: TEXT.codeLauf }),
+    el("p", { class: "hinweistext", id: "code-ohne-frage", text: ohneFrageHinweis(codeOhneFrage(task)),
+      hidden: codeOhneFrage(task).length === 0 }),
     frage,
     ausgabe,
     bilder,
@@ -817,7 +819,8 @@ async function codeAusfuehren(task, sprache, quelltext, teile, zusaetzlich = [])
 // Liefert die Erlaubnisse für diesen einen Lauf; durchgesetzt werden sie in der Brücke und im Code-Läufer.
 function codeErlaubnis(task, sprache, quelltext, frage, zusaetzlich = []) {
   const obergrenze = codeObergrenze(task);
-  const fest = zusaetzlich.filter((e) => obergrenze.includes(e));
+  // Was der Kurs ohne Rückfrage erlaubt, zählt wie schon zugestimmt.
+  const fest = [...new Set([...zusaetzlich, ...codeOhneFrage(task)])].filter((e) => obergrenze.includes(e));
   const wuensche = codeWuensche(quelltext, sprache, obergrenze).filter((e) => !fest.includes(e));
   const schluessel = `${z.turn?.session_id}|${task.id}`;
   const { erlaubt, offen } = erlaubnisStand(wuensche, z.codeErlaubt.get(schluessel));
