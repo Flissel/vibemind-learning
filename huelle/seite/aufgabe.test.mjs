@@ -825,3 +825,33 @@ test("Code-Karte: was der Kurs ohne Rückfrage erlaubt, gilt bei jedem Lauf und 
   assert.match(js, /const fest = \[\.\.\.new Set\(\[\.\.\.zusaetzlich, \.\.\.codeOhneFrage\(task\)\]\)\]\.filter\(\(e\) => obergrenze\.includes\(e\)\);/);
   assert.match(js, /ohneFrageHinweis\(codeOhneFrage\(task\)\)/);
 });
+test("leistenText: kurzer Text bleibt ganz, langer wird an einer Wortgrenze gekürzt und trägt den Rest", async () => {
+  const { leistenText, LEISTE_ZEICHEN } = await import("./aufgabe.js");
+  assert.deepEqual(leistenText("Richtig.\n\nGut."), { kurz: "Richtig. Gut.", voll: null });
+  assert.deepEqual(leistenText(null), { kurz: "", voll: null });
+  assert.deepEqual(leistenText("   "), { kurz: "", voll: null });
+  const lang = "Teilweise richtig.\n\n" + Array.from({ length: 30 }, (_, i) => `Satz ${i}: Die Begründung fehlt noch.`).join(" ");
+  const { kurz, voll } = leistenText(lang);
+  assert.ok(kurz.length <= LEISTE_ZEICHEN && kurz.startsWith("Teilweise richtig. Satz 0:") && kurz.endsWith(" …"));
+  // Kein halbes Wort am Ende, und der ganze Text bleibt mit seinen Absätzen erhalten.
+  assert.ok(lang.replace(/\s+/g, " ").startsWith(kurz.slice(0, -2)));
+  assert.match(kurz, /[A-Za-zäöüß.:]\s…$/);
+  assert.equal(voll, lang);
+  // Genau an der Grenze: nichts zu kürzen.
+  const grenze = "a".repeat(LEISTE_ZEICHEN);
+  assert.deepEqual(leistenText(grenze), { kurz: grenze, voll: null });
+  // Ein Wort ohne Leerzeichen wird hart gekürzt statt gar nicht.
+  const wurm = leistenText("b".repeat(LEISTE_ZEICHEN + 50));
+  assert.ok(wurm.kurz.length <= LEISTE_ZEICHEN && wurm.kurz.endsWith(" …") && wurm.voll.length === LEISTE_ZEICHEN + 50);
+});
+
+test("Leiste: „Ganze Rückmeldung“ klappt den vollen Text auf und schließt bei anderem Text", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.ok(js.includes('leisteMehr: "Ganze Rückmeldung"') && js.includes('leisteWeniger: "Weniger anzeigen"'));
+  // Offen ist der Kasten nur für genau den Text, für den er geöffnet wurde (Aufgabenwechsel, neue Bewertung: zu).
+  assert.match(js, /const offenVoll = teile\.voll !== null && z\.leisteOffen === text;/);
+  assert.match(js, /\$\("leisten-mehr"\)\.addEventListener\("click", \(\) => \{\s+z\.leisteOffen = z\.leisteOffen === z\.leistenText \? null : z\.leistenText;/);
+  // Die Abfrage alle 2 s darf den Kasten nicht neu füllen (die Leseposition ginge verloren).
+  assert.match(js, /if \(voll\.textContent !== inhalt\) voll\.textContent = inhalt;/);
+});

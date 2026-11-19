@@ -1866,7 +1866,8 @@ def test_abgeben_karte_scheitert_urteil_kommt_als_text_zurueck() -> None:
     body = r.json()
     assert r.status_code == 200 and body["flaeche"] is False and body["urteil"] == "Richtig."
     assert body["karte"].startswith("Gelesen: -1,5") and "Richtig." in body["karte"]
-    assert "$" not in body["karte"] and "\n" not in body["karte"]
+    # Die ganze Rueckmeldung mit Absaetzen; die Seite zeigt zuerst den Anfang und klappt den Rest auf.
+    assert "$" not in body["karte"] and "\n\n" in body["karte"]
 
 
 def test_abgeben_mit_karte_auf_der_flaeche_ohne_kartentext() -> None:

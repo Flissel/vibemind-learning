@@ -3,7 +3,7 @@ import {
   abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, codeObergrenze, codeOhneFrage, codeVorgabe, codeWuensche, eingabeHinweis, ohneFrageHinweis,
   erlaubnisFrage, erlaubnisStand, laengerAnbieten, laufBilder, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
-  KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenZustand,
+  KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenText, leistenZustand,
   meldungFuer,
   nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
@@ -53,6 +53,8 @@ const TEXT = {
   ueberarbeiten: "Ändern Sie Ihre Antwort auf der Fläche und drücken Sie dann erneut „Abgeben“.",
   nichtZugeordnet: "Das konnte ich nicht zuordnen.",
   wirdBewertet: "Wird bewertet …",
+  leisteMehr: "Ganze Rückmeldung",
+  leisteWeniger: "Weniger anzeigen",
   kaertchenHinweis: "Antippen statt schreiben – oder weiter mit dem Stift auf der Fläche.",
   kaertchenAbgeben: "Mit Kärtchen abgeben",
   fallSeitenleiste: "Fall",
@@ -108,6 +110,8 @@ const z = {
   mcpAutoVerbunden: false, // „Fläche verbinden“ wurde auf PenEchos Meldung schon einmal ausgelöst (höchstens einmal je Laden)
   kaertchen: null, // {taskId, zustand}: Auswahl der Begriffs-Kärtchen der gezeigten Aufgabe
   kaertchenAbgegeben: new Map(), // "<Sitzung>|<Aufgabe>" -> abgegebene Auswahl; sie bleibt nach dem Abgeben sichtbar
+  leistenText: null, // der Text, den die Leiste gerade zeigt (ungekürzt)
+  leisteOffen: null, // der Text, für den „Ganze Rückmeldung“ aufgeklappt wurde; null = zu
   codeErlaubt: new Map(), // "<Sitzung>|<Aufgabe>" -> Erlaubnisse, denen die Person „für diese Aufgabe“ zugestimmt hat
   rahmenGruppe: null, // {gruppe: "g-<id>", person} oder null
 };
@@ -1293,8 +1297,21 @@ function leisteZeigen() {
     knoepfeBox.dataset.plan = plan.kennung;
   }
   const text = z.busy ? TEXT.wirdBewertet : (z.hinweis ?? z.speicherHinweis ?? ergebnisHinweis(ergebnis));
-  $("leisten-hinweis").textContent = text ?? "";
-  $("leisten-hinweis").hidden = !text;
+  // Lange Rückmeldung: zuerst der Anfang, auf Wunsch der ganze Text in einem Kasten, der in sich scrollt.
+  const teile = leistenText(text);
+  z.leistenText = text ?? null;
+  const offenVoll = teile.voll !== null && z.leisteOffen === text;
+  if (!offenVoll) z.leisteOffen = null; // anderer Text (Aufgabenwechsel, neue Bewertung): wieder zu
+  $("leisten-hinweis").textContent = teile.kurz;
+  $("leisten-hinweis").hidden = !text || offenVoll;
+  const voll = $("leisten-voll");
+  const inhalt = offenVoll ? teile.voll : "";
+  if (voll.textContent !== inhalt) voll.textContent = inhalt;
+  voll.hidden = !offenVoll;
+  const mehr = $("leisten-mehr");
+  mehr.hidden = teile.voll === null;
+  mehr.textContent = offenVoll ? TEXT.leisteWeniger : TEXT.leisteMehr;
+  mehr.setAttribute("aria-expanded", String(offenVoll));
   const offen = z.korrektur !== null && ergebnis !== null && zustand.knoepfe.includes(z.korrektur === "falsch" ? "falsch" : "eintippen");
   $("korrektur").hidden = !offen;
   if (offen) $("korrektur-text").textContent = eingabeHinweis(task.type) ?? "";
@@ -1541,6 +1558,10 @@ async function start() {
   window.addEventListener("message", flaechenNachricht);
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
   $("korrektur").addEventListener("submit", (ereignis) => { ereignis.preventDefault(); void korrekturSenden(); });
+  $("leisten-mehr").addEventListener("click", () => {
+    z.leisteOffen = z.leisteOffen === z.leistenText ? null : z.leistenText;
+    leisteZeigen();
+  });
   $("layout-a").addEventListener("click", () => layoutSetzen("a"));
   $("layout-c").addEventListener("click", () => layoutSetzen("c"));
   $("aufgabe-zurueck").addEventListener("click", () => aufgabeBlaettern(-1));

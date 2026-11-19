@@ -548,6 +548,23 @@ export function leistenKnoepfe(ids, { busy, speichert, abgebenGesperrt }) {
   return { knoepfe, kennung: JSON.stringify(knoepfe) };
 }
 
+// Die Leiste zeigt zuerst nur den Anfang: eine lange Rückmeldung verdeckte sonst Fläche und Knöpfe (F14).
+export const LEISTE_ZEICHEN = 240;
+
+/**
+ * `kurz`: der Text als eine Zeile, höchstens `LEISTE_ZEICHEN` lang, an einer Wortgrenze gekürzt und mit „ …“.
+ * `voll`: der ganze Text mit Absätzen, wenn gekürzt wurde, sonst null (dann gibt es nichts aufzuklappen).
+ */
+export function leistenText(text) {
+  const roh = typeof text === "string" ? text.trim() : "";
+  const zeile = roh.replace(/\s+/g, " ");
+  if (zeile.length <= LEISTE_ZEICHEN) return { kurz: zeile, voll: null };
+  const kopf = zeile.slice(0, LEISTE_ZEICHEN - 1); // Platz für „ …“
+  const grenze = kopf.lastIndexOf(" ");
+  const anfang = (grenze > 0 ? kopf.slice(0, grenze) : kopf.slice(0, LEISTE_ZEICHEN - 2)).replace(/[\s,;–-]+$/, "");
+  return { kurz: `${anfang} …`, voll: roh };
+}
+
 /** Der Hinweis nach einem nicht lesbaren Ergebnis (ein unverändert erneut abgegebenes Bild bleibt nicht lesbar). */
 export function ergebnisHinweis(ergebnis) {
   if (!ergebnis) return null;

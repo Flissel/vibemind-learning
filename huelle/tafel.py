@@ -105,9 +105,6 @@ def aufgabentext(task: Mapping[str, object], nummer: int, *, mit_fall: bool = Tr
     return "\n".join(zeilen)
 
 
-LEISTE_ZEICHEN = 240  # Leiste: Urteil und Anfang der Rueckmeldung; der Rest wuerde Flaeche und Knoepfe verdecken
-
-
 def kuerzen(text: str, *, zeichen: int, zeilen: int | None = None, je_zeile: int = 36) -> str:
     """`text`, falls er passt; sonst an der letzten passenden Wortgrenze gekuerzt und mit „ …“.
 
@@ -129,10 +126,13 @@ def kuerzen(text: str, *, zeichen: int, zeilen: int | None = None, je_zeile: int
 
 
 def leistentext(gelesen: str | None, urteil: str, text: str) -> str:
-    """Die Rueckmeldung als eine Zeile Klartext fuer die Leiste, wenn die Karte nicht auf die Flaeche kam."""
+    """Die ganze Rueckmeldung als Klartext mit Absaetzen fuer die Leiste, wenn die Karte nicht auf die Flaeche kam.
+
+    Gekuerzt wird hier nichts: die Seite zeigt zuerst den Anfang und klappt den Rest auf (`leistenText`)."""
     teile = [f"Gelesen: {_klar(gelesen)}"] if gelesen and _klar(gelesen) else []
-    teile += [_klar(urteil), _klar(text)]
-    return kuerzen(" ".join(" ".join(t.split()) for t in teile if t), zeichen=LEISTE_ZEICHEN)
+    teile.append(_klar(urteil))
+    absaetze = "\n".join(_klar(zeile) for zeile in text.split("\n")).strip()
+    return "\n\n".join(t for t in [*teile, absaetze] if t)
 
 
 def rueckmeldungstext(gelesen: str | None, urteil: str, text: str) -> str:

@@ -63,6 +63,16 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   background: #fff; font-size: .9rem; box-shadow: 0 1px 4px rgba(0, 0, 0, .25); overflow-wrap: anywhere;
   max-height: 9rem; overflow-y: auto;
 }
+/* Ganze Rückmeldung, wenn die Karte nicht auf die Fläche kam: aufgeklappt, in sich scrollend, damit die Knöpfe sichtbar bleiben. */
+.leisten-voll {
+  margin: 0; max-width: 22rem; padding: .4rem .6rem; border: 1px solid #c9c6bc; border-radius: .5rem;
+  background: #fff; font-size: .9rem; box-shadow: 0 1px 4px rgba(0, 0, 0, .25); overflow-wrap: anywhere;
+  max-height: 33vh; overflow-y: auto; white-space: pre-wrap;
+}
+.leisten-mehr {
+  min-height: 2rem; padding: 0 .7rem; border: 1px solid #c9c6bc; border-radius: .5rem; background: #fff;
+  font-size: .85rem; box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+}
 .korrektur-text { display: block; margin: 0 0 .3rem; color: #55524a; }
 .korrektur-zeile { display: flex; flex-wrap: wrap; gap: .35rem; }
 .korrektur-zeile input { flex: 1 1 8rem; min-width: 0; min-height: 2.5rem; padding: 0 .5rem; border: 1px solid #c9c6bc; border-radius: .5rem; }
@@ -142,6 +152,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .flaeche { height: 70vh; flex: 0 0 70vh; overflow: hidden; }
   .flaechenleiste { left: .5rem; align-items: flex-end; }
   .leisten-hinweis, .korrektur { max-width: 100%; }
+  .leisten-voll { max-width: 100%; }
   .kurswahl select { max-width: 100%; }
   .listenkopf { flex-basis: 100%; }
 }

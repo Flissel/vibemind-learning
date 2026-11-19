@@ -244,6 +244,19 @@ def test_leisten_hinweis_ist_in_der_hoehe_begrenzt() -> None:
     assert "max-height:" in regel and "overflow-y: auto" in regel
 
 
+def test_ganze_rueckmeldung_in_der_leiste_ist_aufklappbar_und_in_der_hoehe_begrenzt() -> None:
+    html = (SEITE / "index.html").read_text(encoding="utf-8")
+    leiste = html.split('id="flaechenleiste"')[1].split('id="leisten-knoepfe"')[0]
+    # Der Knopf steht vor dem Kasten und nennt ihn; beide sind anfangs versteckt.
+    assert '<button type="button" id="leisten-mehr" class="leisten-mehr" aria-expanded="false" aria-controls="leisten-voll" hidden>' in leiste
+    assert '<div id="leisten-voll" class="leisten-voll" tabindex="0" hidden></div>' in leiste
+    assert leiste.index('id="leisten-hinweis"') < leiste.index('id="leisten-mehr"') < leiste.index('id="leisten-voll"')
+    css = (SEITE / "huelle.css").read_text(encoding="utf-8")
+    regel = css.split(".leisten-voll {")[1].split("}")[0]
+    # Hoechstens ein Drittel der Bildschirmhoehe, scrollt in sich, Absaetze bleiben: "Passt" bleibt sichtbar (F14).
+    assert "max-height: 33vh" in regel and "overflow-y: auto" in regel and "white-space: pre-wrap" in regel
+
+
 def test_seitenleiste_haelt_katex_hilfstext_drinnen() -> None:
     # Abnahme 06.11. (F16): KaTeX setzt .katex-mathml absolut. Ohne positionierte Seitenleiste lag der
     # Hilfstext von Formeln weit unten in der Leiste ausserhalb ihres Scrollbereichs, und die ganze Seite
