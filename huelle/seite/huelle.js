@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, CODE_SPRACHEN, codeObergrenze, codeOhneFrage, codeVorgabe, codeWuensche, eingabeHinweis, ohneFrageHinweis,
+  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, bildquelleAus, CODE_SPRACHEN, codeObergrenze, codeOhneFrage, codeVorgabe, codeWuensche, eingabeHinweis, ohneFrageHinweis,
   erlaubnisFrage, erlaubnisStand, laengerAnbieten, laufBilder, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenText, leistenZustand,
@@ -706,6 +706,15 @@ async function kaertchenAbgeben() {
   kaertchenAktualisieren();
 }
 
+// Das Bild der Aufgabe steht auf der Fläche; die Karte nennt Urheber und Lizenz und führt zur Dateiseite.
+function bildquelleZeile(task) {
+  const quelle = bildquelleAus(task);
+  if (!quelle) return null;
+  return el("p", { class: "hinweistext bildquelle" }, quelle.text,
+    quelle.href ? " " : null,
+    quelle.href ? el("a", { href: quelle.href, target: "_blank", rel: "noopener noreferrer", text: "(Quelle)" }) : null);
+}
+
 function karteAufgabe() {
   const t = z.turn;
   // Listenkurs: die Karte gilt der gewählten Aufgabe (Antwortfeld für Typ `code`, `{nummer, answer}`).
@@ -730,6 +739,7 @@ function karteAufgabe() {
     $("karte").replaceChildren(...ohneLeere(
       setzeText(el("p", { class: "aufgabe" }), task.prompt, math),
       fallBlock(task, math),
+      bildquelleZeile(task),
       el("p", { class: "hinweistext", text: TEXT.aufFlaeche }),
       KAERTCHEN_TYPEN.has(task.type) ? el("section", { id: "kaertchen", class: "kaertchen", "aria-label": "Kärtchen" }) : null,
       sperre,

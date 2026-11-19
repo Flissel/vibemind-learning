@@ -2225,6 +2225,7 @@ class AdaptiveSessionService:
 
     @staticmethod
     def _presentation(item: AdaptiveItem) -> dict[str, object]:
+        bild_felder = frozenset({"image", "width", "height", "bildquelle"})
         allowed_by_type = {
             # Both sides of a matching task; the solution (pairs) never travels.
             "matching": frozenset({"left", "right"}),
@@ -2232,7 +2233,10 @@ class AdaptiveSessionService:
             # with the position of its box (and of the boxes that repeat it).
             "fill_in": frozenset({"template", "shell", "image", "width", "height", "rect", "more"}),
             "numeric": frozenset({"unit"}),
-            "penecho_canvas": frozenset({"canvas_href"}),
+            # A picture next to the task with its source (Werkstatt, Wikimedia Commons).
+            "open": bild_felder,
+            "case": bild_felder,
+            "penecho_canvas": frozenset({"canvas_href"}) | bild_felder,
             # The language, the starting code, what the program may be allowed (and which of it the
             # course grants without asking) and the names of the exercise files; test cases and file
             # contents (`scoring_config`) never travel.

@@ -113,6 +113,9 @@ WERKZEUGE = (
     werkzeuge.werkstatt_auftrag,
     # Programmieraufgaben: die Musterloesung laeuft hier am PC im abgeschotteten Code-Laeufer.
     werkzeuge.werkstatt_code_pruefen,
+    # Bild an der Aufgabe: Suche bei Wikimedia Commons; Titel, Urheber und Lizenz kommen von dort.
+    werkzeuge.werkstatt_bild_suchen,
+    werkzeuge.werkstatt_bild_setzen,
     # Freigabe der Werkstatt: nur anzeigen. Freigeben (werkzeuge.werkstatt_freigeben) ruft
     # allein die Freigabeseite nach dem Klick der Inhaberin, nie das Modell.
     werkzeuge.werkstatt_freigabe_anzeigen,

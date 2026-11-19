@@ -99,6 +99,13 @@ class LearningClient:
     ) -> dict[str, Any]:
         return self._request("PATCH", self.api_url + path, roles, json_body=body, extra=extra)
 
+    def put_bytes(
+        self, path: str, daten: bytes, *, roles: str, content_type: str = "application/octet-stream"
+    ) -> dict[str, Any]:
+        """Upload one file as the request body (media of a task)."""
+        return self._request(
+            "PUT", self.api_url + path, roles, content=daten, extra={"Content-Type": content_type})
+
     def delete(
         self, path: str, *, roles: str, extra: dict[str, str] | None = None
     ) -> dict[str, Any]:
@@ -137,6 +144,7 @@ class LearningClient:
         roles: str | None,
         *,
         json_body: dict[str, Any] | None = None,
+        content: bytes | None = None,
         extra: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
@@ -154,6 +162,7 @@ class LearningClient:
                 method,
                 url,
                 json=json_body,
+                content=content,
                 headers=headers,
                 timeout=timeout if timeout is not None else _TIMEOUT_SECONDS,
             )

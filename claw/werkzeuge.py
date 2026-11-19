@@ -27,6 +27,7 @@ Author tools send role ``learning.author``; ``entwurf_ablehnen`` sends
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
@@ -43,7 +44,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from . import freigabe_eingang
+from . import commons, freigabe_eingang
 from .freigabe import WERKSTATT, FreigabeAbgelehnt, FreigabeStore, handy_basis
 from .pruefung_seite import PREFIX as PRUEFUNG_PREFIX
 from .pruefung_seite import PruefungStore
@@ -930,7 +931,15 @@ def werkstatt_aufgabe_aendern(
 ) -> dict[str, Any]:
     """Aendert Felder einer Aufgabe und legt eine neue Fassung mit Begruendung `grund` an.
     `basis` ist die Nummer der neuesten Fassung; bei Abweichung kommt ein Konflikt mit `neueste`.
+    Ein Bild setzt oder entfernt nur `werkstatt_bild_setzen`.
     """
+    if "bild" in felder:
+        return {"ok": False, "fehler": "Ein Bild setzt nur werkstatt_bild_setzen: Lizenz und Urheber "
+                                       "kommen von Wikimedia Commons, nicht aus dem Chat."}
+    return _bild_patch(task_id, basis, felder, grund)
+
+
+def _bild_patch(task_id: str, basis: int | None, felder: dict[str, Any], grund: str) -> dict[str, Any]:
     return _ws_patch(
         f"/aufgaben/{_seg(task_id)}", {"based_on": basis, "felder": dict(felder), "reason": grund}
     )
@@ -1023,6 +1032,126 @@ def werkstatt_code_pruefen(task_id: str) -> dict[str, Any]:
         "bestanden": ergebnis.alle_bestanden, "tests": ergebnis.gesamt,
         "fehlgeschlagen": list(ergebnis.fehlgeschlagen), "fassung": (geaendert.get("daten") or {}).get("number"),
     }}
+
+
+# --- Bild an der Aufgabe (Wikimedia Commons) ----------------------------------
+
+_BILD_ARTEN = ("open", "case", "sketch")
+
+
+def _commons_transport() -> httpx.BaseTransport | None:
+    return None  # der echte Weg; Tests setzen hier ein nachgestelltes Commons ein
+
+
+def _commons(arbeit: Callable[[httpx.Client], dict[str, Any]]) -> dict[str, Any]:
+    """`arbeit` mit einem Abrufer fuer Wikimedia Commons; ohne Kontaktangabe wird Commons nicht gefragt."""
+    kontakt = os.environ.get(commons.KONTAKT_ENV, "").strip()
+    if not kontakt:
+        return {"ok": False, "fehler": f"Für Wikimedia Commons fehlt die Kontaktangabe ({commons.KONTAKT_ENV}): "
+                                       "Wikimedia verlangt Namen und Kontakt des Abrufers."}
+    try:
+        with httpx.Client(transport=_commons_transport(), timeout=30,
+                          headers={"User-Agent": commons.agent(kontakt)}, follow_redirects=False) as http:
+            return arbeit(http)
+    except commons.CommonsFehler as fehler:
+        return {"ok": False, "fehler": str(fehler)}
+
+
+def _bild_brauchbar(d: commons.Datei) -> str | None:
+    """Warum eine Datei nicht in einen Kurs darf; None, wenn sie darf."""
+    from ..services.werkstatt.aufgabenbild import lizenz_erlaubt
+
+    if not commons.ist_bild(d):
+        return "Das ist kein Bild (PNG, JPEG oder SVG)"
+    if not lizenz_erlaubt(d.lizenz):
+        return (f"Die Lizenz „{d.lizenz or 'unbekannt'}“ erlaubt keine gewerbliche Nutzung mit Änderungen "
+                "oder ist unbekannt")
+    if not d.urheber and d.lizenz.lower().startswith("cc by"):
+        return "Die Lizenz verlangt die Nennung des Urhebers, Commons nennt aber keinen"
+    return None
+
+
+def werkstatt_bild_suchen(suchwort: str, anzahl: int = 6) -> dict[str, Any]:
+    """Sucht bei Wikimedia Commons Bilder zu `suchwort` (am besten englisch, etwa „chromosome diagram
+    unlabeled“) und nennt nur solche, deren Lizenz gewerbliche Nutzung und Aenderungen erlaubt (gemeinfrei,
+    CC0, CC BY, CC BY-SA). Je Treffer: `datei` (fuer `werkstatt_bild_setzen`), `titel`, `urheber`, `lizenz`
+    und `seite` (die Dateiseite zum Ansehen). `aussortiert` zaehlt, was wegen Lizenz oder Art wegfiel.
+    Du zeigst der Inhaberin die Treffer mit ihren Seiten und laesst SIE waehlen; du waehlst nie selbst.
+    Fuer „Benennen“ braucht es ein Bild ohne eingetragene Namen.
+    """
+    def arbeit(http: httpx.Client) -> dict[str, Any]:
+        gefunden = commons.suchen(http, str(suchwort)[:200])
+        brauchbar = [d for d in gefunden if _bild_brauchbar(d) is None]
+        treffer = [{"datei": d.datei, "titel": d.titel, "urheber": d.urheber or "unbekannt", "lizenz": d.lizenz,
+                    "seite": d.seite, "breite": d.breite, "hoehe": d.hoehe}
+                   for d in brauchbar[: max(1, min(int(anzahl), 10))]]
+        return {"ok": True, "daten": {"treffer": treffer, "aussortiert": len(gefunden) - len(brauchbar)}}
+
+    return _commons(arbeit)
+
+
+def werkstatt_bild_setzen(task_id: str, datei: str | None) -> dict[str, Any]:
+    """Setzt an einer offenen Aufgabe, einem Fall oder einer Skizze das Bild `datei` (der Wert `datei` aus
+    `werkstatt_bild_suchen`, „File:…“), das die Inhaberin ausgewaehlt hat: holt Titel, Urheber und Lizenz
+    von Wikimedia Commons, legt eine verkleinerte Kopie ab und traegt alles als neue Fassung ein. Unfreie
+    oder unbekannte Lizenzen werden abgelehnt. `datei=None` nimmt das Bild wieder weg. Lernende sehen das
+    Bild erst nach der Freigabe; danach `werkstatt_vorschau` zeigen.
+    """
+    from ..services.werkstatt.aufgabenbild import HERKUNFT
+
+    gelesen = werkstatt_fassungen(task_id)
+    if not gelesen.get("ok"):
+        return gelesen
+    fassungen = (gelesen.get("daten") or {}).get("fassungen") or []
+    if not fassungen:
+        return {"ok": False, "fehler": "Die Aufgabe hat noch keine Fassung"}
+    neueste = fassungen[-1]
+    if (neueste.get("content") or {}).get("kind") not in _BILD_ARTEN:
+        return {"ok": False, "fehler": "Ein Bild tragen nur offene Aufgaben, Fälle und Skizzen"}
+    if datei is None:
+        weg = _bild_patch(task_id, neueste.get("number"), {"bild": None}, "Bild entfernt")
+        return weg if not weg.get("ok") else {"ok": True, "daten": {"fassung": (weg.get("daten") or {}).get("number"),
+                                                                    "bild": None}}
+
+    def arbeit(http: httpx.Client) -> dict[str, Any]:
+        gewaehlt: commons.Datei | None = None
+        geholt: tuple[bytes, str] | None = None
+        for breite in commons.BREITEN:
+            gewaehlt = commons.datei(http, str(datei)[:400], breite=breite)
+            if gewaehlt is None:
+                return {"ok": False, "fehler": "Diese Datei gibt es bei Wikimedia Commons nicht"}
+            grund = _bild_brauchbar(gewaehlt)
+            if grund is not None:
+                return {"ok": False, "fehler": grund}
+            geholt = commons.laden(http, gewaehlt)
+            if geholt is not None:
+                break
+        if gewaehlt is None or geholt is None:
+            return {"ok": False, "fehler": "Das Bild ist auch verkleinert zu groß oder kein PNG/JPEG"}
+        daten, art = geholt
+        name = f"bild-{hashlib.sha256(daten).hexdigest()[:16]}.{art}"
+        abgelegt = _run(lambda client: client.put_bytes(
+            f"/lernsequenz-medien/{name}", daten, roles=ROLE_AUTHOR,
+            content_type="image/png" if art == "png" else "image/jpeg"))
+        if not abgelegt.get("ok"):
+            return abgelegt
+        urheber = gewaehlt.urheber or "unbekannt"
+        bild = {
+            "image": f"/lernsequenz-medien/{name}", "width": gewaehlt.bild_breite, "height": gewaehlt.bild_hoehe,
+            "titel": gewaehlt.titel, "urheber": urheber, "lizenz": gewaehlt.lizenz,
+            "lizenz_url": gewaehlt.lizenz_url, "quelle_url": gewaehlt.seite,
+        }
+        geaendert = _bild_patch(
+            task_id, neueste.get("number"), {"bild": bild},
+            f"Bild aus {HERKUNFT}: {gewaehlt.titel} ({gewaehlt.lizenz}, {urheber})")
+        if not geaendert.get("ok"):
+            return geaendert
+        return {"ok": True, "daten": {
+            "fassung": (geaendert.get("daten") or {}).get("number"), "bild": name,
+            "quelle": f"Bild: {gewaehlt.titel}, {urheber}, {gewaehlt.lizenz}, {HERKUNFT}",
+        }}
+
+    return _commons(arbeit)
 
 
 def werkstatt_auftrag(auftrag_id: str) -> dict[str, Any]:

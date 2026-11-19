@@ -42,6 +42,8 @@
     "mcp__learning__werkstatt_vorschau",
     "mcp__learning__werkstatt_auftrag",
     "mcp__learning__werkstatt_code_pruefen",
+    "mcp__learning__werkstatt_bild_suchen",
+    "mcp__learning__werkstatt_bild_setzen",
     "mcp__learning__werkstatt_freigabe_anzeigen"
   ]
 }

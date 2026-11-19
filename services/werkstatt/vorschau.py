@@ -12,6 +12,7 @@ from typing import Any
 from spaces.learning.services.lernsequenz.aus_struktur import _media_available
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
+from spaces.learning.services.werkstatt.aufgabenbild import quellenzeile
 from spaces.learning.services.werkstatt.graph import graphen_zeichnen
 from spaces.learning.services.werkstatt.inhalt import (
     Code,
@@ -150,6 +151,13 @@ def _testlauf_stand(inhalt: Code) -> str:
     return "bestanden"
 
 
+def _mit_bild(text: str, inhalt: Offen | Fall | Skizze) -> tuple[str, str | None]:
+    """The task text with the picture's source line below it, and the picture's path (or None)."""
+    if inhalt.bild is None:
+        return text, None
+    return f"{text}\n\n{quellenzeile(inhalt.bild)}", inhalt.bild.image
+
+
 def vorschau(content: dict[str, Any]) -> dict[str, Any]:
     inhalt = inhalt_lesen(content)
     bild: str | None = None
@@ -162,7 +170,7 @@ def vorschau(content: dict[str, Any]) -> dict[str, Any]:
         ]
         loesung = "Richtig: " + ", ".join(richtig)
     elif isinstance(inhalt, (Offen, Fall)):
-        text = inhalt.prompt
+        text, bild = _mit_bild(inhalt.prompt, inhalt)
         loesung = f"Erwartete Antwort: {inhalt.expected_answer}"
     elif isinstance(inhalt, Luecke):
         text = f"{inhalt.prompt}\n\n{_PLATZHALTER.sub('____', inhalt.template)}"
@@ -188,7 +196,7 @@ def vorschau(content: dict[str, Any]) -> dict[str, Any]:
         text = "\n".join([inhalt.prompt, "", feld])
         loesung = f"Lösung: {inhalt.value:g} (± {inhalt.tolerance:g}); Rechnung: {inhalt.rechnung}"
     elif isinstance(inhalt, Skizze):
-        text = inhalt.prompt
+        text, bild = _mit_bild(inhalt.prompt, inhalt)
         loesung = f"Musterskizze: {inhalt.expected_answer}\nKriterien: " + "; ".join(
             f"{r.description} ({r.points})" for r in inhalt.rubric
         )

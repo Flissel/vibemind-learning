@@ -45,6 +45,7 @@ from spaces.learning.services.course_factory.practice_catalog import (
 from spaces.learning.services.lernsequenz.aus_struktur import _media_available, _random_ids
 from spaces.learning.services.lernsequenz.bilder import render_terminal
 from spaces.learning.services.lernsequenz.medien import save_media
+from spaces.learning.services.werkstatt.aufgabenbild import darstellung as bild_darstellung
 from spaces.learning.services.werkstatt.belege import belege_auswaehlen
 from spaces.learning.services.werkstatt.graph import GraphFehler, graphen_zeichnen
 from spaces.learning.services.werkstatt.inhalt import (
@@ -300,6 +301,12 @@ class WerkstattKatalog:
 # item shapes
 
 
+def _mit_bild(inhalt: Offen | Fall | Skizze) -> dict[str, Any]:
+    """`presentation` with the task's picture and its source, or nothing: the picture was stored when it
+    was chosen, the release only passes its path on."""
+    return {"presentation": bild_darstellung(inhalt.bild)} if inhalt.bild is not None else {}
+
+
 def _item_felder(
     item_id: str, inhalt: AufgabeInhalt, graph_bilder: list[dict[str, Any]] | None = None,
     *, mathe: bool = False, code_regeln: dict[str, str] | None = None,
@@ -317,7 +324,8 @@ def _item_felder(
     if isinstance(inhalt, (Offen, Fall)):
         rubrik = _scaled([c.model_dump(mode="json") for c in inhalt.rubric])
         return (
-            inhalt.kind, {"text": inhalt.expected_answer or inhalt.prompt}, {"prompt": inhalt.prompt},
+            inhalt.kind, {"text": inhalt.expected_answer or inhalt.prompt},
+            {"prompt": inhalt.prompt, **_mit_bild(inhalt)},
             rubrik or [dict(_FALLBACK_CRITERION)],
         )
     if isinstance(inhalt, Luecke):
@@ -339,7 +347,7 @@ def _item_felder(
         )
     if isinstance(inhalt, Skizze):
         return (
-            "penecho_canvas", {"text": inhalt.expected_answer}, {"prompt": inhalt.prompt},
+            "penecho_canvas", {"text": inhalt.expected_answer}, {"prompt": inhalt.prompt, **_mit_bild(inhalt)},
             _scaled([c.model_dump(mode="json") for c in inhalt.rubric]),
         )
     if isinstance(inhalt, Code):

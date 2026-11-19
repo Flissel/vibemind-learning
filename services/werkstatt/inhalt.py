@@ -25,6 +25,7 @@ from spaces.learning.services.evaluation.code_tests import (
     Testfall,
 )
 from spaces.learning.services.adaptive_engine.darstellung import vorlage_felder as passende_felder
+from spaces.learning.services.werkstatt.aufgabenbild import Bild
 
 Fach = Literal["terminal", "mathe", "consulting"]
 
@@ -96,12 +97,15 @@ class Offen(_AufgabeBasis):
     kind: Literal["open"]
     expected_answer: str = Field(max_length=50_000)
     rubric: list[RubricCriterion] = Field(min_length=1, max_length=100)
+    # A picture next to the task (to name or describe); not part of the solution.
+    bild: Bild | None = None
 
 
 class Fall(_AufgabeBasis):
     kind: Literal["case"]
     expected_answer: str = Field(max_length=50_000)
     rubric: list[RubricCriterion] = Field(min_length=1, max_length=100)
+    bild: Bild | None = None
 
 
 class LueckeFeld(_StrictDraft):
@@ -195,6 +199,7 @@ class Skizze(_AufgabeBasis):
     kind: Literal["sketch"]
     expected_answer: str = Field(min_length=1, max_length=50_000)
     rubric: list[RubricCriterion] = Field(min_length=3, max_length=5)
+    bild: Bild | None = None
 
 
 class Testlauf(_StrictDraft):

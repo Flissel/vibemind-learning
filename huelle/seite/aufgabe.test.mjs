@@ -855,3 +855,29 @@ test("Leiste: „Ganze Rückmeldung“ klappt den vollen Text auf und schließt 
   // Die Abfrage alle 2 s darf den Kasten nicht neu füllen (die Leseposition ginge verloren).
   assert.match(js, /if \(voll\.textContent !== inhalt\) voll\.textContent = inhalt;/);
 });
+test("bildquelleAus: Quellenangabe zum Bild der Aufgabe, Link nur zu Wikimedia Commons", async () => {
+  const { bildquelleAus } = await import("./aufgabe.js");
+  const quelle = { titel: "Chromosome.svg", urheber: "Magnus Manske", lizenz: "CC BY-SA 3.0",
+    lizenz_url: "https://creativecommons.org/licenses/by-sa/3.0", quelle_url: "https://commons.wikimedia.org/wiki/File:Chromosome.svg" };
+  const task = (bildquelle, image = "/lernen/api/medien/bild-0123456789abcdef.png") => ({ type: "open", presentation: { image, bildquelle } });
+  assert.deepEqual(bildquelleAus(task(quelle)), {
+    text: "Bild: Chromosome.svg, Magnus Manske, CC BY-SA 3.0, Wikimedia Commons",
+    href: "https://commons.wikimedia.org/wiki/File:Chromosome.svg",
+  });
+  // Fremde oder kaputte Adresse: die Angabe bleibt, der Link fällt weg.
+  assert.equal(bildquelleAus(task({ ...quelle, quelle_url: "https://example.org/x" })).href, null);
+  assert.equal(bildquelleAus(task({ ...quelle, quelle_url: "javascript:alert(1)" })).href, null);
+  // Ohne Bild oder ohne vollständige Angabe gibt es keine Zeile.
+  assert.equal(bildquelleAus(task(quelle, null)), null);
+  assert.equal(bildquelleAus(task({ ...quelle, urheber: "" })), null);
+  assert.equal(bildquelleAus(task(undefined)), null);
+  assert.equal(bildquelleAus({ type: "open" }), null);
+  assert.equal(bildquelleAus(null), null);
+});
+
+test("Aufgabenkarte: die Quellenangabe steht bei der Aufgabe, der Link öffnet außerhalb der Seite", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(js, /bildquelleZeile\(task\),\s+el\("p", \{ class: "hinweistext", text: TEXT\.aufFlaeche \}\)/);
+  assert.ok(js.includes('target: "_blank", rel: "noopener noreferrer"'));
+});
