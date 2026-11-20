@@ -35,6 +35,21 @@ def bibliotheken_leise() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+SITZUNGSLOGGER = "spaces.learning.huelle.sitzungen"
+
+
+def sitzungsprotokoll_an() -> None:
+    """Binden und Beenden der Canvas-Sitzungen (INFO) in die Fehlerausgabe, mit Uhrzeit. Nur dieser eine Logger:
+    alle anderen bleiben auf WARNING, denn auf INFO koennten sie Adressen oder Kennungen nennen."""
+    logger = logging.getLogger(SITZUNGSLOGGER)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        ausgabe = logging.StreamHandler()
+        ausgabe.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(ausgabe)
+
+
 def build_apps(einstellung: Einstellung) -> tuple[Weiche, FlaechenWeiche]:
     """(Seiten-Weiche, Flaechen-Weiche) mit einer gemeinsamen Sperre."""
     seiten, flaeche, _ = _bauen(einstellung)
@@ -118,6 +133,7 @@ async def _beide(einstellung: Einstellung) -> None:
 
 
 def main() -> None:
+    sitzungsprotokoll_an()
     asyncio.run(_beide(einstellung_lesen()))
 
 

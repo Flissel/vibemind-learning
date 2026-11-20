@@ -930,3 +930,31 @@ test("Aufgabenkarte: die Quellenangabe steht bei der Aufgabe, der Link öffnet a
   assert.match(js, /bildquelleZeile\(task\),\s+el\("p", \{ class: "hinweistext", text: TEXT\.aufFlaeche \}\)/);
   assert.ok(js.includes('target: "_blank", rel: "noopener noreferrer"'));
 });
+// ---- Seitenleiste: in „Fläche groß“ eingeklappt (20.11.: sie nahm dem Canvas ein Viertel der Breite) --------
+test("seitenleiste: in „Fläche groß“ zu, außer auf Wunsch oder wenn dort gearbeitet wird", async () => {
+  const { seitenleiste } = await import("./aufgabe.js");
+  const lage = { layout: "a", gewuenscht: false, phase: "aufgabe", task: { type: "open" } };
+  assert.equal(seitenleiste(lage), "zu");
+  assert.equal(seitenleiste({ ...lage, task: { type: "numeric" } }), "zu");
+  // Auf Wunsch liegt sie über dem Canvas, das seine Breite behält.
+  assert.equal(seitenleiste({ ...lage, gewuenscht: true }), "ueber");
+  // „Geteilt“ bleibt, wie es war.
+  assert.equal(seitenleiste({ ...lage, layout: "c" }), "fest");
+  assert.equal(seitenleiste({ ...lage, layout: "c", gewuenscht: true }), "fest");
+  // Wird die Aufgabe in der Seitenleiste beantwortet (code) oder steht dort der Inhalt (Kursende, keine Aufgabe),
+  // darf sie nie verschwinden.
+  assert.equal(seitenleiste({ ...lage, task: { type: "code" } }), "fest");
+  assert.equal(seitenleiste({ ...lage, task: null }), "fest");
+  assert.equal(seitenleiste({ ...lage, phase: "ende" }), "fest");
+  assert.equal(seitenleiste({ ...lage, phase: "rueckmeldung" }), "fest");
+});
+
+test("Seite: Knopf für die Seitenleiste, Klassen und Regeln sind da", async () => {
+  const lesen = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+  const html = lesen("./index.html"), css = lesen("./huelle.css"), js = lesen("./huelle.js");
+  assert.match(html, /<button type="button" id="leiste-knopf" aria-pressed="false"[^>]*>Begriffe und Notizen<\/button>/);
+  assert.match(css, /\.leiste-zu \.leiste \{ display: none; \}/);
+  assert.match(css, /\.leiste-ueber \.leiste \{[^}]*position: absolute;/);
+  assert.match(js, /seitenleiste\(\{ layout: /);
+  assert.ok(js.includes('speicher("schreiben", "huelle-leiste"'));
+});

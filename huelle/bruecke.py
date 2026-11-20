@@ -100,6 +100,9 @@ from .zusammenfassung import (
 )
 
 log = logging.getLogger(__name__)
+# Eigenes Protokoll fuer das Binden und Beenden der Canvas-Sitzungen (INFO, `server.sitzungsprotokoll_an`):
+# nur Aufgabennummer und Anlass, nie eine Kennung. Befund 20.11.: ohne es war "3 KI" nicht zu erklaeren.
+sitzungslog = logging.getLogger("spaces.learning.huelle.sitzungen")
 
 T = TypeVar("T")
 
@@ -2415,6 +2418,8 @@ class Bruecke:
                 self._penecho.vergessen(schluessel)
                 session_id = self._aufgaben_sitzung(sitzung, schluessel, titel)
                 ergebnis = aktion(session_id)
+            if sitzung.aufgaben_boards.get(nummer) != session_id:
+                sitzungslog.info("Aufgabe %d: Sitzung gebunden", nummer)
             sitzung.aufgaben_boards[nummer] = session_id
             sitzung.canvas_bekannt.add(nummer)
         return ergebnis
@@ -2422,20 +2427,56 @@ class Bruecke:
     def _vorn(self, sitzung: _Sitzung, nummer: int) -> None:
         """Das Canvas der Aufgabe `nummer` steht jetzt vorn: nur es behaelt seine PenEcho-Sitzung, die der anderen
         Aufgaben enden (ihr Inhalt bleibt). Sonst sammelte die Lernflaeche je geoeffneter Aufgabe eine offene
-        Sitzung, die niemand mehr bedient (Befund 20.11.: Anzeige „5 KI“)."""
+        Sitzung, die niemand mehr bedient (Befund 20.11.: Anzeige „5 KI“).
+
+        Auch die Sitzungen, die nur noch die Merkdatei kennt (von vor einem Neustart der Huelle), enden hier:
+        die Bruecke hat sie in diesem Prozess nie geoeffnet, bei PenEcho koennen sie trotzdem offen sein."""
         sitzung.vorn = nummer
+        anlass = f"Wechsel zu {nummer}"
         with self._flaeche_sperre:
             for andere in [n for n in sitzung.aufgaben_boards if n != nummer]:
-                self._aufgaben_sitzung_schliessen(sitzung, andere)
+                self._aufgaben_sitzung_schliessen(sitzung, andere, anlass)
+            for andere, session_id in self._gemerkte_aufgaben_sitzungen(sitzung).items():
+                if andere != nummer:
+                    self._sitzung_beenden(sitzung, andere, session_id, f"{anlass}, Altbestand")
 
-    def _aufgaben_sitzung_schliessen(self, sitzung: _Sitzung, nummer: int) -> None:
+    def _gemerkte_aufgaben_sitzungen(self, sitzung: _Sitzung) -> dict[int, str]:
+        """Aufgabennummer -> sessionId aus der Merkdatei, nur Schluessel `<sid>#<Zahl>` (nie das Kurs-Canvas).
+        Nicht lesbar: leer, der Wechsel geht vor."""
+        try:
+            gemerkt = self._penecho.sitzungen_von(sitzung.sid)
+        except (PenEchoNichtErreichbar, OSError, ValueError) as fehler:
+            log.warning("Gemerkte Sitzungen nicht lesbar: %s", _typ(fehler))
+            return {}
+        karte: dict[int, str] = {}
+        for schluessel, session_id in gemerkt.items():
+            rest = schluessel.rsplit("#", 1)[-1]
+            if rest.isdigit():
+                karte[int(rest)] = session_id
+        return karte
+
+    def _aufgaben_sitzung_schliessen(self, sitzung: _Sitzung, nummer: int, anlass: str) -> None:
         """Beendet die PenEcho-Sitzung des Canvas der Aufgabe `nummer`, still. Die Bruecke haelt sie danach nicht
         mehr, auch wenn PenEcho nicht antwortet: der naechste Aufruf dort bindet das Dokument neu."""
         session_id = sitzung.aufgaben_boards.pop(nummer, None)
-        if session_id is None:
-            return
+        if session_id is not None:
+            self._sitzung_beenden(sitzung, nummer, session_id, anlass)
+
+    def _sitzung_beenden(self, sitzung: _Sitzung, nummer: int, session_id: str, anlass: str) -> None:
         schluessel = self._aufgaben_schluessel(sitzung.sid, nummer)
-        self._still(lambda: self._penecho.sitzung_schliessen(schluessel, session_id))
+        ok = self._still(lambda: self._penecho.sitzung_schliessen(schluessel, session_id))
+        sitzungslog.info("Aufgabe %d: Sitzung %s (%s)", nummer, "beendet" if ok else "nicht beendet", anlass)
+
+    def _hintergrund_beenden(self, sitzung: _Sitzung, nummer: int) -> None:
+        """Nach dem Schreiben auf ein Canvas, das nicht vorn steht: sein Dokument merken, seine Sitzung beenden.
+        Sonst bliebe sie bis zum naechsten Wechsel offen (Befund 20.11. abends: „3 KI“). Weiss die Bruecke nicht,
+        was vorn steht (nach einem Neustart), bleibt die Sitzung: es koennte die Aufgabe der Person sein."""
+        if sitzung.vorn is None or sitzung.vorn == nummer:
+            return
+        with self._flaeche_sperre:
+            if (board := sitzung.aufgaben_boards.get(nummer)) is not None:
+                self._board_merken(sitzung, board)  # der Aufrufer findet das Board danach nicht mehr
+                self._aufgaben_sitzung_schliessen(sitzung, nummer, "Hintergrund")
 
     @staticmethod
     def _still(arbeit: Callable[[], object]) -> bool:
@@ -2486,6 +2527,7 @@ class Bruecke:
         """
         neu = self._ohne_canvas(sitzung, nummer)
         bisher = sitzung.vorn
+        sitzung.vorn = nummer  # ab hier gilt sie als vorn: `_auf_nummer_still` beendet sonst ihre Sitzung gleich
         if neu:
             ok = self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
         else:
@@ -2509,11 +2551,12 @@ class Bruecke:
         genau wie bisher auf dem gemeinsamen Board (`_flaeche_still`).
 
         Legt eine Bewertung ihre Karte auf ein verlassenes Canvas, bindet `_auf_aufgabe` dessen Dokument in einer
-        neuen Sitzung (ohne `show` bleibt es im Hintergrund). Die bleibt bis zum naechsten Wechsel offen und endet
-        dann mit allen anderen (`_vorn`): hier zu schliessen traefe auch eine Korrektur auf der Aufgabe, an der die
-        Person gerade arbeitet, wenn die Bruecke sie nicht als vorn kennt."""
+        neuen Sitzung (ohne `show` bleibt es im Hintergrund). Die endet gleich danach wieder
+        (`_hintergrund_beenden`), ausser die Aufgabe steht vorn oder die Bruecke weiss nicht, was vorn steht."""
         if sitzung.je_aufgabe:
-            return self._still(lambda: self._auf_aufgabe(sitzung, nummer, self._aufgaben_titel(task, nummer), aktion))
+            ok = self._still(lambda: self._auf_aufgabe(sitzung, nummer, self._aufgaben_titel(task, nummer), aktion))
+            self._hintergrund_beenden(sitzung, nummer)
+            return ok
         return self._flaeche_still(sitzung, aktion)
 
     def _nummer_merken(self, sitzung: _Sitzung, nummer: int) -> None:

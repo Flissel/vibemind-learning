@@ -112,8 +112,14 @@ Im Modell „ein Canvas je Aufgabe“ behält nur das Canvas vorn seine PenEcho-
 - Kommt die Person zurück, bindet `penecho_start_session` dasselbe Dokument über Schlüssel und `documentId` in
   einer neuen Sitzung.
 - Legt eine Bewertung ihre Karte auf ein verlassenes Canvas, öffnet das eine Sitzung im Hintergrund (ohne
-  `show` wechselt PenEcho die Ansicht nicht). Sie endet mit dem nächsten Wechsel. Es sind also kurzzeitig zwei
-  Sitzungen möglich, nie mehr eine je geöffneter Aufgabe.
+  `show` wechselt PenEcho die Ansicht nicht). Sie endet gleich nach dem Schreiben wieder
+  (`_hintergrund_beenden`); vorher merkt die Brücke das Dokument. Ausnahme: weiß die Brücke nicht, welches
+  Canvas vorn steht (nach einem Neustart, vor dem ersten Zeigen), bleibt die Sitzung bis zum nächsten Wechsel.
+- Beim Wechsel enden auch die Sitzungen, die nur noch `sitzungen.json` kennt (Schlüssel `<sid>#<Zahl>`, von vor
+  einem Neustart der Hülle). Das Kurs-Canvas (`<sid>#kurs`) und andere Lernsitzungen bleiben unberührt.
+- Protokoll: Binden und Beenden stehen mit Uhrzeit, Aufgabennummer und Anlass in `huelle.err.log` (Logger
+  `spaces.learning.huelle.sitzungen`, nie eine Kennung). Anlass war der Befund „3 KI“ am Abend des 20.11.,
+  der sich ohne Protokoll nicht erklären ließ.
 - Grund: PenEcho zählt offene Sitzungen neben „MCP“ („5 KI“); vorher blieb je geöffneter Aufgabe eine stehen.
 - Nicht gemessen, nur in `service.js` und `schema.js` gelesen: das Freigeben des Schlüssels beim Schließen und
   dass ein Start ohne `show` im Hintergrund bleibt. Gruppensitzungen und das Kurs-Canvas sind unverändert.

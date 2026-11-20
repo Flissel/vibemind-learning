@@ -253,6 +253,16 @@ def test_sitzung_schliessen_beendet_die_sitzung_und_vergisst_sie(zustand: Path) 
     assert len(fake.aufrufe("penecho_start_session")) == 2
 
 
+def test_sitzungen_von_nennt_nur_die_canvas_sitzungen_dieser_lernsitzung(zustand: Path) -> None:
+    fake = Fake()
+    c = _client(zustand, fake)
+    eins = c.sitzung(f"{LERN_SID}#1", TITEL)
+    c.sitzung(LERN_SID, TITEL)
+    c.sitzung("andere#1", TITEL)
+    assert c.sitzungen_von(LERN_SID) == {f"{LERN_SID}#1": eins}
+    assert c.sitzungen_von("niemand") == {}
+
+
 def test_sitzung_schliessen_vergisst_auch_wenn_penecho_nicht_antwortet(
     zustand: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

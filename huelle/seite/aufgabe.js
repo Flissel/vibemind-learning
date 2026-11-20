@@ -625,7 +625,18 @@ export const SICHERN_ALLE_MS = 60000;
 export function sichernFaellig({ phase, turnState, busy, sichtbar }) {
   return phase === "aufgabe" && turnState === "active" && !busy && sichtbar === true;
 }
-export const NICHTS_ZU_SPEICHERN = "Auf der Fläche gibt es noch nichts zu speichern.";
+
+/**
+ * Wie die Seitenleiste steht: "fest" (eigene Spalte), "ueber" (liegt über dem Canvas) oder "zu".
+ * In „Fläche groß“ ist sie zu, solange die Aufgabe auf der Fläche bearbeitet wird: dort steht dann nur noch
+ * Beiwerk (Begriffe, Notizen), das dem Canvas ein Viertel der Breite nahm. Auf Wunsch liegt sie über dem Canvas.
+ * Sie bleibt fest, wenn dort gearbeitet oder gelesen wird: „Geteilt“, Typ `code`, keine Aufgabe, Kursende.
+ */
+export function seitenleiste({ layout, gewuenscht, phase, task }) {
+  if (layout === "c" || phase !== "aufgabe" || !task || !FLAECHENTYPEN.has(task.type)) return "fest";
+  return gewuenscht ? "ueber" : "zu";
+}
+export const NICHTS_ZU_SPEICHERN ="Auf der Fläche gibt es noch nichts zu speichern.";
 
 /** Der ruhige Hinweis zum Speichern; null bei Erfolg. „Leer“ meldet nur der Knopf selbst (`manuell`). */
 export function speicherHinweis(ergebnis, manuell) {

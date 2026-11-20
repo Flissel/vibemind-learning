@@ -809,6 +809,13 @@ class PenEchoMcp:
         finally:
             self.vergessen(schluessel)
 
+    def sitzungen_von(self, wurzel: str) -> dict[str, str]:
+        """Gemerkte Sitzungen der Canvas einer Lernsitzung: Schluessel `<wurzel>#...` -> sessionId; nur lesend.
+
+        Fuer das Aufraeumen nach einem Neustart der Huelle: was hier steht, kann bei PenEcho noch offen sein,
+        ohne dass die Bruecke es in diesem Prozess geoeffnet hat."""
+        return {k: v for k, v in self._gemerkt().items() if k.startswith(f"{wurzel}#") and v}
+
     def vergessen(self, schluessel: str) -> None:
         """Entfernt die gemerkte sessionId zu einem Schluessel (naechstes sitzung() startet neu)."""
         karte = self._gemerkt()

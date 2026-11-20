@@ -122,6 +122,8 @@ class FakePenEcho:
         # Aufgaben-Canvas: Antworten der neuen Methoden (Standard: Canvas schliesst, kein Dokument).
         self.schliessen_ergebnis = True
         self.dokumente_je_schluessel: dict[str, str] = {}
+        # Sitzungen, die nur noch die Merkdatei kennt (Altbestand von vor einem Neustart der Huelle).
+        self.gemerkte_sitzungen: dict[str, str] = {}
 
     def _pruefen(self, name: str) -> None:
         if self.unbekannt_einmal:
@@ -143,6 +145,10 @@ class FakePenEcho:
 
     def sitzung_schliessen(self, schluessel: str, session_id: str) -> None:
         self.aufrufe.append(("sitzung_schliessen", schluessel, session_id))
+        self.gemerkte_sitzungen.pop(schluessel, None)
+
+    def sitzungen_von(self, wurzel: str) -> dict[str, str]:
+        return {k: v for k, v in self.gemerkte_sitzungen.items() if k.startswith(f"{wurzel}#")}
 
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,

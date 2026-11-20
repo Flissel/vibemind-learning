@@ -1541,9 +1541,10 @@ def test_scheitert_das_schliessen_gelingt_der_wechsel_trotzdem(tmp_path: Path) -
         client.app.beenden()
 
 
-def test_karte_auf_verlassenem_canvas_oeffnet_eine_sitzung_bis_zum_naechsten_wechsel(tmp_path: Path) -> None:
+def test_karte_auf_verlassenem_canvas_schliesst_ihre_sitzung_gleich_wieder(tmp_path: Path) -> None:
     # Eine Bewertung laeuft weiter, waehrend die Person schon die naechste Aufgabe offen hat: ihre Karte braucht
-    # eine Sitzung auf dem alten Canvas. Die endet mit dem naechsten Wechsel, zusammen mit allen anderen.
+    # eine Sitzung auf dem alten Canvas. Die endet sofort nach dem Schreiben (Befund 20.11. abends: "3 KI", eine
+    # Hintergrund-Sitzung schrieb noch, waehrend ein anderes Canvas vorn stand).
     ll = _neu_lern(3)
     client, penecho, _ = _oeffnen(ll, tmp_path)
     try:
@@ -1552,13 +1553,77 @@ def test_karte_auf_verlassenem_canvas_oeffnet_eine_sitzung_bis_zum_naechsten_wec
         gesehen: list[str] = []
         assert client.app._auf_nummer_still(sitzung, ll.eintraege[0]["task"], 1, gesehen.append) is True
         assert gesehen == ["board-1"]
-        assert sitzung.aufgaben_boards == {2: "board-2", 1: "board-1"} and sitzung.vorn == 2
-        assert _geschlossen(penecho) == [(f"{SID}#1", "board-1")]  # nur der Wechsel von eben
-        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3}).status_code == 200
-        assert sorted(_geschlossen(penecho)[1:]) == [(f"{SID}#1", "board-1"), (f"{SID}#2", "board-2")]
-        assert sitzung.aufgaben_boards == {3: "board-3"} and sitzung.vorn == 3
+        assert sitzung.aufgaben_boards == {2: "board-2"} and sitzung.vorn == 2
+        assert _geschlossen(penecho) == [(f"{SID}#1", "board-1"), (f"{SID}#1", "board-1")]  # Wechsel, dann Karte
+        assert 1 in sitzung.canvas_bekannt  # die Aufgabe gilt weiter als geoeffnet
     finally:
         client.app.beenden()
+
+
+def test_schreiben_auf_das_canvas_vorn_schliesst_nichts(tmp_path: Path) -> None:
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        assert client.app._auf_nummer_still(sitzung, ll.eintraege[0]["task"], 1, lambda s: None) is True
+        assert _geschlossen(penecho) == [] and sitzung.aufgaben_boards == {1: "board-1"}
+    finally:
+        client.app.beenden()
+
+
+def test_ohne_bekanntes_canvas_vorn_schliesst_das_schreiben_nichts(tmp_path: Path) -> None:
+    # Nach einem Neustart weiss die Bruecke nicht, welches Canvas die Person vor sich hat: dann lieber eine
+    # Sitzung zu viel als die der Aufgabe, an der sie gerade arbeitet.
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        sitzung.vorn = None
+        assert client.app._auf_nummer_still(sitzung, ll.eintraege[1]["task"], 2, lambda s: None) is True
+        assert _geschlossen(penecho) == [] and sitzung.aufgaben_boards == {1: "board-1", 2: "board-2"}
+    finally:
+        client.app.beenden()
+
+
+def test_wechsel_schliesst_auch_die_nur_gemerkten_sitzungen_der_anderen_aufgaben(tmp_path: Path) -> None:
+    # Altbestand: Sitzungen von vor einem Neustart der Huelle stehen nur noch in der Merkdatei.
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        penecho.gemerkte_sitzungen.update({
+            f"{SID}#3": "alt-3", f"{SID}#2": "alt-2", f"{SID}#kurs": "alt-kurs", "andere-sid#3": "fremd"})
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        # Die eigene (#2) nicht, die des Kurs-Canvas nicht, fremde Lernsitzungen nicht.
+        assert sorted(_geschlossen(penecho)) == [(f"{SID}#1", "board-1"), (f"{SID}#3", "alt-3")]
+        assert client.app._sitzungen[SID].aufgaben_boards == {2: "board-2"}
+    finally:
+        client.app.beenden()
+
+
+def test_gemerkte_sitzungen_nicht_lesbar_bricht_den_wechsel_nicht(tmp_path: Path) -> None:
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        def kaputt(wurzel: str) -> dict[str, str]:
+            raise OSError("weg")
+
+        penecho.sitzungen_von = kaputt  # type: ignore[method-assign]
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
+        assert r.status_code == 200 and r.json()["flaeche"] is True
+        assert _geschlossen(penecho) == [(f"{SID}#1", "board-1")]
+    finally:
+        client.app.beenden()
+
+
+def test_oeffnen_und_schliessen_stehen_im_sitzungsprotokoll(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("INFO", logger="spaces.learning.huelle.sitzungen"):
+        client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+        try:
+            assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        finally:
+            client.app.beenden()
+    zeilen = [r.getMessage() for r in caplog.records if r.name == "spaces.learning.huelle.sitzungen"]
+    assert zeilen == ["Aufgabe 1: Sitzung gebunden", "Aufgabe 2: Sitzung gebunden",
+                      "Aufgabe 1: Sitzung beendet (Wechsel zu 2)"]
+    assert SID not in caplog.text and "board-" not in caplog.text  # keine Kennungen im Protokoll
 
 
 def test_verlassene_aufgabe_gilt_weiter_als_geoeffnet(tmp_path: Path) -> None:

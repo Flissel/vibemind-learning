@@ -5,7 +5,7 @@ import {
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenText, leistenZustand,
   meldungFuer,
-  nach409, NICHT_LESBAR, ohneLeere, SICHERN_ALLE_MS, sichernFaellig, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
+  nach409, NICHT_LESBAR, ohneLeere, seitenleiste, SICHERN_ALLE_MS, sichernFaellig,speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import {
   flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, flaechenHerkunft, gruppeAusAdresse, kennungBelegt,
@@ -202,6 +202,25 @@ function layoutSetzen(art) {
   $("layout-a").setAttribute("aria-pressed", String(wahl === "a"));
   $("layout-c").setAttribute("aria-pressed", String(wahl === "c"));
   speicher("schreiben", "huelle-layout", wahl);
+  seitenleisteSetzen();
+}
+
+// Seitenleiste in „Fläche groß“: zu, auf Wunsch über dem Canvas; fest, wenn dort gearbeitet wird (aufgabe.js).
+let leisteGewuenscht = false;
+function seitenleisteSetzen() {
+  const task = z.liste ? z.listenAufgaben.get(z.gewaehlt) ?? null : z.turn?.task ?? null;
+  const art = seitenleiste({ layout: document.body.classList.contains("layout-c") ? "c" : "a",
+    gewuenscht: leisteGewuenscht, phase: z.phase, task });
+  document.body.classList.toggle("leiste-zu", art === "zu");
+  document.body.classList.toggle("leiste-ueber", art === "ueber");
+  const knopf = $("leiste-knopf");
+  knopf.hidden = art === "fest"; // dann gibt es nichts zu klappen
+  knopf.setAttribute("aria-pressed", String(art === "ueber"));
+}
+function seitenleisteKlappen() {
+  leisteGewuenscht = !leisteGewuenscht;
+  speicher("schreiben", "huelle-leiste", leisteGewuenscht ? "1" : "0");
+  seitenleisteSetzen();
 }
 
 // ---- Kopf ----------------------------------------------------------------------------------
@@ -1282,6 +1301,7 @@ function leisteZeigen() {
   const leiste = $("flaechenleiste");
   const t = z.turn;
   kaertchenAktualisieren();
+  seitenleisteSetzen();
   // Listenkurs: die Leiste gilt der gewählten Aufgabe; ihre Knöpfe folgen deren Stand.
   const gewaehlt = z.liste ? gewaehlteAufgabe() : null;
   const task = z.liste ? z.listenAufgaben.get(z.gewaehlt) ?? null : t?.task;
@@ -1567,6 +1587,7 @@ async function start() {
       rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung, undefined, z.rahmenGruppe);
     }
   } else if (rahmen.dataset.src) rahmen.src = flaechenAdresse(rahmen.dataset.src, kennung);
+  leisteGewuenscht = speicher("lesen", "huelle-leiste") === "1";
   layoutSetzen(speicher("lesen", "huelle-layout"));
   window.addEventListener("message", flaechenNachricht);
   $("flaeche-verbinden").addEventListener("click", () => { void flaecheVerbinden(); });
@@ -1575,6 +1596,7 @@ async function start() {
     z.leisteOffen = z.leisteOffen === z.leistenText ? null : z.leistenText;
     leisteZeigen();
   });
+  $("leiste-knopf").addEventListener("click", seitenleisteKlappen);
   $("layout-a").addEventListener("click", () => layoutSetzen("a"));
   $("layout-c").addEventListener("click", () => layoutSetzen("c"));
   $("aufgabe-zurueck").addEventListener("click", () => aufgabeBlaettern(-1));
