@@ -98,8 +98,7 @@ def test_der_auftrag_traegt_beschreibung_rahmen_und_masse(welt: tuple[Comfy, Lea
     assert werkzeuge.werkstatt_szene_setzen(TASK, "T", BESCHREIBUNG, format="hoch")["ok"] is True
     ablauf = c.auftrag["prompt"]
     text = ablauf["4"]["inputs"]["text"]
-    assert text.startswith(BESCHREIBUNG) and "no text" in text.lower() and "no logos" in text.lower()
-    assert "real person" in text.lower()
+    assert text.startswith(BESCHREIBUNG) and "plain and unbranded" in text and "fictional" in text
     assert (ablauf["6"]["inputs"]["width"], ablauf["6"]["inputs"]["height"]) == (768, 1024)
     assert (ablauf["7"]["inputs"]["width"], ablauf["7"]["inputs"]["height"]) == (768, 1024)
     assert isinstance(ablauf["8"]["inputs"]["noise_seed"], int)
@@ -213,8 +212,12 @@ def test_formate_sind_durch_16_teilbar() -> None:
 def test_rahmen_haengt_die_festen_regeln_an() -> None:
     text = szene.rahmen("  A busy   office\nkitchen ")
     assert text.startswith("A busy office kitchen. ")
-    for regel in ("no text", "no letters", "no logos", "no brand names", "no watermark", "real person"):
-        assert regel in text.lower(), regel
+    for regel in ("plain and unbranded", "blank", "anonymous, fictional"):
+        assert regel in text, regel
+    # Echter Befund 20.11.: Auf „no logos“ zeichnete FLUX.2 ein Markenlogo. Der Rahmen sagt deshalb, was zu sehen
+    # ist, und nennt das Unerwünschte gar nicht erst.
+    for wort in ("logo", "brand name", "watermark", "celebrity", "no text"):
+        assert wort not in text.lower(), wort
 
 
 def test_als_jpeg_wandelt_und_haelt_die_grenze() -> None:

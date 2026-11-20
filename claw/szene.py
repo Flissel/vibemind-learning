@@ -28,9 +28,11 @@ TAKT_S = 2
 _ABLAUF = Path(__file__).with_name("szene_flux2.json")
 _HIER = frozenset({"127.0.0.1", "localhost"})
 _PNG = b"\x89PNG\r\n\x1a\n"
-# What every picture must not contain. FLUX has no separate negative prompt, so it is part of the text.
-_RAHMEN = ("Realistic photograph, natural light, neutral everyday setting. No text, no letters, no captions, "
-           "no logos, no brand names, no watermark. No real person, no celebrity, no recognisable individual.")
+# What every picture should look like. FLUX has no negative prompt, and naming the unwanted thing invites it
+# (20.11.2026: "no logos" produced a brand logo on a laptop), so the frame only says what is there.
+_RAHMEN = ("Realistic photograph, natural light, neutral everyday setting. All objects, devices and clothing are "
+           "plain and unbranded. Screens, signs, papers and whiteboards are blank. The people are anonymous, "
+           "fictional adults.")
 
 
 class SzeneFehler(RuntimeError):

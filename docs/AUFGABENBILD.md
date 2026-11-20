@@ -81,8 +81,12 @@ zeichnet Aufbau, Abläufe und Beschriftungen falsch.
 - **Ein Bild nach dem anderen:** Ist die Warteschlange von ComfyUI nicht leer, stellt das Werkzeug keinen
   Auftrag und meldet „besetzt“. Zwischen Nachsehen und Auftrag liegt ein Augenblick; stellt genau dann jemand
   anderes ein Bild ein, warten beide hintereinander.
-- **Fester Rahmen:** An jede Beschreibung hängt der Code an: kein Text, keine Logos oder Marken, keine echten
-  Personen. Das Modell hält sich daran meistens, nicht immer.
+- **Fester Rahmen:** An jede Beschreibung hängt der Code an, wie das Bild aussehen soll: schlichte Gegenstände
+  ohne Marke, leere Tafeln, Bildschirme und Papiere, erfundene Personen. Der Rahmen nennt das Unerwünschte
+  bewusst nicht: Auf „no logos“ zeichnete das Modell am 20.11.2026 ein Markenlogo. Sicher ist auch das nicht;
+  die Sicherung ist der Blick der Inhaberin in der Vorschau.
+- **Treue zur Beschreibung:** Zahlen hält das Modell nicht ein (sechs oder sieben Personen statt fünf). Die
+  Aufgabe darf sich deshalb nicht auf genaue Zahlen im Bild stützen.
 - **Frist:** sieben Minuten. Bleibt die Antwort auf den Auftrag aus, wird er nicht neu gestellt, sondern gesucht.
 - **Ablage:** als JPEG (höchstens 580.000 Bytes) im Medienordner; Beschreibung und Modell stehen als
   `bild.beschreibung` und `bild.modell` an der Fassung. ComfyUI behält zusätzlich seine eigene Kopie im
