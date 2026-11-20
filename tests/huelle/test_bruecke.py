@@ -141,6 +141,9 @@ class FakePenEcho:
     def vergessen(self, schluessel: str) -> None:
         self.aufrufe.append(("vergessen", schluessel))
 
+    def sitzung_schliessen(self, schluessel: str, session_id: str) -> None:
+        self.aufrufe.append(("sitzung_schliessen", schluessel, session_id))
+
     def aufgabe_setzen(self, session_id: str, aufgabe_id: str, text: str, nummer: int, *,
                        mit_ergebnisfeld: bool = False, mit_arbeitsfeld: bool = False,
                        bilder: Any = (), rechteck: dict[str, int] | None = None, zeigen: bool = True,

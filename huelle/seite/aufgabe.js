@@ -494,7 +494,7 @@ export function eingabeHinweis(typ) {
 
 // ---- Fläche zuerst: Leiste über der Fläche ----------------------------------------------------------
 export const KNOPF_TEXT = {
-  speichern: "Speichern", abgeben: "Abgeben", passt: "Passt", ueberarbeiten: "Überarbeiten",
+  abgeben: "Abgeben", passt: "Passt", ueberarbeiten: "Überarbeiten",
   falsch: "Falsch gelesen", eintippen: "Selbst eintippen", neuBewerten: "Neu bewerten",
 };
 export const NICHT_LESBAR = "Nicht lesbar.";
@@ -512,7 +512,7 @@ export function ergebnisAus(daten) {
 const unlesbar = (e) => e.lesbar === false || e.urteil === NICHT_LESBAR;
 
 /**
- * Welche Knöpfe die Leiste zeigt. Ohne Ergebnis: Speichern, Abgeben. Mit lesbarem Urteil (auch „Wird noch
+ * Welche Knöpfe die Leiste zeigt. Ohne Ergebnis: Abgeben (gesichert wird von selbst). Mit lesbarem Urteil (auch „Wird noch
  * geprüft.“) zusätzlich Passt, Überarbeiten und bei deterministischen Typen Falsch gelesen; nicht lesbar:
  * Selbst eintippen statt Passt. `code` hat keine Leiste (Antwortformular in der Seitenleiste).
  */
@@ -529,7 +529,7 @@ export function leistenZustand(task, ergebnis) {
       if (deterministisch) knoepfe.push("falsch");
     }
   }
-  knoepfe.push("speichern", "abgeben");
+  knoepfe.push("abgeben");
   return { sichtbar: true, knoepfe };
 }
 
@@ -538,11 +538,11 @@ export function leistenZustand(task, ergebnis) {
  * die Kennung ändert: die Abfrage alle 2 s ersetzte sonst die Knöpfe unter dem Finger, und Klicks auf
  * „Selbst eintippen“ gingen ins Leere (Abnahme A2, Befund 8).
  */
-export function leistenKnoepfe(ids, { busy, speichert, abgebenGesperrt }) {
+export function leistenKnoepfe(ids, { busy, abgebenGesperrt }) {
   const knoepfe = ids.map((id) => ({
     id,
     haupt: id === "abgeben",
-    disabled: Boolean(busy) || (id === "speichern" && Boolean(speichert)) || (id === "abgeben" && Boolean(abgebenGesperrt)),
+    disabled: Boolean(busy) || (id === "abgeben" && Boolean(abgebenGesperrt)),
     text: KNOPF_TEXT[id],
   }));
   return { knoepfe, kennung: JSON.stringify(knoepfe) };
@@ -616,7 +616,15 @@ export async function speichernMitWiederholung(speichern) {
   return { ok: false, art: r.code === "leer" ? "leer" : "fehler" };
 }
 
-export const NICHT_GESPEICHERT = "Nicht gespeichert – bitte „Speichern“ drücken.";
+export const NICHT_GESPEICHERT = "Nicht gespeichert – die Lernfläche versucht es gleich noch einmal.";
+
+// Ohne Knopf „Speichern“: die Seite sichert beim Wechsel der Aufgabe, nach jeder Abgabe und in diesem Takt.
+export const SICHERN_ALLE_MS = 60000;
+
+/** Ob der Takt jetzt sichern soll: offene Aufgabe, sichtbare Seite, keine laufende Bewertung. */
+export function sichernFaellig({ phase, turnState, busy, sichtbar }) {
+  return phase === "aufgabe" && turnState === "active" && !busy && sichtbar === true;
+}
 export const NICHTS_ZU_SPEICHERN = "Auf der Fläche gibt es noch nichts zu speichern.";
 
 /** Der ruhige Hinweis zum Speichern; null bei Erfolg. „Leer“ meldet nur der Knopf selbst (`manuell`). */

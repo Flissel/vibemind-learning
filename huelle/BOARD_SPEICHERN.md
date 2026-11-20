@@ -93,6 +93,31 @@ Probe wurde sie mit dem Temp-Ordner der eigenen Instanz entfernt.
     Es wird nichts gemerkt.
   - Fehler von PenEcho und eine Antwort ohne `documentId` kommen als `PenEchoNichtErreichbar`.
 
+## Wann gesichert wird und wie lange eine Sitzung lebt (20.11.2026)
+
+Einen eigenen Knopf „Speichern“ hat die Hülle nicht mehr. Sie löst PenEchos Speichern selbst aus:
+
+- nach Abgeben, Passt, Überarbeiten und Weiter (wie bisher),
+- **vor jedem Wechsel der Aufgabe**: PenEcho sichert, was vorn ist, also zuerst das verlassene Canvas, dann
+  holt die Brücke das nächste (die Seite wartet darauf höchstens vier Sekunden),
+- alle 60 Sekunden, solange eine Aufgabe offen und die Seite sichtbar ist und keine Bewertung läuft.
+
+Scheitert es, steht „Nicht gespeichert“ in der Leiste, bis ein späterer Versuch gelingt. Die Striche liegen
+unabhängig davon fortlaufend in der Arbeitsfläche des Browsers.
+
+Im Modell „ein Canvas je Aufgabe“ behält nur das Canvas vorn seine PenEcho-Sitzung:
+
+- Holt die Brücke ein Canvas nach vorn (zeigen, weiter, passt, Aufnahme), beendet sie danach die Sitzungen
+  aller anderen Aufgaben (`penecho_close_session`, der Inhalt bleibt, der `sessionKey` wird frei).
+- Kommt die Person zurück, bindet `penecho_start_session` dasselbe Dokument über Schlüssel und `documentId` in
+  einer neuen Sitzung.
+- Legt eine Bewertung ihre Karte auf ein verlassenes Canvas, öffnet das eine Sitzung im Hintergrund (ohne
+  `show` wechselt PenEcho die Ansicht nicht). Sie endet mit dem nächsten Wechsel. Es sind also kurzzeitig zwei
+  Sitzungen möglich, nie mehr eine je geöffneter Aufgabe.
+- Grund: PenEcho zählt offene Sitzungen neben „MCP“ („5 KI“); vorher blieb je geöffneter Aufgabe eine stehen.
+- Nicht gemessen, nur in `service.js` und `schema.js` gelesen: das Freigeben des Schlüssels beim Schließen und
+  dass ein Start ohne `show` im Hintergrund bleibt. Gruppensitzungen und das Kurs-Canvas sind unverändert.
+
 ## Speichern über PenEchos eigenen Knopf (Festlegung des Inhabers: Option 3)
 
 Eine Server-Kopie entsteht nur über PenEchos Knopf „Speichern“. Die Hülle drückt ihn selbst,

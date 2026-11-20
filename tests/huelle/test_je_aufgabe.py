@@ -166,7 +166,7 @@ def test_zeigen_legt_canvas_bei_bedarf_an(tmp_path: Path) -> None:
         assert ("aufgabe_setzen", "board-2", ll.eintraege[1]["task"]["id"], "Frage 2", 2) in neu
         assert ("bereiche_melden", "board-2", [EINZEL_RECHTECK]) in neu
         assert penecho.rechtecke[-1] == (2, EINZEL_RECHTECK) and penecho.zeigen[-1] == (2, True)
-        assert client.app._sitzungen[SID].aufgaben_boards == {1: "board-1", 2: "board-2"}
+        assert client.app._sitzungen[SID].aufgaben_boards == {2: "board-2"}  # die Sitzung von Aufgabe 1 endete
 
         vorher = len(penecho.aufrufe)
         r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
@@ -196,7 +196,7 @@ def test_aufgaben_canvas_beruehrt_gemeinsames_board_nie(tmp_path: Path) -> None:
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 1}).status_code == 200
         assert sitzung.board is None
-        assert sitzung.aufgaben_boards == {1: "board-1", 2: "board-2"}
+        assert sitzung.aufgaben_boards == {1: "board-1"}  # nur das Canvas vorn behaelt seine Sitzung
         assert [a for a in penecho.aufrufe if a[0] == "dokument_merken"] == [
             ("dokument_merken", "board-1"), ("dokument_merken", "board-2")]
     finally:
@@ -653,8 +653,9 @@ def test_karte_kommt_mit_dem_canvas(tmp_path: Path) -> None:
         assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
         assert [(k[1], k[3]) for k in _karten(penecho)] == [("board-1", 1), ("board-2", 2)]
         assert penecho.karten_rechtecke == [(1, EINZEL_RECHTECK), (2, EINZEL_RECHTECK)]
-        assert [a[0] for a in _flaechenaufrufe(penecho, vorher) if a[0] != "sitzung"][-2:] == \
-            ["rueckmeldung_zeigen", "karte_zeigen"]
+        # Danach endet nur noch die Sitzung des verlassenen Canvas.
+        assert [a[0] for a in _flaechenaufrufe(penecho, vorher) if a[0] != "sitzung"][-3:] == \
+            ["rueckmeldung_zeigen", "karte_zeigen", "sitzung_schliessen"]
         # Auch ein vorhandenes Canvas bekommt die Karte wieder (sie ersetzt die vorige, steht also nie doppelt);
         # die Ansicht rahmt dann gleich Bereich und Karte.
         vorher = len(penecho.aufrufe)
@@ -1484,3 +1485,92 @@ def test_kurs_abgeben_unlesbar_erst_nach_mitteilung_nicht_bearbeitet(tmp_path: P
             assert _buchungen(ll, "learning_task_answer") == [{"answer": {}, "attempt_id": _aid(ll, 2)}]
         finally:
             bruecke.beenden()
+
+
+# ---- Nur das Canvas vorn behaelt seine PenEcho-Sitzung ------------------------------------------------------
+# Befund 20.11.: die Lernflaeche zeigte "5 KI", weil je geoeffneter Aufgabe eine Sitzung offen blieb.
+
+def _geschlossen(penecho: FakePenEcho) -> list[tuple[Any, ...]]:
+    return [a[1:] for a in penecho.aufrufe if a[0] == "sitzung_schliessen"]
+
+
+def test_wechsel_schliesst_die_sitzung_des_verlassenen_canvas(tmp_path: Path) -> None:
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        assert sitzung.aufgaben_boards == {1: "board-1"} and sitzung.vorn == 1 and _geschlossen(penecho) == []
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        assert _geschlossen(penecho) == [(f"{SID}#1", "board-1")]
+        assert sitzung.aufgaben_boards == {2: "board-2"} and sitzung.vorn == 2
+        # Erst steht das neue Canvas vorn, dann endet die alte Sitzung.
+        namen = penecho.namen()
+        letztes_zeigen = max(i for i, a in enumerate(penecho.aufrufe) if a[:2] == ("bereich_zeigen", "board-2"))
+        assert letztes_zeigen < namen.index("sitzung_schliessen")
+        # Zurueck zur ersten Aufgabe: sie hatte schon ein Canvas, also nur zeigen; jetzt endet die Sitzung der zweiten.
+        vorher = len(penecho.aufrufe)
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 1}).status_code == 200
+        assert "aufgabe_setzen" not in [a[0] for a in penecho.aufrufe[vorher:]]
+        assert _geschlossen(penecho)[-1] == (f"{SID}#2", "board-2")
+        assert sitzung.aufgaben_boards == {1: "board-1"} and sitzung.vorn == 1
+    finally:
+        client.app.beenden()
+
+
+def test_dieselbe_aufgabe_erneut_zeigen_schliesst_nichts(tmp_path: Path) -> None:
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 1}).status_code == 200
+        assert _geschlossen(penecho) == [] and client.app._sitzungen[SID].aufgaben_boards == {1: "board-1"}
+    finally:
+        client.app.beenden()
+
+
+def test_scheitert_das_schliessen_gelingt_der_wechsel_trotzdem(tmp_path: Path) -> None:
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        def weg(schluessel: str, session_id: str) -> None:
+            penecho.aufrufe.append(("sitzung_schliessen", schluessel, session_id))
+            raise PenEchoNichtErreichbar("weg")
+
+        penecho.sitzung_schliessen = weg  # type: ignore[method-assign]
+        r = client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2})
+        assert r.status_code == 200 and r.json()["flaeche"] is True
+        # Die Bruecke haelt die alte Sitzung nicht weiter fest: der naechste Aufruf dort bindet neu.
+        assert client.app._sitzungen[SID].aufgaben_boards == {2: "board-2"}
+    finally:
+        client.app.beenden()
+
+
+def test_karte_auf_verlassenem_canvas_oeffnet_eine_sitzung_bis_zum_naechsten_wechsel(tmp_path: Path) -> None:
+    # Eine Bewertung laeuft weiter, waehrend die Person schon die naechste Aufgabe offen hat: ihre Karte braucht
+    # eine Sitzung auf dem alten Canvas. Die endet mit dem naechsten Wechsel, zusammen mit allen anderen.
+    ll = _neu_lern(3)
+    client, penecho, _ = _oeffnen(ll, tmp_path)
+    try:
+        sitzung = client.app._sitzungen[SID]
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        gesehen: list[str] = []
+        assert client.app._auf_nummer_still(sitzung, ll.eintraege[0]["task"], 1, gesehen.append) is True
+        assert gesehen == ["board-1"]
+        assert sitzung.aufgaben_boards == {2: "board-2", 1: "board-1"} and sitzung.vorn == 2
+        assert _geschlossen(penecho) == [(f"{SID}#1", "board-1")]  # nur der Wechsel von eben
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 3}).status_code == 200
+        assert sorted(_geschlossen(penecho)[1:]) == [(f"{SID}#1", "board-1"), (f"{SID}#2", "board-2")]
+        assert sitzung.aufgaben_boards == {3: "board-3"} and sitzung.vorn == 3
+    finally:
+        client.app.beenden()
+
+
+def test_verlassene_aufgabe_gilt_weiter_als_geoeffnet(tmp_path: Path) -> None:
+    # Ohne gemerktes Dokument (Merken scheiterte) wuerde eine verlassene Aufgabe sonst als nie geoeffnet gelten:
+    # ein erneutes Zeigen setzte sie noch einmal, und "Kurs abgeben" buchte sie leer.
+    client, penecho, _ = _oeffnen(_neu_lern(3), tmp_path)
+    try:
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 2}).status_code == 200
+        vorher = len(penecho.aufrufe)
+        assert client.post(f"/lernen/api/sitzungen/{SID}/zeigen", json={"nummer": 1}).status_code == 200
+        neu = penecho.aufrufe[vorher:]
+        assert "aufgabe_setzen" not in [a[0] for a in neu]
+        assert ("bereich_zeigen", "board-1", EINZEL_RECHTECK) in neu
+    finally:
+        client.app.beenden()

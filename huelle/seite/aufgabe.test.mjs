@@ -263,9 +263,9 @@ test("eingabeHinweis: je Typ ein Beispiel", () => {
 
 const ERG = (urteil, lesbar = urteil !== "Nicht lesbar.") => ({ vorbewertung_id: "v1", urteil, lesbar });
 
-test("leistenZustand: ohne Ergebnis Speichern und Abgeben, bei code keine Leiste", () => {
-  assert.deepEqual(leistenZustand({ type: "numeric" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
-  assert.deepEqual(leistenZustand({ type: "open" }, null), { sichtbar: true, knoepfe: ["speichern", "abgeben"] });
+test("leistenZustand: ohne Ergebnis nur Abgeben (gesichert wird von selbst), bei code keine Leiste", () => {
+  assert.deepEqual(leistenZustand({ type: "numeric" }, null), { sichtbar: true, knoepfe: ["abgeben"] });
+  assert.deepEqual(leistenZustand({ type: "open" }, null), { sichtbar: true, knoepfe: ["abgeben"] });
   assert.deepEqual(leistenZustand({ type: "code" }, null), { sichtbar: false, knoepfe: [] });
   assert.deepEqual(leistenZustand(null, null), { sichtbar: false, knoepfe: [] });
   assert.deepEqual(leistenZustand({ type: "unbekannt" }, null), { sichtbar: false, knoepfe: [] });
@@ -274,26 +274,26 @@ test("leistenZustand: ohne Ergebnis Speichern und Abgeben, bei code keine Leiste
 test("leistenZustand: lesbares Urteil -> Passt, Ueberarbeiten, Falsch gelesen (nur deterministisch)", () => {
   for (const urteil of ["Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Wird noch geprüft."]) {
     assert.deepEqual(leistenZustand({ type: "numeric" }, ERG(urteil)),
-      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "falsch", "speichern", "abgeben"] }, urteil);
+      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "falsch", "abgeben"] }, urteil);
     assert.deepEqual(leistenZustand({ type: "case" }, ERG(urteil)),
-      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "speichern", "abgeben"] }, urteil);
+      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "abgeben"] }, urteil);
   }
 });
 
 test("leistenZustand: nicht lesbar -> Selbst eintippen statt Passt", () => {
   assert.deepEqual(leistenZustand({ type: "matching" }, ERG("Nicht lesbar.")),
-    { sichtbar: true, knoepfe: ["ueberarbeiten", "eintippen", "speichern", "abgeben"] });
+    { sichtbar: true, knoepfe: ["ueberarbeiten", "eintippen", "abgeben"] });
   // das lesbar-Flag allein reicht ebenfalls
   assert.deepEqual(leistenZustand({ type: "numeric" }, { vorbewertung_id: "v", urteil: "Richtig.", lesbar: false }).knoepfe,
-    ["ueberarbeiten", "eintippen", "speichern", "abgeben"]);
+    ["ueberarbeiten", "eintippen", "abgeben"]);
   // Rubrik-Typ: nichts zum Eintippen
   assert.deepEqual(leistenZustand({ type: "open" }, ERG("Nicht lesbar.")).knoepfe,
-    ["ueberarbeiten", "speichern", "abgeben"]);
+    ["ueberarbeiten", "abgeben"]);
 });
 
 test("KNOPF_TEXT: feste Beschriftungen", () => {
   assert.deepEqual(KNOPF_TEXT, {
-    speichern: "Speichern", abgeben: "Abgeben", passt: "Passt", ueberarbeiten: "Überarbeiten",
+    abgeben: "Abgeben", passt: "Passt", ueberarbeiten: "Überarbeiten",
     falsch: "Falsch gelesen", eintippen: "Selbst eintippen", neuBewerten: "Neu bewerten",
   });
 });
@@ -356,8 +356,8 @@ test("speichernMitWiederholung: leer und andere Codes ohne Wiederholung, wirft n
 test("speicherHinweis: ruhige Hinweise, nichts bei Erfolg", () => {
   assert.equal(speicherHinweis({ ok: true, art: "ok" }, true), null);
   assert.equal(speicherHinweis({ ok: false, art: "leer" }, true), "Auf der Fläche gibt es noch nichts zu speichern.");
-  assert.equal(speicherHinweis({ ok: false, art: "fehler" }, true), "Nicht gespeichert – bitte „Speichern“ drücken.");
-  assert.equal(speicherHinweis({ ok: false, art: "fehler" }, false), "Nicht gespeichert – bitte „Speichern“ drücken.");
+  assert.equal(speicherHinweis({ ok: false, art: "fehler" }, true), "Nicht gespeichert – die Lernfläche versucht es gleich noch einmal.");
+  assert.equal(speicherHinweis({ ok: false, art: "fehler" }, false), "Nicht gespeichert – die Lernfläche versucht es gleich noch einmal.");
   assert.equal(speicherHinweis({ ok: false, art: "leer" }, false), null);
 });
 
@@ -406,13 +406,13 @@ test("meldungFuer: Fehlercodes je Aufgaben-Canvas haben feste Texte", () => {
 test("speicherAusgang: Fehler vor 'Weiter' setzt den Dauerhinweis, der danach stehen bleibt", () => {
   const fehler = { ok: false, art: "fehler" };
   const nachPasst = speicherAusgang(fehler, { manuell: false, token: 1, aktuell: 1, alt: null });
-  assert.deepEqual(nachPasst, { speicher: "Nicht gespeichert – bitte „Speichern“ drücken.", meldung: null });
+  assert.deepEqual(nachPasst, { speicher: "Nicht gespeichert – die Lernfläche versucht es gleich noch einmal.", meldung: null });
   // Ein späteres automatisches „leer“ oder ein fremdes Ergebnis lässt ihn unverändert.
   assert.equal(speicherAusgang({ ok: false, art: "leer" }, { manuell: false, token: 1, aktuell: 1, alt: nachPasst.speicher }).speicher, nachPasst.speicher);
 });
 
 test("speicherAusgang: Fehler nach der Wartezeit von Passt landet ebenfalls im Dauerhinweis (Token noch aktuell)", () => {
-  assert.equal(speicherAusgang({ ok: false, art: "fehler" }, { manuell: false, token: 3, aktuell: 3 }).speicher, "Nicht gespeichert – bitte „Speichern“ drücken.");
+  assert.equal(speicherAusgang({ ok: false, art: "fehler" }, { manuell: false, token: 3, aktuell: 3 }).speicher, "Nicht gespeichert – die Lernfläche versucht es gleich noch einmal.");
 });
 
 test("speicherAusgang: Ergebnis eines anderen Kurses wird verworfen", () => {
@@ -440,9 +440,36 @@ test("leistenKnoepfe: gleiche Lage, gleiche Kennung; nur echte Änderungen bauen
   assert.equal(a.knoepfe[2].haupt, true);
   assert.notEqual(leistenKnoepfe(["passt", "eintippen", "abgeben"], { ...lage, abgebenGesperrt: true }).kennung, a.kennung);
   assert.notEqual(leistenKnoepfe(["passt", "abgeben"], lage).kennung, a.kennung);
-  const beschaeftigt = leistenKnoepfe(["speichern", "abgeben"], { ...lage, busy: true });
+  const beschaeftigt = leistenKnoepfe(["passt", "abgeben"], { ...lage, busy: true });
   assert.ok(beschaeftigt.knoepfe.every((k) => k.disabled));
-  assert.equal(leistenKnoepfe(["speichern"], { ...lage, speichert: true }).knoepfe[0].disabled, true);
+});
+
+test("sichernFaellig: nur bei offener Aufgabe, sichtbarer Seite und ohne laufende Bewertung", async () => {
+  const { sichernFaellig, SICHERN_ALLE_MS } = await import("./aufgabe.js");
+  assert.equal(SICHERN_ALLE_MS, 60000);
+  const lage = { phase: "aufgabe", turnState: "active", busy: false, sichtbar: true };
+  assert.equal(sichernFaellig(lage), true);
+  assert.equal(sichernFaellig({ ...lage, phase: "rueckmeldung" }), false);
+  assert.equal(sichernFaellig({ ...lage, turnState: "completed" }), false);
+  assert.equal(sichernFaellig({ ...lage, turnState: undefined }), false);
+  // Während eine Bewertung läuft, stellt die Brücke die Fläche um: dann nicht dazwischen sichern.
+  assert.equal(sichernFaellig({ ...lage, busy: true }), false);
+  // Ein Tab im Hintergrund löst nichts aus; beim Zurückkehren kommt die nächste Runde.
+  assert.equal(sichernFaellig({ ...lage, sichtbar: false }), false);
+});
+
+test("Seite: beim Wechsel der Aufgabe wird erst gesichert, dann das neue Canvas geholt; kein Speichern-Knopf", async () => {
+  const { readFileSync } = await import("node:fs");
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  const start = js.indexOf("async function aufgabeWaehlen(nummer)");
+  const wahl = js.slice(start, js.indexOf("function aufgabeBlaettern", start));
+  const sichern = wahl.indexOf("await Promise.race([speichern(false), pause(BEWERTET_NACH_MS)])");
+  // Die Lernfläche sichert, was gerade vorn ist: also bevor die Brücke das nächste Canvas nach vorn holt.
+  assert.ok(sichern > 0 && sichern < wahl.indexOf("flaecheZeigen(t.session_id, nummer)"));
+  assert.match(wahl, /if \(wechsel[^)]*\) await Promise\.race/);
+  // Alle 60 s von selbst, statt eines Knopfs.
+  assert.match(js, /setInterval\(\(\) => \{\s*if \(sichernFaellig\(/);
+  assert.ok(!js.includes("speichern(true)") && !js.includes("speichern: () =>"));
 });
 
 import { ohneLeere } from "./aufgabe.js";

@@ -240,6 +240,35 @@ def test_vergessen_entfernt_eintrag(zustand: Path) -> None:
     c.vergessen("Unbekannt")  # kein Fehler
 
 
+def test_sitzung_schliessen_beendet_die_sitzung_und_vergisst_sie(zustand: Path) -> None:
+    # Ein verlassenes Aufgaben-Canvas: die Sitzung endet (der Inhalt bleibt), das naechste `sitzung` bindet neu.
+    fake = Fake()
+    c = _client(zustand, fake)
+    session_id = c.sitzung(LERN_SID, TITEL)
+    c.sitzung_schliessen(LERN_SID, session_id)
+    assert [a["arguments"] for a in fake.aufrufe("penecho_close_session")] == [{"sessionId": session_id}]
+    datei = zustand.parent / "learning-huelle" / "sitzungen.json"
+    assert json.loads(datei.read_text(encoding="utf-8")) == {}
+    c.sitzung(LERN_SID, TITEL)
+    assert len(fake.aufrufe("penecho_start_session")) == 2
+
+
+def test_sitzung_schliessen_vergisst_auch_wenn_penecho_nicht_antwortet(
+    zustand: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Sonst nutzte der naechste Aufruf eine Sitzung, deren Zustand niemand kennt.
+    c = _client(zustand, Fake())
+    session_id = c.sitzung(LERN_SID, TITEL)
+
+    def weg(name: str, argumente: dict[str, object], timeout: float | None = None) -> dict[str, object]:
+        raise PenEchoNichtErreichbar("weg")
+
+    monkeypatch.setattr(c, "_werkzeug", weg)
+    c.sitzung_schliessen(LERN_SID, session_id)  # kein Fehler
+    datei = zustand.parent / "learning-huelle" / "sitzungen.json"
+    assert json.loads(datei.read_text(encoding="utf-8")) == {}
+
+
 @pytest.mark.parametrize("code", ["session_not_found", "session_expired", "session_closed", "canvas_disconnected"])
 def test_unbekannte_sitzung_ist_eigener_fehler(zustand: Path, code: str) -> None:
     with pytest.raises(PenEchoSitzungUnbekannt) as info:

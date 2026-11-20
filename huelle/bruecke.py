@@ -307,6 +307,13 @@ class _Sitzung:
     je_aufgabe: bool = False
     # Nur mit `je_aufgabe`: Nummer -> PenEcho-Sitzung ihres Canvas (Schluessel `<sid>#<nummer>`), nur im Speicher.
     aufgaben_boards: dict[int, str] = field(default_factory=dict)
+    # Nur mit `je_aufgabe`: die Aufgabe, deren Canvas die Bruecke zuletzt nach vorn geholt hat (zeigen, weiter, passt,
+    # Aufnahme). Dabei enden die PenEcho-Sitzungen aller anderen Aufgaben. None, solange noch keines vorn war.
+    vorn: int | None = None
+    # Nur mit `je_aufgabe`: Aufgaben, die in diesem Prozess schon ein Canvas hatten, auch wenn ihre Sitzung
+    # inzwischen beendet ist. Sonst gaelte eine verlassene Aufgabe als nie geoeffnet (und „Kurs abgeben“ buchte
+    # sie leer), sobald ihr Dokument einmal nicht gemerkt werden konnte.
+    canvas_bekannt: set[int] = field(default_factory=set)
 
     @property
     def lern_actor(self) -> str:
@@ -2409,7 +2416,26 @@ class Bruecke:
                 session_id = self._aufgaben_sitzung(sitzung, schluessel, titel)
                 ergebnis = aktion(session_id)
             sitzung.aufgaben_boards[nummer] = session_id
+            sitzung.canvas_bekannt.add(nummer)
         return ergebnis
+
+    def _vorn(self, sitzung: _Sitzung, nummer: int) -> None:
+        """Das Canvas der Aufgabe `nummer` steht jetzt vorn: nur es behaelt seine PenEcho-Sitzung, die der anderen
+        Aufgaben enden (ihr Inhalt bleibt). Sonst sammelte die Lernflaeche je geoeffneter Aufgabe eine offene
+        Sitzung, die niemand mehr bedient (Befund 20.11.: Anzeige „5 KI“)."""
+        sitzung.vorn = nummer
+        with self._flaeche_sperre:
+            for andere in [n for n in sitzung.aufgaben_boards if n != nummer]:
+                self._aufgaben_sitzung_schliessen(sitzung, andere)
+
+    def _aufgaben_sitzung_schliessen(self, sitzung: _Sitzung, nummer: int) -> None:
+        """Beendet die PenEcho-Sitzung des Canvas der Aufgabe `nummer`, still. Die Bruecke haelt sie danach nicht
+        mehr, auch wenn PenEcho nicht antwortet: der naechste Aufruf dort bindet das Dokument neu."""
+        session_id = sitzung.aufgaben_boards.pop(nummer, None)
+        if session_id is None:
+            return
+        schluessel = self._aufgaben_schluessel(sitzung.sid, nummer)
+        self._still(lambda: self._penecho.sitzung_schliessen(schluessel, session_id))
 
     @staticmethod
     def _still(arbeit: Callable[[], object]) -> bool:
@@ -2426,6 +2452,8 @@ class Bruecke:
         `_setzauftrag`), danach das Dokument merken. PenEcho-Fehler beim Setzen gehen an den Aufrufer."""
         auftrag = self._setzauftrag(task, nummer, EINZEL_RECHTECK, zeigen=zeigen)  # Bilder laden vor der Sperre
         titel = self._aufgaben_titel(task, nummer)
+        if zeigen:
+            sitzung.vorn = nummer  # die anderen Sitzungen schliesst der Aufrufer, wenn das Setzen gelang
         with self._flaeche_sperre:
             self._still(lambda: self._auf_aufgabe(
                 sitzung, nummer, titel, lambda s: self._penecho.bereiche_melden(s, [EINZEL_RECHTECK])))
@@ -2440,8 +2468,8 @@ class Bruecke:
         return aufgaben_titel(nummer, str(task.get("prompt") or ""))
 
     def _ohne_canvas(self, sitzung: _Sitzung, nummer: int) -> bool:
-        """Die Aufgabe hat noch kein Canvas: kein Board in diesem Prozess und kein gemerktes Dokument."""
-        return nummer not in sitzung.aufgaben_boards and \
+        """Die Aufgabe hat noch kein Canvas: in diesem Prozess nie eines gehabt und kein gemerktes Dokument."""
+        return nummer not in sitzung.aufgaben_boards and nummer not in sitzung.canvas_bekannt and \
             self._penecho.dokument_von(self._aufgaben_schluessel(sitzung.sid, nummer)) is None
 
     def _aufgabe_zeigen(
@@ -2457,6 +2485,7 @@ class Bruecke:
         Passt im alten Modell; ein neu angelegtes merkt `_einzel_setzen` schon).
         """
         neu = self._ohne_canvas(sitzung, nummer)
+        bisher = sitzung.vorn
         if neu:
             ok = self._still(lambda: self._einzel_setzen(sitzung, task, nummer, zeigen=True))
         else:
@@ -2465,15 +2494,24 @@ class Bruecke:
             ok = self._auf_nummer_still(sitzung, task, nummer, lambda s: zeigen(s, EINZEL_RECHTECK))
             if ok and merken:
                 self._nummer_merken(sitzung, nummer)
-        if ok and eintrag is not None:
+        if not ok:
+            sitzung.vorn = bisher  # nichts kam nach vorn: die bisherige Sitzung bleibt, wie sie ist
+            return False
+        if eintrag is not None:
             self._einzel_karte(sitzung, eintrag, zeigen=neu)
-        return ok
+        self._vorn(sitzung, nummer)  # erst wenn das neue Canvas steht, enden die Sitzungen der verlassenen
+        return True
 
     def _auf_nummer_still(
         self, sitzung: _Sitzung, task: dict[str, Any], nummer: int, aktion: Callable[[str], Any],
     ) -> bool:
         """Flaechenaufruf fuer die Aufgabe `nummer`, still: im neuen Modell auf ihrem Canvas (`_auf_aufgabe`), sonst
-        genau wie bisher auf dem gemeinsamen Board (`_flaeche_still`)."""
+        genau wie bisher auf dem gemeinsamen Board (`_flaeche_still`).
+
+        Legt eine Bewertung ihre Karte auf ein verlassenes Canvas, bindet `_auf_aufgabe` dessen Dokument in einer
+        neuen Sitzung (ohne `show` bleibt es im Hintergrund). Die bleibt bis zum naechsten Wechsel offen und endet
+        dann mit allen anderen (`_vorn`): hier zu schliessen traefe auch eine Korrektur auf der Aufgabe, an der die
+        Person gerade arbeitet, wenn die Bruecke sie nicht als vorn kennt."""
         if sitzung.je_aufgabe:
             return self._still(lambda: self._auf_aufgabe(sitzung, nummer, self._aufgaben_titel(task, nummer), aktion))
         return self._flaeche_still(sitzung, aktion)
@@ -2512,6 +2550,7 @@ class Bruecke:
                 roh = self._auf_aufgabe(
                     sitzung, nummer, self._aufgaben_titel(task, nummer),
                     lambda s: self._penecho.aufgabe_aufnehmen(s, EINZEL_RECHTECK, ergebnis=ergebnis))
+                self._vorn(sitzung, nummer)  # die Aufnahme holt das Canvas nach vorn (auch je Schritt von „Kurs abgeben“)
             return _als_png(roh)
         except PenEchoBeschaeftigt:
             log.warning("Aufnahme: Flaeche belegt")

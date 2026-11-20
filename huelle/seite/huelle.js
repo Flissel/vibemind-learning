@@ -5,7 +5,7 @@ import {
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenText, leistenZustand,
   meldungFuer,
-  nach409, NICHT_LESBAR, ohneLeere, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
+  nach409, NICHT_LESBAR, ohneLeere, SICHERN_ALLE_MS, sichernFaellig, speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import {
   flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, flaechenHerkunft, gruppeAusAdresse, kennungBelegt,
@@ -373,6 +373,10 @@ async function aufgabeWaehlen(nummer) {
   if (wechsel && z.phase === "aufgabe" && t.state === "active") { hilfeLeeren(); karteAufgabe(); }
   listeZeigen();
   const token = z.token;
+  // Die Lernfläche sichert immer das Canvas, das vorn ist: also das verlassene sichern, bevor die Brücke das
+  // nächste nach vorn holt (und danach die Sitzung des verlassenen beendet). Höchstens kurz warten.
+  if (wechsel && z.phase === "aufgabe" && t.state === "active") await Promise.race([speichern(false), pause(BEWERTET_NACH_MS)]);
+  if (token !== z.token || z.gewaehlt !== nummer) return; // inzwischen Kurs oder Aufgabe gewechselt
   const r = await flaecheZeigen(t.session_id, nummer);
   if (r.ok && token === z.token) dokumenteUebernehmen(r.daten); // auch ein eben angelegtes Canvas
   if (!r.ok && z.turn === t && z.gewaehlt === nummer) {
@@ -1247,7 +1251,7 @@ async function hinweis() {
   if (typeof r.daten.hinweis === "string" && r.daten.hinweis) { z.tutor = []; hilfeZeigen([r.daten.hinweis]); }
 }
 
-// ---- Leiste über der Fläche: Speichern, Abgeben, Passt, Überarbeiten, Falsch gelesen ---------------------
+// ---- Leiste über der Fläche: Abgeben, Passt, Überarbeiten, Falsch gelesen; gesichert wird von selbst -------
 const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
 
 /**
@@ -1289,7 +1293,6 @@ function leisteZeigen() {
   if (!zustand.sichtbar) return;
   const abgebenGesperrt = gewaehlt !== null && (gewaehlt.status === "in_bewertung" || gewaehlt.status === "bestaetigt");
   const aktion = {
-    speichern: () => { if (!z.speichert) void speichern(true); },
     abgeben: () => void abgeben(),
     passt: () => void passt(),
     ueberarbeiten: () => ueberarbeiten(),
@@ -1297,7 +1300,7 @@ function leisteZeigen() {
     eintippen: () => korrekturOeffnen("eintippen"),
   };
   // Nur bei echter Änderung neu bauen; die Aktionen lesen den Zustand erst beim Klick.
-  const plan = leistenKnoepfe(zustand.knoepfe, { busy: z.busy, speichert: z.speichert !== null, abgebenGesperrt });
+  const plan = leistenKnoepfe(zustand.knoepfe, { busy: z.busy, abgebenGesperrt });
   const knoepfeBox = $("leisten-knoepfe");
   if (knoepfeBox.dataset.plan !== plan.kennung) {
     knoepfeBox.replaceChildren(...plan.knoepfe.map((k) => el("button", {
@@ -1578,6 +1581,12 @@ async function start() {
   $("aufgabe-vor").addEventListener("click", () => aufgabeBlaettern(1));
   $("kurs-abgeben").addEventListener("click", () => { void kursAbgeben(); });
   $("aufgabe-wahl").addEventListener("change", (ereignis) => { void aufgabeWaehlen(Number(ereignis.target.value)); });
+  // Ohne Knopf „Speichern“: solange eine Aufgabe offen ist, sichert die Seite in diesem Takt von selbst.
+  setInterval(() => {
+    if (sichernFaellig({ phase: z.phase, turnState: z.turn?.state, busy: z.busy, sichtbar: document.visibilityState === "visible" })) {
+      void speichern(false);
+    }
+  }, SICHERN_ALLE_MS);
   if (z.gruppeId !== null) {
     // Gruppe: keine Kurswahl; Kurs und Titel kommen aus der Antwort der Gruppenroute.
     await kursOeffnen({ course_id: null, titel: "" });

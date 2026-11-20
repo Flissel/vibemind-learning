@@ -797,6 +797,18 @@ class PenEchoMcp:
                 pass
             raise
 
+    def sitzung_schliessen(self, schluessel: str, session_id: str) -> None:
+        """Beendet die PenEcho-Sitzung eines verlassenen Canvas und vergisst ihre sessionId.
+
+        Der Inhalt des Dokuments bleibt (penecho_close_session). PenEcho gibt dabei den sessionKey frei; das naechste
+        `sitzung()` mit demselben Schluessel bindet dasselbe Dokument in einer neuen Sitzung, im Hintergrund, bis
+        die Huelle es zeigt. Antwortet PenEcho nicht, wird trotzdem vergessen: eine Sitzung mit unbekanntem Zustand
+        darf niemand weiterverwenden."""
+        try:
+            self._sitzung_schliessen(session_id)
+        finally:
+            self.vergessen(schluessel)
+
     def vergessen(self, schluessel: str) -> None:
         """Entfernt die gemerkte sessionId zu einem Schluessel (naechstes sitzung() startet neu)."""
         karte = self._gemerkt()
