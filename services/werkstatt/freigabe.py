@@ -302,6 +302,14 @@ def freigabe_vorbereiten(
         fehlt = _herkunft_fehlt(a, ersten.get(a["task_id"]))
         if fehlt is not None:
             befunde.append(fehlt)
+        bild = getattr(inhalt, "bild", None)
+        if bild is not None and bild.herkunft == "ki":
+            # Nobody but the owner can tell whether the picture shows what the task says.
+            befunde.append({
+                "code": "bild_ki", "task_id": a["task_id"], "blockierend": False,
+                "text": f"Die Aufgabe „{a['summary']}“ trägt ein KI-erzeugtes Bild; bitte in der Vorschau "
+                        "ansehen, ob es zeigt, was die Aufgabe beschreibt.",
+            })
         blockierend = [f for f in neueste["findings"] if f.get("code") not in _NICHT_BLOCKIEREND]
         if isinstance(inhalt, Code):
             # Recomputed from the content: a version brought back carries no stored findings, and

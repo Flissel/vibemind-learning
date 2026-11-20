@@ -55,6 +55,7 @@ SPEC_TOOLS = {
     "werkstatt_bild_suchen",
     "werkstatt_bild_setzen",
     "werkstatt_diagramm_setzen",
+    "werkstatt_szene_setzen",
     "werkstatt_freigabe_anzeigen",
 }
 

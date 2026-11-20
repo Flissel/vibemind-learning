@@ -68,10 +68,33 @@ derselben Stelle wie ein Bild von Commons und ersetzt es; weggenommen wird es mi
   Vorschau.
 - **Voraussetzung:** Graphviz ist auf dem Rechner des Claw installiert; ohne meldet das Werkzeug das.
 
+## KI-erzeugte Szene
+
+Für Szenen ohne einzig richtige Antwort (beschreiben, beurteilen) zeichnet die Bild-KI
+(`werkstatt_szene_setzen`), nur an offenen Aufgaben und Fällen. Für Fachliches ist sie nicht gedacht: Sie
+zeichnet Aufbau, Abläufe und Beschriftungen falsch.
+
+- **Wo gezeichnet wird:** im ComfyUI, das auf dem Rechner des Claw schon läuft, mit FLUX.2 klein
+  (`claw/szene_flux2.json`). Angesprochen wird nur dieser Rechner (`LEARNING_COMFYUI_URL`, Vorgabe
+  `http://127.0.0.1:8188`); die Beschreibung einer Aufgabe verlässt ihn nicht. ComfyUI wird nur benutzt, nie
+  gestartet oder beendet, und seine Modelle bleiben geladen.
+- **Ein Bild nach dem anderen:** Ist die Warteschlange von ComfyUI nicht leer, stellt das Werkzeug keinen
+  Auftrag und meldet „besetzt“. Zwischen Nachsehen und Auftrag liegt ein Augenblick; stellt genau dann jemand
+  anderes ein Bild ein, warten beide hintereinander.
+- **Fester Rahmen:** An jede Beschreibung hängt der Code an: kein Text, keine Logos oder Marken, keine echten
+  Personen. Das Modell hält sich daran meistens, nicht immer.
+- **Frist:** sieben Minuten. Bleibt die Antwort auf den Auftrag aus, wird er nicht neu gestellt, sondern gesucht.
+- **Ablage:** als JPEG (höchstens 580.000 Bytes) im Medienordner; Beschreibung und Modell stehen als
+  `bild.beschreibung` und `bild.modell` an der Fassung. ComfyUI behält zusätzlich seine eigene Kopie im
+  Ausgabeordner (`lernaufgabe-szene_…`).
+- **Quellenzeile:** „Bild: KI-erzeugt“; im Katalog steht nur `bildquelle: {ki: true}`.
+- **Hinweis in der Freigabe:** Jede Aufgabe mit KI-Bild erzeugt den Befund `bild_ki`. Er sperrt nicht.
+
 ## Offen
 
 - Ob die Bewertung zuverlässig erkennt, dass ein handgeschriebener Name am richtigen Teil steht, ist nicht
   gemessen.
 - Die Quellenangabe steht auf der Karte, nicht im PDF-Bericht.
 - Die HTML-Seite eines Diagramms gelangt nicht von selbst nach Rowboat; die Inhaberin übernimmt die Datei.
-- Andere Diagrammarten (Zeitachsen, Sequenzen, Kurven) und Bild-KI für Beschreiben-Aufgaben sind eigene Stufen.
+- Andere Diagrammarten (Zeitachsen, Sequenzen, Kurven) sind eine eigene Stufe.
+- Die Bild-KI teilt sich die Grafikkarte mit anderen Diensten; eine gemeinsame Warteschlange gibt es nicht.

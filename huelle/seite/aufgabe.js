@@ -560,6 +560,7 @@ export function bildquelleAus(task) {
   const p = task?.presentation;
   const q = p?.bildquelle;
   if (typeof p?.image !== "string" || !q) return null;
+  if (q.ki === true) return { text: "Bild: KI-erzeugt", href: null };
   if (q.eigen === true) {
     const titel = typeof q.titel === "string" ? q.titel.trim() : "";
     return titel ? { text: `Diagramm: ${titel}, eigene Darstellung`, href: null } : null;

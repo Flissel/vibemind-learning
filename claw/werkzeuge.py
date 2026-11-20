@@ -44,7 +44,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from . import commons, freigabe_eingang, zeichner
+from . import commons, freigabe_eingang, szene, zeichner
 from .freigabe import WERKSTATT, FreigabeAbgelehnt, FreigabeStore, handy_basis
 from .pruefung_seite import PREFIX as PRUEFUNG_PREFIX
 from .pruefung_seite import PruefungStore
@@ -931,12 +931,14 @@ def werkstatt_aufgabe_aendern(
 ) -> dict[str, Any]:
     """Aendert Felder einer Aufgabe und legt eine neue Fassung mit Begruendung `grund` an.
     `basis` ist die Nummer der neuesten Fassung; bei Abweichung kommt ein Konflikt mit `neueste`.
-    Ein Bild setzt oder entfernt nur `werkstatt_bild_setzen`, ein Diagramm nur `werkstatt_diagramm_setzen`.
+    Ein Bild setzt oder entfernt nur `werkstatt_bild_setzen`, ein Diagramm nur `werkstatt_diagramm_setzen`,
+    eine KI-erzeugte Szene nur `werkstatt_szene_setzen`.
     """
     if "bild" in felder:
         return {"ok": False, "fehler": "Ein Bild setzt nur werkstatt_bild_setzen (Lizenz und Urheber kommen von "
                                        "Wikimedia Commons, nicht aus dem Chat), ein Diagramm nur "
-                                       "werkstatt_diagramm_setzen."}
+                                       "werkstatt_diagramm_setzen, eine KI-erzeugte Szene nur "
+                                       "werkstatt_szene_setzen."}
     return _bild_patch(task_id, basis, felder, grund)
 
 
@@ -1239,6 +1241,73 @@ def werkstatt_diagramm_setzen(
     return {"ok": True, "daten": {
         "fassung": (geaendert.get("daten") or {}).get("number"), "bild": name,
         "quelle": f"Diagramm: {titel}, {EIGEN}", "html": seite,
+    }}
+
+
+# --- KI-erzeugte Szene an der Aufgabe (ComfyUI auf diesem Rechner) ------------
+
+_SZENE_ARTEN = ("open", "case")
+
+
+def _comfy_transport() -> httpx.BaseTransport | None:
+    return None  # der echte Weg; Tests setzen hier ein nachgestelltes ComfyUI ein
+
+
+def werkstatt_szene_setzen(task_id: str, titel: str, beschreibung: str, format: str = "quer") -> dict[str, Any]:
+    """Laesst die Bild-KI auf diesem Rechner eine Szene zeichnen und setzt sie als Bild an eine offene
+    Aufgabe oder einen Fall (neue Fassung; ein vorhandenes Bild wird ersetzt). Nur fuer Szenen, zu denen es
+    keine einzig richtige Antwort gibt (beschreiben, beurteilen); nie fuer Fachliches, das exakt sein muss:
+    dafuer `werkstatt_bild_suchen` oder `werkstatt_diagramm_setzen`.
+    `titel`: kurz, worum es geht. `beschreibung`: was zu sehen sein soll, auf Englisch, bis 600 Zeichen,
+    ohne Namen echter Personen oder Marken. `format`: `quer`, `hoch` oder `quadrat`.
+    Das dauert einige Minuten. Ist die Grafikkarte besetzt, meldet das Werkzeug das; dann spaeter erneut.
+    Lernende sehen das Bild erst nach der Freigabe und mit dem Vermerk „KI-erzeugt“; danach
+    `werkstatt_vorschau` zeigen. Wegnehmen: `werkstatt_bild_setzen(task_id, None)`.
+    """
+    from ..services.werkstatt.aufgabenbild import KI_ZEILE
+
+    titel = " ".join(str(titel).split())[:300]
+    beschreibung = " ".join(str(beschreibung).split())
+    if not titel:
+        return {"ok": False, "fehler": "Das Bild braucht einen Titel"}
+    if not beschreibung or len(beschreibung) > szene.MAX_BESCHREIBUNG:
+        return {"ok": False, "fehler": f"Die Beschreibung braucht 1 bis {szene.MAX_BESCHREIBUNG} Zeichen"}
+    if format not in szene.FORMATE:
+        return {"ok": False, "fehler": "Das Format ist quer, hoch oder quadrat"}
+    gelesen = werkstatt_fassungen(task_id)
+    if not gelesen.get("ok"):
+        return gelesen
+    fassungen = (gelesen.get("daten") or {}).get("fassungen") or []
+    if not fassungen:
+        return {"ok": False, "fehler": "Die Aufgabe hat noch keine Fassung"}
+    neueste = fassungen[-1]
+    if (neueste.get("content") or {}).get("kind") not in _SZENE_ARTEN:
+        return {"ok": False, "fehler": "Ein KI-erzeugtes Bild tragen nur offene Aufgaben und Fälle"}
+    try:
+        with httpx.Client(base_url=szene.adresse(), transport=_comfy_transport(), follow_redirects=False) as http:
+            if szene.besetzt(http):
+                return {"ok": False, "fehler": "Die Grafikkarte ist gerade mit einem anderen Bild besetzt; "
+                                               "bitte in einigen Minuten noch einmal"}
+            png = szene.erzeugen(http, beschreibung, format, secrets.randbelow(2**48))
+        daten, breite, hoehe = szene.als_jpeg(png)
+    except szene.SzeneFehler as fehler:
+        return {"ok": False, "fehler": str(fehler)}
+    except httpx.HTTPError:
+        return {"ok": False, "fehler": "Die Bild-KI (ComfyUI) ist auf diesem Rechner nicht erreichbar"}
+    name = f"bild-{hashlib.sha256(daten).hexdigest()[:16]}.jpg"
+    abgelegt = _run(lambda client: client.put_bytes(
+        f"/lernsequenz-medien/{name}", daten, roles=ROLE_AUTHOR, content_type="image/jpeg"))
+    if not abgelegt.get("ok"):
+        return abgelegt
+    bild = {
+        "image": f"/lernsequenz-medien/{name}", "width": breite, "height": hoehe, "titel": titel,
+        "herkunft": "ki", "beschreibung": beschreibung, "modell": szene.MODELL,
+    }
+    geaendert = _bild_patch(task_id, neueste.get("number"), {"bild": bild}, f"KI-erzeugtes Bild: {titel}")
+    if not geaendert.get("ok"):
+        return geaendert
+    return {"ok": True, "daten": {
+        "fassung": (geaendert.get("daten") or {}).get("number"), "bild": name, "quelle": KI_ZEILE,
     }}
 
 

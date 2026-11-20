@@ -44,6 +44,8 @@ _ENV_KEYS = (
     "LEARNING_COMMONS_KONTAKT",
     # Diagramme (optional): Ordner fuer die HTML-Seiten; ohne Angabe `diagramme` neben dieser Datei.
     "LEARNING_DIAGRAMM_ORDNER",
+    # Bild-KI (optional): Adresse des ComfyUI auf diesem Rechner; ohne Angabe http://127.0.0.1:8188.
+    "LEARNING_COMFYUI_URL",
     # Handy-Freigabe (optional): https-Basis hinter `tailscale serve` und das Telegram-Skript.
     "LEARNING_CLAW_FREIGABE_BASIS",
     "LEARNING_CLAW_TELEGRAM_SKRIPT",
@@ -121,6 +123,7 @@ WERKZEUGE = (
     werkzeuge.werkstatt_bild_suchen,
     werkzeuge.werkstatt_bild_setzen,
     werkzeuge.werkstatt_diagramm_setzen,
+    werkzeuge.werkstatt_szene_setzen,
     # Freigabe der Werkstatt: nur anzeigen. Freigeben (werkzeuge.werkstatt_freigeben) ruft
     # allein die Freigabeseite nach dem Klick der Inhaberin, nie das Modell.
     werkzeuge.werkstatt_freigabe_anzeigen,

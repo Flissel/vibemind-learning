@@ -23,7 +23,7 @@ tutor_fragen veroeffentlichung_anzeigen zeichenaufgabe_oeffnen zeichenhinweis \
 werkstatt_kurs_neu werkstatt_kurs_zeigen werkstatt_kurs_aendern werkstatt_kurs_uebernehmen \
 werkstatt_grobentwurf_neu werkstatt_aufgabe_neu werkstatt_aufgabe_ausformulieren werkstatt_aufgabe_aendern \
 werkstatt_aufgabe_loeschen werkstatt_fassungen werkstatt_zurueckholen werkstatt_vorschau \
-werkstatt_auftrag werkstatt_code_pruefen werkstatt_bild_suchen werkstatt_bild_setzen werkstatt_diagramm_setzen werkstatt_freigabe_anzeigen"
+werkstatt_auftrag werkstatt_code_pruefen werkstatt_bild_suchen werkstatt_bild_setzen werkstatt_diagramm_setzen werkstatt_szene_setzen werkstatt_freigabe_anzeigen"
 
 if [ "$(docker inspect -f '{{.State.Status}}' learning-claw 2>/dev/null || echo fehlt)" != "running" ]; then
   echo "ABBRUCH: learning-claw laeuft nicht (docker compose up -d in $HIER)." >&2

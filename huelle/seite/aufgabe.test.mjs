@@ -888,6 +888,15 @@ test("bildquelleAus: ein eigenes Diagramm nennt Titel und „eigene Darstellung�
   assert.equal(bildquelleAus(task({ titel: "X", eigen: "ja" })), null);
 });
 
+test("bildquelleAus: ein KI-erzeugtes Bild sagt das, ohne Link", async () => {
+  const { bildquelleAus } = await import("./aufgabe.js");
+  const task = (bildquelle) => ({ type: "case", presentation: { image: "/lernen/api/medien/bild-0123456789abcdef.jpg", bildquelle } });
+  assert.deepEqual(bildquelleAus(task({ ki: true })), { text: "Bild: KI-erzeugt", href: null });
+  assert.equal(bildquelleAus(task({ ki: true, quelle_url: "https://commons.wikimedia.org/wiki/File:X.png" })).href, null);
+  // „ki“ muss genau true sein.
+  assert.equal(bildquelleAus(task({ ki: "ja" })), null);
+});
+
 test("Aufgabenkarte: die Quellenangabe steht bei der Aufgabe, der Link öffnet außerhalb der Seite", async () => {
   const { readFileSync } = await import("node:fs");
   const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");

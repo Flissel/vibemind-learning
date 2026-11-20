@@ -45,6 +45,7 @@
     "mcp__learning__werkstatt_bild_suchen",
     "mcp__learning__werkstatt_bild_setzen",
     "mcp__learning__werkstatt_diagramm_setzen",
+    "mcp__learning__werkstatt_szene_setzen",
     "mcp__learning__werkstatt_freigabe_anzeigen"
   ]
 }

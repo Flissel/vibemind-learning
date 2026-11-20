@@ -183,7 +183,7 @@ def test_kein_werkstatt_werkzeug_veroeffentlicht(fake: Fake) -> None:
         and f is not werkzeuge.werkstatt_code_pruefen
         # The picture tools talk to Wikimedia Commons; their tests are in test_claw_bild.py.
         and f not in (werkzeuge.werkstatt_bild_suchen, werkzeuge.werkstatt_bild_setzen,
-                         werkzeuge.werkstatt_diagramm_setzen)
+                         werkzeuge.werkstatt_diagramm_setzen, werkzeuge.werkstatt_szene_setzen)
     ]
     assert len(names) == 13
     assert not any("veroeffentlich" in n or "freigeb" in n or "publish" in n for n in names)

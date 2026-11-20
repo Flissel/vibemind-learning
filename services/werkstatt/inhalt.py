@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
 from spaces.learning.services.course_factory.schemas import (
     Citation,
@@ -200,6 +200,14 @@ class Skizze(_AufgabeBasis):
     expected_answer: str = Field(min_length=1, max_length=50_000)
     rubric: list[RubricCriterion] = Field(min_length=3, max_length=5)
     bild: Bild | None = None
+
+    @field_validator("bild")
+    @classmethod
+    def _keine_ki_szene(cls, wert: Bild | None) -> Bild | None:
+        # Something specific gets labelled on a drawing task; a picture model is too imprecise for that.
+        if wert is not None and wert.herkunft == "ki":
+            raise ValueError("Eine Skizze trägt kein KI-erzeugtes Bild")
+        return wert
 
 
 class Testlauf(_StrictDraft):
