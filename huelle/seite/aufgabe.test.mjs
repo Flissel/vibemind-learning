@@ -975,3 +975,45 @@ test("Leiste: liegt als eigene Zeile über dem Canvas, nicht mehr darauf; ohne I
   const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
   assert.match(js, /leiste\.hidden = !leisteSichtbar\(/);
 });
+// ---- Fortschritt: vorläufiger Wert nach der Abgabe (21.11.: ohne „Passt“ stand überall „—“) -----------------
+test("begriffAnzeige: gebucht, vorläufig oder offen", async () => {
+  const { begriffAnzeige } = await import("./aufgabe.js");
+  assert.deepEqual(begriffAnzeige({ beherrschung: 0.6 }), { wert: 0.6, text: "60 %", vorlaeufig: false });
+  assert.deepEqual(begriffAnzeige({ beherrschung: null }), { wert: null, text: "—", vorlaeufig: false });
+  assert.deepEqual(begriffAnzeige({}), { wert: null, text: "—", vorlaeufig: false });
+  // Eine offene Abgabe: ihr Wert steht da, deutlich als vorläufig; gebucht wird erst mit „Passt“.
+  assert.deepEqual(begriffAnzeige({ beherrschung: null, vorlaeufig: 0.62 }), { wert: 0.62, text: "62 % vorläufig", vorlaeufig: true });
+  assert.deepEqual(begriffAnzeige({ beherrschung: 0.5, vorlaeufig: 0.58 }), { wert: 0.58, text: "58 % vorläufig", vorlaeufig: true });
+  assert.deepEqual(begriffAnzeige({ beherrschung: 0.5, vorlaeufig: null }), { wert: 0.5, text: "50 %", vorlaeufig: false });
+  assert.deepEqual(begriffAnzeige({ beherrschung: 1.4, vorlaeufig: -1 }), { wert: 0, text: "0 % vorläufig", vorlaeufig: true });
+});
+
+test("begriffeZusammenfassen: der vorläufige Wert bleibt beim zusammengelegten Begriff", () => {
+  const aus = begriffeZusammenfassen([
+    { titel: "Kettenregel", beherrschung: null, vorlaeufig: 0.62 },
+    { titel: "kettenregel", beherrschung: 0.3 },
+  ]);
+  assert.equal(aus.length, 1);
+  assert.equal(aus[0].vorlaeufig, 0.62);
+});
+
+test("neueRueckmeldungen: nur Vorbewertungen, die die Seite noch nicht kannte", async () => {
+  const { neueRueckmeldungen } = await import("./liste.js");
+  const stand = { aufgaben: [
+    { nummer: 1, status: "rueckmeldung", vorbewertung_id: "a" },
+    { nummer: 2, status: "in_bewertung", vorbewertung_id: null },
+    { nummer: 3, status: "bestaetigt", vorbewertung_id: "c" },
+  ] };
+  assert.deepEqual(neueRueckmeldungen(new Set(), stand), ["a", "c"]);
+  assert.deepEqual(neueRueckmeldungen(new Set(["a", "c"]), stand), []);
+  assert.deepEqual(neueRueckmeldungen(new Set(["a"]), null), []);
+});
+
+test("Seite: nach einer neuen Rückmeldung lädt sie die Begriffe nach und zeigt Vorläufiges anders", () => {
+  const lesen = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
+  const js = lesen("./huelle.js"), css = lesen("./huelle.css");
+  assert.ok(js.includes("/stand?begriffe=1"));
+  assert.match(js, /neueRueckmeldungen\(z\.gesehen, /);
+  assert.match(js, /begriffAnzeige\(b\)/);
+  assert.match(css, /\.balken\.vorlaeufig > span \{/);
+});

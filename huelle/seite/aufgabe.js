@@ -285,7 +285,8 @@ export function begriffTitel(titel) {
 
 /** Begriffe mit gleichem Anzeigetitel (ohne Gross-/Kleinschreibung) werden einer; hoehere Beherrschung gewinnt (null/fehlend am niedrigsten). */
 export function begriffeZusammenfassen(begriffe) {
-  const stufe = (b) => (typeof b?.beherrschung === "number" ? b.beherrschung : -1);
+  const stufe = (b) => (typeof b?.vorlaeufig === "number" ? b.vorlaeufig
+    : typeof b?.beherrschung === "number" ? b.beherrschung : -1);
   const reihe = [];
   const platz = new Map();
   for (const b of Array.isArray(begriffe) ? begriffe : []) {
@@ -295,6 +296,21 @@ export function begriffeZusammenfassen(begriffe) {
     if (stufe(b) > stufe(reihe[i])) reihe[i] = b;
   }
   return reihe;
+}
+
+/**
+ * Was die Begriffsliste zu einem Begriff zeigt: `wert` (0..1 oder null), `text` und ob er `vorlaeufig` ist.
+ * Vorläufig heißt: eine Abgabe ist bewertet, aber noch nicht mit „Passt“ gebucht; der Server rechnet aus, was
+ * die Buchung ergäbe (`vorlaeufig`). Ohne „Passt“ stand sonst überall „—“ (Befund 21.11.).
+ */
+export function begriffAnzeige(b) {
+  const zahl = (x) => (typeof x === "number" ? Math.max(0, Math.min(1, x)) : null);
+  const vorlaeufig = zahl(b?.vorlaeufig);
+  const wert = vorlaeufig ?? zahl(b?.beherrschung);
+  if (wert === null) return { wert: null, text: "—", vorlaeufig: false };
+  const prozent = `${Math.round(wert * 100)} %`;
+  return vorlaeufig === null ? { wert, text: prozent, vorlaeufig: false }
+    : { wert, text: `${prozent} vorläufig`, vorlaeufig: true };
 }
 
 // ---- Flaechen-Hinweis ----------------------------------------------------------------------------

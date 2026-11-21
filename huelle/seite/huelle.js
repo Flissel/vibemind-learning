@@ -1,6 +1,6 @@
 // Bedienteil der Lern-Huelle: Aufgabenkarte neben der PenEcho-Flaeche.
 import {
-  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffeZusammenfassen, begriffTitel, bildquelleAus, CODE_SPRACHEN, codeObergrenze, codeOhneFrage, codeVorgabe, codeWuensche, eingabeHinweis, ohneFrageHinweis,
+  abgabeNummerZulaessig, autoVerbindenFaellig, antwortAus, begriffAnzeige, begriffeZusammenfassen, begriffTitel, bildquelleAus, CODE_SPRACHEN, codeObergrenze, codeOhneFrage, codeVorgabe, codeWuensche, eingabeHinweis, ohneFrageHinweis,
   erlaubnisFrage, erlaubnisStand, laengerAnbieten, laufBilder, ergebnisAus, ergebnisHinweis, fehlerText, laufText,
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenText, leistenZustand,
@@ -14,7 +14,7 @@ import {
 import {
   entwurfSperrt, entwurfText, eintragSetzen, FLAECHE_LAEDT, FLAECHE_OHNE_AUFGABE, hinweisFuerAktiv,
   KURS_ABGEBEN_RUECKFRAGE, kursAbgabeText,
-  kursAbgebenSichtbar, kursEndeLaden, LISTEN_MELDUNGEN, listenErgebnisAus, mitLadeHinweis, mussAbfragen, naechsteOffene,
+  kursAbgebenSichtbar, kursEndeLaden, LISTEN_MELDUNGEN, listenErgebnisAus, mitLadeHinweis, mussAbfragen, naechsteOffene, neueRueckmeldungen,
   nummerAusDokument, nummerZurNachricht, ohneLadeHinweis, standAnnehmen, statusText, warteText, zusammenfassungSessionId,
 } from "./liste.js";
 
@@ -93,6 +93,7 @@ const z = {
   listenAufgaben: new Map(), // nummer -> task (vom Öffnen), für Leiste und „Falsch gelesen“
   gewaehlt: null, // gewählte Aufgabe; „Abgeben“, „Passt“ usw. gelten für sie
   verworfen: new Set(), // vorbewertung_id, deren Knöpfe „Überarbeiten“ ausgeblendet hat
+  gesehen: new Set(), // vorbewertung_id, zu denen die Begriffe schon nachgeladen wurden
   abfrage: null, // Zeitgeber der Standabfrage
   folge: 0, // laufende Nummer der Anfragen, die einen Stand bringen
   gueltigAb: 0, // Stände aus Anfragen davor gelten nicht (letzte Abgabe begonnen oder beantwortet)
@@ -255,6 +256,12 @@ function standAnwenden(stand, anfrage) {
   const neu = standAnnehmen(stand, { anfrage, gueltigAb: z.gueltigAb, sendend: z.sendend });
   if (!neu) return false;
   z.liste = neu;
+  // Eine Rückmeldung, die die Seite noch nicht kannte: ihr vorläufiger Wert gehört in die Begriffsliste.
+  const neueIds = neueRueckmeldungen(z.gesehen, neu);
+  if (neueIds.length > 0) {
+    neueIds.forEach((id) => z.gesehen.add(id));
+    void begriffeNachladen();
+  }
   modellUebernehmen(stand);
   if (!neu.aufgaben.some((a) => a.nummer === z.gewaehlt)) z.gewaehlt = neu.aktuell;
   abfragePlanen();
@@ -280,6 +287,16 @@ const neueAnfrage = () => { z.folge += 1; return z.folge; };
 function abfrageStoppen() {
   if (z.abfrage !== null) clearTimeout(z.abfrage);
   z.abfrage = null;
+}
+
+// Begriffe samt vorläufigem Wert von der Brücke; die laufende Standabfrage bringt sie nicht mit (zu teuer alle 2 s).
+async function begriffeNachladen() {
+  const t = z.turn;
+  const token = z.token;
+  if (!t || !z.liste) return;
+  const r = await api("GET", `/sitzungen/${t.session_id}/stand?begriffe=1`);
+  if (token !== z.token || !r.ok) return;
+  if (Array.isArray(r.daten.begriffe)) begriffeZeigen(r.daten.begriffe);
 }
 
 // Alle 2 s, solange eine Aufgabe bewertet wird; sonst nicht.
@@ -980,14 +997,14 @@ async function karteBewertung() {
 function begriffeZeigen(begriffe) {
   const liste = $("begriffe");
   liste.replaceChildren(...begriffeZusammenfassen(begriffe).map((b) => {
-    const wert = typeof b.beherrschung === "number" ? Math.max(0, Math.min(1, b.beherrschung)) : null;
+    const a = begriffAnzeige(b);
     const fuellung = el("span");
-    fuellung.style.width = wert === null ? "0%" : `${Math.round(wert * 100)}%`;
+    fuellung.style.width = a.wert === null ? "0%" : `${Math.round(a.wert * 100)}%`;
     return el("li", {},
       el("div", { class: "begriff-titel" },
         el("span", { text: klartext(begriffTitel(b.titel)) }),
-        el("span", { text: wert === null ? "—" : `${Math.round(wert * 100)} %` })),
-      el("div", { class: "balken", role: "img", "aria-label": wert === null ? "—" : `${Math.round(wert * 100)} %` }, fuellung));
+        el("span", { class: a.vorlaeufig ? "wert-vorlaeufig" : "", text: a.text })),
+      el("div", { class: a.vorlaeufig ? "balken vorlaeufig" : "balken", role: "img", "aria-label": a.text }, fuellung));
   }));
   $("begriffe-box").hidden = liste.children.length === 0;
 }

@@ -199,3 +199,9 @@ export function entwurfSperrt({ typ, status, entwurf }) {
 
 export const entwurfText = (nummer) =>
   `Bitte senden Sie zuerst Ihre Antwort zu Aufgabe ${nummer} ab, bevor Sie den Kurs abgeben.`;
+
+/** Die Kennungen der Vorbewertungen im Stand, die die Seite noch nicht kannte: dann lädt sie die Begriffe nach. */
+export function neueRueckmeldungen(gesehen, stand) {
+  const aufgaben = Array.isArray(stand?.aufgaben) ? stand.aufgaben : [];
+  return aufgaben.map((a) => a?.vorbewertung_id).filter((id) => typeof id === "string" && !gesehen.has(id));
+}

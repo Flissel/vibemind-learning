@@ -4925,3 +4925,16 @@ def test_setzauftrag_reicht_den_fall_getrennt_und_nur_wenn_gesetzt() -> None:
     b._setzauftrag({**task, "presentation": {}}, 1, EINZEL_RECHTECK)("pe-1")
     assert penecho.faelle == ["Muster GmbH", None]
     assert all("Fall" not in a[3] for a in penecho.aufrufe if a[0] == "aufgabe_setzen")
+
+
+# ---- Fortschritt: Begriffe mit dem Stand nachladen (21.11.: vorlaeufiger Wert nach der Abgabe) ----------------
+def test_stand_bringt_begriffe_nur_auf_wunsch() -> None:
+    ll = ListenLern(2)
+    client, _, _ = _listen_offen(ll)
+    try:
+        ohne = client.get(f"/lernen/api/sitzungen/{SID}/stand").json()
+        assert "begriffe" not in ohne  # die Abfrage alle 2 s fragt Learning nicht jedes Mal nach den Begriffen
+        mit = client.get(f"/lernen/api/sitzungen/{SID}/stand?begriffe=1").json()
+        assert "begriffe" in mit and mit["aufgaben"] == ohne["aufgaben"]
+    finally:
+        client.app.beenden()

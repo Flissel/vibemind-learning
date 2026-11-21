@@ -479,6 +479,109 @@ class AdaptiveSessionService:
             )
         )
 
+    @staticmethod
+    def _loesungen(db: Session, concept_id: str) -> frozenset[str]:
+        """Fingerprint of the solutions behind a concept: type and expected answer of its items.
+        Wording may change between revisions without touching it (as in the workshop catalog)."""
+        rows = db.execute(
+            select(AdaptiveItem.item_type, AdaptiveItem.expected_answer)
+            .join(ItemConcept, ItemConcept.item_id == AdaptiveItem.id)
+            .where(ItemConcept.concept_id == concept_id)
+        ).all()
+        return frozenset(
+            hashlib.sha256(
+                json.dumps([item_type, answer], sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            for item_type, answer in rows
+        )
+
+    def _begriff_vorn(self, db: Session, concept_id: str) -> str | None:
+        """The same concept in the newest revision, if this one is older and the solutions are
+        unchanged; otherwise None. A session keeps running on its revision after a newer one
+        was published, while overview and new sessions use the newest (finding 2026-11-21)."""
+        alt = db.get(AdaptiveConcept, concept_id)
+        if alt is None:
+            return None
+        neueste = self._neueste_revision(db, alt.course_id)
+        if neueste is None or neueste <= alt.course_revision:
+            return None
+        vorn = db.scalar(
+            select(AdaptiveConcept.id).where(
+                AdaptiveConcept.course_id == alt.course_id,
+                AdaptiveConcept.course_revision == neueste,
+                AdaptiveConcept.concept_key == alt.concept_key,
+            )
+        )
+        if vorn is None or self._loesungen(db, vorn) != self._loesungen(db, concept_id):
+            return None
+        return vorn
+
+    def _vorlaeufig(
+        self,
+        db: Session,
+        course_id: str,
+        revision: int,
+        actor_id: str,
+        stand: dict[str, tuple[str, MasteryState | None]],
+    ) -> dict[str, float]:
+        """Concept key -> mastery the learner's open previews would lead to, were they booked.
+
+        Counts the newest preview of every unbooked attempt in the learner's active sessions of
+        the course, if it is readable and accepted. Nothing is written: a preview only counts
+        once the learner confirms it. `stand`: key -> (concept id, booked state) of `revision`.
+        """
+        werte = {key: state or MasteryState() for key, (_, state) in stand.items()}
+        ids = {concept_id: key for key, (concept_id, _) in stand.items()}
+        versuche = db.scalars(
+            select(LearningAttempt)
+            .join(LearningSession, LearningSession.id == LearningAttempt.session_id)
+            .where(
+                LearningSession.course_id == course_id,
+                LearningSession.actor_id == actor_id,
+                LearningSession.state == "active",
+                ~select(LearningResponse.id)
+                .where(LearningResponse.attempt_id == LearningAttempt.id)
+                .exists(),
+            )
+            .order_by(LearningAttempt.selected_at, LearningAttempt.ordinal)
+        ).all()
+        betroffen: set[str] = set()
+        for attempt in versuche:
+            neueste = db.scalars(
+                select(LearningVorbewertung)
+                .where(LearningVorbewertung.attempt_id == attempt.id)
+                .order_by(LearningVorbewertung.created_at.desc(), LearningVorbewertung.id.desc())
+                .limit(1)
+            ).first()
+            if (
+                neueste is None
+                or not neueste.lesbar
+                or not neueste.accepted
+                or neueste.score is None
+                or neueste.confidence is None
+            ):
+                continue
+            concept_ids = db.scalars(
+                select(ItemConcept.concept_id).where(ItemConcept.item_id == attempt.item_id)
+            ).all()
+            for concept_id in concept_ids:
+                ziel = concept_id if attempt.course_revision == revision else self._begriff_vorn(db, concept_id)
+                key = ids.get(ziel) if ziel is not None else None
+                if key is None:
+                    continue
+                update = calculate_mastery_update(
+                    werte[key],
+                    score=neueste.score,
+                    confidence=neueste.confidence,
+                    concept_count=len(concept_ids),
+                    accepted=True,
+                )
+                if update is None:
+                    continue
+                werte[key] = update.after
+                betroffen.add(key)
+        return {key: round(werte[key].posterior_mean, 2) for key in betroffen}
+
     def listen_aufgaben(self, *, course_id: str) -> tuple[int, tuple[PublicTask, ...]]:
         """Revision and fixed task list a NEW list session of the course would get, without starting one.
 
@@ -522,6 +625,13 @@ class AdaptiveSessionService:
                     AdaptiveConcept.course_revision == revision,
                 )
             ).all()
+            vorlaeufig = self._vorlaeufig(
+                db, course_id, revision, actor_id,
+                {
+                    concept.concept_key: (concept.id, mastery and MasteryState(mastery.alpha, mastery.beta))
+                    for concept, mastery in rows
+                },
+            )
             begriffe = sorted(
                 (
                     {
@@ -532,6 +642,8 @@ class AdaptiveSessionService:
                             if mastery is None
                             else round(mastery.alpha / (mastery.alpha + mastery.beta), 2)
                         ),
+                        # What the open (unbooked) previews would make of it; None without one.
+                        "vorlaeufig": vorlaeufig.get(concept.concept_key),
                     }
                     for concept, mastery in rows
                 ),
@@ -1665,7 +1777,78 @@ class AdaptiveSessionService:
                 review.last_evaluation_id = evaluation.id
                 review.revision += 1
                 review.updated_at = now
+            vorn = self._begriff_vorn(db, concept_id)
+            if vorn is not None:
+                self._vorn_gutschreiben(
+                    db, actor_id=actor_id, concept_id=vorn, davor=before, evaluation=evaluation,
+                    concept_count=len(concept_ids), plan=plan, now=now,
+                )
         return True
+
+    @staticmethod
+    def _vorn_gutschreiben(
+        db: Session,
+        *,
+        actor_id: str,
+        concept_id: str,
+        davor: MasteryState,
+        evaluation: LearningEvaluation,
+        concept_count: int,
+        plan: object,
+        now: datetime,
+    ) -> None:
+        """Credit a booking made on an older revision to the same concept of the newest one.
+
+        The learner's state there is carried on, never overwritten: an existing value gets the
+        same update on top; without one it starts from the older revision's state before this
+        booking (what a publication would have copied). The evidence stays with the revision
+        the answer was given on; the review schedule follows the booking.
+        """
+        ziel = db.get(
+            ConceptMastery, {"actor_id": actor_id, "concept_id": concept_id}, with_for_update=True
+        )
+        update = calculate_mastery_update(
+            MasteryState(ziel.alpha, ziel.beta) if ziel is not None else davor,
+            score=evaluation.score,
+            confidence=evaluation.confidence,
+            concept_count=concept_count,
+            accepted=evaluation.accepted,
+        )
+        if update is None:
+            return
+        if ziel is None:
+            db.add(
+                ConceptMastery(
+                    actor_id=actor_id, concept_id=concept_id, alpha=update.after.alpha,
+                    beta=update.after.beta, revision=2, updated_at=now,
+                )
+            )
+        else:
+            ziel.alpha = update.after.alpha
+            ziel.beta = update.after.beta
+            ziel.revision += 1
+            ziel.updated_at = now
+        review = db.get(
+            ReviewSchedule, {"actor_id": actor_id, "concept_id": concept_id}, with_for_update=True
+        )
+        if review is None:
+            db.add(
+                ReviewSchedule(
+                    actor_id=actor_id, concept_id=concept_id,
+                    interval_index=plan.interval_index, due_at=plan.due_at,  # type: ignore[attr-defined]
+                    maintenance=plan.maintenance,  # type: ignore[attr-defined]
+                    alternate_representation_required=plan.alternate_representation_required,  # type: ignore[attr-defined]
+                    last_evaluation_id=evaluation.id, revision=1, updated_at=now,
+                )
+            )
+        else:
+            review.interval_index = plan.interval_index  # type: ignore[attr-defined]
+            review.due_at = plan.due_at  # type: ignore[attr-defined]
+            review.maintenance = plan.maintenance  # type: ignore[attr-defined]
+            review.alternate_representation_required = plan.alternate_representation_required  # type: ignore[attr-defined]
+            review.last_evaluation_id = evaluation.id
+            review.revision += 1
+            review.updated_at = now
 
     def _update_misconceptions(
         self,

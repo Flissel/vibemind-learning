@@ -141,6 +141,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .begriff-titel { display: flex; justify-content: space-between; gap: .5rem; font-size: .95rem; }
 .balken { height: .5rem; margin-top: .2rem; border-radius: .25rem; background: #e4e1d8; overflow: hidden; }
 .balken > span { display: block; height: 100%; background: #1d7a3e; }
+/* Vorläufig (bewertet, noch nicht mit „Passt“ gebucht): gestreift und heller, der Text sagt es dazu. */
+.balken.vorlaeufig > span { background: repeating-linear-gradient(135deg, #1d7a3e 0 .35rem, #8fc4a2 .35rem .7rem); }
+.wert-vorlaeufig { color: #55524a; font-style: italic; }
 .notizen li { margin: 0 0 .6rem; padding: .5rem .6rem; border: 1px solid #e4e1d8; border-radius: .5rem; font-size: .95rem; }
 .notizen .auswahl { margin: 0 0 .25rem; font-weight: 600; }
 .notizen .erklaerung { margin: 0; }

@@ -2743,7 +2743,16 @@ class Bruecke:
     async def _r_stand(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
         actor = request.state.actor_id
-        return await self._ausfuehren(lambda: self._stand_mit_modell(self._listensitzung(actor, sid)), ablauf=False)
+        # `?begriffe=1`: dazu die Begriffe mit gebuchtem und vorlaeufigem Wert. Nur auf Wunsch, denn die Seite fragt
+        # den Stand alle 2 s ab und Learning soll nicht jedes Mal die Begriffe ausrechnen.
+        mit_begriffen = request.query_params.get("begriffe") == "1"
+
+        def arbeit() -> dict[str, Any]:
+            sitzung = self._listensitzung(actor, sid)
+            stand = self._stand_mit_modell(sitzung)
+            return {**stand, "begriffe": self._begriffe(sitzung)} if mit_begriffen else stand
+
+        return await self._ausfuehren(arbeit, ablauf=False)
 
     async def _r_zeigen(self, request: Request) -> JSONResponse:
         sid = request.path_params["sid"]
