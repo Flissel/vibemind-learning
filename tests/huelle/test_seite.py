@@ -209,14 +209,16 @@ def test_uvicorn_ohne_proxy_header() -> None:
     assert uvicorn_settings("127.0.0.1", 8151)["proxy_headers"] is False
 
 
-def test_leiste_sitzt_oben_rechts_unter_der_penecho_kopfzeile() -> None:
+def test_leiste_liegt_als_zeile_ueber_dem_canvas_und_nicht_darauf() -> None:
     # Abnahme 06.11.: unten rechts verdeckte die Leiste mit Passt/Ueberarbeiten/Falsch gelesen
-    # PenEchos Werkzeugleiste (Stift, Radierer) und das KI-Feld unten rechts.
+    # PenEchos Werkzeugleiste (Stift, Radierer) und das KI-Feld unten rechts. Befund 21.11.: oben rechts
+    # schwebend verdeckte sie im schmalen Fenster dieselbe Werkzeugleiste. Jetzt liegt sie gar nicht mehr darauf.
     css = (SEITE / "huelle.css").read_text(encoding="utf-8")
-    regel = css.split(".flaechenleiste {")[1].split("}")[0]
-    assert "top:" in regel and "bottom:" not in regel
+    regel = css.split("\n.flaechenleiste {")[1].split("}")[0]
+    assert "position: absolute" not in regel and "order: -1" in regel
+    assert " top:" not in regel and " bottom:" not in regel and "right:" not in regel
     js = (SEITE / "huelle.js").read_text(encoding="utf-8")
-    assert "finden Sie oben rechts" in js and "unten rechts" not in js
+    assert "in der Kopfzeile der Fläche" in js and "oben rechts" not in js and "unten rechts" not in js
 
 
 def test_leiste_ueber_der_flaeche_ist_verdrahtet() -> None:
@@ -225,9 +227,9 @@ def test_leiste_ueber_der_flaeche_ist_verdrahtet() -> None:
     for kennung in ("flaechenleiste", "leisten-hinweis", "korrektur-feld", "neu-bewerten", "leisten-knoepfe"):
         assert f'id="{kennung}"' in flaeche, kennung
     css = (SEITE / "huelle.css").read_text(encoding="utf-8")
-    assert ".flaechenleiste {" in css and "pointer-events: none" in css and "pointer-events: auto" in css
-    mobil = css.split("@media (max-width: 699px)")[1]
-    assert ".flaechenleiste" in mobil and "flex-wrap: wrap" in css
+    # Eine Zeile im Fluss der Seite: sie faengt keine Zeiger ueber dem Canvas ab, braucht also keine Ausnahme.
+    assert ".flaechenleiste {" in css and "pointer-events" not in css.split("\n.flaechenleiste {")[1].split("}")[0]
+    assert "flex-flow: row wrap" in css
     js = (SEITE / "huelle.js").read_text(encoding="utf-8")
     assert 'from "./flaeche.js"' in js and "flaecheSpeichern(" in js
     for route in ("/abgeben", "/korrektur", "/passt"):

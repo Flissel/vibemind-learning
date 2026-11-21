@@ -49,16 +49,15 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .leiste-ueber .leiste { position: absolute; z-index: 6; top: 0; bottom: 0; left: 0; width: min(320px, 90vw); box-shadow: 0 0 1.25rem rgba(23, 25, 28, .25); }
 #leiste-knopf { min-height: 2.5rem; padding: 0 .9rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff; }
 #leiste-knopf[aria-pressed="true"] { background: #17191c; color: #fff; }
-.flaeche { position: relative; min-width: 0; min-height: 0; background: #fff; }
-.flaeche iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.flaeche { position: relative; min-width: 0; min-height: 0; background: #fff; display: flex; flex-direction: column; }
+.flaeche iframe { display: block; width: 100%; flex: 1 1 auto; min-height: 0; border: 0; background: #fff; }
 
-/* Leiste oben rechts unter PenEchos Kopfzeile (unten liegen PenEchos Werkzeuge und KI-Feld):
-   nur die Leiste selbst fängt Zeigerereignisse, der Rest gehört dem Stift. */
+/* Leiste als eigene Zeile über dem Canvas (im HTML steht sie hinter dem Rahmen, daher `order`). Sie lag früher
+   schwebend auf dem Canvas und verdeckte dort je nach Fensterbreite Meldungen und die Stiftleiste (21.11.). */
 .flaechenleiste {
-  position: absolute; right: .5rem; top: 3.75rem; z-index: 2; max-width: calc(100% - 1rem);
-  display: flex; flex-direction: column; align-items: flex-end; gap: .35rem; pointer-events: none;
+  order: -1; flex: 0 0 auto; padding: .4rem .5rem; border-bottom: 1px solid #c9c6bc; background: #fff;
+  display: flex; flex-flow: row wrap; align-items: center; justify-content: flex-end; gap: .35rem;
 }
-.flaechenleiste > * { pointer-events: auto; }
 .leisten-knoepfe { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
 .leisten-knoepfe button, .korrektur button {
   min-height: 2.5rem; padding: 0 .9rem; border: 1px solid #17191c; border-radius: .5rem; background: #fff;
@@ -158,7 +157,6 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .leiste { overflow: visible; border-right: 0; border-bottom: 1px solid #c9c6bc; }
   .leiste-ueber .leiste { position: static; width: auto; box-shadow: none; } /* schmal: untereinander wie bisher */
   .flaeche { height: 70vh; flex: 0 0 70vh; overflow: hidden; }
-  .flaechenleiste { left: .5rem; align-items: flex-end; }
   .leisten-hinweis, .korrektur { max-width: 100%; }
   .leisten-voll { max-width: 100%; }
   .kurswahl select { max-width: 100%; }

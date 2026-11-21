@@ -213,7 +213,7 @@ test("leistenZustand: alle zehn Learning-Typen (gemeinsame Fixture mit Python)",
     const z = leistenZustand({ type }, null);
     if (seitenleiste.includes(type)) { assert.equal(z.sichtbar, false, type); continue; }
     assert.equal(z.sichtbar, true, type);
-    assert.ok(z.knoepfe.includes("abgeben"), type);
+    assert.ok(!z.knoepfe.includes("abgeben"), type); // Abgeben hat die Lernfläche selbst (20.11.: stand doppelt da)
     const mitErgebnis = leistenZustand({ type }, ERG("Richtig."));
     assert.equal(mitErgebnis.knoepfe.includes("falsch"), deterministisch.includes(type), type);
   }
@@ -264,8 +264,8 @@ test("eingabeHinweis: je Typ ein Beispiel", () => {
 const ERG = (urteil, lesbar = urteil !== "Nicht lesbar.") => ({ vorbewertung_id: "v1", urteil, lesbar });
 
 test("leistenZustand: ohne Ergebnis nur Abgeben (gesichert wird von selbst), bei code keine Leiste", () => {
-  assert.deepEqual(leistenZustand({ type: "numeric" }, null), { sichtbar: true, knoepfe: ["abgeben"] });
-  assert.deepEqual(leistenZustand({ type: "open" }, null), { sichtbar: true, knoepfe: ["abgeben"] });
+  assert.deepEqual(leistenZustand({ type: "numeric" }, null), { sichtbar: true, knoepfe: [] });
+  assert.deepEqual(leistenZustand({ type: "open" }, null), { sichtbar: true, knoepfe: [] });
   assert.deepEqual(leistenZustand({ type: "code" }, null), { sichtbar: false, knoepfe: [] });
   assert.deepEqual(leistenZustand(null, null), { sichtbar: false, knoepfe: [] });
   assert.deepEqual(leistenZustand({ type: "unbekannt" }, null), { sichtbar: false, knoepfe: [] });
@@ -274,21 +274,21 @@ test("leistenZustand: ohne Ergebnis nur Abgeben (gesichert wird von selbst), bei
 test("leistenZustand: lesbares Urteil -> Passt, Ueberarbeiten, Falsch gelesen (nur deterministisch)", () => {
   for (const urteil of ["Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Wird noch geprüft."]) {
     assert.deepEqual(leistenZustand({ type: "numeric" }, ERG(urteil)),
-      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "falsch", "abgeben"] }, urteil);
+      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "falsch"] }, urteil);
     assert.deepEqual(leistenZustand({ type: "case" }, ERG(urteil)),
-      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten", "abgeben"] }, urteil);
+      { sichtbar: true, knoepfe: ["passt", "ueberarbeiten"] }, urteil);
   }
 });
 
 test("leistenZustand: nicht lesbar -> Selbst eintippen statt Passt", () => {
   assert.deepEqual(leistenZustand({ type: "matching" }, ERG("Nicht lesbar.")),
-    { sichtbar: true, knoepfe: ["ueberarbeiten", "eintippen", "abgeben"] });
+    { sichtbar: true, knoepfe: ["ueberarbeiten", "eintippen"] });
   // das lesbar-Flag allein reicht ebenfalls
   assert.deepEqual(leistenZustand({ type: "numeric" }, { vorbewertung_id: "v", urteil: "Richtig.", lesbar: false }).knoepfe,
-    ["ueberarbeiten", "eintippen", "abgeben"]);
+    ["ueberarbeiten", "eintippen"]);
   // Rubrik-Typ: nichts zum Eintippen
   assert.deepEqual(leistenZustand({ type: "open" }, ERG("Nicht lesbar.")).knoepfe,
-    ["ueberarbeiten", "abgeben"]);
+    ["ueberarbeiten"]);
 });
 
 test("KNOPF_TEXT: feste Beschriftungen", () => {
@@ -957,4 +957,21 @@ test("Seite: Knopf für die Seitenleiste, Klassen und Regeln sind da", async () 
   assert.match(css, /\.leiste-ueber \.leiste \{[^}]*position: absolute;/);
   assert.match(js, /seitenleiste\(\{ layout: /);
   assert.ok(js.includes('speicher("schreiben", "huelle-leiste"'));
+});
+test("Leiste: liegt als eigene Zeile über dem Canvas, nicht mehr darauf; ohne Inhalt ist sie weg", async () => {
+  const { leisteSichtbar, leistenKnoepfe } = await import("./aufgabe.js");
+  // 21.11.: die schwebenden Knöpfe verdeckten im schmalen Fenster die Stiftleiste der Lernfläche.
+  const css = readFileSync(new URL("./huelle.css", import.meta.url), "utf8");
+  const regel = css.match(/\n\.flaechenleiste \{([^}]*)\}/)[1];
+  assert.ok(!regel.includes("position: absolute") && regel.includes("order: -1"));
+  assert.match(css, /\n\.flaeche \{[^}]*display: flex; flex-direction: column;/);
+  assert.equal(leisteSichtbar({ knoepfe: [], text: null, korrektur: false }), false);
+  assert.equal(leisteSichtbar({ knoepfe: ["passt"], text: null, korrektur: false }), true);
+  assert.equal(leisteSichtbar({ knoepfe: [], text: "Wird bewertet …", korrektur: false }), true);
+  assert.equal(leisteSichtbar({ knoepfe: [], text: null, korrektur: true }), true);
+  // Ohne „Abgeben“ ist „Passt“ der Hauptknopf.
+  const plan = leistenKnoepfe(["passt", "ueberarbeiten"], { busy: false, abgebenGesperrt: false });
+  assert.deepEqual(plan.knoepfe.map((k) => k.haupt), [true, false]);
+  const js = readFileSync(new URL("./huelle.js", import.meta.url), "utf8");
+  assert.match(js, /leiste\.hidden = !leisteSichtbar\(/);
 });

@@ -5,7 +5,7 @@ import {
   flaechenHinweis, FLAECHEN_HINWEIS, formel, klartext, korrekturAntwort, kaertchenAntwort, kaertchenKennung, kaertchenPaar, kaertchenStart, kaertchenTippen, fokusZiel,
   KAERTCHEN_TYPEN, etiketten, kursErgebnis, kursVorwahl, leistenKnoepfe, leistenText, leistenZustand,
   meldungFuer,
-  nach409, NICHT_LESBAR, ohneLeere, seitenleiste, SICHERN_ALLE_MS, sichernFaellig,speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
+  nach409, NICHT_LESBAR, leisteSichtbar, ohneLeere, seitenleiste,SICHERN_ALLE_MS, sichernFaellig,speicherAusgang, speichernMitWiederholung, sperrHinweis, SPERR_HINWEIS,
 } from "./aufgabe.js";
 import {
   flaecheErneuern, flaechenAdresse, flaechenKennung, flaechenKopf, flaecheSpeichern, flaechenHerkunft, gruppeAusAdresse, kennungBelegt,
@@ -49,7 +49,7 @@ const TEXT = {
   allgemein: "Das hat gerade nicht geklappt. Bitte versuchen Sie es noch einmal.",
   bewertungFehler: "Die Bewertung konnte nicht gespeichert werden. Bitte versuchen Sie es noch einmal.",
   rechnen: "Sie können auf der Fläche rechnen oder zeichnen.",
-  aufFlaeche: "Lösen Sie die Aufgabe auf der Fläche. „Abgeben“ finden Sie oben rechts.",
+  aufFlaeche: "Lösen Sie die Aufgabe auf der Fläche. „Abgeben“ finden Sie oben in der Kopfzeile der Fläche.",
   ueberarbeiten: "Ändern Sie Ihre Antwort auf der Fläche und drücken Sie dann erneut „Abgeben“.",
   nichtZugeordnet: "Das konnte ich nicht zuordnen.",
   wirdBewertet: "Wird bewertet …",
@@ -1346,6 +1346,8 @@ function leisteZeigen() {
   mehr.textContent = offenVoll ? TEXT.leisteWeniger : TEXT.leisteMehr;
   mehr.setAttribute("aria-expanded", String(offenVoll));
   const offen = z.korrektur !== null && ergebnis !== null && zustand.knoepfe.includes(z.korrektur === "falsch" ? "falsch" : "eintippen");
+  // Die Zeile über dem Canvas kostet nur Höhe, wenn sie etwas zeigt.
+  leiste.hidden = !leisteSichtbar({ knoepfe: zustand.knoepfe, text, korrektur: offen });
   $("korrektur").hidden = !offen;
   if (offen) $("korrektur-text").textContent = eingabeHinweis(task.type) ?? "";
   $("neu-bewerten").disabled = z.busy;

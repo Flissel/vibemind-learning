@@ -529,8 +529,14 @@ export function leistenZustand(task, ergebnis) {
       if (deterministisch) knoepfe.push("falsch");
     }
   }
-  knoepfe.push("abgeben");
+  // Kein „Abgeben“ mehr: den Knopf hat die Lernfläche selbst in ihrer Kopfzeile (`lernAbgeben`, meldet
+  // `huelle-abgeben`); hier stand er ein zweites Mal (Befund 21.11.).
   return { sichtbar: true, knoepfe };
+}
+
+/** Ob die Zeile über dem Canvas etwas zeigt: Knöpfe, einen Text oder das Eingabefeld der Korrektur. */
+export function leisteSichtbar({ knoepfe, text, korrektur }) {
+  return knoepfe.length > 0 || Boolean(text) || korrektur === true;
 }
 
 /**
@@ -539,9 +545,10 @@ export function leistenZustand(task, ergebnis) {
  * „Selbst eintippen“ gingen ins Leere (Abnahme A2, Befund 8).
  */
 export function leistenKnoepfe(ids, { busy, abgebenGesperrt }) {
+  const hauptknopf = ids.includes("abgeben") ? "abgeben" : "passt";
   const knoepfe = ids.map((id) => ({
     id,
-    haupt: id === "abgeben",
+    haupt: id === hauptknopf,
     disabled: Boolean(busy) || (id === "abgeben" && Boolean(abgebenGesperrt)),
     text: KNOPF_TEXT[id],
   }));
