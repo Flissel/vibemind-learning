@@ -65,6 +65,12 @@ _RUECKMELDUNG_ZEICHEN_JE_ZEILE = 64
 # Handschrift der Lernenden enthaelt.
 FELD_BREITE = 480
 FELD_HOEHE = 200
+# Abnahme 21.11.: in 480 x 200 passte eine Zuordnung mit fuenf Antworten nicht, der Text lief unten heraus und der
+# Schnappschuss des Feldes las nur den Anfang. Breite Bereiche (das eigene Canvas je Aufgabe, 2000 breit) haben
+# rechts neben Fall und Bildern Platz fuer ein grosses Feld; im schmalen Raster (1300/1760) bleibt es klein.
+FELD_BREITE_GROSS = 680
+FELD_HOEHE_GROSS = 1000
+_BREIT_AB = 1900
 _FELD_RAND_RECHTS = 20
 _FELD_RAND_OBEN = 80
 _RAHMEN_ABSTAND = 8
@@ -76,8 +82,8 @@ URTEILE = ("Richtig.", "Teilweise richtig.", "Noch nicht richtig.", "Nicht lesba
 # Abnahme 06.11. (F15): PenEcho nimmt je Flaeche hoechstens 50 Texte (canvasDocumentsCapacity "text" 50,
 # MAX_VISIBLE_TEXT_BOXES 50 auch fuer die Lernenden). Ein eigenes Schild ueber dem Feld kostete je Aufgabe
 # einen dritten Text; der Hinweis steht deshalb als letzte Zeile im Aufgabentext.
-_HINWEIS_ERGEBNIS = "Ihr Ergebnis schreiben Sie in das blau umrandete Feld."
-_HINWEIS_LOESUNG = "Ihre Lösung schreiben Sie in das blau umrandete Feld."
+_HINWEIS_ERGEBNIS = "Ihr Ergebnis schreiben Sie in das blau umrandete Lösungsfeld."
+_HINWEIS_LOESUNG = "Ihre Lösung schreiben Sie in das blau umrandete Lösungsfeld."
 
 # Bericht am Kursende. Urheberschafts-Befund (Task 1, BOARD_SPEICHERN.md): PenEchos KI-Tinte landet in
 # denselben Raster-Kacheln wie die Striche der Lernenden, nur Plots und Widgets sind trennbar. Darum
@@ -124,6 +130,17 @@ class Felder(NamedTuple):
     berichtsplatz: dict[str, int]
 
 
+def _ist_breit(b: dict[str, int]) -> bool:
+    """Hat der Bereich Platz fuer das grosse Ergebnisfeld rechts neben Fall und Bildern?"""
+    return b["w"] >= _BREIT_AB
+
+
+def _neben_feld(b: dict[str, int], f: "Felder") -> dict[str, int]:
+    """Spalte zwischen Aufgabentext und grossem Ergebnisfeld in einem breiten Bereich (Fall, Bilder)."""
+    a, e = f.arbeitsfeld, f.ergebnisfeld
+    return {"x": a["x"], "y": a["y"], "w": e["x"] - 2 * _BILD_LUECKE - a["x"], "h": a["h"]}
+
+
 def felder(b: dict[str, int]) -> Felder:
     """Text, Ergebnisfeld, Arbeitsfeld, Rueckmeldung und Berichtsbild zum Bereichsrechteck `b`.
 
@@ -131,11 +148,14 @@ def felder(b: dict[str, int]) -> Felder:
     mit Bild) verlaengert Text, Arbeitsfeld und Rueckmeldung nach unten, das Ergebnisfeld bleibt oben.
     """
     text = {"x": b["x"] + _TEXT_RAND, "y": b["y"] + _TEXT_RAND, "w": _TEXT_BREITE, "h": b["h"] - 2 * _TEXT_RAND}
+    breit = _ist_breit(b)
+    feld_w = FELD_BREITE_GROSS if breit else FELD_BREITE
+    feld_h = min(FELD_HOEHE_GROSS, b["h"] - _FELD_RAND_OBEN - _TEXT_RAND) if breit else FELD_HOEHE
     ergebnis = {
-        "x": b["x"] + b["w"] - _FELD_RAND_RECHTS - FELD_BREITE,
+        "x": b["x"] + b["w"] - _FELD_RAND_RECHTS - feld_w,
         "y": b["y"] + _FELD_RAND_OBEN,
-        "w": FELD_BREITE,
-        "h": FELD_HOEHE,
+        "w": feld_w,
+        "h": feld_h,
     }
     x = text["x"] + text["w"] + _TEXT_RAND
     arbeit = {"x": x, "y": b["y"] + _FELD_RAND_OBEN, "w": b["x"] + b["w"] - _FELD_RAND_RECHTS - x,
@@ -245,6 +265,9 @@ def fallfeld(b: dict[str, int]) -> dict[str, int]:
     Zeilen lesbar kurz bleiben; der Schnappschuss des Ergebnisfelds erfasst ihn nicht.
     """
     f = felder(b)
+    if _ist_breit(b):
+        spalte = _neben_feld(b, f)
+        return {**spalte, "w": min(spalte["w"], _RUECKMELDUNG_BREITE)}
     a, e = f.arbeitsfeld, f.ergebnisfeld
     y = e["y"] + e["h"] + 2 * _BILD_LUECKE
     return {"x": a["x"], "y": y, "w": min(a["w"], _RUECKMELDUNG_BREITE), "h": a["y"] + a["h"] - y}
@@ -285,8 +308,11 @@ def bildfeld(nummer: int, *, unter_ergebnisfeld: bool, rechteck: dict[str, int] 
     Schreiben bleibt und offene Aufgaben direkt im Bild beschriftet werden koennen. `rechteck` ersetzt
     `bereich(nummer)` (Listenkurs, dann ohne die Grenze 1..20).
     """
-    f = felder(rechteck if rechteck is not None else bereich(nummer))
+    b = rechteck if rechteck is not None else bereich(nummer)
+    f = felder(b)
     a = f.arbeitsfeld
+    if unter_ergebnisfeld and _ist_breit(b):
+        return _neben_feld(b, f)
     if unter_ergebnisfeld:
         e = f.ergebnisfeld
         y = e["y"] + e["h"] + 2 * _BILD_LUECKE
@@ -371,9 +397,34 @@ def _spalten(plaetze: Iterable[dict[str, int]]) -> list[dict[str, int]]:
 
 _KONTEXT = "context.md"
 _MARKE = re.compile(r"<!-- lernflaeche-bereiche:.*-->")
+# Vertrag mit der Lernflaeche (lernflaeche-kern.js FELDER_MARKE): die Flaeche zeichnet diese Rechtecke als festen,
+# beschrifteten Rahmen "Lösungsfeld" auf die Papierebene (nicht radierbar, nicht im Schnappschuss).
+_FELDER_MARKE = re.compile(r"<!-- lernflaeche-loesungsfelder:(.*)-->")
+_FELDER_HOECHSTENS = 60  # lernflaeche-kern.js BEREICHE_HOECHSTENS gilt fuer beide Zeilen
 
 
-def _markenpatch(inhalt: str, neu: str) -> str | None:
+def felderzeile(rechtecke: Sequence[Sequence[int]]) -> str:
+    return f"<!-- lernflaeche-loesungsfelder: {json.dumps([list(r) for r in rechtecke], separators=(',', ':'))} -->"
+
+
+def _gemeldete_felder(inhalt: str) -> list[list[int]]:
+    """Rechtecke der ersten Zeile der Loesungsfelder in `inhalt`; fehlt sie oder ist sie kaputt: []."""
+    for z in inhalt.split("\n"):
+        treffer = _FELDER_MARKE.fullmatch(z.strip())
+        if treffer:
+            try:
+                roh = json.loads(treffer.group(1))
+            except ValueError:
+                return []
+            if isinstance(roh, list) and all(
+                    isinstance(e, list) and len(e) == 4 and all(isinstance(n, int) and not isinstance(n, bool) for n in e)
+                    for e in roh):
+                return roh
+            return []
+    return []
+
+
+def _markenpatch(inhalt: str, neu: str, marke: re.Pattern[str] = _MARKE) -> str | None:
     """Strikter Unified Diff (PenEcho penecho_patch_file, jsdiff ohne Unschaerfe) fuer die Markenzeile `neu`.
 
     Ersetzt die erste vorhandene Markenzeile (eine Zeile, ohne Kontext) oder haengt `neu` an das Ende;
@@ -387,7 +438,7 @@ def _markenpatch(inhalt: str, neu: str) -> str | None:
         zeilen.pop()  # "" nach dem letzten Zeilenumbruch (oder der leere Inhalt)
     ohne_lf = "\n\\ No newline at end of file\n"
     for i, z in enumerate(zeilen):
-        if _MARKE.fullmatch(z.strip()):
+        if marke.fullmatch(z.strip()):
             if z == neu:
                 return None
             ende = ohne_lf if offen_am_ende and i == len(zeilen) - 1 else "\n"
@@ -1187,6 +1238,7 @@ class PenEchoMcp:
         feld = loesungsfeld(b, mit_ergebnisfeld=mit_ergebnisfeld, mit_arbeitsfeld=mit_arbeitsfeld)
         if feld is not None:
             praefix = "ergebnis" if mit_ergebnisfeld else "arbeit"
+            self._feld_melden(session_id, feld)
             self._feld_zeichnen(session_id, aufgabe_id, nummer, feld, praefix, zeigen=zeigen)
 
     def _fall_setzen(
@@ -1316,6 +1368,47 @@ class PenEchoMcp:
         # Der Zusatz bleibt immer erhalten, nur die aufgabe_id wird bei Bedarf gekuerzt.
         rest = MAX_SCHLUESSEL - len(f"{praefix}--{nummer}{zusatz}")
         return f"{praefix}-{aufgabe_id[:rest]}-{nummer}{zusatz}"
+
+    def _feld_melden(self, session_id: str, feld: dict[str, int]) -> None:
+        """Das Feld als Loesungsfeld in die context.md des Boards (`felderzeile`): die Lernflaeche zeichnet daraus
+        den festen, beschrifteten Rahmen. Schon gemeldete Felder des Boards bleiben stehen (Listenkurs: eine Zeile
+        fuer alle Aufgaben); steht das Feld schon da, wird nichts geschrieben.
+
+        Zierde wie der Tintenrahmen: Fehler ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab. Der
+        Tintenrahmen (`_feld_zeichnen`) bleibt daneben bestehen: in der Gruppe sehen die anderen nur ihn (context.md
+        wird dort nicht abgeglichen), und eine aeltere Lernflaeche kennt die Zeile nicht.
+        """
+        eintrag = [feld["x"], feld["y"], feld["w"], feld["h"]]
+        try:
+            for versuch in (1, 2):
+                lesen = self._struktur(self._werkzeug("penecho_read_file", {"sessionId": session_id, "path": _KONTEXT}))
+                inhalt, pruefsumme = lesen.get("content"), lesen.get("contentHash")
+                if not isinstance(inhalt, str) or not isinstance(pruefsumme, str) or not pruefsumme:
+                    log.warning("Loesungsfeld nicht gemeldet: context.md nicht lesbar")
+                    return
+                gemeldet = _gemeldete_felder(inhalt)
+                if eintrag in gemeldet:
+                    return
+                if len(gemeldet) >= _FELDER_HOECHSTENS:
+                    log.warning("Loesungsfeld nicht gemeldet: schon %d Felder auf dem Board", len(gemeldet))
+                    return
+                patch = _markenpatch(inhalt, felderzeile([*gemeldet, eintrag]), _FELDER_MARKE)
+                if patch is None:
+                    return
+                kennung = hashlib.sha256(f"{pruefsumme}\n{patch}".encode("utf-8")).hexdigest()[:32]
+                try:
+                    self._werkzeug("penecho_patch_file", {
+                        "sessionId": session_id, "path": _KONTEXT, "contentHash": pruefsumme, "patch": patch,
+                        "requestId": f"felder-{kennung}",
+                    })
+                    return
+                except PenEchoQuelleVeraltet:
+                    if versuch == 2:
+                        log.warning("Loesungsfeld nicht gemeldet: context.md aendert sich laufend")
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("Loesungsfeld nicht gemeldet: %s", _typ(fehler))
 
     def _feld_zeichnen(
         self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], praefix: str, *, zeigen: bool = True,

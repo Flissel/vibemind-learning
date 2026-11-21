@@ -764,7 +764,7 @@ def test_aufgabe_setzen_mit_ergebnisfeld_zwei_aufrufe_feste_ids(zustand: Path) -
     assert len(rahmen) == 1 and rahmen[0]["requestId"] == "ergebnis-t1-3"
     assert rahmen[0]["baseRevision"] == 7
     (text,) = [e for e in erste if e["action"] == "create_text"]
-    assert text["text"] == "Aufgabe 3: x\n\nIhr Ergebnis schreiben Sie in das blau umrandete Feld."
+    assert text["text"] == "Aufgabe 3: x\n\nIhr Ergebnis schreiben Sie in das blau umrandete Lösungsfeld."
 
 
 def test_aufgaben_bleiben_unter_penechos_textgrenze(zustand: Path) -> None:
@@ -1155,7 +1155,7 @@ def test_aufgabe_mit_arbeitsfeld_zeichnet_rahmen_hinweis_im_aufgabentext(zustand
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Skizzieren", 8, mit_arbeitsfeld=True)
     edits = [e["arguments"] for e in fake.aufrufe("penecho_edit_canvas")]
     (text,) = [e for e in edits if e["action"] == "create_text"]
-    assert text["text"] == "Aufgabe 8: Skizzieren\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."
+    assert text["text"] == "Aufgabe 8: Skizzieren\n\nIhre Lösung schreiben Sie in das blau umrandete Lösungsfeld."
     (rahmen,) = _ink(fake)
     assert rahmen["requestId"] == "arbeit-t1-8" and rahmen["baseRevision"] == 4
     a = arbeitsfeld(8)
@@ -2342,7 +2342,7 @@ def test_langer_fall_wird_auf_dem_board_gekuerzt(zustand: Path, rechteck: dict |
     assert _zeilen_schaetzung(text, 36 * tf["w"] // 400) <= tf["h"] // 27
     assert text.startswith(f"Aufgabe 1: {prompt}\n\nFall:\n")
     assert _MARKER in text and fall not in text
-    assert text.endswith("\n\nIhre Lösung schreiben Sie in das blau umrandete Feld.")
+    assert text.endswith("\n\nIhre Lösung schreiben Sie in das blau umrandete Lösungsfeld.")
     assert text.index(_MARKER) < text.index("Ihre Lösung")
 
 
@@ -2350,13 +2350,13 @@ def test_kurzer_fall_bleibt_vollstaendig_ohne_hinweis_auf_die_seitenleiste(zusta
     fake = FeldFake()
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Frage", 1, mit_arbeitsfeld=True, fall="Muster GmbH")
     assert _board_text(fake) == ("Aufgabe 1: Frage\n\nFall:\nMuster GmbH\n\n"
-                                 "Ihre Lösung schreiben Sie in das blau umrandete Feld.")
+                                 "Ihre Lösung schreiben Sie in das blau umrandete Lösungsfeld.")
 
 
 def test_ohne_fall_bleibt_der_text_wie_bisher(zustand: Path) -> None:
     fake = FeldFake()
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Frage", 1, mit_arbeitsfeld=True)
-    assert _board_text(fake) == "Aufgabe 1: Frage\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."
+    assert _board_text(fake) == "Aufgabe 1: Frage\n\nIhre Lösung schreiben Sie in das blau umrandete Lösungsfeld."
 
 
 def test_fall_ohne_platz_entfaellt_ganz(zustand: Path) -> None:
@@ -2365,7 +2365,7 @@ def test_fall_ohne_platz_entfaellt_ganz(zustand: Path) -> None:
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", lang, 1, mit_arbeitsfeld=True, fall="Muster GmbH")
     text = _board_text(fake)
     assert "Fall:" not in text and _MARKER not in text
-    assert text == f"Aufgabe 1: {lang}\n\nIhre Lösung schreiben Sie in das blau umrandete Feld."
+    assert text == f"Aufgabe 1: {lang}\n\nIhre Lösung schreiben Sie in das blau umrandete Lösungsfeld."
 
 
 # ---- Fall im eigenen Feld: langes Quiz (Abnahme 14.11.) -----------------------------------------------------------
@@ -2381,18 +2381,20 @@ def _fall_texte(fake: Fake) -> list[dict]:
             if a["arguments"]["action"] == "create_text" and a["arguments"]["requestId"].startswith("fall-")]
 
 
-def test_fall_kommt_unter_das_ergebnisfeld_wenn_das_textfeld_voll_ist(zustand: Path) -> None:
+def test_fall_steht_im_eigenen_canvas_neben_dem_ergebnisfeld_wenn_das_textfeld_voll_ist(zustand: Path) -> None:
     fake = FeldFake()
     fall = _FALL[:1100]
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", _QUIZ, 1, mit_ergebnisfeld=True, fall=fall, rechteck=_EINZEL)
-    assert _board_text(fake) == f"Aufgabe 1: {_QUIZ}\n\nIhr Ergebnis schreiben Sie in das blau umrandete Feld."
+    assert _board_text(fake) == f"Aufgabe 1: {_QUIZ}\n\nIhr Ergebnis schreiben Sie in das blau umrandete Lösungsfeld."
     (eigen,) = _fall_texte(fake)
     assert eigen["text"] == f"Fall:\n{fall}"
     f = felder(_EINZEL)
     platz, e = eigen["region"], f.ergebnisfeld
     assert platz == fallfeld(_EINZEL)
-    # unter dem Ergebnisfeld samt Rahmen, rechts neben dem Text, ganz im Bereich, hoechstens so breit wie die Karte
-    assert platz["y"] >= e["y"] + e["h"] + 20 and platz["x"] >= f.textfeld["x"] + f.textfeld["w"]
+    # links neben dem grossen Ergebnisfeld samt Rahmen (21.11.), rechts neben dem Text, ganz im Bereich,
+    # hoechstens so breit wie die Karte
+    assert platz["x"] + platz["w"] <= e["x"] - 20 and platz["y"] == f.arbeitsfeld["y"]
+    assert platz["x"] >= f.textfeld["x"] + f.textfeld["w"]
     assert platz["x"] + platz["w"] <= _EINZEL["x"] + _EINZEL["w"] and platz["y"] + platz["h"] <= _EINZEL["y"] + _EINZEL["h"]
     assert platz["w"] <= 760
     # Der Fall wird vor dem Rahmen gesetzt (PenEcho zaehlt Tinte als Hindernis fuer Text).
@@ -2416,7 +2418,7 @@ def test_fall_bleibt_im_textfeld_wenn_er_dort_passt(zustand: Path) -> None:
     _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "Frage", 1, mit_ergebnisfeld=True, fall="Muster GmbH",
                                           rechteck=_EINZEL)
     assert _board_text(fake) == ("Aufgabe 1: Frage\n\nFall:\nMuster GmbH\n\n"
-                                 "Ihr Ergebnis schreiben Sie in das blau umrandete Feld.")
+                                 "Ihr Ergebnis schreiben Sie in das blau umrandete Lösungsfeld.")
     assert _fall_texte(fake) == []
 
 
@@ -2469,3 +2471,122 @@ def test_aufgabe_aufnehmen_rahmt_platz_fuer_die_karte(zustand: Path) -> None:
     PenEchoMcp(zustand, transport=httpx.MockTransport(fake)).aufgabe_aufnehmen("sess-1", _EINZEL, ergebnis=True)
     (zeigen,) = [a["arguments"] for a in fake.aufrufe("penecho_edit_canvas") if a["arguments"]["action"] == "show"]
     assert zeigen["region"] == zeile_mit_karte(_EINZEL)
+
+
+# ---- 21.11.: grosses, fest beschriftetes Loesungsfeld -----------------------------------------------------------
+
+def test_ergebnisfeld_ist_im_eigenen_canvas_gross_und_im_raster_wie_bisher() -> None:
+    assert felder(_EINZEL).ergebnisfeld == {"x": 1400, "y": 180, "w": 680, "h": 1000}
+    assert (ergebnisfeld(1)["w"], ergebnisfeld(1)["h"]) == (480, 200)
+    niedrig = {**_EINZEL, "h": 700}
+    e = felder(niedrig).ergebnisfeld
+    assert e["h"] == 600 and e["y"] + e["h"] <= niedrig["y"] + niedrig["h"] - 20  # bleibt im Bereich
+
+
+def test_fall_und_bilder_stehen_im_schmalen_raster_weiter_unter_dem_feld() -> None:
+    b = bereich(1)
+    e = felder(b).ergebnisfeld
+    assert fallfeld(b)["y"] == e["y"] + e["h"] + 40
+    assert bildfeld(1, unter_ergebnisfeld=True)["y"] == e["y"] + e["h"] + 40
+
+
+def test_bilder_stehen_im_eigenen_canvas_neben_dem_ergebnisfeld() -> None:
+    f = felder(_EINZEL)
+    platz = bildfeld(1, unter_ergebnisfeld=True, rechteck=_EINZEL)
+    assert platz["y"] == f.arbeitsfeld["y"] and platz["h"] == f.arbeitsfeld["h"]
+    assert platz["x"] == f.arbeitsfeld["x"] and platz["x"] + platz["w"] == f.ergebnisfeld["x"] - 40
+
+
+class FeldKontextFake(FeldFake):
+    """Wie FeldFake, aber context.md hat einen eigenen Inhalt; penecho_patch_file kann abgelehnt werden."""
+
+    def __init__(self, kontext: str = "", patch_fehler: str | None = None) -> None:
+        super().__init__()
+        self.kontext = kontext
+        self.patch_fehler = patch_fehler
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/call":
+            name, args = body["params"]["name"], body["params"]["arguments"]
+            if name == "penecho_read_file" and args.get("path") == "context.md":
+                self.anfragen.append((body, request.headers))
+                sc = {"content": self.kontext, "contentHash": "kh"}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "structuredContent": sc, "content": []}})
+            if name == "penecho_patch_file" and self.patch_fehler:
+                self.anfragen.append((body, request.headers))
+                sc = {"code": self.patch_fehler, "message": "m"}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "isError": True, "structuredContent": sc, "content": []}})
+        return super().__call__(request)
+
+
+def _feldpatches(fake: Fake) -> list[dict]:
+    return [a["arguments"] for a in fake.aufrufe("penecho_patch_file")]
+
+
+def test_loesungsfeld_wird_der_flaeche_gemeldet(zustand: Path) -> None:
+    fake = FeldKontextFake("Aufgabentext der Huelle\n")
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    (patch,) = _feldpatches(fake)
+    assert patch["path"] == "context.md" and patch["contentHash"] == "kh"
+    assert patch["requestId"].startswith("felder-")
+    assert "+<!-- lernflaeche-loesungsfelder: [[1400,180,680,1000]] -->\n" in patch["patch"]
+    assert " Aufgabentext der Huelle\n" in patch["patch"]          # die letzte Zeile bleibt als Kontext stehen
+    assert len(_ink(fake)) == 1                                       # der Tintenrahmen bleibt (Gruppe, alte Flaeche)
+
+
+def test_arbeitsfeld_wird_als_loesungsfeld_gemeldet(zustand: Path) -> None:
+    fake = FeldKontextFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_arbeitsfeld=True, rechteck=_EINZEL)
+    a = felder(_EINZEL).arbeitsfeld
+    (patch,) = _feldpatches(fake)
+    assert f"[[{a['x']},{a['y']},{a['w']},{a['h']}]]" in patch["patch"]
+
+
+def test_aufgabe_ohne_feld_meldet_nichts(zustand: Path) -> None:
+    fake = FeldKontextFake()
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, rechteck=_EINZEL)
+    assert _feldpatches(fake) == []
+
+
+def test_schon_gemeldetes_loesungsfeld_wird_nicht_erneut_geschrieben(zustand: Path) -> None:
+    fake = FeldKontextFake("<!-- lernflaeche-loesungsfelder: [[1400,180,680,1000]] -->\n")
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    assert _feldpatches(fake) == []
+
+
+def test_weiteres_loesungsfeld_kommt_in_dieselbe_zeile(zustand: Path) -> None:
+    # Listenkurs: mehrere Aufgaben auf einem Board, eine Zeile fuer alle Felder.
+    fake = FeldKontextFake("<!-- lernflaeche-bereiche: [[100,100,1760,800]] -->\n"
+                       "<!-- lernflaeche-loesungsfelder: [[1,2,3,4]] -->\n")
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    (patch,) = _feldpatches(fake)
+    assert "-<!-- lernflaeche-loesungsfelder: [[1,2,3,4]] -->\n" in patch["patch"]
+    assert "+<!-- lernflaeche-loesungsfelder: [[1,2,3,4],[1400,180,680,1000]] -->\n" in patch["patch"]
+    assert "lernflaeche-bereiche" not in patch["patch"]              # die Zeile der Bereiche bleibt unberuehrt
+
+
+def test_kaputte_zeile_der_loesungsfelder_wird_ersetzt(zustand: Path) -> None:
+    fake = FeldKontextFake("<!-- lernflaeche-loesungsfelder: kaputt -->\n")
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    (patch,) = _feldpatches(fake)
+    assert "+<!-- lernflaeche-loesungsfelder: [[1400,180,680,1000]] -->\n" in patch["patch"]
+
+
+def test_abgelehnte_meldung_bricht_die_aufgabe_nicht_ab(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    fake = FeldKontextFake(patch_fehler="SOURCE_CONFLICT")
+    with caplog.at_level(logging.WARNING):
+        _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    assert len(_feldpatches(fake)) == 2                               # einmal neu gelesen, dann aufgegeben
+    assert "Loesungsfeld nicht gemeldet" in caplog.text
+    assert len(_ink(fake)) == 1                                       # Text und Tintenrahmen stehen trotzdem
+
+
+def test_sechzig_gemeldete_felder_sind_die_grenze(zustand: Path, caplog: pytest.LogCaptureFixture) -> None:
+    voll = json.dumps([[i, 0, 10, 10] for i in range(60)], separators=(",", ":"))
+    fake = FeldKontextFake(f"<!-- lernflaeche-loesungsfelder: {voll} -->\n")
+    with caplog.at_level(logging.WARNING):
+        _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    assert _feldpatches(fake) == [] and "schon 60 Felder" in caplog.text
