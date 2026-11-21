@@ -2054,15 +2054,18 @@ class Bruecke:
             wort = gebucht.get(e["nummer"])
             richtig = (wort == "richtig" if wort is not None
                        else e["status"] == "bestaetigt" and isinstance(vor, dict) and urteil_aus(vor) == "Richtig.")
+            ganz = ""  # ungekuerzt, nur fuer das PDF
             if nicht_bearbeitet(e["status"], vor, e.get("antwort")):
                 aussage = NICHT_BEARBEITET_RUECKMELDUNG  # die KI-Kursrueckmeldung darf sie nicht als Staerke lesen
             else:
                 aussage = kernaussage(vor, e["task"]) if isinstance(vor, dict) else "–"
+                ganz = kernaussage(vor, e["task"], grenze=None) if isinstance(vor, dict) else ""
             zeilen.append(AufgabeZeile(
                 e["nummer"], str(prompt) if prompt else "", ergebnis_von(e["status"], vor, e["task"], e.get("antwort")),
                 aussage, bild,
                 self._ki_schritte_lesen(sitzung.sid, e["nummer"]), richtig,
                 versuche=_versuche_von(e), erstes_urteil=_erstes_urteil_von(e), urteil=wort or _urteil_wort(vor),
+                rueckmeldung=ganz,
             ))
         if sitzung.je_aufgabe and rueckmeldung is None and turn.get("state") == "completed":
             rueckmeldung = aus_zahlen(zeilen)

@@ -7,6 +7,7 @@ Textfassung enthaelt weder Bilder noch Kennungen.
 from __future__ import annotations
 
 import io
+import logging
 import re
 import textwrap
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ matplotlib.use("Agg")
 from matplotlib import image as mpl_image  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
+
+log = logging.getLogger(__name__)
 
 # Zeitbudget fuer alle Aufnahmen eines PDF-Abrufs zusammen; danach entfallen die uebrigen Bilder.
 BILD_BUDGET_S = 30.0
@@ -61,6 +64,7 @@ class AufgabeZeile:
     versuche: int = 0                   # Zahl der Versuche (Learnings Liste); es zaehlt der beste
     erstes_urteil: str | None = None    # Learnings Zustand des ersten bewerteten Versuchs
     urteil: str | None = None           # „richtig“ | „teilweise“ | „falsch“ des Versuchs, der zaehlt (falls gebucht)
+    rueckmeldung: str = ""              # die ganze Rueckmeldung, ungekuerzt (PDF); leer: `kernaussage` gilt
 
     @property
     def versuche_zeile(self) -> str:
@@ -191,14 +195,16 @@ def ergebnis_von(status: str, vorbewertung: dict[str, Any] | None, task: dict[st
     return "offen"
 
 
-def kernaussage(vorbewertung: dict[str, Any], task: dict[str, Any] | None = None) -> str:
-    """Urteil plus die ganze Rueckmeldung der Karte (alle Kriterien), hoechstens 900 Zeichen (sonst mit „…“)."""
+def kernaussage(vorbewertung: dict[str, Any], task: dict[str, Any] | None = None, *,
+                grenze: int | None = KERNAUSSAGE_ZEICHEN) -> str:
+    """Urteil plus die ganze Rueckmeldung der Karte (alle Kriterien), hoechstens 900 Zeichen (sonst mit „…“).
+    `grenze=None`: ungekuerzt, fuer das PDF (dort endete die Rueckmeldung sonst mitten im Satz)."""
     from .bruecke import kartentext, urteil_aus  # bruecke importiert dieses Modul
 
     ganz = f"{urteil_aus(vorbewertung)} {_einzeilig(kartentext(vorbewertung, task))}".strip()
-    if len(ganz) <= KERNAUSSAGE_ZEICHEN:
+    if grenze is None or len(ganz) <= grenze:
         return ganz
-    return ganz[:KERNAUSSAGE_ZEICHEN - 1].rstrip() + "…"
+    return ganz[:grenze - 1].rstrip() + "…"
 
 
 # ---- Begriffe ------------------------------------------------------------------------------------
@@ -514,8 +520,19 @@ def _begriffeseiten(z: Zusammenfassung) -> list[Figure]:
 
 
 def als_pdf(z: Zusammenfassung) -> bytes:
-    """A4 hoch: Seite 1 Kurs, Datum, Uebersicht; dann (falls vorhanden) die Kursrueckmeldung; je Aufgabe eine
-    Seite; zum Schluss „Begriffe“."""
+    """Das PDF der Zusammenfassung: gesetzt mit ReportLab (`zusammenfassung_pdf`). Fehlt ReportLab in der
+    Umgebung, entsteht die einfache Fassung (`als_pdf_einfach`), damit der Abruf nie daran scheitert."""
+    try:
+        from .zusammenfassung_pdf import als_pdf as gesetzt
+    except ImportError as fehler:
+        log.warning("Zusammenfassung: ReportLab fehlt, einfache Fassung: %s", type(fehler).__name__)
+        return als_pdf_einfach(z)
+    return gesetzt(z)
+
+
+def als_pdf_einfach(z: Zusammenfassung) -> bytes:
+    """Die fruehere Fassung mit matplotlib, nur noch als Ersatz. A4 hoch: Seite 1 Kurs, Datum, Uebersicht; dann
+    (falls vorhanden) die Kursrueckmeldung; je Aufgabe eine Seite; zum Schluss „Begriffe“."""
     puffer = io.BytesIO()
     # fonttype 42: die Schrift (DejaVu Sans, liegt matplotlib bei) steckt als TrueType im PDF, der Text bleibt lesbar.
     with matplotlib.rc_context({"font.family": "DejaVu Sans", "pdf.fonttype": 42}):
