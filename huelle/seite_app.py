@@ -17,6 +17,7 @@ SEITE = Path(__file__).parent / "seite"
 PREFIX = "/lernen/"
 KOPF_MARKE = "<!--KOPF-->"
 FLAECHE_MARKE = "<!--FLAECHE-->"
+UEBERSICHT_MARKE = "<!--UEBERSICHT-->"
 # KaTeX (MIT, 0.16.11, dieselbe Fassung wie die Claw-Seiten) liegt bei der Seite: kein fremder Host beim Laden.
 # Die Huelle setzt Formeln selbst (aufgabe.js `formel` ueber window.katex); Auto-Render braucht sie nicht.
 KOPF = '<link rel="stylesheet" href="katex/katex.min.css"><script defer src="katex/katex.min.js"></script>'
@@ -72,12 +73,16 @@ def seite_app(einstellung: Einstellung) -> App:
     richtlinie = seiten_csp(einstellung.flaechen_herkuenfte)
     lokal_host = f"127.0.0.1:{einstellung.port}"
     flaeche_basis, flaeche_lokal = einstellung.flaechen_herkuenfte
+    # Zurueck zur Kursuebersicht: nur mit eingestellter Adresse (die Dateien selbst tragen keine Adressen).
+    uebersicht = (f'<a id="zur-uebersicht" class="zur-uebersicht" href="{html.escape(einstellung.uebersicht_url, quote=True)}">'
+                  "‹ Kursübersicht</a>") if einstellung.uebersicht_url else ""
 
     def seite_html(host: str) -> str:
         # Wer die Seite lokal oeffnet, bekommt die Flaeche lokal; sonst die Flaechen-Herkunft.
         flaeche = flaeche_lokal if host == lokal_host else flaeche_basis
         roh = (SEITE / "index.html").read_text(encoding="utf-8")
-        return roh.replace(KOPF_MARKE, KOPF).replace(FLAECHE_MARKE, html.escape(flaeche, quote=True))
+        return (roh.replace(KOPF_MARKE, KOPF).replace(FLAECHE_MARKE, html.escape(flaeche, quote=True))
+                .replace(UEBERSICHT_MARKE, uebersicht))
 
     async def text(send: Send, status: int, inhalt: str, erlaubt: str | None = None) -> None:
         body = inhalt.encode("utf-8")

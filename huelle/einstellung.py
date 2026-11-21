@@ -56,6 +56,9 @@ KI_GLEICHZEITIG_VORGABE = 3
 LERNFLAECHE_URL = "LEARNING_HUELLE_LERNFLAECHE_URL"
 LERNFLAECHE_URL_VORGABE = "http://127.0.0.1:3888"
 BEWERTUNG_SCHLUESSEL = "LEARNING_HUELLE_BEWERTUNG_SCHLUESSEL"
+# Optional: Adresse der Kursuebersicht im Browser (LearnHouse-Web), fuer den Link „‹ Kursübersicht“ im Kopf der
+# Seite. Leer = kein Link. Nicht LEARNING_HUELLE_LEARNHOUSE_URL: das ist die API, die nur der Server anspricht.
+UEBERSICHT_URL = "LEARNING_HUELLE_UEBERSICHT_URL"
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,7 @@ class Einstellung:
     lernflaeche_url: str = LERNFLAECHE_URL_VORGABE
     bewertung_schluessel: str = field(default="", repr=False)
     zugang_schluessel: str = field(default="", repr=False)
+    uebersicht_url: str = ""
 
     @property
     def zugang_geheimnis(self) -> str:
@@ -279,4 +283,5 @@ def einstellung_lesen(env: Mapping[str, str] | None = None) -> Einstellung:
         lernflaeche_url=_http_basis(env, LERNFLAECHE_URL) or LERNFLAECHE_URL_VORGABE,
         bewertung_schluessel=_bewertung_schluessel(env),
         zugang_schluessel=_zugang_schluessel(env, schluessel),
+        uebersicht_url=_http_basis(env, UEBERSICHT_URL),
     )

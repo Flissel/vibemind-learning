@@ -282,3 +282,39 @@ def test_kurs_abgeben_macht_aeltere_staende_vor_dem_post_ungueltig() -> None:
     gueltig = rumpf.index("z.gueltigAb = neueAnfrage()")
     assert gueltig < rumpf.index("/kurs-abgeben")
     assert rumpf.count("z.gueltigAb = neueAnfrage()") == 2
+
+
+# ---- Zurueck zur Kursuebersicht (21.11.: von der Uebungsseite fuehrte kein Weg zurueck) ----------------------
+def _mit_uebersicht(adresse: str) -> Any:
+    return einstellung_lesen({
+        "LEARNING_HUELLE_BASIS": f"https://{HOST}",
+        "LEARNING_HUELLE_FLAECHE_BASIS": f"https://{HOST}:8443",
+        "LEARNING_HUELLE_PENECHO_STATE": "/tmp/state",
+        "LEARNHOUSE_LEARNING_SERVICE_KEY": SCHLUESSEL,
+        "LEARNING_HUELLE_ACTOR": "lh-1-test",
+        "LEARNING_HUELLE_KURSE": json.dumps([{"course_id": "11111111-1111-4111-8111-111111111111", "titel": "T"}]),
+        "LEARNING_HUELLE_UEBERSICHT_URL": adresse,
+    })
+
+
+def test_seite_traegt_den_link_zur_kursuebersicht() -> None:
+    html = _hole(seite_app(_mit_uebersicht("https://akademie.example.test/")), "/lernen/")[1]["body"].decode("utf-8")
+    assert '<a id="zur-uebersicht" class="zur-uebersicht" href="https://akademie.example.test">‹ Kursübersicht</a>' in html
+    assert "<!--UEBERSICHT-->" not in html
+    # Im Kopf ganz vorn, vor der Kurswahl.
+    assert html.index('id="zur-uebersicht"') < html.index('id="kurs"')
+
+
+def test_seite_ohne_einstellung_hat_keinen_link_zur_kursuebersicht() -> None:
+    html = _hole(seite_app(E), "/lernen/")[1]["body"].decode("utf-8")
+    assert "zur-uebersicht" not in html and "<!--UEBERSICHT-->" not in html
+
+
+def test_adresse_der_kursuebersicht_wird_geprueft_und_maskiert() -> None:
+    import pytest
+
+    for schlecht in ("javascript:alert(1)", "ftp://x.example", "https://nutzer:pw@x.example", "https://x.example/?a=1"):
+        with pytest.raises(RuntimeError, match="LEARNING_HUELLE_UEBERSICHT_URL"):
+            _mit_uebersicht(schlecht)
+    html = _hole(seite_app(_mit_uebersicht('https://x.example/a"b')), "/lernen/")[1]["body"].decode("utf-8")
+    assert 'href="https://x.example/a&quot;b"' in html
