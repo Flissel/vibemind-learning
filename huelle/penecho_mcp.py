@@ -407,6 +407,14 @@ def felderzeile(rechtecke: Sequence[Sequence[int]]) -> str:
     return f"<!-- lernflaeche-loesungsfelder: {json.dumps([list(r) for r in rechtecke], separators=(',', ':'))} -->"
 
 
+def _gleiche_ecke(gemeldet: Sequence[Sequence[int]], feld: dict[str, int]) -> dict[str, int] | None:
+    """Das gemeldete Feld mit derselben rechten oberen Ecke wie `feld` (mindestens 100 x 100, auf der Flaeche)."""
+    for x, y, w, h in gemeldet:
+        if x + w == feld["x"] + feld["w"] and y == feld["y"] and w >= 100 and h >= 100 and x >= 0 and y + h <= FLAECHE_GROESSE:
+            return {"x": x, "y": y, "w": w, "h": h}
+    return None
+
+
 def _gemeldete_felder(inhalt: str) -> list[list[int]]:
     """Rechtecke der ersten Zeile der Loesungsfelder in `inhalt`; fehlt sie oder ist sie kaputt: []."""
     for z in inhalt.split("\n"):
@@ -1238,8 +1246,11 @@ class PenEchoMcp:
         feld = loesungsfeld(b, mit_ergebnisfeld=mit_ergebnisfeld, mit_arbeitsfeld=mit_arbeitsfeld)
         if feld is not None:
             praefix = "ergebnis" if mit_ergebnisfeld else "arbeit"
-            self._feld_melden(session_id, feld)
-            self._feld_zeichnen(session_id, aufgabe_id, nummer, feld, praefix, zeigen=zeigen)
+            # Der feste Rahmen der Lernflaeche ersetzt die Tinte. Tinte nur noch, wenn die Meldung scheiterte, und in
+            # der Gruppe: dort sehen die anderen nur sie (context.md wird nicht abgeglichen).
+            gemeldet = self._feld_melden(session_id, feld)
+            if not gemeldet or self._ist_gruppensitzung(session_id):
+                self._feld_zeichnen(session_id, aufgabe_id, nummer, feld, praefix, zeigen=zeigen)
 
     def _fall_setzen(
         self, session_id: str, aufgabe_id: str, nummer: int, fall: str, platz: dict[str, int],
@@ -1369,14 +1380,20 @@ class PenEchoMcp:
         rest = MAX_SCHLUESSEL - len(f"{praefix}--{nummer}{zusatz}")
         return f"{praefix}-{aufgabe_id[:rest]}-{nummer}{zusatz}"
 
-    def _feld_melden(self, session_id: str, feld: dict[str, int]) -> None:
+    def _ist_gruppensitzung(self, session_id: str) -> bool:
+        """Gehoert die Sitzung zu einer Gruppenflaeche? (`_sitzung_in_gruppe` merkt deren Tab-Marke mit "g" davor;
+        die Marke eigener Boards ist ein reiner Hex-Hash.)"""
+        tabs = self._gemerkt(self._tabdatei)
+        return any(sid == session_id and tabs.get(k, "").startswith("g") for k, sid in self._gemerkt().items())
+
+    def _feld_melden(self, session_id: str, feld: dict[str, int]) -> bool:
         """Das Feld als Loesungsfeld in die context.md des Boards (`felderzeile`): die Lernflaeche zeichnet daraus
         den festen, beschrifteten Rahmen. Schon gemeldete Felder des Boards bleiben stehen (Listenkurs: eine Zeile
-        fuer alle Aufgaben); steht das Feld schon da, wird nichts geschrieben.
+        fuer alle Aufgaben). Steht an derselben rechten oberen Ecke schon ein Feld (auch ein von den Lernenden
+        groesser gezogenes, siehe `_feld_auf_flaeche`), wird nichts geschrieben. True, wenn das Feld danach dasteht.
 
-        Zierde wie der Tintenrahmen: Fehler ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab. Der
-        Tintenrahmen (`_feld_zeichnen`) bleibt daneben bestehen: in der Gruppe sehen die anderen nur ihn (context.md
-        wird dort nicht abgeglichen), und eine aeltere Lernflaeche kennt die Zeile nicht.
+        Zierde: Fehler ausser verlorener Sitzung/Flaeche brechen die Aufgabe nicht ab; dann zeichnet
+        `aufgabe_setzen` den Tintenrahmen (`_feld_zeichnen`) als Ersatz.
         """
         eintrag = [feld["x"], feld["y"], feld["w"], feld["h"]]
         try:
@@ -1385,23 +1402,23 @@ class PenEchoMcp:
                 inhalt, pruefsumme = lesen.get("content"), lesen.get("contentHash")
                 if not isinstance(inhalt, str) or not isinstance(pruefsumme, str) or not pruefsumme:
                     log.warning("Loesungsfeld nicht gemeldet: context.md nicht lesbar")
-                    return
+                    return False
                 gemeldet = _gemeldete_felder(inhalt)
-                if eintrag in gemeldet:
-                    return
+                if _gleiche_ecke(gemeldet, feld) is not None:
+                    return True
                 if len(gemeldet) >= _FELDER_HOECHSTENS:
                     log.warning("Loesungsfeld nicht gemeldet: schon %d Felder auf dem Board", len(gemeldet))
-                    return
+                    return False
                 patch = _markenpatch(inhalt, felderzeile([*gemeldet, eintrag]), _FELDER_MARKE)
                 if patch is None:
-                    return
+                    return True
                 kennung = hashlib.sha256(f"{pruefsumme}\n{patch}".encode("utf-8")).hexdigest()[:32]
                 try:
                     self._werkzeug("penecho_patch_file", {
                         "sessionId": session_id, "path": _KONTEXT, "contentHash": pruefsumme, "patch": patch,
                         "requestId": f"felder-{kennung}",
                     })
-                    return
+                    return True
                 except PenEchoQuelleVeraltet:
                     if versuch == 2:
                         log.warning("Loesungsfeld nicht gemeldet: context.md aendert sich laufend")
@@ -1409,6 +1426,23 @@ class PenEchoMcp:
             raise
         except PenEchoNichtErreichbar as fehler:
             log.warning("Loesungsfeld nicht gemeldet: %s", _typ(fehler))
+        return False
+
+    def _feld_auf_flaeche(self, session_id: str, feld: dict[str, int]) -> dict[str, int]:
+        """Das Feld, wie es jetzt auf der Flaeche steht: die Lernenden koennen es am Griff nach links und unten
+        groesser ziehen (lernflaeche-kern.js loesungsfeldZiehen), die rechte obere Ecke bleibt. Gelesen wird das
+        gemeldete Feld mit dieser Ecke aus context.md; fehlt es oder ist die Datei nicht lesbar: `feld` selbst.
+        Verlorene Sitzung/Flaeche gehen weiter, damit die Aufnahme danach ihren ueblichen Weg nimmt."""
+        try:
+            lesen = self._struktur(self._werkzeug("penecho_read_file", {"sessionId": session_id, "path": _KONTEXT}))
+        except (PenEchoSitzungUnbekannt, PenEchoFlaecheVerloren):
+            raise
+        except PenEchoNichtErreichbar as fehler:
+            log.warning("Loesungsfeld nicht gelesen: %s", _typ(fehler))
+            return feld
+        inhalt = lesen.get("content")
+        treffer = _gleiche_ecke(_gemeldete_felder(inhalt), feld) if isinstance(inhalt, str) else None
+        return treffer if treffer is not None else feld
 
     def _feld_zeichnen(
         self, session_id: str, aufgabe_id: str, nummer: int, feld: dict[str, int], praefix: str, *, zeigen: bool = True,
@@ -1715,8 +1749,10 @@ class PenEchoMcp:
                                  rueckmeldungstext(gelesen, urteil, text), rechteck=rechteck)
 
     def ergebnis_schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None) -> bytes:
-        """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; der Rahmen liegt ausserhalb)."""
-        return self._aufnahme(session_id, felder(rechteck).ergebnisfeld if rechteck is not None else ergebnisfeld(nummer))
+        """PNG des Ergebnisfelds (nur die Handschrift der Lernenden; der Rahmen liegt ausserhalb), in der Groesse,
+        die es jetzt auf der Flaeche hat (`_feld_auf_flaeche`)."""
+        feld = felder(rechteck).ergebnisfeld if rechteck is not None else ergebnisfeld(nummer)
+        return self._aufnahme(session_id, self._feld_auf_flaeche(session_id, feld))
 
     def schnappschuss(self, session_id: str, nummer: int, *, rechteck: dict[str, int] | None = None,
                       timeout: float | None = None) -> bytes:

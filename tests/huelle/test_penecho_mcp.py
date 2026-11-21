@@ -25,6 +25,8 @@ TITEL = "Kurs A · 03.11.2026"
 
 
 class Fake:
+    feld_melden = False  # True: die Flaeche nimmt die Zeile der Loesungsfelder an (fester Rahmen statt Tinte)
+
     def __init__(self, *, fehler: bool = False, tool_404: int = 0, tool_fehler: str | None = None) -> None:
         self.tool_404 = tool_404
         self.tool_fehler = tool_fehler
@@ -50,6 +52,11 @@ class Fake:
             self.tool_404 -= 1
             return httpx.Response(404, json={"error": "Session not found"})
         name = body["params"]["name"]
+        if (name == "penecho_patch_file" and not self.feld_melden
+                and str(body["params"]["arguments"].get("requestId", "")).startswith("felder-")):
+            sc = {"code": "PATCH_REJECTED", "message": "m"}
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "isError": True, "structuredContent": sc, "content": [{"type": "text", "text": json.dumps(sc)}]}})
         if self.tool_fehler:
             sc = {"code": self.tool_fehler, "message": "m"}
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
@@ -2498,7 +2505,10 @@ def test_bilder_stehen_im_eigenen_canvas_neben_dem_ergebnisfeld() -> None:
 
 
 class FeldKontextFake(FeldFake):
-    """Wie FeldFake, aber context.md hat einen eigenen Inhalt; penecho_patch_file kann abgelehnt werden."""
+    """Wie FeldFake, aber context.md hat einen eigenen Inhalt und die Flaeche nimmt die Zeile der Loesungsfelder an;
+    penecho_patch_file kann abgelehnt werden."""
+
+    feld_melden = True
 
     def __init__(self, kontext: str = "", patch_fehler: str | None = None) -> None:
         super().__init__()
@@ -2534,7 +2544,7 @@ def test_loesungsfeld_wird_der_flaeche_gemeldet(zustand: Path) -> None:
     assert patch["requestId"].startswith("felder-")
     assert "+<!-- lernflaeche-loesungsfelder: [[1400,180,680,1000]] -->\n" in patch["patch"]
     assert " Aufgabentext der Huelle\n" in patch["patch"]          # die letzte Zeile bleibt als Kontext stehen
-    assert len(_ink(fake)) == 1                                       # der Tintenrahmen bleibt (Gruppe, alte Flaeche)
+    assert _ink(fake) == []                                           # der feste Rahmen ersetzt die Tinte
 
 
 def test_arbeitsfeld_wird_als_loesungsfeld_gemeldet(zustand: Path) -> None:
@@ -2590,3 +2600,70 @@ def test_sechzig_gemeldete_felder_sind_die_grenze(zustand: Path, caplog: pytest.
     with caplog.at_level(logging.WARNING):
         _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
     assert _feldpatches(fake) == [] and "schon 60 Felder" in caplog.text
+
+
+# ---- 21.11.: Feld groesser ziehen; Tinte nur noch als Ersatz und in der Gruppe ----------------------------------
+
+_GEZOGEN = "<!-- lernflaeche-loesungsfelder: [[1100,180,980,1220]] -->\n"   # rechte obere Ecke wie das Feld in _EINZEL
+
+
+def _aufnahmen(fake: Fake) -> list[dict]:
+    return [a["arguments"]["region"] for a in fake.aufrufe("penecho_capture_canvas")]
+
+
+def test_schnappschuss_nimmt_das_gezogene_feld(zustand: Path) -> None:
+    fake = FeldKontextFake(_GEZOGEN)
+    _client(zustand, fake).ergebnis_schnappschuss("sess-1", 1, rechteck=_EINZEL)
+    assert _aufnahmen(fake) == [{"x": 1100, "y": 180, "w": 980, "h": 1220}]
+
+
+@pytest.mark.parametrize("kontext", [
+    "",                                                                       # nichts gemeldet
+    "<!-- lernflaeche-loesungsfelder: [[1,2,300,400]] -->\n",                 # nur ein anderes Feld
+    "<!-- lernflaeche-loesungsfelder: [[2050,180,30,1000]] -->\n",            # gleiche Ecke, aber kaputt klein
+    "<!-- lernflaeche-loesungsfelder: kaputt -->\n",
+])
+def test_schnappschuss_nimmt_ohne_brauchbare_meldung_das_feste_feld(zustand: Path, kontext: str) -> None:
+    fake = FeldKontextFake(kontext)
+    _client(zustand, fake).ergebnis_schnappschuss("sess-1", 1, rechteck=_EINZEL)
+    assert _aufnahmen(fake) == [felder(_EINZEL).ergebnisfeld]
+
+
+def test_schnappschuss_bleibt_beim_festen_feld_wenn_der_kontext_nicht_lesbar_ist(zustand: Path) -> None:
+    class Stumm(FeldFake):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            if body["method"] == "tools/call" and body["params"]["name"] == "penecho_read_file":
+                self.anfragen.append((body, request.headers))
+                sc = {"code": "FILE_NOT_FOUND", "message": "m"}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "isError": True, "structuredContent": sc, "content": []}})
+            return super().__call__(request)
+
+    fake = Stumm()
+    _client(zustand, fake).ergebnis_schnappschuss("sess-1", 1, rechteck=_EINZEL)
+    assert _aufnahmen(fake) == [felder(_EINZEL).ergebnisfeld]
+
+
+def test_gezogenes_feld_bleibt_beim_erneuten_setzen_stehen(zustand: Path) -> None:
+    # Aufgabe wird nach Neuladen noch einmal gesetzt: das Feld der Lernenden wird nicht zurueckgestellt.
+    fake = FeldKontextFake(_GEZOGEN)
+    _client(zustand, fake).aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    assert _feldpatches(fake) == [] and _ink(fake) == []
+
+
+def test_in_der_gruppe_kommt_die_tinte_zum_festen_rahmen_dazu(zustand: Path) -> None:
+    fake = FeldKontextFake()
+    client = _client(zustand, fake)
+    client._merken({"k": "sess-1"})
+    client._merken({"k": "g0123abc"}, client._tabdatei)
+    client.aufgabe_setzen("sess-1", "t1", "x", 1, mit_ergebnisfeld=True, rechteck=_EINZEL)
+    assert len(_feldpatches(fake)) == 1 and len(_ink(fake)) == 1
+
+
+def test_eigenes_board_ist_keine_gruppensitzung(zustand: Path) -> None:
+    client = _client(zustand, FeldKontextFake())
+    client._merken({"k": "sess-1", "g": "sess-2"})
+    client._merken({"k": "0123abcdef", "g": "gfedcba"}, client._tabdatei)
+    assert not client._ist_gruppensitzung("sess-1") and client._ist_gruppensitzung("sess-2")
+    assert not client._ist_gruppensitzung("unbekannt")
